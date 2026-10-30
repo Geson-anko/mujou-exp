@@ -19,7 +19,7 @@ from torch import nn
 
 import mujou
 from experiments.continuous_stream.config import Config
-from experiments.continuous_stream.model import encoder_modules
+from experiments.continuous_stream.model import encoder_modules, standardize_
 from experiments.continuous_stream.nodes import MinGRU, compare_energy, insert_, sigreg
 from experiments.continuous_stream.optim import from_config
 from mujou import DictSpec, Node, Port, TensorSpec, TimestampSpec
@@ -169,6 +169,7 @@ class WorldBPNetwork(mujou.Network):
         self.tau = tau
         torch.manual_seed(config.seed)
         g1, z = encoder_modules(d.size, m.d_z)
+        standardize_(g1, z, d.size, seed=config.seed + 10_000)
         step, readout = MinGRU(m.d_z, m.d_s), nn.Linear(m.d_s, m.d_z)
         self.input = pc.Input(
             x=TensorSpec((1, d.size, d.size)), y=TensorSpec((1,)), period=tau.period
