@@ -55,6 +55,7 @@ class OptimConfig:
 class ModelConfig:
     """The sizes of the network (PLAN.md, section 7)."""
 
+    hidden: int = 0  # stage 0: the width of the hidden layer (0: linear)
     d_z: int = 64
     d_s: int = 256
     kappa: float = 0.05  # the weight of SIGReg
@@ -87,6 +88,8 @@ class Config:
 
     name: str = "run"
     seed: int = 0
+    bp: bool = False  # the baseline: the same modules by BP in one node
+    eval_interval: float = 60.0  # seconds of the run's timer between evaluations
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
