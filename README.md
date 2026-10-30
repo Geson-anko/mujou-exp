@@ -1,10 +1,10 @@
 # mujou-exp
 
-Experiments with [mujou](https://github.com/Geson-anko/mujou), the asynchronous distributed deep learning library for continuous learning.
+継続学習のための非同期・分散深層学習ライブラリ [mujou](https://github.com/Geson-anko/mujou) を使って実験するプロジェクト。
 
-mujou is a git submodule (`mujou/`) installed in editable mode. When an experiment needs something mujou lacks, add it in the submodule, send a pull request to mujou, and keep experimenting on top of the change.
+mujou は git submodule（`mujou/`）で、editable でインストールする。実験で mujou に足りない機能が見つかったら、submodule 側に追加し、mujou へ PR を送りながら実験を進める。
 
-## Setup
+## セットアップ
 
 ```sh
 git clone --recurse-submodules https://github.com/Geson-anko/mujou-exp.git
@@ -12,32 +12,32 @@ cd mujou-exp
 just setup   # git submodule update --init, uv venv --clear, uv sync, pre-commit install
 ```
 
-`uv sync` builds mujou's native module (Rust, via maturin), so it needs [uv](https://docs.astral.sh/uv/), [just](https://just.systems/) 1.58 or later and [rustup](https://rustup.rs/). The dev container has all of them.
+`uv sync` は mujou のネイティブモジュール（Rust、maturin 経由）をビルドする。そのため [uv](https://docs.astral.sh/uv/)、[just](https://just.systems/) 1.58 以上、[rustup](https://rustup.rs/) が要る。dev container には全部入っている。
 
 ## Dev container
 
-`.devcontainer/` is the same environment as mujou's: Ubuntu with uv, just, gh, the Rust toolchain and Claude Code. Open the checkout in VS Code and choose "Reopen in Container", or run any command through the [Dev Container CLI](https://github.com/devcontainers/cli):
+`.devcontainer/` は mujou と同じ環境で、Ubuntu に uv、just、gh、Rust ツールチェーン、Claude Code が入っている。チェックアウトを VS Code で開いて "Reopen in Container" を選ぶか、[Dev Container CLI](https://github.com/devcontainers/cli) 経由で任意のコマンドを実行する。
 
 ```sh
 just container just run
 ```
 
-The container uses its own virtualenv, `.venv-devcontainer/`, so that it does not collide with the host's `.venv/`.
+コンテナはホストの `.venv/` と衝突しないよう、専用の仮想環境 `.venv-devcontainer/` を使う。
 
-## Commands
+## コマンド
 
-| Recipe              | What it does                                                            |
-| ------------------- | ----------------------------------------------------------------------- |
-| `just setup`        | Fetch the submodule, create the virtualenv, install the pre-commit hook |
-| `just format`       | Run the pre-commit hooks on all files                                   |
-| `just test`         | pytest of this project                                                  |
-| `just test-fast`    | pytest without the `slow` tests                                         |
-| `just type`         | pyright over `experiments/` and `tests/`                                |
-| `just run`          | format → test → type. **Run it before committing**                      |
-| `just mujou-status` | State of the submodule; fails if its commit is not on origin            |
-| `just mujou-update` | Move the submodule to the latest `origin/main`                          |
-| `just container …`  | Run a command in the dev container                                      |
+| レシピ              | 内容                                                              |
+| ------------------- | ----------------------------------------------------------------- |
+| `just setup`        | submodule の取得、仮想環境の作成、pre-commit フックのインストール |
+| `just format`       | pre-commit フックを全ファイルに実行                               |
+| `just test`         | このプロジェクトの pytest                                         |
+| `just test-fast`    | `slow` を除いた pytest                                            |
+| `just type`         | `experiments/` と `tests/` への pyright                           |
+| `just run`          | format → test → type。**コミット前に実行する**                    |
+| `just mujou-status` | submodule の状態。コミットが origin に無ければ失敗する            |
+| `just mujou-update` | submodule を `origin/main` の最新へ進める                         |
+| `just container …`  | dev container の中でコマンドを実行する                            |
 
-## Working with mujou
+## mujou を変更するとき
 
-See [CLAUDE.md](CLAUDE.md) and the skill `mujou-upstream` (`.claude/skills/mujou-upstream/SKILL.md`).
+[CLAUDE.md](CLAUDE.md) と skill `mujou-upstream`（`.claude/skills/mujou-upstream/SKILL.md`）を参照。

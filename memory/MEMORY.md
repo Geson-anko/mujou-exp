@@ -12,3 +12,4 @@
 ## feedback
 
 - [質問は最後にまとめる](feedback_questions_at_end.md) — 推奨案で進み、質問は区切りにまとめて出す
+- [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
