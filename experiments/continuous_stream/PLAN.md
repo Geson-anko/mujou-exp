@@ -317,6 +317,7 @@ Hoque ら, [arXiv:2505.11709](https://arxiv.org/abs/2505.11709)、[apple/ml-egod
 ```text
 experiments/continuous_stream/
   PLAN.md       この計画書
+  MILESTONES.md 実装と検証のマイルストーン
   README.md     仮説・実行方法・結果（段ごとに追記）
   __init__.py
   config.py     設定の dataclass（seed、寸法、時定数、optimizer）
@@ -332,7 +333,7 @@ tests/continuous_stream/
 ```
 
 - 出力は `runs/<日付>-<名前>/` に `config.json`（mujou の SHA を含む）と `metrics.jsonl`。commit しない
-- テストのオラクル: SIGReg の EP を数値積分と閉じた形で比べる（ガウスの標本で 0 に近い）、時間で白色化した optimizer が $\tau \to 0$ で SGD と一致する、射影した更新が守る部分空間と直交する、`Dynamics` が同じ入力で BP 版の minGRU と同じ $s$ を出す
+- テストのオラクルは [MILESTONES.md](MILESTONES.md) の各マイルストーンに書く
 - `torch.set_num_threads(1)`。並列の実行は別プロセスで、32 コアに最大 8 本
 
 ### 計算の見込み
