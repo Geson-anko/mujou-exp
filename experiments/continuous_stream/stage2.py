@@ -11,6 +11,7 @@ reference. The baselines learn by SGD.
 
 import argparse
 import json
+import math
 import statistics
 from collections import defaultdict
 from dataclasses import replace
@@ -112,25 +113,39 @@ def summary(path: Path) -> dict[str, float]:
 
 
 def table(out: Path) -> dict[str, dict[str, list[float]]]:
-    """The summary of each setting, a list over the seeds (in their order)."""
-    t: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    """The summary of each setting, a list over ``SEEDS``: NaN for a seed whose
+    run did not finish or lacks the metric."""
+    t: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(lambda: [math.nan] * len(SEEDS))
+    )
     for done in sorted(out.glob("*/done")):
         name = done.parent.name.split("-", 3)[3].removeprefix("v2-")
-        setting, _ = name.rsplit("-s", 1)
+        setting, seed = name.rsplit("-s", 1)
         for key, value in summary(done.parent / "metrics.jsonl").items():
-            t[setting][key].append(value)
+            t[setting][key][SEEDS.index(int(seed))] = value
     return t
 
 
 BASES = ("sgd", "adam-m0.3", "adam-m1", "adamw")
+RANK_MIN = 32.0  # D / 2: below it, z has collapsed (stage 1)
+
+
+def collapsed(row: dict[str, list[float]], s: int) -> bool:
+    """Whether the run of seed ``s`` collapsed or did not finish: ``preq`` is
+    NaN, or the last effective rank of $z$ is below ``RANK_MIN``. A collapsed
+    $z$ predicts itself trivially, so its errors are not comparable."""
+    if math.isnan(row["preq"][s]):
+        return True
+    return "rank" in row and not row["rank"][s] >= RANK_MIN
 
 
 def judge(t: dict[str, dict[str, list[float]]]) -> list[str]:
     """H2-H4 of PLAN.md, section 8, by the thresholds fixed before the runs.
 
     The baseline of each seed and metric is the best of ``BASES`` (SGD and the
-    AdamW kinds) for that seed. A whitened or projected optimizer "improves" a
-    metric by ``1 - value / baseline``.
+    AdamW kinds) for that seed, among the runs that did not collapse
+    (``collapsed``). A whitened or projected optimizer "improves" a metric by
+    ``1 - value / baseline``; one that collapsed in a seed improves nothing.
 
     - H2: an optimizer improves both ``preq`` and ``rollout10`` by >= 10% in
       every seed.
@@ -138,13 +153,19 @@ def judge(t: dict[str, dict[str, list[float]]]) -> list[str]:
       best of H2 (by the mean improvement), in every seed.
     - H4: that best one keeps (``retention``) better than the baseline of
       ``preq`` in every seed.
+    - The precondition: SGD predicts one frame ahead better than the mean of
+      $z$ (``rollout1`` below 1) in every seed. Without it, the lines of H2-H4
+      are only for the record.
     """
     seeds = range(len(t["sgd"]["preq"]))
+    bases = {s: [b for b in BASES if b in t and not collapsed(t[b], s)] for s in seeds}
 
     def base(key: str, s: int) -> float:
-        return min(t[b][key][s] for b in BASES if b in t)
+        return min(t[b][key][s] for b in bases[s])
 
     def gain(name: str, key: str, s: int) -> float:
+        if collapsed(t[name], s):
+            return -math.inf
         return 1 - t[name][key][s] / base(key, s)
 
     keys = ("preq", "rollout10")
@@ -174,10 +195,21 @@ def judge(t: dict[str, dict[str, list[float]]]) -> list[str]:
             f"H3 (against {best}): {'supported' if h3 else 'rejected'}; orth: {orth}"
         )
     if all("retention" in t[n] for n in (best, *BASES) if n in t):
-        b = [min(t[x]["retention"][s] for x in BASES if x in t) for s in seeds]
+        b = [min(t[x]["retention"][s] for x in bases[s]) for s in seeds]
         h4 = all(t[best]["retention"][s] < b[s] for s in seeds)
         values = "/".join(f"{t[best]['retention'][s]:.3g} vs {b[s]:.3g}" for s in seeds)
         lines.append(f"H4 ({best}): {'supported' if h4 else 'rejected'}; {values}")
+    if "rollout1" in t["sgd"]:
+        r = t["sgd"]["rollout1"]
+        met = all(r[s] < 1 for s in seeds)
+        values = "/".join(f"{r[s]:.3g}" for s in seeds)
+        lines.append(
+            f"Precondition (sgd rollout1 < 1): {'met' if met else 'not met'}; {values}"
+        )
+    excluded = [
+        f"{b}-s{SEEDS[s]}" for s in seeds for b in BASES if b in t and b not in bases[s]
+    ]
+    lines.append(f"Collapsed baselines, left out: {excluded}")
     return lines
 
 
