@@ -54,9 +54,10 @@ repos:
       - id: mdformat
         args: ["--number"]
         # memory/ uses [[wiki-links]] between memories, which mdformat escapes
-        # into \[\[...\]\] and thereby breaks. .claude/ skills contain LaTeX-like
-        # text and tables whose escaping mdformat would also alter.
-        exclude: ^(memory/|\.claude/)
+        # into \[\[...\]\] and thereby breaks. .claude/ skills and the documents of
+        # each experiment (experiments/<name>/) contain LaTeX-like text and tables
+        # whose escaping mdformat would also alter.
+        exclude: ^(memory/|\.claude/|experiments/[^/]+/)
         additional_dependencies:
           - mdformat-gfm
           - mdformat-tables
