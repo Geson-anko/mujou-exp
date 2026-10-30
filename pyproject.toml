@@ -1,0 +1,82 @@
+[project]
+name = "mujou-exp"
+version = "0.1.0"
+description = "Experiments with mujou, the asynchronous distributed deep learning library for continuous learning"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "mujou",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.2.0",
+    "pyright>=1.1.400",
+    "pytest>=8.3.5",
+    "ruff>=0.8.4",
+]
+
+[tool.uv]
+# Research code, not a distributable: install the dependencies into the virtualenv only.
+package = false
+default-groups = ["dev"]
+
+# mujou comes from the git submodule, installed in editable mode: a change under
+# mujou/ is picked up at once (the Rust extension is rebuilt on the next `uv run`).
+[tool.uv.sources]
+mujou = { path = "mujou", editable = true }
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+# mujou has its own tests (`just test` inside mujou/); only this project's are run here.
+testpaths = ["tests"]
+# `experiments` is imported from the tests as a top-level package.
+pythonpath = ["."]
+addopts = [
+    "--color=yes",
+    "--durations=10",
+    "--strict-markers",
+]
+markers = [
+    "slow: long-running training checks (deselect with -m 'not slow')",
+    "cuda(n=1): needs n CUDA devices; skipped otherwise",
+]
+
+[tool.pyright]
+pythonVersion = "3.14"
+include = ["experiments", "tests"]
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/.venv-devcontainer",
+    "mujou",
+    ".claude/worktrees/",
+]
+reportImplicitOverride = true
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py314"
+extend-exclude = [
+    "mujou",
+    ".venv-devcontainer",
+    ".claude/worktrees",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E203", # Whitespace before ':'
+    "E501", # Line too long (formatter owns this)
+    "E741", # Ambiguous variable name (math notation: l, I)
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

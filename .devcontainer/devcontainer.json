@@ -1,0 +1,51 @@
+{
+  "name": "mujou-exp",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "initializeCommand": "mkdir -p \"$HOME/.claude\" \"$HOME/.config/gh\" \"$HOME/.ssh\" && touch \"$HOME/.claude.json\" \"$HOME/.gitconfig\"",
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind",
+    "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind",
+    "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind",
+    "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,readonly"
+  ],
+  "hostRequirements": {
+    "gpu": "optional"
+  },
+  "containerEnv": {
+    "UV_PROJECT_ENVIRONMENT": ".venv-devcontainer",
+    "UV_LINK_MODE": "copy",
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "core.fileMode",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
+    "GIT_CONFIG_VALUE_1": "!gh auth git-credential"
+  },
+  "remoteEnv": {
+    "PATH": "${containerWorkspaceFolder}/.venv-devcontainer/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "git submodule update --init --recursive && uv sync && { [ -f .git/hooks/pre-commit ] || uv run pre-commit install; }",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "skellock.just",
+        "rust-lang.rust-analyzer",
+        "anthropic.claude-code",
+        "nuriyev.claude-code-katex",
+        "krsnasgr.claude-code-notify"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv-devcontainer/bin/python"
+      }
+    }
+  }
+}

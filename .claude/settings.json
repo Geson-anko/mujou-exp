@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(awk:*)",
+      "Bash(file:*)",
+      "Bash(stat:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(touch:*)",
+      "Bash(xargs:*)",
+      "Bash(which:*)",
+      "Bash(whereis:*)",
+      "Bash(type:*)",
+      "Bash(hash:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(cut:*)",
+      "Bash(tr:*)",
+      "Bash(column:*)",
+      "Bash(nl:*)",
+      "Bash(rev:*)",
+      "Bash(paste:*)",
+      "Bash(join:*)",
+      "Bash(diff:*)",
+      "Bash(cmp:*)",
+      "Bash(comm:*)",
+      "Bash(realpath:*)",
+      "Bash(readlink:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(printf:*)",
+      "Bash(printenv:*)",
+      "Bash(date:*)",
+      "Bash(uname:*)",
+      "Bash(hostname:*)",
+      "Bash(id:*)",
+      "Bash(du:*)",
+      "Bash(df:*)",
+      "Bash(ps:*)",
+      "Bash(pgrep:*)",
+      "Bash(md5sum:*)",
+      "Bash(sha256sum:*)",
+      "Bash(shasum:*)",
+      "Bash(base64:*)",
+      "Bash(jq:*)",
+      "Bash(yq:*)",
+      "Bash(expr:*)",
+      "Bash(bc:*)",
+      "Bash(test:*)",
+      "Bash(tee:*)",
+      "Bash(find:*)",
+      "Bash(tree:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(fd:*)",
+      "Bash(man:*)",
+      "Bash(just:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(uvx:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(pwd)",
+      "Bash(env)",
+      "Bash(whoami)",
+      "Bash(true)",
+      "Bash(false)",
+      "Bash(command -v:*)",
+      "Bash(sed -n:*)",
+      "Bash(unzip -l:*)",
+      "Bash(tar -tf:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git tag:*)",
+      "Bash(git blame:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git mv:*)",
+      "Bash(git rm:*)",
+      "Bash(git merge:*)",
+      "Bash(git reflog:*)",
+      "Bash(git describe:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git shortlog:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git symbolic-ref:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git name-rev:*)",
+      "Bash(git diff-tree:*)",
+      "Bash(git diff-index:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git grep:*)",
+      "Bash(git config --get:*)",
+      "Bash(git config --list:*)",
+      "Bash(git worktree *)",
+      "Bash(git cherry-pick *)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue status:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh workflow view:*)",
+      "Bash(gh workflow list:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh auth status:*)",
+      "Bash(gh search:*)",
+      "Bash(uv pip show:*)",
+      "Bash(uv pip list:*)",
+      "Bash(uv python:*)",
+      "Bash(uv add:*)",
+      "Bash(uv remove:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv lock:*)",
+      "Bash(uv run:*)",
+      "Bash(uv tree:*)",
+      "Bash(uv export:*)",
+      "Bash(uv venv:*)",
+      "Bash(uv version:*)",
+      "Bash(uv build:*)",
+      "Bash(pre-commit:*)",
+      "WebSearch",
+      "WebFetch",
+      "Bash(git submodule:*)",
+      "Bash(just -f mujou/justfile:*)",
+      "Bash(git -C mujou status:*)",
+      "Bash(git -C mujou log:*)",
+      "Bash(git -C mujou diff:*)",
+      "Bash(git -C mujou show:*)",
+      "Bash(git -C mujou fetch:*)",
+      "Bash(git -C mujou branch:*)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(./.env)",
+      "Read(./**/*.env)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -f:*)",
+      "Bash(git clean -df:*)",
+      "Bash(git clean --force:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git checkout .)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(sudo:*)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      ".claude/worktrees/**"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pretooluse-guard-bash.py\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/compaction-recovery.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/userpromptsubmit-compaction-recovery.sh\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/userpromptsubmit-compact-prep-reminder.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/scripts/statusline.sh\""
+  },
+  "effortLevel": "medium"
+}

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+# Virtualenv of the dev container (UV_PROJECT_ENVIRONMENT)
+.venv-devcontainer/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Tooling caches
+.ruff_cache/
+.pyright/
+
+# Build output
+dist/
+build/
+
+# Experiment artifacts (checkpoints, logs, plots): keep them out of git
+runs/
+outputs/
+wandb/
+logs/
+*.ckpt
+*.pt
+*.pth
+
+# Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+
+# Environment overrides
+.env
+
+# OS
+.DS_Store
+Thumbs.db
