@@ -81,9 +81,12 @@ def configs() -> list[Config]:
     return out
 
 
-def run_all(out: Path, jobs: int) -> None:
+def run_all(out: Path, jobs: int, every: list[Config] | None = None) -> None:
+    """Run each of ``every`` (``configs()`` if ``None``) not done yet in ``out``,
+    ``jobs`` at a time, each in a process of its own."""
     out.mkdir(parents=True, exist_ok=True)
-    todo = [c for c in configs() if not list(out.glob(f"*-{c.name}/done"))]
+    every = configs() if every is None else every
+    todo = [c for c in every if not list(out.glob(f"*-{c.name}/done"))]
     print(f"{len(todo)} runs to go", flush=True)
 
     def one(c: Config) -> None:
