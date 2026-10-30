@@ -8,6 +8,7 @@
 
 - [プロジェクトの目的](project_purpose.md) — mujou を使って実験するリポジトリ。足りない機能は mujou に足して PR を送る
 - [mujou submodule の運用](project_mujou_submodule.md) — editable で入れる。未 push のコミットを指すポインタをコミットしない
+- [PC-ALM が中心](project_pc_alm_central.md) — 学習則は mujou.pc。BP は基準だけ。手法は局所的な形で組む
 
 ## feedback
 
