@@ -3,6 +3,7 @@ PyTorch: the rollout, the linear probe and the effective rank on the clips of
 ``video.eval_clips``, and the correlation of the gradients in time."""
 
 import copy
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -140,7 +141,7 @@ def evaluate(snap: Snapshot, clips: Frame, d_s: int) -> dict[str, float]:
         "rank": effective_rank(z.reshape(p * c * t, -1)),
     }
     for h, err in rollout_errors(z, snap.step, snap.readout, d_s).items():
-        out[f"rollout{h}"] = err / var
+        out[f"rollout{h}"] = err / var if var > 0 else math.nan  # z collapsed
     states, _ = run_states(z, snap.step, snap.readout, d_s, t, 0)
     half = c // 2  # train on the first half of the clips of each phase
     targets = torch.cat([clips.state, clips.params], -1).reshape(p, c, t, -1)

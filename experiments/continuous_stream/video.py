@@ -118,7 +118,7 @@ class Video:
         balls: int = 3,
         frame: float = 1 / 30,
         physics: Physics = Physics(),
-        episode: tuple[float, float] = (30.0, 90.0),
+        episode: tuple[float, float] = (3.0, 6.0),
         substeps: int = 8,
         seed: int,
     ) -> None:

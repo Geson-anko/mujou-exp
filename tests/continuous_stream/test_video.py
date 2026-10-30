@@ -57,6 +57,18 @@ class TestPhysics:
         assert vel[0][1 - axis] == 0.0
         assert 0.1 <= pos[0][axis] <= 0.9
 
+    def test_the_stream_keeps_moving(self):
+        """With the default episodes, the balls do not come to rest: the
+        stream is not mostly still frames."""
+        video = Video(physics=Physics(period=600.0), seed=0)
+        frames = [video.next() for _ in range(3600)]  # 2 minutes
+        moved = [
+            float((b.image - a.image).abs().max()) > 1e-2
+            for a, b in zip(frames, frames[1:], strict=False)
+            if not b.reset
+        ]
+        assert sum(moved) / len(moved) > 0.95
+
     def test_the_physics_follows_its_schedule_across_episodes(self):
         physics = Physics(period=10.0)
         video = Video(physics=physics, episode=(1.0, 2.0), seed=0)

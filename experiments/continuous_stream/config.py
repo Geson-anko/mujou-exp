@@ -79,8 +79,10 @@ class DataConfig:
     size: int = 32
     balls: int = 3
     physics_period: float = 600.0  # T of gamma(t) and e(t)
-    episode_min: float = 30.0
-    episode_max: float = 90.0
+    # About an evaluation clip (128 frames): with the drag and the loss at the
+    # walls, the balls rest on the floor after about 20 s.
+    episode_min: float = 3.0
+    episode_max: float = 6.0
     # The order of the frames: "stream" (as they come), "shuffled" (clips of
     # clip seconds in a random order, each a new episode) or "replay" (each
     # live clip followed by one drawn from a reservoir of replay frames).
