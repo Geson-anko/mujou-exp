@@ -10,6 +10,7 @@ from torch import nn
 from experiments.continuous_stream.optim import (
     AdamDirection,
     Grafted,
+    Orthogonalized,
     Projected,
     Whitened,
 )
@@ -234,3 +235,22 @@ def test_a_chain_learns_with_it():
             run.step(tau.period, net.input, *net.layers, net.output)
     after = net.layers[0].module.state_dict()
     assert any(not torch.equal(before[k], after[k]) for k in before)
+
+
+class TestOrthogonalized:
+    @pytest.mark.parametrize("shape", [(5, 3), (3, 5)])
+    def test_it_is_the_limit_of_whitened(self, shape):
+        (w,) = _params(shape)
+        (g,) = _grads([w], 1)[0]
+        limit = Whitened(tau=1.0, tau_l=1e-9, tau_r=1e-9, eps=1e-14)
+        want = _trajectory(limit, [w], [[g]], elapsed=0.5)[0]
+        got = _trajectory(Orthogonalized(tau=1.0), [w], [[g]], elapsed=0.5)[0]
+        torch.testing.assert_close(got, want, atol=1e-6, rtol=1e-6)
+
+    def test_a_rank_one_gradient_moves_along_u_v(self):
+        u, v = torch.tensor([3.0, 4.0]), torch.tensor([1.0, 0.0, 0.0])
+        g = torch.outer(u, v).double()
+        got = _trajectory(
+            Orthogonalized(tau=1.0), [torch.zeros(2, 3).double()], [[g]], 1.0
+        )
+        torch.testing.assert_close(got[0], -torch.outer(u / 5, v).double())

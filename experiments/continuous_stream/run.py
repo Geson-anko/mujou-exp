@@ -10,17 +10,18 @@ from pathlib import Path
 import mujou.pc as pc
 import mujou.testing
 import torch
+from mujou.testing import ManualRun
 from torch import nn
 
 from experiments.continuous_stream.bp import WorldBPNetwork, bp_chain
 from experiments.continuous_stream.config import Config
 from experiments.continuous_stream.evaluate import Snapshot, evaluate
-from experiments.continuous_stream.host import Host
+from experiments.continuous_stream.host import Host, RealtimeHost
 from experiments.continuous_stream.model import Network
 from experiments.continuous_stream.optim import from_config
 from experiments.continuous_stream.record import REPO_ROOT, Recorder
 from experiments.continuous_stream.stream0 import LinearStream
-from experiments.continuous_stream.video import Physics, Video, eval_clips
+from experiments.continuous_stream.video import Physics, Video, eval_clips, ordered
 from mujou import TensorSpec
 
 
@@ -97,7 +98,9 @@ def run_video(config: Config, recorder: Recorder) -> None:
     Each frame records the prequential ``error`` (1/D ||z_hat - z||^2, on the
     frames with a prediction); each ``eval_interval`` seconds, the metrics of
     ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
-    of each node's gradients over the interval.
+    of each node's gradients over the interval. The frames come in
+    ``data.order`` (``video.ordered``); a replayed frame records only its
+    ``replay_error``, and the metrics count the live frames.
     """
     d, t = config.data, config.time
     physics = Physics(period=d.physics_period)
@@ -113,10 +116,25 @@ def run_video(config: Config, recorder: Recorder) -> None:
     net = WorldBPNetwork(config) if config.bp else Network(config, correlation=True)
     frames = round(d.seconds / t.frame)
     every = max(1, round(config.eval_interval / t.frame))
-    with mujou.testing.run(net) as run:
-        host = Host(run, frame=t.frame, period=net.tau.period)
-        for k in range(frames):
-            f = video.next()
+    shown = ordered(
+        video,
+        frames=frames,
+        order=d.order,
+        clip=round(d.clip / t.frame),
+        replay=d.replay,
+        seed=config.seed + 1,
+    )
+    k = 0  # the live frames shown
+    if config.realtime:
+        context = mujou.run(net)
+    else:
+        context = mujou.testing.run(net)
+    with context as run:
+        if isinstance(run, ManualRun):
+            host: Host | RealtimeHost = Host(run, frame=t.frame, period=net.tau.period)
+        else:
+            host = RealtimeHost(run, frame=t.frame)
+        for f, live in shown:
             sample = pc.msg.Sample(
                 x=f.image,
                 y=torch.zeros(1),
@@ -124,16 +142,27 @@ def run_video(config: Config, recorder: Recorder) -> None:
                 reset=torch.tensor(f.reset),
             )
             p, written = host.show({net.prev: sample}, net.next)
+            if not live:
+                if p is not None and bool(p["mask"]):
+                    error = float(((p["y_hat"] - p["y"]) ** 2).mean())
+                    recorder.log(float(written), replay_error=error)
+                continue
             values: dict[str, float | int] = {"frame": k}
-            if bool(p["mask"]):
+            if p is None:  # real time: no prediction of the frame in time
+                values["missed"] = int(not f.reset)
+            elif bool(p["mask"]):
                 values["error"] = float(((p["y_hat"] - p["y"]) ** 2).mean())
-            if (k + 1) % every == 0:
+            # The modules are read between steps only: not while a real-time run runs.
+            if (k + 1) % every == 0 and not config.realtime:
                 values.update(evaluate(snapshot(net), clips, config.model.d_s))
                 if isinstance(net, Network):
                     for name, corr in net.correlations.items():
                         for lag, rho in corr.take().items():
                             values[f"rho_{name}_{lag}"] = rho
             recorder.log(float(written), **values)
+            k += 1
+    if config.realtime:  # once the run has stopped
+        recorder.log(d.seconds, **evaluate(snapshot(net), clips, config.model.d_s))
 
 
 def main(argv: list[str] | None = None) -> Path:

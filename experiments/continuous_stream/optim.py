@@ -32,6 +32,7 @@ __all__ = [
     "BoundDirection",
     "DirectionOptimizer",
     "Grafted",
+    "Orthogonalized",
     "Projected",
     "Whitened",
     "from_config",
@@ -282,6 +283,48 @@ class _BoundWhitened(BoundDirection):
 
 
 @dataclass(frozen=True, kw_only=True)
+class Orthogonalized(DirectionOptimizer):
+    r"""The orthogonalized step of each matrix, $D = U V^\top$ for
+    $G = U \Sigma V^\top$ (as Muon, by an SVD): the limit of ``Whitened`` with
+    $a = b = 1/4$ and $\tau \to 0$, without a state. Singular values below
+    ``eps`` times the largest are dropped (the gradient of one sample of a
+    ``Linear`` has rank 1)."""
+
+    eps: float = 1e-4
+
+    @override
+    def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
+        return _BoundOrthogonalized(self.eps)
+
+
+class _BoundOrthogonalized(BoundDirection):
+    def __init__(self, eps: float) -> None:
+        self._eps = eps
+
+    @override
+    def direction(
+        self, grads: Sequence[torch.Tensor], elapsed: float
+    ) -> list[torch.Tensor]:
+        ds = []
+        for g in grads:
+            if g.ndim < 2:
+                ds.append(g)
+                continue
+            u, sigma, vh = torch.linalg.svd(_matrix(g), full_matrices=False)
+            keep = sigma > self._eps * sigma[0]
+            ds.append((u[:, keep] @ vh[keep]).reshape(g.shape))
+        return ds
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {}
+
+    @override
+    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
+        pass
+
+
+@dataclass(frozen=True, kw_only=True)
 class Projected(DirectionOptimizer):
     r"""A hard projection: $D = (I - U_L U_L^\top)\, G\, (I - U_R U_R^\top)$.
 
@@ -431,6 +474,8 @@ def from_config(c: OptimConfig) -> Optimizer:
             eps=c.eps,
             refresh=c.refresh,
         )
+    elif c.kind == "orthogonalized":
+        inner = Orthogonalized(tau=c.tau, eps=c.eps)
     elif c.kind == "projected":
         inner = Projected(
             tau=c.tau,

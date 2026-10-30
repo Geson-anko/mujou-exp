@@ -18,12 +18,13 @@ deviation half the radius, in $[0, 1]$.
 """
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import NamedTuple
 
 import torch
 
-__all__ = ["Frame", "Physics", "Video", "eval_clips"]
+__all__ = ["Frame", "Physics", "Video", "eval_clips", "ordered"]
 
 RADII = (0.06, 0.08, 0.10)
 
@@ -233,3 +234,52 @@ def eval_clips(
     return Frame(
         images.reshape(phases, clips, length, 1, size, size), states, params, False
     )
+
+
+def ordered(
+    video: Video, *, frames: int, order: str, clip: int, replay: int, seed: int
+) -> Iterator[tuple[Frame, bool]]:
+    """The frames to show for ``frames`` frames of ``video``, and whether each is
+    live (of the stream itself).
+
+    - ``"stream"``: as they come.
+    - ``"shuffled"``: cut into clips of ``clip`` frames shown in a random order,
+      each a new episode (``reset`` on its first frame): the stream without its
+      correlation beyond a clip.
+    - ``"replay"``: after each live clip of ``clip`` frames, a clip drawn
+      uniformly from a reservoir of ``replay`` frames of live clips (each clip
+      of the stream kept with probability capacity / clips seen). Both start
+      with ``reset``, as their states do not continue the frames before.
+
+    The order is drawn from ``seed``.
+    """
+    g = torch.Generator().manual_seed(seed)
+    if order == "stream":
+        for _ in range(frames):
+            yield video.next(), True
+    elif order == "shuffled":
+        stream = [video.next() for _ in range(frames)]
+        starts = list(range(0, frames, clip))
+        for i in torch.randperm(len(starts), generator=g).tolist():
+            for j, f in enumerate(stream[starts[i] : starts[i] + clip]):
+                yield f._replace(reset=j == 0), True
+    elif order == "replay":
+        capacity = max(1, replay // clip)
+        reservoir: list[list[Frame]] = []
+        seen = 0
+        while seen * clip < frames:
+            live = [video.next() for _ in range(min(clip, frames - seen * clip))]
+            for j, f in enumerate(live):
+                yield f._replace(reset=f.reset or (j == 0 and seen > 0)), True
+            seen += 1
+            if len(reservoir) < capacity:
+                reservoir.append(live)
+            else:
+                i = int(torch.randint(seen, (), generator=g))
+                if i < capacity:
+                    reservoir[i] = live
+            drawn = reservoir[int(torch.randint(len(reservoir), (), generator=g))]
+            for j, f in enumerate(drawn):
+                yield f._replace(reset=j == 0), False
+    else:
+        raise ValueError(f"unknown order {order!r}")
