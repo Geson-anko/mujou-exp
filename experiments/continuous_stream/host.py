@@ -12,9 +12,9 @@ from typing import Any
 from mujou.testing import ManualRun
 from mujou.time import Timestamp
 
-from mujou import MultiPort, Port
+from mujou import MultiPort, Port, Run
 
-__all__ = ["Host"]
+__all__ = ["Host", "RealtimeHost"]
 
 
 class Host:
@@ -61,4 +61,48 @@ class Host:
         self.frames += 1
         if first is None:
             raise RuntimeError("the frame did not reach the watched port")
+        return first, written
+
+
+class RealtimeHost:
+    """Shows a ``mujou.run`` one frame each ``frame`` seconds of its timer, in
+    real time: the nodes run on their own, and a frame the network has not
+    reached in time is just overtaken by the next.
+
+    ``show`` has the meaning of ``Host.show``; it returns once the frame's time
+    is over, with the first message of ``watch`` made from this write whose
+    ``"mask"`` is set (the nodes run on their own, so the first one of the write
+    may come before the prediction caught up), or ``None`` if there was none in
+    the frame.
+    """
+
+    def __init__(self, run: Run, *, frame: float) -> None:
+        self.run = run
+        self._frame = frame
+        self.frames = 0
+        self._start: Timestamp | None = None
+
+    def show(
+        self,
+        writes: Mapping[Port[Any, Any], Any],
+        watch: Port[Any, Any] | MultiPort[Any, Any],
+    ) -> tuple[Any, Timestamp]:
+        written = self.run.write(writes)
+        if self._start is None:
+            self._start = written
+        end = (self.frames + 1) * self._frame  # seconds since the first write
+        first = None
+        try:
+            left = end - (self.run.timer.now() - self._start)
+            first, _ = self.run.wait_for(
+                watch,
+                lambda m: m["time"] == written and bool(m["mask"]),
+                timeout=max(left, 0.0),
+            )
+        except TimeoutError:
+            pass
+        left = end - (self.run.timer.now() - self._start)
+        if left > 0:
+            self.run.timer.sleep(left)
+        self.frames += 1
         return first, written
