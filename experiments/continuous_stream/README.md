@@ -262,6 +262,21 @@ uv run python -m experiments.continuous_stream.run --config <path>  # 設定は 
   - `rollout10` は 1.6〜1.9 で、10 フレーム先はまだ平均を言うより悪い
 - M10 で optimizer と relaxer を比べるときの出発点は、この設定にする。比べるものには、SIGReg の押し出しへの強さ（発散するか）と `rollout10` を入れる
 
+### ストリームに合う optimizer と relaxer（M10、2026-10-31）
+
+M9 の設定（`stop_target` あり、$\kappa=0.8$、SGD は学習率 0.01）の上で、段 2 の比較を回し直す。M8 の判定（H2〜H4）はここで出す。
+
+**relaxer: 候補から外す**
+- 測ったもの（M9 の設定、seed 0/1、60 秒、計 3455 フレーム）: 各フレームの最後のステップで、平衡点（$r=0$、$\lambda=-g$）までの残り。$\lVert r\rVert/\lVert\lambda\rVert$ の中央値は `G1` 2.6〜2.9%、`Z` 0.8〜0.9%、Dynamics 0.7〜0.8%（90 パーセンタイルでも 4% 以下）。最後のステップでの $\lambda$ の変化も同じ大きさ
+- フレーム内の 16〜17 ステップで、credit は数 % まで BP に届いている。relaxer は平衡点への道筋だけを変えるので、縮められるのはこの数 % だけ。段 0（BP と 3 桁一致）と M9（`rollout10` が BP と同じで、発散しにくい）とも合う
+- 決めておいた規則（届いていれば relaxer は外す）に従い、mujou への relaxer の追加はしない
+
+**回す前に確定した判定基準**（`stage2.judge` をそのまま使う。runs は `runs/stage2-m10`）
+- 共通: 合成動画 30 分、seed 0/1/2、`stop_target` あり、$\kappa=0.8$、SGD の学習率 0.01。向きはすべて grafting で SGD の歩幅にそろえる。白色化と射影は `refresh=5` 秒、$\tau_L,\tau_R\in\{0.3,3\}$ 秒。`pc.optim.AdamW` は要素ごとの学習率 1e-3（参考）
+- 指標、H2〜H4、崩壊した run の扱い、前提（SGD の `rollout1` < 1）は段 2 の節と同じ
+- 段 2 との違い: 発散した run は、その seed の基準からも候補からも外す（崩壊と同じ扱い）。H2 の候補が発散したら、その seed では改善なしになる
+- 実時間の確認: H2 で最もよかったもの（平均の改善で選ぶ）と SGD を、`realtime: true`（`mujou.run`）で 1 本ずつ 30 分回す。順位（`preq`）が変わらなければ「実時間でも保つ」
+
 ## 計算時間（M5、2026-10-30）
 
 合成動画（32×32、$D=64$、$d_s=256$）を `mujou.testing.run` で回したときの値。CPU 1 スレッドで、評価は含まない。

@@ -5,8 +5,9 @@ on 30 minutes of the synthetic video, and the judgement of H2-H4.
     uv run python -m experiments.continuous_stream.stage2 summarize --out runs/stage2
 
 Every direction is grafted to the step size of SGD at the learning rate chosen
-in stage 1; ``adamw`` (``pc.optim.AdamW`` as it is) is the practical
-reference. The baselines learn by SGD.
+in M9 (it was stage 1 before M9: ``runs/stage2-static`` and the paused sweep);
+``adamw`` (``pc.optim.AdamW`` as it is) is the practical reference. The
+baselines learn by SGD. M10 runs it into ``runs/stage2-m10``.
 """
 
 import argparse
@@ -27,7 +28,9 @@ from experiments.continuous_stream.record import REPO_ROOT
 from experiments.continuous_stream.stage0 import SEEDS, run_all
 
 FRAME = 1 / 30
-LR = 0.1  # per frame, chosen in stage 1 with KAPPA (README: the moving stream)
+# The setting of M9 (README): the target's gradient stopped, and the largest
+# learning rate per frame at which SGD did not diverge in any seed.
+LR = 0.01
 KAPPA = 0.8
 TAU = FRAME / LR
 TAUS = (0.3, 3.0)  # tau_L, tau_R in seconds: about the correlation time of stage 1
@@ -62,7 +65,7 @@ def optimizers() -> dict[str, OptimConfig]:
 
 def configs() -> list[Config]:
     data = DataConfig(kind="video", seconds=SECONDS, physics_period=PERIOD)
-    model = ModelConfig(kappa=KAPPA)
+    model = ModelConfig(kappa=KAPPA, stop_target=True)
     out = []
     for seed in SEEDS:
         for name, optim in optimizers().items():
