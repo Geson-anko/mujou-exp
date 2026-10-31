@@ -5,7 +5,8 @@
 
 The search is 10 minutes of the moving stream with seed 0, over the weight of
 SIGReg, the learning rate and whether the prediction error sends credit to its
-target (``stop_target``).
+target (``stop_target``). The check (``--confirm``) runs the setting chosen
+from it for 30 minutes with seeds 0-2, by PC-ALM and by BP.
 """
 
 import argparse
@@ -19,7 +20,7 @@ from experiments.continuous_stream.config import (
     OptimConfig,
 )
 from experiments.continuous_stream.record import REPO_ROOT
-from experiments.continuous_stream.stage0 import run_all
+from experiments.continuous_stream.stage0 import SEEDS, run_all
 from experiments.continuous_stream.stage1 import summary
 
 FRAME = 1 / 30
@@ -42,6 +43,26 @@ def configs() -> list[Config]:
     ]
 
 
+# Chosen from the search (README: M9).
+CHOSEN = ModelConfig(kappa=0.8, stop_target=True)
+CHOSEN_LR = 0.1
+
+
+def confirm() -> list[Config]:
+    return [
+        Config(
+            name=f"m9-confirm-{'bp' if bp else 'pc'}-s{seed}",
+            seed=seed,
+            bp=bp,
+            model=CHOSEN,
+            optim=OptimConfig(kind="sgd", tau=FRAME / CHOSEN_LR),
+            data=DataConfig(kind="video", seconds=1800.0),
+        )
+        for seed in SEEDS
+        for bp in (False, True)
+    ]
+
+
 KEYS = ("z_var", "rank", "rel_error", "rollout1", "rollout10", "probe_z_pos")
 
 
@@ -50,9 +71,10 @@ def main() -> None:
     parser.add_argument("what", choices=["run", "summarize"])
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "runs" / "collapse")
     parser.add_argument("--jobs", type=int, default=16)
+    parser.add_argument("--confirm", action="store_true", help="the 30-minute check")
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs, configs())
+        run_all(args.out, args.jobs, confirm() if args.confirm else configs())
         return
     for done in sorted(args.out.glob("*/done")):
         name = done.parent.name.split("-", 3)[3]
