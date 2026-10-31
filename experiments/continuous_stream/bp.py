@@ -15,6 +15,7 @@ import mujou.pc as pc
 import torch
 from mujou.pc.msg import Activity
 from mujou.pc.optim import Optimizer
+from mujou.types import Device
 from torch import nn
 
 import mujou
@@ -65,8 +66,9 @@ class WorldBP(Node):
         learn_interval: float | None,
         min_samples: int = 16,
         seed: int = 0,
+        device: Device = "cpu",
     ) -> None:
-        super().__init__(period=tau.period, seed=seed)
+        super().__init__(device=device, period=tau.period, seed=seed)
         g1, z, step, readout = modules
         self.encoder = nn.Sequential(g1, z)
         self.step, self.readout = step, readout
@@ -81,12 +83,19 @@ class WorldBP(Node):
         ]
         self.optimizer = optimizer.bind(self._params)
         d_z, d_s = readout.out_features, readout.in_features
-        self.buffer = torch.zeros(capacity, d_z)
+        dev = self.device
+        self.buffer = torch.zeros(capacity, d_z, device=dev)
         self.count = 0
         self.register_state("count")
-        self.directions = torch.zeros(directions, d_z)
-        self.z_prev, self.s_prev = torch.zeros(d_z), torch.zeros(d_s)
-        self.z_last, self.s_last = torch.zeros(d_z), torch.zeros(d_s)
+        self.directions = torch.zeros(directions, d_z, device=dev)
+        self.z_prev, self.s_prev = (
+            torch.zeros(d_z, device=dev),
+            torch.zeros(d_s, device=dev),
+        )
+        self.z_last, self.s_last = (
+            torch.zeros(d_z, device=dev),
+            torch.zeros(d_s, device=dev),
+        )
         self.has_prev = False
         self.register_state("has_prev")
         self.started = False  # whether a frame came before
@@ -125,7 +134,9 @@ class WorldBP(Node):
         if self.started:
             self.count = insert_(self.buffer, self.count, self.z_last, self.generator)
         self.started = True
-        a = torch.randn(self.directions.shape, generator=self.generator)
+        a = torch.randn(
+            self.directions.shape, generator=self.generator, device=self.device
+        )
         self.directions = a / torch.linalg.vector_norm(a, dim=1, keepdim=True)
         if bool(act["reset"]):
             self.s_prev = torch.zeros_like(self.s_prev)
@@ -171,8 +182,13 @@ class WorldBPNetwork(mujou.Network):
         g1, z = encoder_modules(d.size, m.d_z)
         standardize_(g1, z, d.size, seed=config.seed + 10_000)
         step, readout = MinGRU(m.d_z, m.d_s), nn.Linear(m.d_s, m.d_z)
+        dev = config.device
+        g1, z, step, readout = g1.to(dev), z.to(dev), step.to(dev), readout.to(dev)
         self.input = pc.Input(
-            x=TensorSpec((1, d.size, d.size)), y=TensorSpec((1,)), period=tau.period
+            x=TensorSpec((1, d.size, d.size)),
+            y=TensorSpec((1,)),
+            period=tau.period,
+            device=dev,
         )
         self.world = WorldBP(
             (g1, z, step, readout),
@@ -184,6 +200,7 @@ class WorldBPNetwork(mujou.Network):
             optimizer=from_config(config.optim),
             learn_interval=t.learn_interval,
             seed=config.seed,
+            device=dev,
         )
         self.input.next.connect(self.world.prev)
         self.prev, self.next = self.input.prev, self.world.next

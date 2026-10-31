@@ -522,7 +522,7 @@ class _BoundCorrelation(BoundOptimizer):
         self._inner = inner
         self._k = 0
         self._past: dict[int, torch.Tensor] = {}
-        self._sums = dict.fromkeys(LAGS, 0.0)
+        self._sums: dict[int, torch.Tensor | float] = dict.fromkeys(LAGS, 0.0)
         self._counts = dict.fromkeys(LAGS, 0)
 
     @override
@@ -532,7 +532,7 @@ class _BoundCorrelation(BoundOptimizer):
         for lag in LAGS:
             past = self._past.get(self._k - lag)
             if past is not None:
-                self._sums[lag] += float(past @ g)
+                self._sums[lag] += past @ g  # a tensor: no wait for the device
                 self._counts[lag] += 1
         self._past[self._k] = g
         recent, every = LAGS[-2], LAGS[-2]
@@ -544,7 +544,7 @@ class _BoundCorrelation(BoundOptimizer):
 
     def take(self) -> dict[int, float]:
         out = {
-            lag: self._sums[lag] / self._counts[lag]
+            lag: float(self._sums[lag]) / self._counts[lag]
             for lag in LAGS
             if self._counts[lag]
         }

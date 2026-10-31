@@ -100,6 +100,7 @@ class Config:
     bp: bool = False  # the baseline: the same modules by BP in one node
     eval_interval: float = 60.0  # seconds of the run's timer between evaluations
     realtime: bool = False  # mujou.run in real time, rather than stepped by hand
+    device: str = "cpu"  # where every node computes, and the evaluation ("cuda")
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     model: ModelConfig = field(default_factory=ModelConfig)

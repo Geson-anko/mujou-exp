@@ -20,6 +20,14 @@ from experiments.continuous_stream.model import Network
 from experiments.continuous_stream.nodes import compare_energy, sigreg
 from experiments.continuous_stream.video import Video
 
+DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA"),
+    ),
+]
+
 SMALL = Config(
     model=ModelConfig(d_z=8, d_s=12, directions=16, buffer=31),
     optim=OptimConfig(tau=1.0),
@@ -36,11 +44,12 @@ def _sample(image: torch.Tensor, reset: bool) -> pc.msg.Sample:
 
 
 class TestNetwork:
-    def test_lam_is_the_credit_of_bp_at_the_fixed_point(self):
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_lam_is_the_credit_of_bp_at_the_fixed_point(self, device):
         """Hold a frame with learning off: each node's lam relaxes to the
         credit -dL/dh of L_k (the prediction error and SIGReg), computed by
         autograd through the same modules, memory, buffer and directions."""
-        config = replace(SMALL, time=TimeConfig(learn_interval=math.inf))
+        config = replace(SMALL, time=TimeConfig(learn_interval=math.inf), device=device)
         net = Network(config)
         video = Video(seed=0)
         f = video.next()
@@ -53,7 +62,7 @@ class TestNetwork:
                     run_.step(net.tau.period)
             for _ in range(3000):  # hold the last frame: 6 s
                 run_.step(net.tau.period)
-        x = f.image
+        x = f.image.to(device)
         g1, z_mod = net.g1.module, net.z.module
         h1 = g1(x).detach().requires_grad_()
         z = z_mod(h1)
@@ -72,6 +81,23 @@ class TestNetwork:
         assert g_z.abs().max() > 1e-4  # the credit is not trivially zero
         for r in (net.g1.r, net.z.r, d.r):
             assert r.abs().max() < 1e-6
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA")
+    @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
+    def test_cuda_streams_as_the_cpu_does(self, tmp_path, monkeypatch, bp):
+        """The same run on the CPU and on CUDA (without TF32) predicts the same
+        first 10 frames up to rounding: the same initial weights and steps.
+        SIGReg is not on yet (``min_samples``); after it, the directions differ,
+        as the generators of the CPU and CUDA draw differently."""
+        monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+        errors = {}
+        for device in ("cpu", "cuda"):
+            records = _video_run(tmp_path, f"{device}-{bp}", bp=bp, device=device)
+            errors[device] = torch.tensor(
+                [r["error"] for r in records if "error" in r][:10]
+            )
+        assert len(errors["cpu"]) == 10
+        torch.testing.assert_close(errors["cuda"], errors["cpu"], rtol=1e-3, atol=1e-6)
 
     def test_bp_starts_from_the_same_weights(self):
         pcn, bpn = Network(SMALL), WorldBPNetwork(SMALL)

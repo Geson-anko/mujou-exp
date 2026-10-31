@@ -113,6 +113,12 @@ def run_video(config: Config, recorder: Recorder) -> None:
         seed=config.seed,
     )
     clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
+    dev = config.device
+    clips = clips._replace(
+        image=clips.image.to(dev),
+        state=clips.state.to(dev),
+        params=clips.params.to(dev),
+    )
     net = WorldBPNetwork(config) if config.bp else Network(config, correlation=True)
     frames = round(d.seconds / t.frame)
     every = max(1, round(config.eval_interval / t.frame))
