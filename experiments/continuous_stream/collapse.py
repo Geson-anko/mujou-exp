@@ -6,7 +6,8 @@
 The search is 10 minutes of the moving stream with seed 0, over the weight of
 SIGReg, the learning rate and whether the prediction error sends credit to its
 target (``stop_target``). The check (``--confirm``) runs the setting chosen
-from it for 30 minutes with seeds 0-2, by PC-ALM and by BP.
+from it for 30 minutes with seeds 0-2, by PC-ALM and by BP, at the learning
+rates of ``CONFIRM_RATES``.
 """
 
 import argparse
@@ -43,24 +44,30 @@ def configs() -> list[Config]:
     ]
 
 
-# Chosen from the search (README: M9).
+# Chosen from the search (README: M9). 0.1 diverged in two of three seeds.
 CHOSEN = ModelConfig(kappa=0.8, stop_target=True)
-CHOSEN_LR = 0.1
+CONFIRM_RATES = (0.1, 0.03, 0.01)
 
 
 def confirm() -> list[Config]:
     return [
         Config(
-            name=f"m9-confirm-{'bp' if bp else 'pc'}-s{seed}",
+            name=f"m9-confirm-{'bp' if bp else 'pc'}{lr_tag(lr)}-s{seed}",
             seed=seed,
             bp=bp,
             model=CHOSEN,
-            optim=OptimConfig(kind="sgd", tau=FRAME / CHOSEN_LR),
+            optim=OptimConfig(kind="sgd", tau=FRAME / lr),
             data=DataConfig(kind="video", seconds=1800.0),
         )
+        for lr in CONFIRM_RATES
         for seed in SEEDS
         for bp in (False, True)
     ]
+
+
+def lr_tag(lr: float) -> str:
+    """The first check (0.1) has no tag in its name."""
+    return "" if lr == 0.1 else f"-lr{lr:g}"
 
 
 KEYS = ("z_var", "rank", "rel_error", "rollout1", "rollout10", "probe_z_pos")
