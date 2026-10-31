@@ -17,12 +17,18 @@ from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
-from experiments.continuous_stream.config import Config, DataConfig, OptimConfig
+from experiments.continuous_stream.config import (
+    Config,
+    DataConfig,
+    ModelConfig,
+    OptimConfig,
+)
 from experiments.continuous_stream.record import REPO_ROOT
 from experiments.continuous_stream.stage0 import SEEDS, run_all
 
 FRAME = 1 / 30
-LR = 0.01  # per frame, chosen in stage 1 (with kappa = 0.05)
+LR = 0.1  # per frame, chosen in stage 1 with KAPPA (README: the moving stream)
+KAPPA = 0.8
 TAU = FRAME / LR
 TAUS = (0.3, 3.0)  # tau_L, tau_R in seconds: about the correlation time of stage 1
 REFRESH = 5.0  # seconds between the eigendecompositions (README: compute time)
@@ -56,15 +62,29 @@ def optimizers() -> dict[str, OptimConfig]:
 
 def configs() -> list[Config]:
     data = DataConfig(kind="video", seconds=SECONDS, physics_period=PERIOD)
+    model = ModelConfig(kappa=KAPPA)
     out = []
     for seed in SEEDS:
         for name, optim in optimizers().items():
             out.append(
-                Config(name=f"v2-{name}-s{seed}", seed=seed, optim=optim, data=data)
+                Config(
+                    name=f"v2-{name}-s{seed}",
+                    seed=seed,
+                    optim=optim,
+                    model=model,
+                    data=data,
+                )
             )
         sgd = optimizers()["sgd"]
         out.append(
-            Config(name=f"v2-bp-s{seed}", seed=seed, bp=True, optim=sgd, data=data)
+            Config(
+                name=f"v2-bp-s{seed}",
+                seed=seed,
+                bp=True,
+                optim=sgd,
+                model=model,
+                data=data,
+            )
         )
         for order in ("shuffled", "replay"):
             out.append(
@@ -72,6 +92,7 @@ def configs() -> list[Config]:
                     name=f"v2-{order}-s{seed}",
                     seed=seed,
                     optim=sgd,
+                    model=model,
                     data=replace(data, order=order),
                 )
             )
@@ -127,16 +148,16 @@ def table(out: Path) -> dict[str, dict[str, list[float]]]:
 
 
 BASES = ("sgd", "adam-m0.3", "adam-m1", "adamw")
-RANK_MIN = 32.0  # D / 2: below it, z has collapsed (stage 1)
 
 
-def collapsed(row: dict[str, list[float]], s: int) -> bool:
+def collapsed(row: dict[str, list[float]], sgd: dict[str, list[float]], s: int) -> bool:
     """Whether the run of seed ``s`` collapsed or did not finish: ``preq`` is
-    NaN, or the last effective rank of $z$ is below ``RANK_MIN``. A collapsed
-    $z$ predicts itself trivially, so its errors are not comparable."""
+    NaN, or the last effective rank of $z$ is below half of SGD's in the seed.
+    A collapsed $z$ predicts itself trivially, so its errors are not
+    comparable."""
     if math.isnan(row["preq"][s]):
         return True
-    return "rank" in row and not row["rank"][s] >= RANK_MIN
+    return "rank" in row and not row["rank"][s] >= sgd["rank"][s] / 2
 
 
 def judge(t: dict[str, dict[str, list[float]]]) -> list[str]:
@@ -158,13 +179,16 @@ def judge(t: dict[str, dict[str, list[float]]]) -> list[str]:
       are only for the record.
     """
     seeds = range(len(t["sgd"]["preq"]))
-    bases = {s: [b for b in BASES if b in t and not collapsed(t[b], s)] for s in seeds}
+    bases = {
+        s: [b for b in BASES if b in t and not collapsed(t[b], t["sgd"], s)]
+        for s in seeds
+    }
 
     def base(key: str, s: int) -> float:
         return min(t[b][key][s] for b in bases[s])
 
     def gain(name: str, key: str, s: int) -> float:
-        if collapsed(t[name], s):
+        if collapsed(t[name], t["sgd"], s):
             return -math.inf
         return 1 - t[name][key][s] / base(key, s)
 

@@ -38,13 +38,14 @@ class TestJudge:
         assert any(x.startswith("H3 (against white-lr1): rejected") for x in lines)
 
     def test_a_collapsed_baseline_is_left_out(self):
-        """AdamW with a collapsed z (low rank) has a tiny error; it is not the
-        baseline, and a collapsed candidate improves nothing."""
+        """AdamW with a collapsed z (a rank below half of SGD's) has a tiny
+        error; it is not the baseline, and a collapsed candidate improves
+        nothing."""
         t = {
             "sgd": {**_row(1.0, 1.0, 1.0), "rank": [40.0] * 3},
-            "adamw": {**_row(0.01, 0.01, 0.01), "rank": [2.0, 2.0, 50.0]},
+            "adamw": {**_row(0.01, 0.01, 0.01), "rank": [2.0, 19.0, 50.0]},
             "white-lr1": {**_row(0.8, 0.8, 0.9), "rank": [40.0] * 3},
-            "proj4": {**_row(0.1, 0.1, 0.1), "rank": [40.0, 40.0, 3.0]},
+            "proj4": {**_row(0.1, 0.1, 0.1), "rank": [40.0, 40.0, 19.0]},
         }
         t["adamw"]["preq"][2] = math.nan  # did not finish
         lines = judge(t)
