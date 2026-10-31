@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 import mujou.pc as pc
 import mujou.testing
@@ -13,6 +14,7 @@ from experiments.continuous_stream.optim import (
     Orthogonalized,
     Projected,
     Whitened,
+    _eigh,
 )
 from mujou import TensorSpec
 
@@ -254,3 +256,37 @@ class TestOrthogonalized:
             Orthogonalized(tau=1.0), [torch.zeros(2, 3).double()], [[g]], 1.0
         )
         torch.testing.assert_close(got[0], -torch.outer(u / 5, v).double())
+
+
+class TestEigh:
+    def _failing_once(self, monkeypatch) -> list[torch.Tensor]:
+        """Make the next ``torch.linalg.eigh`` fail as LAPACK does; return the
+        matrices it is called with."""
+        eigh, calls = torch.linalg.eigh, []
+
+        def fake(a: torch.Tensor) -> Any:
+            calls.append(a)
+            if len(calls) == 1:
+                raise RuntimeError("failed to converge")  # as LinAlgError
+            return eigh(a)
+
+        monkeypatch.setattr(torch.linalg, "eigh", fake)
+        return calls
+
+    def test_a_failure_on_a_finite_matrix_decomposes_it_perturbed(self, monkeypatch):
+        g = torch.randn(64, 4, dtype=torch.float64)
+        a = g @ g.T  # rank 4: 60 repeated zero eigenvalues
+        want, _ = torch.linalg.eigh(a)
+        calls = self._failing_once(monkeypatch)
+        values, vectors = _eigh(a)
+        assert len(calls) == 2
+        torch.testing.assert_close(values, want, rtol=0, atol=1e-9)
+        recon = vectors @ torch.diag(values) @ vectors.T
+        torch.testing.assert_close(recon, a, rtol=0, atol=1e-9)
+
+    def test_a_failure_on_a_matrix_with_nan_raises(self, monkeypatch):
+        a = torch.eye(3, dtype=torch.float64)
+        a[0, 1] = a[1, 0] = math.nan
+        self._failing_once(monkeypatch)
+        with pytest.raises(RuntimeError):
+            _eigh(a)

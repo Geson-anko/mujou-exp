@@ -205,8 +205,24 @@ class _Factors(Stateful):
 
 def _eigh(a: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """The eigenvalues (ascending) and eigenvectors of the symmetric ``a``, in
-    float64."""
-    return torch.linalg.eigh(a.double())
+    float64.
+
+    LAPACK's divide and conquer may fail to converge on a finite matrix with
+    nearly repeated eigenvalues (as L and R of a low-rank G are); then ``a`` is
+    perturbed by a symmetric noise of 1e-12 of its norm, far below the
+    ``eps`` of the optimizers, and decomposed again. A matrix that is not
+    finite raises."""
+    a = a.double()
+    try:
+        return torch.linalg.eigh(a)
+    except RuntimeError:  # torch.linalg.LinAlgError
+        if not bool(torch.isfinite(a).all()):
+            raise
+        g = torch.Generator(a.device).manual_seed(0)
+        noise = torch.randn(a.shape, generator=g, dtype=a.dtype, device=a.device)
+        noise = (noise + noise.T) / 2
+        scale = 1e-12 * torch.linalg.matrix_norm(a) / torch.linalg.matrix_norm(noise)
+        return torch.linalg.eigh(a + scale * noise)
 
 
 @dataclass(frozen=True, kw_only=True)
