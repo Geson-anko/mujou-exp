@@ -7,7 +7,9 @@ on 30 minutes of the synthetic video, and the judgement of H2-H4.
 Every direction is grafted to the step size of SGD at the learning rate chosen
 in M9 (it was stage 1 before M9: ``runs/stage2-static`` and the paused sweep);
 ``adamw`` (``pc.optim.AdamW`` as it is) is the practical reference. The
-baselines learn by SGD. M10 runs it into ``runs/stage2-m10``.
+baselines learn by SGD. M10 runs it into ``runs/stage2-m10``, and checks the
+best of H2 against SGD in real time (``--realtime``, one run at a time, into
+``runs/stage2-m10-realtime``).
 """
 
 import argparse
@@ -102,6 +104,19 @@ def configs() -> list[Config]:
     return out
 
 
+# The best of H2 by the mean improvement in M10 (README: M10).
+REALTIME = ("sgd", "proj4-lr0.3")
+
+
+def realtime() -> list[Config]:
+    """The runs of ``REALTIME`` with seed 0, by ``mujou.run`` in real time."""
+    every = {c.name: c for c in configs()}
+    return [
+        replace(every[f"v2-{name}-s0"], name=f"rt-{name}-s0", realtime=True)
+        for name in REALTIME
+    ]
+
+
 def summary(path: Path) -> dict[str, float]:
     """Of one run, relative to the variance of z of the evaluations:
 
@@ -116,9 +131,12 @@ def summary(path: Path) -> dict[str, float]:
     live = [r for r in records if "frame" in r]
     end = live[-1]["time"]
     last = [r for r in live if r["time"] >= end - 600.0]
-    evals = [r for r in last if "rank" in r]
+    # A real-time run is evaluated once, after it stops, in a record of its own.
+    evals = [r for r in records if "rank" in r and r["time"] >= end - 600.0]
     z_var = statistics.fmean(r["z_var"] for r in evals)
     out = {"z_var": z_var}
+    if z_var == 0:  # z collapsed to a constant: nothing is comparable
+        return {"z_var": z_var, "preq": math.nan}
     out["preq"] = statistics.fmean(r["error"] for r in last if "error" in r) / z_var
     for key in ("rollout1", "rollout5", "rollout10", "rollout20"):
         out[key] = statistics.fmean(r[key] for r in evals)
@@ -143,7 +161,7 @@ def table(out: Path) -> dict[str, dict[str, list[float]]]:
         lambda: defaultdict(lambda: [math.nan] * len(SEEDS))
     )
     for done in sorted(out.glob("*/done")):
-        name = done.parent.name.split("-", 3)[3].removeprefix("v2-")
+        name = done.parent.name.split("-", 3)[3].removeprefix("v2-").removeprefix("rt-")
         setting, seed = name.rsplit("-s", 1)
         for key, value in summary(done.parent / "metrics.jsonl").items():
             t[setting][key][SEEDS.index(int(seed))] = value
@@ -245,9 +263,10 @@ def main() -> None:
     parser.add_argument("what", choices=["run", "summarize"])
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "runs" / "stage2")
     parser.add_argument("--jobs", type=int, default=14)
+    parser.add_argument("--realtime", action="store_true", help="the real-time check")
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs, configs())
+        run_all(args.out, args.jobs, realtime() if args.realtime else configs())
         return
     for setting, values in sorted(table(args.out).items()):
         cells = "  ".join(
