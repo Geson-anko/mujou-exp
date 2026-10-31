@@ -45,11 +45,18 @@ def _sample(image: torch.Tensor, reset: bool) -> pc.msg.Sample:
 
 class TestNetwork:
     @pytest.mark.parametrize("device", DEVICES)
-    def test_lam_is_the_credit_of_bp_at_the_fixed_point(self, device):
+    @pytest.mark.parametrize("stop", [False, True], ids=["", "stop_target"])
+    def test_lam_is_the_credit_of_bp_at_the_fixed_point(self, device, stop):
         """Hold a frame with learning off: each node's lam relaxes to the
         credit -dL/dh of L_k (the prediction error and SIGReg), computed by
-        autograd through the same modules, memory, buffer and directions."""
-        config = replace(SMALL, time=TimeConfig(learn_interval=math.inf), device=device)
+        autograd through the same modules, memory, buffer and directions;
+        with ``stop_target``, through a detached target of the prediction."""
+        config = replace(
+            SMALL,
+            time=TimeConfig(learn_interval=math.inf),
+            model=replace(SMALL.model, stop_target=stop),
+            device=device,
+        )
         net = Network(config)
         video = Video(seed=0)
         f = video.next()
@@ -70,7 +77,8 @@ class TestNetwork:
         d = net.dynamics
         s = d.module(d.z_prev, d.s_prev).detach().requires_grad_()
         sr = net.sigreg
-        loss = compare_energy(net.compare.module, s, z_leaf, 0.05) + 0.05 * sigreg(
+        target = z_leaf.detach() if stop else z_leaf
+        loss = compare_energy(net.compare.module, s, target, 0.05) + 0.05 * sigreg(
             z_leaf, sr.buffer[: sr.count], sr.directions
         )
         g_z, g_s = torch.autograd.grad(loss, [z_leaf, s])

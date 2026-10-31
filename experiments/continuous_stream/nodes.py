@@ -164,7 +164,9 @@ class Compare(Node):
     Its energy is ``compare_energy``; it sends its gradient with respect to
     $s$ to ``Dynamics`` and with respect to $z$ to ``Z``, and learns $W_o$ by
     the one with respect to $W_o$, when both inputs are of the same frame and
-    ``Dynamics`` predicted (its ``mask``). It sends the prediction ``y_hat``
+    ``Dynamics`` predicted (its ``mask``). With ``stop_target``, it sends
+    zeros to ``Z`` instead: the target is a constant of the energy, as a stop
+    gradient. It sends the prediction ``y_hat``
     $= \hat z_k$, the target ``y`` $= z_k$, their ``mask`` and ``time`` (a
     ``pc.msg.Prediction``), and the prediction error ``loss`` $\frac{1}{D}
     \lVert \hat z_k - z_k \rVert^2$ on ``error``.
@@ -180,11 +182,13 @@ class Compare(Node):
         tau: pc.TimeConstants,
         optimizer: Optimizer,
         learn_interval: float | None,
+        stop_target: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period)
         self.module = readout
         self._kappa = kappa
+        self._stop_target = stop_target
         self.clock = pc.clock.LearnClock.of(
             tau, period=self.period, learn_interval=learn_interval
         )
@@ -217,7 +221,7 @@ class Compare(Node):
         if mask:
             g_s, g_z, g_theta = self._vjp(s["h"], z["h"], learn)
             self.s.send(g_s)
-            self.z.send(g_z)
+            self.z.send(torch.zeros_like(g_z) if self._stop_target else g_z)
         else:
             self.s.send(torch.zeros_like(s["h"]))
             self.z.send(torch.zeros_like(z["h"]))

@@ -60,6 +60,9 @@ class ModelConfig:
     d_z: int = 64
     d_s: int = 256
     kappa: float = 0.05  # the weight of SIGReg
+    # Whether the prediction error sends no credit to its target z_k (a stop
+    # gradient), so that only SIGReg shapes the encoder from its side.
+    stop_target: bool = False
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
 

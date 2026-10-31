@@ -45,7 +45,7 @@ class WorldBP(Node):
     \mathrm{SIGReg}(z_k; \mathcal B_k)$, the same memory of $z_{k-1}, s_{k-1}$
     (detached: the gradient stops at one frame, as in PC-ALM), the same buffer
     and directions as the nodes of ``model.Network``, and the same
-    ``LearnClock``.
+    ``LearnClock``. With ``stop_target``, $z_k$ of the first term is detached.
 
     In the update that first sees a frame, it remembers the frame before,
     updates the buffer and the directions, and sends the prequential
@@ -66,10 +66,12 @@ class WorldBP(Node):
         learn_interval: float | None,
         min_samples: int = 16,
         seed: int = 0,
+        stop_target: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         g1, z, step, readout = modules
+        self._stop_target = stop_target
         self.encoder = nn.Sequential(g1, z)
         self.step, self.readout = step, readout
         self._kappa, self._min = kappa, min_samples
@@ -161,7 +163,8 @@ class WorldBP(Node):
         """$L_k$ at the current weights (the memory is constant)."""
         z = self.encoder(x)
         s = self.step(self.z_prev, self.s_prev)
-        loss = compare_energy(self.readout, s, z, self._kappa)
+        target = z.detach() if self._stop_target else z
+        loss = compare_energy(self.readout, s, target, self._kappa)
         if self.count + 1 >= self._min:
             loss = loss + self._kappa * sigreg(
                 z, self.buffer[: self.count], self.directions
@@ -200,6 +203,7 @@ class WorldBPNetwork(mujou.Network):
             optimizer=from_config(config.optim),
             learn_interval=t.learn_interval,
             seed=config.seed,
+            stop_target=m.stop_target,
             device=dev,
         )
         self.input.next.connect(self.world.prev)

@@ -145,6 +145,7 @@ class Network(mujou.Network):
             tau=tau,
             optimizer=optimizer_of("compare"),
             learn_interval=li,
+            stop_target=m.stop_target,
             device=dev,
         )
         self.input.next.connect(self.g1.prev)
