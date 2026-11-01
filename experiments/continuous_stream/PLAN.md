@@ -377,6 +377,16 @@ tests/continuous_stream/
 - grafting を使う（歩幅で順位が入れ替わったため）。段 2 では、向きの比較はすべて grafting ありで行う。`pc.optim.AdamW` は大きさもそのままで、実用上の参考として回す
 - `learn_interval` は 25 ms（PC-ALM と BP が 3 桁まで一致し、`None` より 1〜5% よい）
 
+### 段 2 までで決めたこと（ユーザー、2026-11-01）
+
+段 3 はこの設定から始める。根拠と数字は README.md の M6〜M10。
+
+- optimizer は SGD、学習率 0.01。AdamW・白色化・射影はまだ使わない（M10 でどれも `preq` で SGD を超えず、Adam 系は崩壊か発散した）。Adam 系の向きを使わないので、grafting も当面使わない
+- `stop_target` を入れる（M9。入れないとエンコーダの表現が崩壊する）
+- SIGReg の重みは $\kappa=0.8$（M7〜M9。LeJEPA の既定の 0.05 では $z$ の分散が 0 近くまで縮む）
+- エンコーダの初期化は `model.standardize_`（M7。既定の初期化では $z$ の標準偏差が約 0.002 で、SIGReg が広げられない）
+- 学習規則は PC-ALM、`learn_interval` は 25 ms、relaxer は `pc.relax.Euler` のまま（M6、M10）。BP は比べる相手としてだけ回す
+
 ### 仮決め（推奨で進める）
 
 | 項目           | 仮決め                                                                      | 主な理由                                               |
@@ -391,4 +401,5 @@ tests/continuous_stream/
 
 - EgoDex の使い方は後で詰める（2026-10-30、ユーザー）。どのタスクをどの順に流すか（同じタスクに戻ってくる順にすれば保持を測れる）を含む
 - EgoDex の CNN の寸法（段 2 の結果を見て）
+- 今後の課題（2026-11-01、ユーザー）: SIGReg が $\lvert z\rvert$ を外へ押し広げること（学習率 0.01 でも BP とシャッフル版が seed 1 で発散した）と、`rollout10` が 1.5〜1.9 と大きいこと
 - $\Delta t$ を $f$ の入力に与えるか（フレームの周期が一定のうちは不要。実時間の実行で周期が揺れるなら考える）
