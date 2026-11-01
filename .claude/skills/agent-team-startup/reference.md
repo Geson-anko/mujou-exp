@@ -4,7 +4,7 @@ skill `agent-team-startup` の補助資料。判断に必要になった時点�
 
 ## 並列化パターン A：spec-test-author × plan-implementer
 
-`tests/` と `experiments/` は disjoint なので、両 agent は同じ計画書を入力に同時起動できる。仕様 first フローでも、2 つを順番に実行する必要はない。
+`tests/` と `exp/` は disjoint なので、両 agent は同じ計画書を入力に同時起動できる。仕様 first フローでも、2 つを順番に実行する必要はない。
 
 ```
 implementation-planner
@@ -39,7 +39,7 @@ spec-test-author  plan-implementer   ← 並列起動（同じ計画書を入力
 
 - **独立したモジュール・機能**ごとに implementer / spec-test-author を分割する
 - **インターフェース境界が明確**で、互いの実装詳細に依存しないときに使う
-- 例：`experiments/<name>/optim.py` を 1 セット、`experiments/<name>/video.py` を別セットで並行
+- 例：`exp/<name>/optim.py` を 1 セット、`exp/<name>/balls.py` を別セットで並行
 - パターン A と組み合わせ、各モジュール内でさらに spec-test-author × plan-implementer の並列も可能
 - レビューは実装完了後にモジュール単位で並列起動できる
 
@@ -76,7 +76,7 @@ spec-test-author  plan-implementer   ← 並列起動（同じ計画書を入力
 
 ## 起動の流れ（例）
 
-ユーザー指示「エージェントチームで continuous_stream に新しい optimizer の対照を足して」に対し、orchestrator は次の順に進める。
+ユーザー指示「エージェントチームで video に新しい optimizer の対照を足して」に対し、orchestrator は次の順に進める。
 
 1. 要件を確認し、ブランチを作成する
 2. `implementation-planner` を起動して計画策定（1 モジュールに収まるなら orchestrator が自分で計画する）

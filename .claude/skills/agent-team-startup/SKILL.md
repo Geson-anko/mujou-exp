@@ -27,7 +27,7 @@ description: orchestrator（メインエージェント）が implementation-pla
 | algorithm-reviewer     | high         | 更新手法の数理・ノード間の局所性・非同期性・比較の公平さの監査。コードは修正しない |
 | implementation-planner | medium       | 要件の仕様化・計画書作成（コードは書かない）                             |
 | plan-implementer       | medium       | 計画に基づく実装・テスト・グリーン化                                     |
-| spec-test-author       | medium       | 仕様テスト（`tests/` のみ、`experiments/` は触らない）                   |
+| spec-test-author       | medium       | 仕様テスト（`tests/` のみ、`exp/` は触らない）                           |
 | code-simplifier        | medium       | 公開 IF 維持の簡素化 + docstring / 実験の README 同期（レビューはしない） |
 
 orchestrator に `effort` を設定していないのは、frontmatter の effort がセッション値を上書きし、ユーザーが `/effort` で変えた値が反映されなくなるため。セッション既定は `settings.json` の `effortLevel` で与える。
@@ -38,7 +38,7 @@ orchestrator に `effort` を設定していないのは、frontmatter の effor
 
 ```
 0. orchestrator（メイン）
-   - 要件確認・ブランチ作成・以降の統括。experiments/ tests/ は自分で編集しない
+   - 要件確認・ブランチ作成・以降の統括。exp/ tests/ は自分で編集しない
    - ユーザーへの質問はここだけが行える（サブエージェントは AskUserQuestion を持たない）
 
 1. implementation-planner  [複数モジュールにまたがるとき。1 モジュールに収まるなら orchestrator が自分で計画]
@@ -49,7 +49,7 @@ orchestrator に `effort` を設定していないのは、frontmatter の effor
 
 2. spec-test-author  [任意 — 仕様 first フロー時のみ]
    - 計画書を読み、tests/ 配下にテスト（生きた仕様書）を書く
-   - 実験コード（experiments/）は触らない
+   - 実験コード（exp/）は触らない
    - 期待される失敗と仕様根拠を memory/agents/spec-test-author/<task>.md に記録
    - plan-implementer と並列実行可能（reference.md パターン A）
 
@@ -99,7 +99,7 @@ approve（should-fix は残ってよい）の後に 5 を行う。5 で大きく
 
 ## 並列化の基本条件
 
-`tests/` と `experiments/` は disjoint なので、`spec-test-author` と `plan-implementer` は同時起動できる。前提条件は次のとおり。
+`tests/` と `exp/` は disjoint なので、`spec-test-author` と `plan-implementer` は同時起動できる。前提条件は次のとおり。
 
 - planner の「公開インターフェース案」が**シグネチャレベル**（関数名・引数・戻り値型）で確定していること
 - GPU など占有リソースを奪い合う長時間の学習を同時に走らせないこと

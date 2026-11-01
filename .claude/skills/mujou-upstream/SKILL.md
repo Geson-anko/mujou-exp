@@ -1,11 +1,11 @@
 ---
 name: mujou-upstream
-description: 実験中に mujou（git submodule の mujou/）へ機能追加・修正が要ると分かったときの手順。submodule 側でブランチを切って実装し、mujou へ PR を送りながら、実験側はその変更を使い続ける。submodule のポインタの扱い（未 push のコミットを指さない）も含む。「mujou に足りない」「mujou を直して」「mujou に PR」と言われたとき、または experiments/ から mujou の機能を足したくなったときに参照する。
+description: 実験中に mujou（git submodule の mujou/）へ機能追加・修正が要ると分かったときの手順。submodule 側でブランチを切って実装し、mujou へ PR を送りながら、実験側はその変更を使い続ける。submodule のポインタの扱い（未 push のコミットを指さない）も含む。「mujou に足りない」「mujou を直して」「mujou に PR」と言われたとき、または exp/ から mujou の機能を足したくなったときに参照する。
 ---
 
 # mujou に変更を入れて PR を送る
 
-実験で mujou に足りないものが見つかったら、実験側に代用品を作らず、`mujou/` に直接足して upstream へ PR を送る。実験は `mujou/` の作業ブランチを使って止まらずに進める。
+実験で mujou に足りないものが見つかったら、実験側に代用品を作らず、`mujou/` に直接足して upstream へ PR を送る。実験は `mujou/` の作業ブランチを使って止まらずに進める。実験横断の補助や研究中の部品は `exp/lib/` に置き、mujou の抽象の不足は mujou に足す。
 
 ## 前提
 

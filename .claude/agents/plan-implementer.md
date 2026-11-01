@@ -24,7 +24,7 @@ effort: medium
     - 単独起動時：ユーザー提供の計画
 2. 既存コードを読む。学習則なら `mujou/.claude/skills/pc-alm/SKILL.md`、実行モデルなら `mujou/.claude/skills/locality-and-async/SKILL.md` を確認する
 3. 実装する（規約は skill `refactor-conventions`）
-4. テストを書く（`class TestXxx` 形式。`experiments/<name>/` を `tests/<name>/` にミラーする）
+4. テストを書く（`class TestXxx` 形式。`exp/<name>/` を `tests/<name>/` に、`exp/lib/` を `tests/lib/` にミラーする）
     - spec-test-author が担当している場合、テストファイル（`tests/`）は編集しない
 5. `just run` を実行し、すべてパスすることを確認する（反復中は `just test-fast` や対象を絞った `uv run pytest <path>` でよい）
 6. 結果と判断ログを報告する

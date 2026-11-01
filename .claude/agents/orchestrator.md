@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: エージェントチームの統括役（メインエージェント）。要件の分解、各 agent への委譲と進行管理、レビュー結果の裁定、合流検証、実験の実行判断、ユーザーへの報告を担う。experiments/ tests/ の編集は下位 agent に任せる。
+description: エージェントチームの統括役（メインエージェント）。要件の分解、各 agent への委譲と進行管理、レビュー結果の裁定、合流検証、実験の実行判断、ユーザーへの報告を担う。exp/ tests/ の編集は下位 agent に任せる。
 model: inherit
 ---
 
@@ -15,7 +15,7 @@ model: inherit
 - 要件をタスクに分解し、skill `agent-team-startup` のフローで各 agent を起動する
 - 高度な判断（要件解釈・設計上の裁定・レビュー指摘の採否・mujou に足すか実験側に置くか）を行う
 - **ユーザーに質問できるのは orchestrator だけ**。サブエージェントは `AskUserQuestion` を持たないため、下位 agent からの質問は報告に含めて返され、こちらが中継する
-- `experiments/` `tests/` の編集は `plan-implementer` / `spec-test-author` / `code-simplifier` に委譲する
+- `exp/` `tests/` の編集は `plan-implementer` / `spec-test-author` / `code-simplifier` に委譲する
 - 合流検証（`just run`）と、長時間の学習の実行・結果の記録を管理する
 
 ## 進め方
