@@ -1,14 +1,13 @@
 {
   "name": "mujou-exp",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
+  "dockerComposeFile": "../compose.yaml",
+  "service": "dev",
   "remoteUser": "vscode",
   "updateRemoteUserUID": true,
-  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
   "workspaceFolder": "${localWorkspaceFolder}",
-  "initializeCommand": "mkdir -p \"$HOME/.claude\" \"$HOME/.config/gh\" \"$HOME/.ssh\" && touch \"$HOME/.claude.json\" \"$HOME/.gitconfig\"",
+  "initializeCommand": "mkdir -p \"$HOME/.claude\" \"$HOME/.config/gh\" \"$HOME/.ssh\" datasets/egodex && touch \"$HOME/.claude.json\" \"$HOME/.gitconfig\"",
   "mounts": [
+    "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind",
     "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind",
     "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind",
@@ -21,6 +20,7 @@
   "containerEnv": {
     "UV_PROJECT_ENVIRONMENT": ".venv-devcontainer",
     "UV_LINK_MODE": "copy",
+    "EGODEX_DIR": "/datasets/egodex",
     "GIT_CONFIG_COUNT": "2",
     "GIT_CONFIG_KEY_0": "core.fileMode",
     "GIT_CONFIG_VALUE_0": "false",

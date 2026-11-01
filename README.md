@@ -24,6 +24,18 @@ just container just run
 
 コンテナはホストの `.venv/` と衝突しないよう、専用の仮想環境 `.venv-devcontainer/` を使う。
 
+### データセットのマウント
+
+dev container は Docker Compose（ルートの `compose.yaml`）で立ち上げる。Compose がルートの `.env` を読むので、ホスト側のパスは `.env` に書く。
+
+EgoDex（[experiments/continuous_stream/](experiments/continuous_stream/) の段 3）は、ホストのディレクトリをコンテナの `/datasets/egodex` に読み取り専用でマウントする。`.env.example` を `.env` にコピーし、`EGODEX_DIR` にホストのパスを書く。コンテナの中では `EGODEX_DIR=/datasets/egodex` が設定される。
+
+```sh
+cp .env.example .env  # EGODEX_DIR=/path/to/egodex を書き換える
+```
+
+`EGODEX_DIR` が無いときは、checkout の `datasets/egodex`（git の管理外）がマウントされる。パスを変えたらコンテナを作り直す（"Rebuild Container"）。
+
 ## コマンド
 
 | レシピ              | 内容                                                              |

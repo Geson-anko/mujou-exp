@@ -36,6 +36,9 @@ logs/
 # Environment overrides
 .env
 
+# Datasets (mounted into the dev container; see .env.example)
+datasets/
+
 # OS
 .DS_Store
 Thumbs.db
