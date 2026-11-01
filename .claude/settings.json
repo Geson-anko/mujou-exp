@@ -169,8 +169,7 @@
       "Bash(git push -f:*)",
       "Bash(git checkout .)",
       "Bash(rm -rf:*)",
-      "Bash(rm -fr:*)",
-      "Bash(sudo:*)"
+      "Bash(rm -fr:*)"
     ],
     "additionalDirectories": [
       "/tmp",
