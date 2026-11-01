@@ -1,6 +1,8 @@
 """The network of PLAN.md, sections 3-4 and 7: ``Input -> G1 -> Z``, and from
 ``Z`` the ``Dynamics -> Compare`` of the prediction and ``SIGReg``."""
 
+from typing import Any
+
 import mujou.pc as pc
 import torch
 from mujou.pc.optim import Optimizer
@@ -10,9 +12,10 @@ import mujou
 from experiments.continuous_stream.config import Config
 from experiments.continuous_stream.nodes import Compare, Dynamics, MinGRU, SIGReg
 from experiments.continuous_stream.optim import Correlation, from_config
+from experiments.continuous_stream.video import Video
 from mujou import TensorSpec
 
-__all__ = ["Network", "encoder_modules"]
+__all__ = ["Network", "encoder_modules", "standardize_"]
 
 
 def encoder_modules(size: int, d_z: int) -> tuple[nn.Module, nn.Module]:
@@ -33,6 +36,36 @@ def encoder_modules(size: int, d_z: int) -> tuple[nn.Module, nn.Module]:
         nn.Linear(128 * side * side, d_z),
     )
     return g1, z
+
+
+@torch.no_grad()
+def standardize_(g1: nn.Module, z: nn.Module, size: int, seed: int) -> None:
+    """Scale the weights of each convolution and linear map of ``g1`` and ``z``
+    in place, in order, so that its output has standard deviation 1 over 256
+    frames of a video of its own (``seed``), as LSUV does; then shift the bias
+    of the last one so that each dimension of $z$ has mean 0.
+
+    Without it, $z$ starts near 0 (the frames are mostly black), where the
+    gradient of SIGReg vanishes with $z$ and the prediction error collapses it.
+    Scaling only the last map would amplify the credit sent back to ``G1``
+    by the same factor.
+    """
+    video = Video(size=size, seed=seed)
+    images = torch.stack([video.next().image for _ in range(256)])
+    encoder = nn.Sequential(g1, z)
+    layers = [m for m in encoder.modules() if isinstance(m, nn.Conv2d | nn.Linear)]
+    for layer in layers:
+        seen: list[Any] = []  # the output of the layer
+        handle = layer.register_forward_hook(lambda _m, _i, out: seen.append(out))
+        encoder(images)
+        handle.remove()
+        std = seen[0].std()
+        layer.weight.div_(std)
+        assert layer.bias is not None
+        layer.bias.div_(std)
+    last = layers[-1]
+    assert last.bias is not None
+    last.bias.sub_(encoder(images).mean(0))
 
 
 class Network(mujou.Network):
@@ -60,6 +93,7 @@ class Network(mujou.Network):
         li = t.learn_interval
         torch.manual_seed(config.seed)
         g1, z = encoder_modules(d.size, m.d_z)
+        standardize_(g1, z, d.size, seed=config.seed + 10_000)
         self.input = pc.Input(
             x=TensorSpec((1, d.size, d.size)), y=TensorSpec((1,)), period=tau.period
         )
