@@ -96,7 +96,21 @@ def snapshot(net: Network | WorldBPNetwork) -> Snapshot:
     return Snapshot.of(net)
 
 
-def _source(config: Config) -> tuple[Any, Frame]:
+def save_checkpoint(snap: Snapshot, run_dir: Path, seconds: float) -> Path:
+    """Write ``snap`` to ``<run_dir>/ckpt/<seconds>.pt`` and return the path."""
+    path = run_dir / "ckpt" / f"{round(seconds):05d}.pt"
+    path.parent.mkdir(exist_ok=True)
+    torch.save(snap, path)
+    return path
+
+
+def load_checkpoint(path: Path, device: str = "cpu") -> Snapshot:
+    """The ``Snapshot`` that ``save_checkpoint`` wrote (pickled modules: load
+    only checkpoints of your own runs)."""
+    return torch.load(path, map_location=device, weights_only=False)
+
+
+def source(config: Config) -> tuple[Any, Frame]:
     """The stream of frames (``next()`` gives a ``Frame``) and the clips to
     evaluate on."""
     d, t = config.data, config.time
@@ -132,12 +146,13 @@ def run_video(config: Config, recorder: Recorder) -> None:
     the streams that have such a prediction in the frame (and ``z_rms`` over
     all of them); each ``eval_interval`` seconds, the metrics of
     ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
-    of each node's gradients over the interval. The frames come in
+    of each node's gradients over the interval; each ``checkpoint_interval``
+    seconds of frames, a checkpoint (``save_checkpoint``). The frames come in
     ``data.order`` (``balls.ordered``); a replayed frame records only its
     ``replay_error``, and the metrics count the live frames.
     """
     d, t = config.data, config.time
-    video, clips = _source(config)
+    video, clips = source(config)
     dev = config.device
     clips = clips._replace(
         image=clips.image.to(dev),
@@ -148,6 +163,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
     d_state = config.model.d_s * config.model.dyn_nodes
     frames = round(d.seconds / t.frame)
     every = max(1, round(config.eval_interval / t.frame))
+    ckpt_every = round(config.checkpoint_interval / t.frame)  # 0: none
     shown: Iterator[tuple[Frame, bool]]
     if isinstance(video, Streams):
         shown = ((video.next(), True) for _ in range(frames))
@@ -206,6 +222,8 @@ def run_video(config: Config, recorder: Recorder) -> None:
                     for name, corr in net.correlations.items():
                         for lag, rho in corr.take().items():
                             values[f"rho_{name}_{lag}"] = rho
+            if ckpt_every and (k + 1) % ckpt_every == 0 and not config.realtime:
+                save_checkpoint(snapshot(net), recorder.dir, (k + 1) * t.frame)
             recorder.log(float(written), **values)
             k += 1
     if config.realtime:  # once the run has stopped

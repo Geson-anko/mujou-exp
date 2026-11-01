@@ -171,12 +171,22 @@ class Config:
     seed: int = 0
     bp: bool = False  # the baseline: the same modules by BP in one node
     eval_interval: float = 60.0  # seconds of the run's timer between evaluations
+    # Seconds of frames between two checkpoints of the modules (0: none), in
+    # ckpt/ of the run (run.load_checkpoint).
+    checkpoint_interval: float = 0.0
     realtime: bool = False  # mujou.run in real time, rather than stepped by hand
     device: str = "cpu"  # where every node computes, and the evaluation ("cuda")
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
+
+    def __post_init__(self) -> None:
+        c = self.checkpoint_interval
+        if c < 0 or c != round(c):  # the file of a checkpoint is named in seconds
+            raise ValueError(f"checkpoint_interval must be whole seconds, not {c}")
+        if c and self.realtime:  # the modules are read between steps only
+            raise ValueError("no checkpoints in a real-time run")
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

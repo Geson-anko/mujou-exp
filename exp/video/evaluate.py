@@ -17,9 +17,13 @@ from exp.video.model import DynamicsStack, Network, Top
 __all__ = [
     "Snapshot",
     "evaluate",
+    "halves",
     "mean_errors",
     "persistence_errors",
     "rollout_errors",
+    "rollout_shape",
+    "shrink_errors",
+    "shrink_predictions",
 ]
 
 HORIZONS = (1, 5, 10, 20)
@@ -124,11 +128,87 @@ def mean_errors(
     return {h: float(((mean - z[:, observed - 1 + h]) ** 2).mean()) for h in horizons}
 
 
+def halves(phases: int, clips: int, device: torch.device | str = "cpu") -> torch.Tensor:
+    """The two halves of the clips ``(phases * clips,)`` (phase-major, as the
+    clips of ``evaluate``): ``True`` for the first half of the clips of each
+    phase."""
+    return (torch.arange(clips, device=device) < clips // 2).repeat(phases)
+
+
+def shrink_errors(
+    z: torch.Tensor,
+    half: torch.Tensor,
+    observed: int = 16,
+    horizons: Sequence[int] = HORIZONS,
+) -> dict[int, float]:
+    r"""The errors of ``rollout_errors`` for the model that says the last
+    observed $z$ shrunk toward the mean $m$ of ``mean_errors``,
+    $\hat z = m + \lambda_n (z_\text{last} - m)$ (``shrink_predictions``),
+    over all the clips. It knows no dynamics, only how fast $z$ forgets: the
+    bar a rollout has to clear to have learned more than that."""
+    preds = shrink_predictions(z, half, observed, horizons)
+    return {
+        h: float(((preds[h] - z[:, observed - 1 + h]) ** 2).mean()) for h in horizons
+    }
+
+
+def shrink_predictions(
+    z: torch.Tensor,
+    half: torch.Tensor,
+    observed: int = 16,
+    horizons: Sequence[int] = HORIZONS,
+) -> dict[int, torch.Tensor]:
+    r"""The predictions $m + \lambda_n (z_\text{last} - m)$ ``(n, D)`` of the
+    clips ``z`` ``(n, T, D)`` at each horizon, out of sample: $\lambda_n$ is
+    fitted by least squares on the clips where ``half`` (``(n,)`` bool) holds
+    for the others, and on the others for those. $m$ is the mean over all the
+    clips and frames, as in ``mean_errors``."""
+    m = z.mean((0, 1))
+    a = z[:, observed - 1] - m  # (n, D)
+    out = {}
+    for h in horizons:
+        b = z[:, observed - 1 + h] - m
+        pred = torch.empty_like(a)
+        for fit in (half, ~half):
+            lam = (a[fit] * b[fit]).sum() / (a[fit] ** 2).sum()
+            pred[~fit] = m + lam * a[~fit]
+        out[h] = pred
+    return out
+
+
+def rollout_shape(
+    z: torch.Tensor,
+    step: Step,
+    readout: Readout,
+    d_s: int,
+    observed: int = 16,
+    horizons: Sequence[int] = HORIZONS,
+    residual: bool = False,
+) -> dict[str, float]:
+    r"""How the rollout of ``rollout_errors`` misses at each horizon ``n``,
+    across the clips: ``amp{n}``, the variance of the predictions over that of
+    the targets, $\sum_d \text{Var}(\hat z_d) / \sum_d \text{Var}(z_d)$
+    (below 1 they shrink toward their mean, above 1 they overshoot), and
+    ``corr{n}``, their correlation, $\sum_d \text{Cov}(\hat z_d, z_d)$ over
+    the square root of the product of the two sums (0 for predictions that
+    know nothing of the clip)."""
+    _, preds = run_states(z, step, readout, d_s, observed, max(horizons), residual)
+    out = {}
+    for h in horizons:
+        p = preds[:, h - 1] - preds[:, h - 1].mean(0)
+        t = z[:, observed - 1 + h] - z[:, observed - 1 + h].mean(0)
+        vp, vt = (p**2).sum(), (t**2).sum()
+        out[f"amp{h}"] = float(vp / vt)
+        out[f"corr{h}"] = float((p * t).sum() / (vp * vt).sqrt().clamp(min=1e-30))
+    return out
+
+
 @torch.no_grad()
 def evaluate(snap: Snapshot, clips: Frame, d_s: int) -> dict[str, float]:
     """The metrics of section 9 on ``clips`` (``(P, C, T, ...)``): the rollout
     errors relative to the variance of $z$ (and those of
-    ``persistence_errors`` and ``mean_errors``), the probe $R^2$ of the positions,
+    ``persistence_errors``, ``mean_errors`` and ``shrink_errors``, fitted on
+    the ``halves`` of the clips), the ``rollout_shape``, the probe $R^2$ of the positions,
     velocities and physics from $z$ and from $s$ (when the clips have them),
     and the effective rank of $z$. ``d_s`` is the size of the state of
     ``snap.step``."""
@@ -148,6 +228,9 @@ def evaluate(snap: Snapshot, clips: Frame, d_s: int) -> dict[str, float]:
         out[f"persist{h}"] = err / var if var > 0 else math.nan
     for h, err in mean_errors(z).items():
         out[f"mean{h}"] = err / var if var > 0 else math.nan
+    for h, err in shrink_errors(z, halves(p, c, z.device)).items():
+        out[f"shrink{h}"] = err / var if var > 0 else math.nan
+    out.update(rollout_shape(z, snap.step, snap.readout, d_s, residual=snap.residual))
     if clips.state.shape[-1] == 0:  # no latent state to probe (EgoDex)
         return out
     states, _ = run_states(z, snap.step, snap.readout, d_s, t, 0)

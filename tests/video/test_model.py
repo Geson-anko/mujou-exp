@@ -19,7 +19,7 @@ from exp.video.config import (
     OptimConfig,
     TimeConfig,
 )
-from exp.video.evaluate import Snapshot
+from exp.video.evaluate import Snapshot, evaluate
 from exp.video.model import Network
 from exp.video.nodes import compare_energy, is_open
 
@@ -551,6 +551,25 @@ class TestRunVideo:
         without = _video_run(tmp_path, "b", eval_interval=100.0)
         assert any("rank" in r for r in with_eval)
         assert [r.get("error") for r in with_eval] == [r.get("error") for r in without]
+
+    @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
+    def test_a_checkpoint_evaluates_as_the_run_did(self, tmp_path, bp):
+        """A checkpoint is written with each evaluation here; loaded, it gives
+        the metrics the run logged at that time."""
+        name = f"ckpt-{bp}"
+        records = _video_run(
+            tmp_path, name, bp=bp, eval_interval=1.0, checkpoint_interval=1.0
+        )
+        (out,) = tmp_path.glob(f"*-{name}")
+        paths = sorted((out / "ckpt").glob("*.pt"))
+        assert [p.name for p in paths] == ["00001.pt", "00002.pt"]
+        config = Config.load(tmp_path / f"{name}.json")
+        _, clips = run.source(config)
+        d_state = config.model.d_s * config.model.dyn_nodes
+        got = evaluate(run.load_checkpoint(paths[-1]), clips, d_state)
+        logged = [r for r in records if "rank" in r][-1]
+        for key in ("rank", "rollout10", "shrink10", "amp10"):
+            assert got[key] == pytest.approx(logged[key], rel=1e-5)
 
     @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
     def test_four_streams_run_through_and_log_the_mean(self, tmp_path, bp):

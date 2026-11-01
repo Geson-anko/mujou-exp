@@ -343,6 +343,40 @@ def spread_warm(
     return out
 
 
+# The runs to decode (README: M11, the reconstruction): the chosen setting of
+# the spread streams, and one stream with the setting of M11, with a checkpoint
+# every CHECKPOINT seconds.
+CHECKPOINT = 300.0
+
+
+def decode_configs() -> list[Config]:
+    out = []
+    for bp in (False, True):
+        tag = "bp" if bp else "pc"
+        c = _spread(
+            f"m11-ckpt-b{STREAMS}-k0.13-warm{WARMUP:g}-{tag}",
+            0,
+            0.13,
+            0.03,
+            bp=bp,
+            device="cuda:0" if bp else "cuda:1",
+            seconds=1800.0,
+        )
+        out.append(replace(c, optim=replace(c.optim, warmup=WARMUP)))
+        out.append(
+            _config(
+                f"m11-ckpt-single-{tag}",
+                0,
+                CHOSEN,
+                0.03,
+                bp=bp,
+                device="cuda:1" if bp else "cuda:0",
+                seconds=1800.0,
+            )
+        )
+    return [replace(c, checkpoint_interval=CHECKPOINT) for c in out]
+
+
 def confirm() -> list[Config]:
     return [
         _config(
@@ -408,6 +442,7 @@ def main() -> None:
     parser.add_argument("--spread-confirm", action="store_true", help="its check")
     parser.add_argument("--spread-warm", action="store_true", help="with a warmup")
     parser.add_argument("--spread-warm-fast", action="store_true", help="at lr 0.03")
+    parser.add_argument("--decode", action="store_true", help="with checkpoints")
     args = parser.parse_args()
     if args.what == "run":
         if args.confirm:
@@ -434,6 +469,8 @@ def main() -> None:
             todo = spread_warm()
         elif args.spread_warm_fast:  # the margin of rollout10 at 0.02 was thin
             todo = spread_warm(0.03, (0.13,))
+        elif args.decode:
+            todo = decode_configs()
         else:
             todo = open_configs() if args.open else configs()
         run_all(RUN_MODULE, todo, args.out, args.jobs)
