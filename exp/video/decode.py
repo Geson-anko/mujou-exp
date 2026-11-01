@@ -13,7 +13,9 @@ decoded and the shrunk last $z$ (``evaluate.shrink_predictions``) decoded, at
 the last observed frame and ``COLUMNS`` frames after it. The line has the mean
 squared error per pixel of the decoded frames over all the clips: ``recon``
 (the $z$ of the frames), and ``img_rollout{n}``, ``img_persist{n}``,
-``img_mean{n}``, ``img_shrink{n}`` (the predictions $n$ frames ahead); and the
+``img_mean{n}``, ``img_shrink{n}`` (the predictions $n$ frames ahead), and the
+bars without the decoder, ``pix_copy{n}`` (the last observed frame again) and
+``pix_mean{n}`` (the mean of the frames the decoder learned on); and the
 metrics of ``evaluate`` of the checkpoint.
 """
 
@@ -169,6 +171,9 @@ def decode_checkpoint(
         line[f"img_persist{h}"] = err(last, target)
         line[f"img_mean{h}"] = err(m.expand_as(last), target)
         line[f"img_shrink{h}"] = err(shrunk[h], target)
+        # Without the decoder: the last frame again, and the mean frame.
+        line[f"pix_copy{h}"] = float(((x[:, OBSERVED - 1] - target) ** 2).mean())
+        line[f"pix_mean{h}"] = float(((train.mean(0) - target) ** 2).mean())
     line.update(evaluate(snap, clips, d_state))
     # A few clips, from different phases of the physics.
     shown = range(0, p * c, max(1, p * c // SHOWN))[:SHOWN]

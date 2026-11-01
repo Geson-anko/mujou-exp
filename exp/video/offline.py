@@ -3,6 +3,7 @@ synthetic video drawn at random, with Adam (README: M11, the offline bound).
 
     uv run python -m exp.video.offline [--learn-encoder] [--sigreg 15]
         [--local] [--batch 128] [--blur 0] [--sgd --lr 0.03] [--device cuda:0]
+        [--save runs/<dir>]
 
 Each window has 32 frames within an episode: the model observes the first 16
 and then runs open loop on its own predictions, and the loss is the mean
@@ -11,11 +12,14 @@ encoder learns too, with the full credit to the targets, and SIGReg on the z
 of the batch weighted by ``--sigreg`` per sample (about kappa / (1 - kappa)
 of the nodes); ``--local`` stops the gradient where the nodes stop it, at the
 context $z_{k-1}$ and at the prediction fed back. Prints the evaluation on the
-clips every ``--every`` steps.
+clips every ``--every`` steps; with ``--save``, also a checkpoint in
+``<dir>/ckpt/<step>.pt`` (named by the step, not by seconds) with a
+``config.json`` of the same model, for ``decode.py``.
 """
 
 import argparse
 import json
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -23,8 +27,10 @@ from torch import nn
 from exp.lib.mingru import MinGRU
 from exp.lib.sigreg import epps_pulley
 from exp.video.balls import Video, eval_clips
+from exp.video.config import Config, DataConfig, ModelConfig
 from exp.video.evaluate import Snapshot, evaluate
 from exp.video.model import DynamicsStack, Top, encoder_modules, standardize_
+from exp.video.run import save_checkpoint
 
 KEYS = ("rank", "z_var", "rollout1", "rollout10", "persist10", "mean10")
 WINDOW, OBSERVED = 32, 16
@@ -44,7 +50,14 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--every", type=int, default=1000)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--save", type=Path, help="a directory for checkpoints")
     args = parser.parse_args()
+    if args.save is not None:  # the model as a run of the nodes would have it
+        model = ModelConfig(d_z=D_Z, d_s=D_S, z_norm=True, blur=args.blur)
+        config = Config(name="offline", model=model, data=DataConfig(kind="video"))
+        args.save.mkdir(parents=True, exist_ok=True)
+        head = {"config": config.to_dict(), "offline": vars(args) | {"save": None}}
+        (args.save / "config.json").write_text(json.dumps(head, indent=2) + "\n")
     torch.manual_seed(0)
     dev, b = args.device, args.batch
     g1, z_mod = encoder_modules(32, D_Z, z_norm=True, blur=args.blur)
@@ -101,7 +114,10 @@ def main() -> None:
         loss.backward()
         optimizer.step()
         if (i + 1) % args.every == 0:
-            e = evaluate(Snapshot(encoder, step, readout), clips, D_S)
+            snap = Snapshot(encoder, step, readout)
+            e = evaluate(snap, clips, D_S)
+            if args.save is not None:
+                save_checkpoint(snap, args.save, i + 1)
             row = {k: round(e[k], 3) for k in KEYS}
             print(json.dumps({"step": i + 1, **row}), flush=True)
 

@@ -86,6 +86,7 @@ class TestDecodeCheckpoint:
         line = _decoded(tmp_path, "cpu")
         assert all(math.isfinite(v) for v in line.values())
         assert line["img_rollout10"] > 0
+        assert line["pix_copy1"] < line["pix_copy20"]  # frames drift apart
         json.dumps(line)
 
     @pytest.mark.slow
