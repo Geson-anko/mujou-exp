@@ -222,6 +222,38 @@ def streams_configs() -> list[Config]:
     return out
 
 
+# Added after the 30 minutes of 128 streams (README: M11): rollout10 swings
+# with the phase of the physics. With 128 streams the buffer of 1023 holds
+# 8 frames; spread it over a minute or over most of a period of the physics.
+SPANS = (  # (buffer_every, kappa, device), with the buffer 4095
+    (64, 0.15, "cuda:0"),
+    (512, 0.15, "cuda:1"),
+    # Added after those two: the wide buffer let the rank fall (6-15), as the
+    # old z in it meet SIGReg for the new ones; a heavier SIGReg.
+    (512, 0.4, "cuda:0"),
+    (512, 0.6, "cuda:1"),
+    (64, 0.3, "cuda:0"),
+)
+
+
+def span_configs() -> list[Config]:
+    out = []
+    for every, kappa, device in SPANS:
+        model = ModelConfig(
+            kappa=kappa,
+            stop_target=False,
+            z_norm=True,
+            open_loop=0.5,
+            open_cycle=20,
+            buffer=4095,
+            buffer_every=every,
+        )
+        name = f"m11-b{STREAMS}-k{kappa:g}-every{every}-bp"
+        c = _config(name, 0, model, 0.01, bp=True, device=device, seconds=1800.0)
+        out.append(replace(c, data=replace(c.data, streams=STREAMS)))
+    return out
+
+
 def confirm() -> list[Config]:
     return [
         _config(
@@ -282,6 +314,7 @@ def main() -> None:
     parser.add_argument("--long", action="store_true", help="3 hours by BP")
     parser.add_argument("--adam", action="store_true", help="AdamW by BP")
     parser.add_argument("--streams", action="store_true", help="B streams at once")
+    parser.add_argument("--span", action="store_true", help="B streams, wide buffer")
     args = parser.parse_args()
     if args.what == "run":
         if args.confirm:
@@ -298,6 +331,8 @@ def main() -> None:
             todo = adam_configs()
         elif args.streams:
             todo = streams_configs()
+        elif args.span:
+            todo = span_configs()
         else:
             todo = open_configs() if args.open else configs()
         run_all(RUN_MODULE, todo, args.out, args.jobs)
