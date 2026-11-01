@@ -36,6 +36,9 @@ logs/
 # Environment overrides
 .env
 
+# Mount sources linked by .devcontainer/link-egodex.sh
+.devcontainer/.mounts/
+
 # OS
 .DS_Store
 Thumbs.db

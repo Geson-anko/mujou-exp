@@ -24,6 +24,16 @@ just container just run
 
 コンテナはホストの `.venv/` と衝突しないよう、専用の仮想環境 `.venv-devcontainer/` を使う。
 
+### データセットのマウント
+
+EgoDex（[experiments/continuous_stream/](experiments/continuous_stream/) の段 3）は、ホストのディレクトリをコンテナの `/mnt/egodex` に読み取り専用でマウントする。`.env.example` を `.env` にコピーし、`EGODEX_DIR` にホストのパスを書く。コンテナの中では `EGODEX_DIR=/mnt/egodex` が設定される。
+
+```sh
+cp .env.example .env  # EGODEX_DIR=/path/to/egodex を書き換える
+```
+
+devcontainer.json は `.env` を直接読めない。そこで、コンテナの起動前にホストで `.devcontainer/link-egodex.sh` が走り、`.devcontainer/.mounts/egodex` をそのディレクトリへのシンボリックリンクにして、このリンクをマウントする。`EGODEX_DIR` が無ければ空のディレクトリがマウントされる。パスを変えたらコンテナを作り直す（"Rebuild Container"）。
+
 ## コマンド
 
 | レシピ              | 内容                                                              |
