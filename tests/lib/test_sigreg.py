@@ -6,7 +6,14 @@ import pytest
 import torch
 
 import mujou
-from exp.lib.sigreg import SIGReg, epps_pulley, insert_, sigreg
+from exp.lib.sigreg import (
+    SIGReg,
+    ecf_sums,
+    epps_pulley,
+    insert_,
+    sigreg,
+    sigreg_from_sums,
+)
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
@@ -126,7 +133,7 @@ class TestInsert:
 
 
 class _SIGRegNet(mujou.Network):
-    def __init__(self) -> None:
+    def __init__(self, every: int = 1) -> None:
         super().__init__()
         self.z_in = _inputs(("z", D))["z"]
         self.sigreg = SIGReg(
@@ -136,6 +143,7 @@ class _SIGRegNet(mujou.Network):
             capacity=10,
             tau=TAU,
             min_samples=4,
+            every=every,
             seed=5,
         )
         self.z_in.next.connect(self.sigreg.prev)
@@ -177,3 +185,35 @@ class TestSIGRegNode:
             run.step(TAU.period)
             assert not torch.equal(net.sigreg.directions, first)
         torch.testing.assert_close(first.norm(dim=1), torch.ones(8))
+
+
+class TestEvery:
+    def test_it_keeps_the_z_of_one_frame_in_every(self):
+        """With every=3, the buffer holds the z of frames 0, 3, 6, ...: by
+        frame k, those before it."""
+        net = _SIGRegNet(every=3)
+        zs = torch.arange(10.0)[:, None].expand(10, D).contiguous()
+        with mujou.testing.run(net) as run:
+            for k in range(len(zs)):
+                run.write({net.z_in.prev: _sample(zs[k], reset=k == 0)})
+                for _ in range(16):
+                    run.step(TAU.period)
+                kept = net.sigreg.buffer[: net.sigreg.count, 0].tolist()
+                assert kept == [float(j) for j in range(0, k, 3)]
+
+
+class TestSums:
+    def test_the_sums_give_the_value_and_gradient_of_sigreg(self):
+        """Splitting the characteristic function into the buffer's sums and
+        z's own term is the same sum, so the same value and gradient."""
+        g = torch.Generator().manual_seed(7)
+        buffer = torch.randn(40, D, generator=g, dtype=torch.float64)
+        a = torch.randn(32, D, generator=g, dtype=torch.float64)
+        a = a / a.norm(dim=1, keepdim=True)
+        z = (2 * torch.randn(D, generator=g, dtype=torch.float64)).requires_grad_()
+        want = sigreg(z, buffer, a)
+        (g_want,) = torch.autograd.grad(want, z)
+        got = sigreg_from_sums(z, ecf_sums(buffer, a), len(buffer) + 1, a)
+        (g_got,) = torch.autograd.grad(got, z)
+        torch.testing.assert_close(got, want)
+        torch.testing.assert_close(g_got, g_want)
