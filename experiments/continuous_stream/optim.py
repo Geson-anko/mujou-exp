@@ -26,7 +26,9 @@ from experiments.continuous_stream.config import OptimConfig
 from mujou import Stateful
 
 __all__ = [
+    "LAGS",
     "AdamDirection",
+    "Correlation",
     "BoundDirection",
     "DirectionOptimizer",
     "Grafted",
@@ -441,3 +443,74 @@ def from_config(c: OptimConfig) -> Optimizer:
     else:
         raise ValueError(f"unknown optimizer {c.kind!r}")
     return Grafted(inner=inner) if c.graft else inner
+
+
+LAGS = (1, 10, 100, 1000)
+
+
+class Correlation(Optimizer):
+    r"""Wraps an optimizer and records the cosine $\rho(\Delta) = \cos(G_k,
+    G_{k+\Delta})$ of the gradients of one node (all its parameters as one
+    vector), $k$ counting its steps, for $\Delta$ in ``LAGS``.
+
+    The gradients of the last ``LAGS[-2]`` steps are kept, and every
+    ``LAGS[-2]``-th one for ``LAGS[-1]`` steps. ``take()`` returns the mean
+    cosine of each lag since the last ``take()``. A node binds it once: make
+    one per node.
+    """
+
+    def __init__(self, inner: Optimizer) -> None:
+        self._inner = inner
+        self._bound: _BoundCorrelation | None = None
+
+    @override
+    def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
+        self._bound = _BoundCorrelation(self._inner.bind(params))
+        return self._bound
+
+    def take(self) -> dict[int, float]:
+        return {} if self._bound is None else self._bound.take()
+
+
+class _BoundCorrelation(BoundOptimizer):
+    def __init__(self, inner: BoundOptimizer) -> None:
+        self._inner = inner
+        self._k = 0
+        self._past: dict[int, torch.Tensor] = {}
+        self._sums = dict.fromkeys(LAGS, 0.0)
+        self._counts = dict.fromkeys(LAGS, 0)
+
+    @override
+    def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
+        g = torch.cat([x.flatten() for x in grads])
+        g = g / torch.linalg.vector_norm(g).clamp(min=1e-30)
+        for lag in LAGS:
+            past = self._past.get(self._k - lag)
+            if past is not None:
+                self._sums[lag] += float(past @ g)
+                self._counts[lag] += 1
+        self._past[self._k] = g
+        recent, every = LAGS[-2], LAGS[-2]
+        for k in [k for k in self._past if k <= self._k - recent]:
+            if k % every or k < self._k - LAGS[-1]:
+                del self._past[k]
+        self._k += 1
+        self._inner.step_(grads, elapsed)
+
+    def take(self) -> dict[int, float]:
+        out = {
+            lag: self._sums[lag] / self._counts[lag]
+            for lag in LAGS
+            if self._counts[lag]
+        }
+        self._sums = dict.fromkeys(LAGS, 0.0)
+        self._counts = dict.fromkeys(LAGS, 0)
+        return out
+
+    @override
+    def state_dict(self) -> Any:
+        return self._inner.state_dict()
+
+    @override
+    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
+        self._inner.load_state_dict(state)

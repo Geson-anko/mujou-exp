@@ -311,6 +311,11 @@ class SIGReg(Node):
         self.z_last = z.zeros()
         self.seen = -1  # the time (ns) of the frame seen last
         self.register_state("seen")
+        # The g_in sent last and the z it was computed for, valid within a frame:
+        # z changes only when the nodes before learn, so most updates resend it.
+        self.g, self.g_of = z.zeros(), z.zeros()
+        self.cached = False
+        self.register_state("cached")
         self.prev = Port(send=z, recv=act_spec)
         self.value = Port(send=TensorSpec(()), initial=torch.tensor(math.nan))
 
@@ -326,13 +331,16 @@ class SIGReg(Node):
             self.seen = act["time"].ns
             a = torch.randn(self.directions.shape, generator=self.generator)
             self.directions = a / torch.linalg.vector_norm(a, dim=1, keepdim=True)
+            self.cached = False
         self.z_last = act["h"]
         if not bool(act["mask"]) or self.count + 1 < self._min:
             self.prev.send(torch.zeros_like(act["h"]))
             return
-        with torch.enable_grad():
-            z = act["h"].detach().requires_grad_()
-            value = sigreg(z, self.buffer[: self.count], self.directions)
-            (g,) = torch.autograd.grad(value, [z])  # mujou: local-autograd
-        self.prev.send(self._kappa * g)
-        self.value.send(value.detach())
+        if not (self.cached and torch.equal(act["h"], self.g_of)):
+            with torch.enable_grad():
+                z = act["h"].detach().requires_grad_()
+                value = sigreg(z, self.buffer[: self.count], self.directions)
+                (g,) = torch.autograd.grad(value, [z])  # mujou: local-autograd
+            self.g, self.g_of, self.cached = self._kappa * g, act["h"], True
+            self.value.send(value.detach())
+        self.prev.send(self.g)
