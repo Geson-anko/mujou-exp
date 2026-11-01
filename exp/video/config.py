@@ -140,6 +140,9 @@ class DataConfig:
     # the host writing mask = ~reset. Only for ``kind == "video"`` and
     # ``order == "stream"``.
     streams: int = 1
+    # With streams > 1, whether stream i starts at i / streams of the period of
+    # the physics (balls.Streams), so that every frame shows every phase.
+    spread: bool = False
 
     def __post_init__(self) -> None:
         if self.streams < 1:

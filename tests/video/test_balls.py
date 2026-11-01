@@ -211,3 +211,20 @@ class TestStreams:
         assert resets[0].all()  # every video starts with a reset
         assert resets[1:, 0].any() and resets[1:, 1].any()
         assert (resets[1:, 0] != resets[1:, 1]).any()
+
+    def test_spread_streams_start_at_their_phase_of_the_physics(self):
+        """Stream i of n starts at i T / n: its first parameters are those of
+        the physics at that time, and it goes on from there."""
+        physics = Physics(period=60.0)
+        streams = Streams(4, seed=0, spread=True, physics=physics, frame=0.5)
+        for k in range(3):
+            f = streams.next()
+            for i in range(4):
+                t = 15.0 * i + 0.5 * k
+                expected = torch.tensor([physics.gamma(t), physics.restitution(t)])
+                torch.testing.assert_close(f.params[i], expected)
+
+    def test_without_spread_every_stream_starts_at_zero(self):
+        physics = Physics(period=60.0)
+        f = Streams(3, seed=0, physics=physics).next()
+        torch.testing.assert_close(f.params, f.params[:1].expand(3, 2))

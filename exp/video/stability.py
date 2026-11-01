@@ -17,6 +17,7 @@ import math
 import statistics
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from exp.lib.record import REPO_ROOT
 from exp.lib.sweep import run_all
@@ -254,6 +255,72 @@ def span_configs() -> list[Config]:
     return out
 
 
+# Added after the spans (README: M11): the windows offline covered more than a
+# period of the physics, while the 128 streams all stood at one phase; with
+# spread, stream i starts at i / 128 of the period.
+SPREAD = (  # (kappa, bp, device)
+    (0.15, False, "cuda:0"),
+    (0.2, False, "cuda:1"),
+    (0.15, True, "cuda:0"),
+    (0.2, True, "cuda:1"),
+)
+
+
+# Added after those four: rollout10 no longer swings and still falls at 30
+# minutes (1.03 -> 1.02, kappa 0.15): longer, and larger learning rates.
+SPREAD_MORE = (  # (kappa, lr, seconds, device), by BP
+    (0.15, 0.01, 10800.0, "cuda:0"),
+    (0.12, 0.02, 1800.0, "cuda:1"),
+    (0.15, 0.03, 1800.0, "cuda:1"),
+)
+
+
+def _spread(name: str, seed: int, kappa: float, lr: float, **kw: Any) -> Config:
+    model = ModelConfig(
+        kappa=kappa,
+        stop_target=False,
+        z_norm=True,
+        open_loop=0.5,
+        open_cycle=20,
+        buffer=1023,
+    )
+    c = _config(name, seed, model, lr, **kw)
+    return replace(c, data=replace(c.data, streams=STREAMS, spread=True))
+
+
+def spread_configs(seeds: tuple[int, ...] = (0,)) -> list[Config]:
+    out = []
+    for kappa, lr, seconds, device in SPREAD_MORE:
+        tag = "" if seconds == 1800.0 else f"-{seconds:g}s"
+        name = f"m11-b{STREAMS}-spread-k{kappa:g}{tag}-bp"
+        out.append(_spread(name, 0, kappa, lr, bp=True, device=device, seconds=seconds))
+    for seed in seeds:
+        for kappa, bp, device in SPREAD:
+            name = f"m11-b{STREAMS}-spread-k{kappa:g}-{'bp' if bp else 'pc'}"
+            out.append(
+                _spread(name, seed, kappa, 0.01, bp=bp, device=device, seconds=1800.0)
+            )
+    return out
+
+
+# Chosen from the spread runs (README: M11): kappa 0.12 at the learning rate
+# 0.02 met the four conditions by BP (seed 0); its check, by PC-ALM and BP over
+# seeds 0-2 (the BP of seed 0 is the run of SPREAD_MORE).
+def spread_confirm() -> list[Config]:
+    devices = iter(("cuda:0", "cuda:1", "cuda:0", "cuda:1", "cuda:1"))
+    out = []
+    for seed in SEEDS:
+        for bp in (False, True):
+            if bp and seed == 0:
+                continue
+            name = f"m11-b{STREAMS}-spread-k0.12-{'bp' if bp else 'pc'}"
+            dev = next(devices)
+            out.append(
+                _spread(name, seed, 0.12, 0.02, bp=bp, device=dev, seconds=1800.0)
+            )
+    return out
+
+
 def confirm() -> list[Config]:
     return [
         _config(
@@ -315,6 +382,8 @@ def main() -> None:
     parser.add_argument("--adam", action="store_true", help="AdamW by BP")
     parser.add_argument("--streams", action="store_true", help="B streams at once")
     parser.add_argument("--span", action="store_true", help="B streams, wide buffer")
+    parser.add_argument("--spread", action="store_true", help="B streams, all phases")
+    parser.add_argument("--spread-confirm", action="store_true", help="its check")
     args = parser.parse_args()
     if args.what == "run":
         if args.confirm:
@@ -333,6 +402,10 @@ def main() -> None:
             todo = streams_configs()
         elif args.span:
             todo = span_configs()
+        elif args.spread:
+            todo = spread_configs()
+        elif args.spread_confirm:
+            todo = spread_confirm()
         else:
             todo = open_configs() if args.open else configs()
         run_all(RUN_MODULE, todo, args.out, args.jobs)

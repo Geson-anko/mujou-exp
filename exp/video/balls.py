@@ -109,6 +109,7 @@ class Video:
         episode: The shortest and longest episode, in seconds.
         substeps: The steps of the integration per frame.
         seed: Seeds every draw.
+        start: The time of the first frame on the clock of the physics.
     """
 
     def __init__(
@@ -121,8 +122,10 @@ class Video:
         episode: tuple[float, float] = (3.0, 6.0),
         substeps: int = 8,
         seed: int,
+        start: float = 0.0,
     ) -> None:
         self._g = torch.Generator().manual_seed(seed)
+        self._start = start
         self._size, self._frame, self._substeps = size, frame, substeps
         self.radii = RADII[:balls]
         self.physics = physics
@@ -144,7 +147,7 @@ class Video:
     def next(self) -> Frame:
         """The next frame: a new episode starts at its first frame, otherwise the
         balls move by one frame first."""
-        t = self.k * self._frame
+        t = self._start + self.k * self._frame
         reset = self.k == self._end
         if reset:
             self._new_episode()
@@ -175,12 +178,23 @@ class Streams:
     Stream ``i`` is ``Video(seed=seed + STREAM_SEED_STRIDE * i, **video)``, so
     that stream 0 is the stream of ``seed`` itself and the seeds of the others
     stay clear of the small offsets (10_000, 1000, 1) the runs add to ``seed``
-    for their other draws. Each stream starts its episodes on its own.
+    for their other draws. Each stream starts its episodes on its own. With
+    ``spread``, stream ``i`` starts at ``i T / n`` on the clock of the physics
+    (``T`` its period), so that the streams cover every phase of the physics at
+    once; otherwise all start at 0.
     """
 
-    def __init__(self, n: int, *, seed: int, **video: Any) -> None:
+    def __init__(
+        self, n: int, *, seed: int, spread: bool = False, **video: Any
+    ) -> None:
+        period = video.get("physics", Physics()).period
         self.videos = [
-            Video(seed=seed + STREAM_SEED_STRIDE * i, **video) for i in range(n)
+            Video(
+                seed=seed + STREAM_SEED_STRIDE * i,
+                start=i * period / n if spread else 0.0,
+                **video,
+            )
+            for i in range(n)
         ]
 
     def next(self) -> Frame:

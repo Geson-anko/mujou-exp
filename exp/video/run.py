@@ -115,7 +115,7 @@ def _source(config: Config) -> tuple[Any, Frame]:
     video = (
         Video(seed=config.seed, **kwargs)
         if d.streams == 1
-        else Streams(d.streams, seed=config.seed, **kwargs)
+        else Streams(d.streams, seed=config.seed, spread=d.spread, **kwargs)
     )
     clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
     return video, clips
