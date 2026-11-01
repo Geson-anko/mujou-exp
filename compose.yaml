@@ -1,0 +1,10 @@
+# The dev container (.devcontainer/devcontainer.json). Compose reads the .env next
+# to this file, so host paths such as EGODEX_DIR go there (see .env.example).
+services:
+  dev:
+    build:
+      context: .devcontainer
+    command: sleep infinity
+    volumes:
+      # Without EGODEX_DIR, datasets/egodex of this checkout is mounted.
+      - ${EGODEX_DIR:-./datasets/egodex}:/datasets/egodex:ro

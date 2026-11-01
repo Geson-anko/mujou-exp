@@ -36,8 +36,8 @@ logs/
 # Environment overrides
 .env
 
-# Mount sources linked by .devcontainer/link-egodex.sh
-.devcontainer/.mounts/
+# Datasets (mounted into the dev container; see .env.example)
+datasets/
 
 # OS
 .DS_Store
