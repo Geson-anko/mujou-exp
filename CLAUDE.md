@@ -79,7 +79,7 @@ mujou の hook と skill は、このリポジトリのルートで起動した 
 
 ## エージェント運用
 
-- 既定はシングルエージェント。サブエージェントやチームは、ユーザーが明示したときだけ使う
+- 既定はシングルエージェント（skill `solo-dev-cycle`）。サブエージェントやチーム（skill `agent-team-startup`）は、ユーザーが明示したときだけ使う
 - ユーザーへの質問は作業の区切りにまとめて出し、推奨案で進める（[memory/feedback_questions_at_end.md](memory/feedback_questions_at_end.md)）
 - 中間メモは `memory/agents/<agent-name>/<task-slug>.md`
 
@@ -98,6 +98,9 @@ hook は `python3` と `bash` だけに依存し、fail-open。テストは `tes
 
 ## 索引（skill）
 
+- 開発フロー: `/solo-dev-cycle`（既定）/ `/agent-team-startup`（チームを明示されたとき。agent は `.claude/agents/`）
+- テスト方針: `/testing-strategy` / コード規約: `/refactor-conventions`
+- 文書の改善（teacher-student）: `/doc-teacher-student`
 - mujou への機能追加と PR: `/mujou-upstream`
 - Git: `/github-pr` / `/merge-main` / `/do-on-worktree`
 - 並列化: `/maximize-parallels` / `.claude/` 編集: `/edit-dot-claude`
