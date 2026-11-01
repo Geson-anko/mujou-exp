@@ -1,6 +1,6 @@
 # continuous_stream: 動画のストリームから世界のシミュレータを PC-ALM で学ぶ
 
-計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。
+計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。
 
 ## 仮説
 
