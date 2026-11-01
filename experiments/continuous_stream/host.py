@@ -12,7 +12,7 @@ from typing import Any
 from mujou.testing import ManualRun
 from mujou.time import Timestamp
 
-from mujou import Port
+from mujou import MultiPort, Port
 
 __all__ = ["Host"]
 
@@ -37,7 +37,9 @@ class Host:
         return math.floor(k * self._steps + 1e-6)
 
     def show(
-        self, writes: Mapping[Port[Any, Any], Any], watch: Port[Any, Any]
+        self,
+        writes: Mapping[Port[Any, Any], Any],
+        watch: Port[Any, Any] | MultiPort[Any, Any],
     ) -> tuple[Any, Timestamp]:
         """Write ``writes``, step through the frame and return the first message
         of ``watch`` made from this write (its ``"time"`` is the write's): the
