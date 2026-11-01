@@ -10,14 +10,15 @@ import json
 import statistics
 from pathlib import Path
 
+from exp.lib.record import REPO_ROOT
+from exp.lib.sweep import run_all
 from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from exp.video.record import REPO_ROOT
-from exp.video.stage0 import SEEDS, run_all
+from exp.video.stage0 import RUN_MODULE, SEEDS
 
 FRAME = 1 / 30
 RATES = (0.01, 0.03, 0.1)  # per frame
@@ -63,7 +64,7 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=14)
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs, configs())
+        run_all(RUN_MODULE, configs(), args.out, args.jobs)
         return
     for done in sorted(args.out.glob("*/done")):
         name = done.parent.name.split("-", 3)[3]

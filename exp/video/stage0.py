@@ -13,13 +13,12 @@ the second half of each run (after the transient): the time mean of
 import argparse
 import json
 import statistics
-import subprocess
-import sys
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
+from exp.lib.record import REPO_ROOT
+from exp.lib.sweep import run_all
 from exp.video.config import (
     Config,
     DataConfig,
@@ -27,8 +26,8 @@ from exp.video.config import (
     OptimConfig,
     TimeConfig,
 )
-from exp.video.record import REPO_ROOT
 
+RUN_MODULE = "exp.video.run"
 SEEDS = (0, 1, 2)
 SECONDS = 600.0
 TAU = 10.0  # SGD: a learning rate of 1/300 per frame
@@ -81,30 +80,6 @@ def configs() -> list[Config]:
     return out
 
 
-def run_all(out: Path, jobs: int, every: list[Config] | None = None) -> None:
-    """Run each of ``every`` (``configs()`` if ``None``) not done yet in ``out``,
-    ``jobs`` at a time, each in a process of its own."""
-    out.mkdir(parents=True, exist_ok=True)
-    every = configs() if every is None else every
-    todo = [c for c in every if not list(out.glob(f"*-{c.name}/done"))]
-    print(f"{len(todo)} runs to go", flush=True)
-
-    def one(c: Config) -> None:
-        path = out / f"{c.name}.json"
-        path.write_text(c.to_json())
-        cmd = [sys.executable, "-m", "exp.video.run"]
-        cmd += ["--config", str(path), "--out", str(out)]
-        result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"FAILED {c.name}\n{result.stderr[-2000:]}", flush=True)
-            return
-        (Path(result.stdout.strip().splitlines()[-1]) / "done").touch()
-        print(f"done {c.name}", flush=True)
-
-    with ThreadPoolExecutor(jobs) as pool:
-        list(pool.map(one, todo))
-
-
 def _half_means(path: Path) -> dict[str, float]:
     records = [json.loads(line) for line in path.read_text().splitlines()]
     half = records[len(records) // 2 :]
@@ -134,7 +109,7 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=8)
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs)
+        run_all(RUN_MODULE, configs(), args.out, args.jobs)
     else:
         for setting, values in sorted(summarize(args.out).items()):
             cells = "  ".join(

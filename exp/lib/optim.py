@@ -1,4 +1,4 @@
-r"""The optimizers of PLAN.md, section 5: directions that do not expect i.i.d.
+r"""The optimizers of ``exp/video/PLAN.md``, section 5: directions that do not expect i.i.d.
 gradients, as ``pc.optim.Optimizer``.
 
 Each optimizer here is first a direction $D$ computed from the gradients
@@ -19,10 +19,8 @@ from dataclasses import dataclass
 from typing import Any, override
 
 import torch
-from mujou.pc import optim as pc_optim
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-from exp.video.config import OptimConfig
 from mujou import Stateful
 
 __all__ = [
@@ -35,7 +33,6 @@ __all__ = [
     "Orthogonalized",
     "Projected",
     "Whitened",
-    "from_config",
 ]
 
 
@@ -467,43 +464,6 @@ class _BoundAdamDirection(BoundDirection):
                 mine.copy_(saved)
         self._c_m = float(state["c_m"])
         self._c_v = float(state["c_v"])
-
-
-def from_config(c: OptimConfig) -> Optimizer:
-    """The optimizer of the settings ``c``."""
-    if c.kind == "sgd":
-        return pc_optim.SGD(tau=c.tau)
-    if c.kind == "adamw":
-        return pc_optim.AdamW(
-            tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v, weight_decay=c.weight_decay
-        )
-    inner: DirectionOptimizer
-    if c.kind == "adam_direction":
-        inner = AdamDirection(tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v)
-    elif c.kind == "whitened":
-        inner = Whitened(
-            tau=c.tau,
-            tau_l=c.tau_l,
-            tau_r=c.tau_r,
-            a=c.a,
-            b=c.b,
-            eps=c.eps,
-            refresh=c.refresh,
-        )
-    elif c.kind == "orthogonalized":
-        inner = Orthogonalized(tau=c.tau, eps=c.eps)
-    elif c.kind == "projected":
-        inner = Projected(
-            tau=c.tau,
-            tau_l=c.tau_l,
-            tau_r=c.tau_r,
-            rank=c.rank,
-            eps=c.eps,
-            refresh=c.refresh,
-        )
-    else:
-        raise ValueError(f"unknown optimizer {c.kind!r}")
-    return Grafted(inner=inner) if c.graft else inner
 
 
 LAGS = (1, 10, 100, 1000)

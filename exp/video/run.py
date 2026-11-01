@@ -13,15 +13,14 @@ import torch
 from mujou.testing import ManualRun
 from torch import nn
 
+from exp.lib.host import Host, RealtimeHost
+from exp.lib.linear_stream import LinearStream
+from exp.lib.record import REPO_ROOT, Recorder
 from exp.video.balls import Physics, Video, eval_clips, ordered
 from exp.video.bp import WorldBPNetwork, bp_chain
-from exp.video.config import Config
+from exp.video.config import Config, make_optimizer
 from exp.video.evaluate import Snapshot, evaluate
-from exp.video.host import Host, RealtimeHost
 from exp.video.model import Network
-from exp.video.optim import from_config
-from exp.video.record import REPO_ROOT, Recorder
-from exp.video.stream0 import LinearStream
 from mujou import TensorSpec
 
 
@@ -49,7 +48,7 @@ def run_linear(config: Config, recorder: Recorder) -> None:
         y=TensorSpec((1,)),
         loss=pc.loss.MSELoss(),
         tau=tau,
-        optimizer=from_config(config.optim),
+        optimizer=make_optimizer(config.optim),
         learn_interval=t.learn_interval,
     )
     forward = nn.Sequential(*modules)  # the same modules, to evaluate

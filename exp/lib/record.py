@@ -8,7 +8,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, Self
 
-from exp.video.config import Config
+from exp.lib.config import RunConfig
 
 __all__ = ["REPO_ROOT", "Recorder", "git_sha", "git_dirty"]
 
@@ -44,7 +44,7 @@ class Recorder:
         FileExistsError: The directory of the run exists already.
     """
 
-    def __init__(self, config: Config, root: Path = REPO_ROOT / "runs") -> None:
+    def __init__(self, config: RunConfig, root: Path = REPO_ROOT / "runs") -> None:
         now = datetime.datetime.now().astimezone()
         self.dir = root / f"{now:%Y-%m-%d}-{config.name}"
         self.dir.mkdir(parents=True, exist_ok=False)

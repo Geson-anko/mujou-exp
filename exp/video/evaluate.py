@@ -10,14 +10,13 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from exp.lib.metrics import effective_rank, probe_r2
 from exp.video.balls import Frame
 from exp.video.model import Network
 
 __all__ = [
     "Snapshot",
-    "effective_rank",
     "evaluate",
-    "probe_r2",
     "rollout_errors",
 ]
 
@@ -93,39 +92,6 @@ def rollout_errors(
         target = z[:, observed - 1 + h]
         out[h] = float(((preds[:, h - 1] - target) ** 2).mean())
     return out
-
-
-def effective_rank(z: torch.Tensor) -> float:
-    """The exponential of the entropy of the normalized eigenvalues of the
-    covariance of ``z`` (``(n, D)``)."""
-    cov = torch.cov(z.T.double())
-    values = torch.linalg.eigvalsh(cov).clamp(min=0)
-    p = values / values.sum()
-    p = p[p > 0]
-    return float(torch.exp(-(p * p.log()).sum()))
-
-
-def probe_r2(
-    train_x: torch.Tensor,
-    train_y: torch.Tensor,
-    test_x: torch.Tensor,
-    test_y: torch.Tensor,
-    ridge: float = 1e-3,
-) -> torch.Tensor:
-    """The $R^2$ on the test set of each target of the ridge regression from
-    ``x`` (``(n, F)``) to ``y`` (``(n, K)``), the features standardized on the
-    train set. Returns ``(K,)``."""
-    mean, std = train_x.mean(0), train_x.std(0).clamp(min=1e-8)
-    a = torch.cat(
-        [(train_x - mean) / std, train_x.new_ones(len(train_x), 1)], 1
-    ).double()
-    b = torch.cat([(test_x - mean) / std, test_x.new_ones(len(test_x), 1)], 1).double()
-    eye = torch.eye(a.shape[1], dtype=a.dtype, device=a.device)
-    eye[-1, -1] = 0  # no penalty on the intercept
-    w = torch.linalg.solve(a.T @ a + ridge * len(a) * eye, a.T @ train_y.double())
-    resid = ((b @ w - test_y.double()) ** 2).sum(0)
-    total = ((test_y.double() - test_y.double().mean(0)) ** 2).sum(0)
-    return (1 - resid / total).float()
 
 
 @torch.no_grad()

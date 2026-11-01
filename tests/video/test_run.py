@@ -1,7 +1,9 @@
 import json
+import subprocess
 
 import pytest
 
+from exp.lib.record import REPO_ROOT
 from exp.video import run
 from exp.video.config import Config, DataConfig, OptimConfig
 
@@ -34,3 +36,31 @@ class TestRunLinear:
         assert records[0]["dist"] > 0.5
         tail = [r["dist"] for r in records[-300:]]
         assert sum(tail) / len(tail) < 0.1
+
+
+class TestRun:
+    def test_an_empty_run_writes_config_json(self, tmp_path):
+        path = tmp_path / "c.json"
+        path.write_text(Config(name="empty").to_json())
+        out = run.main(
+            ["--config", str(path), "--out", str(tmp_path / "runs"), "--dry"]
+        )
+        assert (out / "config.json").is_file()
+        assert out.name.endswith("-empty")
+
+    def test_help(self):
+        result = subprocess.run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "exp.video.run",
+                "--help",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "--config" in result.stdout

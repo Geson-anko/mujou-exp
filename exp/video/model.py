@@ -9,10 +9,12 @@ from mujou.pc.optim import Optimizer
 from torch import nn
 
 import mujou
+from exp.lib.mingru import MinGRU
+from exp.lib.optim import Correlation
+from exp.lib.sigreg import SIGReg
 from exp.video.balls import Video
-from exp.video.config import Config
-from exp.video.nodes import Compare, Dynamics, MinGRU, SIGReg
-from exp.video.optim import Correlation, from_config
+from exp.video.config import Config, make_optimizer
+from exp.video.nodes import Compare, Dynamics
 from mujou import TensorSpec
 
 __all__ = ["Network", "encoder_modules", "standardize_"]
@@ -85,7 +87,7 @@ class Network(mujou.Network):
         self.correlations: dict[str, Correlation] = {}
 
         def optimizer_of(name: str) -> Optimizer:
-            optimizer = from_config(config.optim)
+            optimizer = make_optimizer(config.optim)
             if correlation:
                 optimizer = self.correlations[name] = Correlation(optimizer)
             return optimizer

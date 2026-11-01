@@ -14,14 +14,15 @@ import argparse
 import json
 from pathlib import Path
 
+from exp.lib.record import REPO_ROOT
+from exp.lib.sweep import run_all
 from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from exp.video.record import REPO_ROOT
-from exp.video.stage0 import SEEDS, run_all
+from exp.video.stage0 import RUN_MODULE, SEEDS
 from exp.video.stage1 import summary
 
 FRAME = 1 / 30
@@ -81,7 +82,9 @@ def main() -> None:
     parser.add_argument("--confirm", action="store_true", help="the 30-minute check")
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs, confirm() if args.confirm else configs())
+        run_all(
+            RUN_MODULE, confirm() if args.confirm else configs(), args.out, args.jobs
+        )
         return
     for done in sorted(args.out.glob("*/done")):
         name = done.parent.name.split("-", 3)[3]

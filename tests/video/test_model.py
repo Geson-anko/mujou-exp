@@ -7,6 +7,7 @@ import mujou.testing
 import pytest
 import torch
 
+from exp.lib.sigreg import sigreg
 from exp.video import run
 from exp.video.balls import Video
 from exp.video.bp import WorldBPNetwork
@@ -18,7 +19,7 @@ from exp.video.config import (
     TimeConfig,
 )
 from exp.video.model import Network
-from exp.video.nodes import compare_energy, sigreg
+from exp.video.nodes import compare_energy
 
 DEVICES = [
     "cpu",

@@ -19,10 +19,11 @@ from mujou.types import Device
 from torch import nn
 
 import mujou
-from exp.video.config import Config
+from exp.lib.mingru import MinGRU
+from exp.lib.sigreg import insert_, sigreg
+from exp.video.config import Config, make_optimizer
 from exp.video.model import encoder_modules, standardize_
-from exp.video.nodes import MinGRU, compare_energy, insert_, sigreg
-from exp.video.optim import from_config
+from exp.video.nodes import compare_energy
 from mujou import DictSpec, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = ["WorldBP", "WorldBPNetwork", "bp_chain"]
@@ -200,7 +201,7 @@ class WorldBPNetwork(mujou.Network):
             directions=m.directions,
             capacity=m.buffer,
             tau=tau,
-            optimizer=from_config(config.optim),
+            optimizer=make_optimizer(config.optim),
             learn_interval=t.learn_interval,
             seed=config.seed,
             stop_target=m.stop_target,

@@ -1,5 +1,3 @@
-import pytest
-
 from exp.video.config import Config, DataConfig, OptimConfig
 
 
@@ -16,12 +14,3 @@ class TestConfig:
             data=DataConfig(kind="linear", tau_x=3.0, iid=True),
         )
         assert Config.from_json(config.to_json()) == config
-
-    def test_an_int_in_json_reads_as_float(self):
-        config = Config.from_dict({"optim": {"tau": 2}})
-        assert isinstance(config.optim.tau, float)
-        assert config.optim.tau == 2.0
-
-    def test_an_unknown_key_is_an_error(self):
-        with pytest.raises(TypeError, match="lr"):
-            Config.from_dict({"optim": {"lr": 0.1}})

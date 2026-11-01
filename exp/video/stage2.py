@@ -20,14 +20,15 @@ from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
+from exp.lib.record import REPO_ROOT
+from exp.lib.sweep import run_all
 from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from exp.video.record import REPO_ROOT
-from exp.video.stage0 import SEEDS, run_all
+from exp.video.stage0 import RUN_MODULE, SEEDS
 
 FRAME = 1 / 30
 # The setting of M9 (README): the target's gradient stopped, and the largest
@@ -39,8 +40,6 @@ TAUS = (0.3, 3.0)  # tau_L, tau_R in seconds: about the correlation time of stag
 REFRESH = 5.0  # seconds between the eigendecompositions (README: compute time)
 SECONDS = 1800.0
 PERIOD = 600.0  # T of the physics
-
-BASELINE = "sgd"
 
 
 def optimizers() -> dict[str, OptimConfig]:
@@ -266,7 +265,9 @@ def main() -> None:
     parser.add_argument("--realtime", action="store_true", help="the real-time check")
     args = parser.parse_args()
     if args.what == "run":
-        run_all(args.out, args.jobs, realtime() if args.realtime else configs())
+        run_all(
+            RUN_MODULE, realtime() if args.realtime else configs(), args.out, args.jobs
+        )
         return
     for setting, values in sorted(table(args.out).items()):
         cells = "  ".join(

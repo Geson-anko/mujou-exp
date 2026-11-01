@@ -2,11 +2,22 @@
 
 import dataclasses
 import json
-import types
-import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
+
+from mujou.pc import optim as pc_optim
+from mujou.pc.optim import Optimizer
+
+from exp.lib.config import from_dict
+from exp.lib.optim import (
+    AdamDirection,
+    DirectionOptimizer,
+    Grafted,
+    Orthogonalized,
+    Projected,
+    Whitened,
+)
 
 __all__ = [
     "Config",
@@ -14,6 +25,7 @@ __all__ = [
     "ModelConfig",
     "OptimConfig",
     "TimeConfig",
+    "make_optimizer",
 ]
 
 
@@ -114,7 +126,7 @@ class Config:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Self:
-        return _from_dict(cls, d)
+        return from_dict(cls, d)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
@@ -128,25 +140,38 @@ class Config:
         return cls.from_json(path.read_text())
 
 
-def _from_dict[T](cls: type[T], d: dict[str, Any]) -> T:
-    """Build the dataclass ``cls`` from ``d``, its nested dataclasses too.
-
-    Raises:
-        TypeError: ``d`` has a key that is not a field of ``cls``.
-    """
-    hints = typing.get_type_hints(cls)
-    names = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
-    unknown = d.keys() - names
-    if unknown:
-        raise TypeError(f"{cls.__name__} has no fields {sorted(unknown)}")
-    kwargs = {}
-    for name, value in d.items():
-        hint = hints[name]
-        if isinstance(hint, type) and dataclasses.is_dataclass(hint):
-            value = _from_dict(hint, value)
-        elif hint is float or (
-            isinstance(hint, types.UnionType) and float in hint.__args__
-        ):
-            value = value if value is None else float(value)  # JSON may give 1
-        kwargs[name] = value
-    return cls(**kwargs)
+def make_optimizer(c: OptimConfig) -> Optimizer:
+    """The optimizer of the settings ``c``."""
+    if c.kind == "sgd":
+        return pc_optim.SGD(tau=c.tau)
+    if c.kind == "adamw":
+        return pc_optim.AdamW(
+            tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v, weight_decay=c.weight_decay
+        )
+    inner: DirectionOptimizer
+    if c.kind == "adam_direction":
+        inner = AdamDirection(tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v)
+    elif c.kind == "whitened":
+        inner = Whitened(
+            tau=c.tau,
+            tau_l=c.tau_l,
+            tau_r=c.tau_r,
+            a=c.a,
+            b=c.b,
+            eps=c.eps,
+            refresh=c.refresh,
+        )
+    elif c.kind == "orthogonalized":
+        inner = Orthogonalized(tau=c.tau, eps=c.eps)
+    elif c.kind == "projected":
+        inner = Projected(
+            tau=c.tau,
+            tau_l=c.tau_l,
+            tau_r=c.tau_r,
+            rank=c.rank,
+            eps=c.eps,
+            refresh=c.refresh,
+        )
+    else:
+        raise ValueError(f"unknown optimizer {c.kind!r}")
+    return Grafted(inner=inner) if c.graft else inner
