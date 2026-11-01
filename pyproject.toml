@@ -30,7 +30,7 @@ mujou = { path = "mujou", editable = true }
 minversion = "8.0"
 # mujou has its own tests (`just test` inside mujou/); only this project's are run here.
 testpaths = ["tests"]
-# `experiments` is imported from the tests as a top-level package.
+# `exp` is imported from the tests as a top-level package.
 pythonpath = ["."]
 addopts = [
     "--color=yes",
@@ -44,7 +44,7 @@ markers = [
 
 [tool.pyright]
 pythonVersion = "3.14"
-include = ["experiments", "tests"]
+include = ["exp", "tests"]
 exclude = [
     "**/__pycache__",
     "**/.venv",

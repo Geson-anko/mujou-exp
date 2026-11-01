@@ -1,9 +1,9 @@
 import json
 import subprocess
 
-from experiments.continuous_stream import run
-from experiments.continuous_stream.config import Config
-from experiments.continuous_stream.record import REPO_ROOT, Recorder
+from exp.video import run
+from exp.video.config import Config
+from exp.video.record import REPO_ROOT, Recorder
 
 
 def _git(*args: str) -> str:
@@ -52,7 +52,7 @@ class TestRun:
                 "run",
                 "python",
                 "-m",
-                "experiments.continuous_stream.run",
+                "exp.video.run",
                 "--help",
             ],
             cwd=REPO_ROOT,

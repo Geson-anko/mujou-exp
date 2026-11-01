@@ -1,6 +1,6 @@
 import torch
 
-from experiments.continuous_stream.evaluate import (
+from exp.video.evaluate import (
     effective_rank,
     probe_r2,
     rollout_errors,

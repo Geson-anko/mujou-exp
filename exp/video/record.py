@@ -8,7 +8,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, Self
 
-from experiments.continuous_stream.config import Config
+from exp.video.config import Config
 
 __all__ = ["REPO_ROOT", "Recorder", "git_sha", "git_dirty"]
 

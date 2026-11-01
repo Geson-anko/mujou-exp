@@ -22,7 +22,7 @@ import torch
 from mujou.pc import optim as pc_optim
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-from experiments.continuous_stream.config import OptimConfig
+from exp.video.config import OptimConfig
 from mujou import Stateful
 
 __all__ = [

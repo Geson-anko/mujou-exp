@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from experiments.continuous_stream import run
-from experiments.continuous_stream.config import Config, DataConfig, OptimConfig
+from exp.video import run
+from exp.video.config import Config, DataConfig, OptimConfig
 
 
 def _run(tmp_path, config: Config):

@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from experiments.continuous_stream.stage2 import judge
+from exp.video.stage2 import judge
 
 
 def _row(preq: float, rollout: float, retention: float) -> dict[str, list[float]]:

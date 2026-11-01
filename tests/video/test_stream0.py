@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from experiments.continuous_stream.stream0 import LinearStream
+from exp.video.stream0 import LinearStream
 
 FRAME = 1 / 30
 

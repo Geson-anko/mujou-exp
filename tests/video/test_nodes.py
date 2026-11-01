@@ -7,8 +7,8 @@ import torch
 from torch import nn
 
 import mujou
-from experiments.continuous_stream.host import Host
-from experiments.continuous_stream.nodes import (
+from exp.video.host import Host
+from exp.video.nodes import (
     Compare,
     Dynamics,
     MinGRU,

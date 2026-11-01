@@ -11,9 +11,9 @@ import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 from torch import nn
 
-from experiments.continuous_stream.bp import bp_chain
-from experiments.continuous_stream.host import Host
-from experiments.continuous_stream.stream0 import LinearStream
+from exp.video.bp import bp_chain
+from exp.video.host import Host
+from exp.video.stream0 import LinearStream
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)

@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 import mujou
-from experiments.continuous_stream.host import Host, RealtimeHost
+from exp.video.host import Host, RealtimeHost
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)

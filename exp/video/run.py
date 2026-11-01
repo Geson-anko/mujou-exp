@@ -1,6 +1,6 @@
 """One run of the continuous-stream experiment.
 
-uv run python -m experiments.continuous_stream.run --config <path>
+uv run python -m exp.video.run --config <path>
 """
 
 import argparse
@@ -13,15 +13,15 @@ import torch
 from mujou.testing import ManualRun
 from torch import nn
 
-from experiments.continuous_stream.bp import WorldBPNetwork, bp_chain
-from experiments.continuous_stream.config import Config
-from experiments.continuous_stream.evaluate import Snapshot, evaluate
-from experiments.continuous_stream.host import Host, RealtimeHost
-from experiments.continuous_stream.model import Network
-from experiments.continuous_stream.optim import from_config
-from experiments.continuous_stream.record import REPO_ROOT, Recorder
-from experiments.continuous_stream.stream0 import LinearStream
-from experiments.continuous_stream.video import Physics, Video, eval_clips, ordered
+from exp.video.bp import WorldBPNetwork, bp_chain
+from exp.video.config import Config
+from exp.video.evaluate import Snapshot, evaluate
+from exp.video.host import Host, RealtimeHost
+from exp.video.model import Network
+from exp.video.optim import from_config
+from exp.video.record import REPO_ROOT, Recorder
+from exp.video.stream0 import LinearStream
+from exp.video.video import Physics, Video, eval_clips, ordered
 from mujou import TensorSpec
 
 

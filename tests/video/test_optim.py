@@ -8,7 +8,7 @@ import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
 
-from experiments.continuous_stream.optim import (
+from exp.video.optim import (
     AdamDirection,
     Grafted,
     Orthogonalized,

@@ -19,10 +19,10 @@ from mujou.types import Device
 from torch import nn
 
 import mujou
-from experiments.continuous_stream.config import Config
-from experiments.continuous_stream.model import encoder_modules, standardize_
-from experiments.continuous_stream.nodes import MinGRU, compare_energy, insert_, sigreg
-from experiments.continuous_stream.optim import from_config
+from exp.video.config import Config
+from exp.video.model import encoder_modules, standardize_
+from exp.video.nodes import MinGRU, compare_energy, insert_, sigreg
+from exp.video.optim import from_config
 from mujou import DictSpec, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = ["WorldBP", "WorldBPNetwork", "bp_chain"]

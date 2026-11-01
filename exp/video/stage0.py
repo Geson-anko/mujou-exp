@@ -1,8 +1,8 @@
 """Stage 0 (PLAN.md, section 8): the sweep on the linear regression stream, and
 its summary.
 
-    uv run python -m experiments.continuous_stream.stage0 run --out runs/stage0
-    uv run python -m experiments.continuous_stream.stage0 summarize --out runs/stage0
+    uv run python -m exp.video.stage0 run --out runs/stage0
+    uv run python -m exp.video.stage0 summarize --out runs/stage0
 
 Each run is one process (``run.main``), ``--jobs`` at a time. The summary takes
 the second half of each run (after the transient): the time mean of
@@ -20,14 +20,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
-from experiments.continuous_stream.config import (
+from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
     TimeConfig,
 )
-from experiments.continuous_stream.record import REPO_ROOT
+from exp.video.record import REPO_ROOT
 
 SEEDS = (0, 1, 2)
 SECONDS = 600.0
@@ -92,7 +92,7 @@ def run_all(out: Path, jobs: int, every: list[Config] | None = None) -> None:
     def one(c: Config) -> None:
         path = out / f"{c.name}.json"
         path.write_text(c.to_json())
-        cmd = [sys.executable, "-m", "experiments.continuous_stream.run"]
+        cmd = [sys.executable, "-m", "exp.video.run"]
         cmd += ["--config", str(path), "--out", str(out)]
         result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
         if result.returncode != 0:

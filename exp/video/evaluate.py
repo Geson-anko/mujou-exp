@@ -10,8 +10,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from experiments.continuous_stream.model import Network
-from experiments.continuous_stream.video import Frame
+from exp.video.model import Network
+from exp.video.video import Frame
 
 __all__ = [
     "Snapshot",

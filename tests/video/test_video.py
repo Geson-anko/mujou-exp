@@ -4,7 +4,7 @@ import time
 import pytest
 import torch
 
-from experiments.continuous_stream.video import (
+from exp.video.video import (
     Physics,
     Video,
     advance,

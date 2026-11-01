@@ -1,8 +1,8 @@
 """Stage 1 (PLAN.md, section 8): the world model on 10 minutes of the synthetic
 video, by SGD at three learning rates, and the correlation of its gradients.
 
-    uv run python -m experiments.continuous_stream.stage1 run --out runs/stage1
-    uv run python -m experiments.continuous_stream.stage1 summarize --out runs/stage1
+    uv run python -m exp.video.stage1 run --out runs/stage1
+    uv run python -m exp.video.stage1 summarize --out runs/stage1
 """
 
 import argparse
@@ -10,14 +10,14 @@ import json
 import statistics
 from pathlib import Path
 
-from experiments.continuous_stream.config import (
+from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from experiments.continuous_stream.record import REPO_ROOT
-from experiments.continuous_stream.stage0 import SEEDS, run_all
+from exp.video.record import REPO_ROOT
+from exp.video.stage0 import SEEDS, run_all
 
 FRAME = 1 / 30
 RATES = (0.01, 0.03, 0.1)  # per frame

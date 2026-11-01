@@ -1,8 +1,8 @@
 """Stage 2 (PLAN.md, section 8): the optimizers of section 5 and the baselines
 on 30 minutes of the synthetic video, and the judgement of H2-H4.
 
-    uv run python -m experiments.continuous_stream.stage2 run --out runs/stage2
-    uv run python -m experiments.continuous_stream.stage2 summarize --out runs/stage2
+    uv run python -m exp.video.stage2 run --out runs/stage2
+    uv run python -m exp.video.stage2 summarize --out runs/stage2
 
 Every direction is grafted to the step size of SGD at the learning rate chosen
 in M9 (it was stage 1 before M9: ``runs/stage2-static`` and the paused sweep);
@@ -20,14 +20,14 @@ from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
-from experiments.continuous_stream.config import (
+from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from experiments.continuous_stream.record import REPO_ROOT
-from experiments.continuous_stream.stage0 import SEEDS, run_all
+from exp.video.record import REPO_ROOT
+from exp.video.stage0 import SEEDS, run_all
 
 FRAME = 1 / 30
 # The setting of M9 (README): the target's gradient stopped, and the largest

@@ -1,6 +1,6 @@
 import pytest
 
-from experiments.continuous_stream.config import Config, DataConfig, OptimConfig
+from exp.video.config import Config, DataConfig, OptimConfig
 
 
 class TestConfig:

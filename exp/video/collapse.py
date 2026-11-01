@@ -1,7 +1,7 @@
 """M9: the collapse of the encoder under SGD, and what keeps it from collapsing.
 
-    uv run python -m experiments.continuous_stream.collapse run --out runs/collapse
-    uv run python -m experiments.continuous_stream.collapse summarize --out runs/collapse
+    uv run python -m exp.video.collapse run --out runs/collapse
+    uv run python -m exp.video.collapse summarize --out runs/collapse
 
 The search is 10 minutes of the moving stream with seed 0, over the weight of
 SIGReg, the learning rate and whether the prediction error sends credit to its
@@ -14,15 +14,15 @@ import argparse
 import json
 from pathlib import Path
 
-from experiments.continuous_stream.config import (
+from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
 )
-from experiments.continuous_stream.record import REPO_ROOT
-from experiments.continuous_stream.stage0 import SEEDS, run_all
-from experiments.continuous_stream.stage1 import summary
+from exp.video.record import REPO_ROOT
+from exp.video.stage0 import SEEDS, run_all
+from exp.video.stage1 import summary
 
 FRAME = 1 / 30
 KAPPAS = (0.05, 0.2, 0.5, 0.8)

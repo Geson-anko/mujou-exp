@@ -7,18 +7,18 @@ import mujou.testing
 import pytest
 import torch
 
-from experiments.continuous_stream import run
-from experiments.continuous_stream.bp import WorldBPNetwork
-from experiments.continuous_stream.config import (
+from exp.video import run
+from exp.video.bp import WorldBPNetwork
+from exp.video.config import (
     Config,
     DataConfig,
     ModelConfig,
     OptimConfig,
     TimeConfig,
 )
-from experiments.continuous_stream.model import Network
-from experiments.continuous_stream.nodes import compare_energy, sigreg
-from experiments.continuous_stream.video import Video
+from exp.video.model import Network
+from exp.video.nodes import compare_energy, sigreg
+from exp.video.video import Video
 
 DEVICES = [
     "cpu",
