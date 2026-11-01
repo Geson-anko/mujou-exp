@@ -10,6 +10,7 @@
 - [コードの 3 層](project_exp_lib.md) — mujou に足す / exp/lib / exp/<name>。実験横断の補助は exp/lib/
 - [mujou submodule の運用](project_mujou_submodule.md) — editable で入れる。未 push のコミットを指すポインタをコミットしない
 - [PC-ALM が中心](project_pc_alm_central.md) — 学習則は mujou.pc。BP は基準だけ。手法は局所的な形で組む
+- [段 3 の知見](project_stage3_findings.md) — |z| 発散の機構と z_norm、rollout10 の物差し（定数で約 1.1）、EgoDex の実行の制約
 
 ## feedback
 
