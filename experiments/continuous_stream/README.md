@@ -2,6 +2,18 @@
 
 計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。
 
+## 決定事項（2026-11-01）
+
+段 3 はこの設定から始める（PLAN.md 12 節）。
+
+- optimizer は SGD、学習率 0.01。AdamW・白色化・射影はまだ使わない
+- `stop_target` を入れる
+- SIGReg の重みは $\kappa=0.8$
+- エンコーダの初期化は `model.standardize_`
+- 学習規則は PC-ALM、`learn_interval` は 25 ms、relaxer は `pc.relax.Euler`
+
+今後の課題は、SIGReg による $\lvert z\rvert$ の押し広げと、大きな `rollout10`（1.5〜1.9）の 2 つ（PLAN.md 13 節）。
+
 ## 仮説
 
 PLAN.md 8 節の H0〜H4。各段の冒頭で閾値を確定させ、ここに写す。
