@@ -1,6 +1,6 @@
 """The evaluation of PLAN.md, section 9, on copies of the modules in plain
 PyTorch: the rollout, the linear probe and the effective rank on the clips of
-``video.eval_clips``, and the correlation of the gradients in time."""
+``balls.eval_clips``, and the correlation of the gradients in time."""
 
 import copy
 import math
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from exp.video.balls import Frame
 from exp.video.model import Network
-from exp.video.video import Frame
 
 __all__ = [
     "Snapshot",

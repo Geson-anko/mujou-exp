@@ -9,10 +9,10 @@ from mujou.pc.optim import Optimizer
 from torch import nn
 
 import mujou
+from exp.video.balls import Video
 from exp.video.config import Config
 from exp.video.nodes import Compare, Dynamics, MinGRU, SIGReg
 from exp.video.optim import Correlation, from_config
-from exp.video.video import Video
 from mujou import TensorSpec
 
 __all__ = ["Network", "encoder_modules", "standardize_"]

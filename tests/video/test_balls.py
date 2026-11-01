@@ -4,7 +4,7 @@ import time
 import pytest
 import torch
 
-from exp.video.video import (
+from exp.video.balls import (
     Physics,
     Video,
     advance,

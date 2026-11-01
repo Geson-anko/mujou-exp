@@ -13,6 +13,7 @@ import torch
 from mujou.testing import ManualRun
 from torch import nn
 
+from exp.video.balls import Physics, Video, eval_clips, ordered
 from exp.video.bp import WorldBPNetwork, bp_chain
 from exp.video.config import Config
 from exp.video.evaluate import Snapshot, evaluate
@@ -21,7 +22,6 @@ from exp.video.model import Network
 from exp.video.optim import from_config
 from exp.video.record import REPO_ROOT, Recorder
 from exp.video.stream0 import LinearStream
-from exp.video.video import Physics, Video, eval_clips, ordered
 from mujou import TensorSpec
 
 
@@ -99,7 +99,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
     frames with a prediction); each ``eval_interval`` seconds, the metrics of
     ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
     of each node's gradients over the interval. The frames come in
-    ``data.order`` (``video.ordered``); a replayed frame records only its
+    ``data.order`` (``balls.ordered``); a replayed frame records only its
     ``replay_error``, and the metrics count the live frames.
     """
     d, t = config.data, config.time

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from exp.video import run
+from exp.video.balls import Video
 from exp.video.bp import WorldBPNetwork
 from exp.video.config import (
     Config,
@@ -18,7 +19,6 @@ from exp.video.config import (
 )
 from exp.video.model import Network
 from exp.video.nodes import compare_energy, sigreg
-from exp.video.video import Video
 
 DEVICES = [
     "cpu",
