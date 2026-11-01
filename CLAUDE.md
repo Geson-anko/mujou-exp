@@ -105,4 +105,5 @@ hook は `python3` と `bash` だけに依存し、fail-open。テストは `tes
 - Git: `/github-pr` / `/merge-main` / `/do-on-worktree`
 - 並列化: `/maximize-parallels` / `.claude/` 編集: `/edit-dot-claude`
 - 日本語の推敲: `/yomiyasu`（日本語ドキュメントを書く・直すときに使う）
+- 実験の結果の資料（`report.html`）: `/experiment-report`（本文は `/yomiyasu` で推敲する）
 - context 管理: `/compact-prep` / 言語切替: `/japanese`
