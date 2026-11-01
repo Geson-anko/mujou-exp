@@ -18,6 +18,7 @@ import mujou.pc as pc
 import torch
 from mujou.pc.msg import Activity
 from mujou.pc.optim import Optimizer
+from mujou.types import Device
 from torch import nn
 
 from mujou import DictSpec, MultiPort, Node, Port, TensorSpec, TimestampSpec
@@ -77,8 +78,9 @@ class Dynamics(Node):
         tau: pc.TimeConstants,
         optimizer: Optimizer,
         learn_interval: float | None,
+        device: Device = "cpu",
     ) -> None:
-        super().__init__(period=tau.period)
+        super().__init__(device=device, period=tau.period)
         self._tau = tau
         self.module = module
         self.clock = pc.clock.LearnClock.of(
@@ -89,9 +91,16 @@ class Dynamics(Node):
         z = act_spec.field("h", TensorSpec)
         d_s = module.gate.out_features
         s = TensorSpec((d_s,))
-        self.r, self.lam = s.zeros(), s.zeros()
-        self.z_prev, self.s_prev = z.zeros(), s.zeros()  # remembered
-        self.z_last, self.mu = z.zeros(), s.zeros()  # received, sent last
+        dev = self.device
+        self.r, self.lam = s.zeros(device=dev), s.zeros(device=dev)
+        self.z_prev, self.s_prev = (
+            z.zeros(device=dev),
+            s.zeros(device=dev),
+        )  # remembered
+        self.z_last, self.mu = (
+            z.zeros(device=dev),
+            s.zeros(device=dev),
+        )  # received, sent
         self.has_prev = False  # whether z_prev is of this video
         self.register_state("has_prev")
         self.act_spec = pc.msg.activity_spec(s, act_spec.field("y", TensorSpec))
@@ -155,7 +164,9 @@ class Compare(Node):
     Its energy is ``compare_energy``; it sends its gradient with respect to
     $s$ to ``Dynamics`` and with respect to $z$ to ``Z``, and learns $W_o$ by
     the one with respect to $W_o$, when both inputs are of the same frame and
-    ``Dynamics`` predicted (its ``mask``). It sends the prediction ``y_hat``
+    ``Dynamics`` predicted (its ``mask``). With ``stop_target``, it sends
+    zeros to ``Z`` instead: the target is a constant of the energy, as a stop
+    gradient. It sends the prediction ``y_hat``
     $= \hat z_k$, the target ``y`` $= z_k$, their ``mask`` and ``time`` (a
     ``pc.msg.Prediction``), and the prediction error ``loss`` $\frac{1}{D}
     \lVert \hat z_k - z_k \rVert^2$ on ``error``.
@@ -171,10 +182,13 @@ class Compare(Node):
         tau: pc.TimeConstants,
         optimizer: Optimizer,
         learn_interval: float | None,
+        stop_target: bool = False,
+        device: Device = "cpu",
     ) -> None:
-        super().__init__(period=tau.period)
+        super().__init__(device=device, period=tau.period)
         self.module = readout
         self._kappa = kappa
+        self._stop_target = stop_target
         self.clock = pc.clock.LearnClock.of(
             tau, period=self.period, learn_interval=learn_interval
         )
@@ -207,7 +221,7 @@ class Compare(Node):
         if mask:
             g_s, g_z, g_theta = self._vjp(s["h"], z["h"], learn)
             self.s.send(g_s)
-            self.z.send(g_z)
+            self.z.send(torch.zeros_like(g_z) if self._stop_target else g_z)
         else:
             self.s.send(torch.zeros_like(s["h"]))
             self.z.send(torch.zeros_like(z["h"]))
@@ -245,12 +259,13 @@ def epps_pulley(x: torch.Tensor, t: torch.Tensor = T_POINTS) -> torch.Tensor:
     $N \int \lvert \hat\varphi(t) - e^{-t^2/2} \rvert^2 e^{-t^2/2}\, dt$ by the
     trapezoid rule on ``t``. Returns ``(M,)``."""
     n = x.shape[0]
-    tx = x.unsqueeze(-1) * t.to(x.dtype)  # (N, M, T)
+    t = t.to(x)
+    tx = x.unsqueeze(-1) * t  # (N, M, T)
     re = torch.cos(tx).mean(0)  # (M, T): the empirical characteristic function
     im = torch.sin(tx).mean(0)
-    phi = torch.exp(-(t.to(x.dtype) ** 2) / 2)  # of N(0, 1), and the weight
+    phi = torch.exp(-(t**2) / 2)  # of N(0, 1), and the weight
     err = ((re - phi) ** 2 + im**2) * phi
-    return n * torch.trapezoid(err, t.to(x.dtype), dim=-1)
+    return n * torch.trapezoid(err, t, dim=-1)
 
 
 def sigreg(
@@ -272,7 +287,7 @@ def insert_(
     if count < capacity:
         buffer[count] = z
         return count + 1
-    buffer[int(torch.randint(capacity, (), generator=g))] = z
+    buffer[int(torch.randint(capacity, (), generator=g, device=g.device))] = z
     return count
 
 
@@ -299,21 +314,22 @@ class SIGReg(Node):
         tau: pc.TimeConstants,
         min_samples: int = 16,
         seed: int = 0,
+        device: Device = "cpu",
     ) -> None:
-        super().__init__(period=tau.period, seed=seed)
+        super().__init__(device=device, period=tau.period, seed=seed)
         self._kappa, self._min = kappa, min_samples
         z = act_spec.field("h", TensorSpec)
         (d,) = z.shape
-        self.buffer = torch.zeros(capacity, d)
+        self.buffer = torch.zeros(capacity, d, device=self.device)
         self.count = 0
         self.register_state("count")
-        self.directions = torch.zeros(directions, d)
-        self.z_last = z.zeros()
+        self.directions = torch.zeros(directions, d, device=self.device)
+        self.z_last = z.zeros(device=self.device)
         self.seen = -1  # the time (ns) of the frame seen last
         self.register_state("seen")
         # The g_in sent last and the z it was computed for, valid within a frame:
         # z changes only when the nodes before learn, so most updates resend it.
-        self.g, self.g_of = z.zeros(), z.zeros()
+        self.g, self.g_of = z.zeros(device=self.device), z.zeros(device=self.device)
         self.cached = False
         self.register_state("cached")
         self.prev = Port(send=z, recv=act_spec)
@@ -329,7 +345,9 @@ class SIGReg(Node):
                     self.buffer, self.count, self.z_last, self.generator
                 )
             self.seen = act["time"].ns
-            a = torch.randn(self.directions.shape, generator=self.generator)
+            a = torch.randn(
+                self.directions.shape, generator=self.generator, device=self.device
+            )
             self.directions = a / torch.linalg.vector_norm(a, dim=1, keepdim=True)
             self.cached = False
         self.z_last = act["h"]

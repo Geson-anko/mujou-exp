@@ -3,6 +3,7 @@ PyTorch: the rollout, the linear probe and the effective rank on the clips of
 ``video.eval_clips``, and the correlation of the gradients in time."""
 
 import copy
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -59,7 +60,7 @@ def run_states(
     $s_0 = 0$) and the predictions ``(n, steps, D)`` of the frames
     ``observed, ..., observed + steps - 1``."""
     n = z.shape[0]
-    s = torch.zeros(n, d_s)
+    s = z.new_zeros(n, d_s)
     states = [s]
     for k in range(1, observed):
         s = step(z[:, k - 1], s)
@@ -115,9 +116,11 @@ def probe_r2(
     ``x`` (``(n, F)``) to ``y`` (``(n, K)``), the features standardized on the
     train set. Returns ``(K,)``."""
     mean, std = train_x.mean(0), train_x.std(0).clamp(min=1e-8)
-    a = torch.cat([(train_x - mean) / std, torch.ones(len(train_x), 1)], 1).double()
-    b = torch.cat([(test_x - mean) / std, torch.ones(len(test_x), 1)], 1).double()
-    eye = torch.eye(a.shape[1], dtype=a.dtype)
+    a = torch.cat(
+        [(train_x - mean) / std, train_x.new_ones(len(train_x), 1)], 1
+    ).double()
+    b = torch.cat([(test_x - mean) / std, test_x.new_ones(len(test_x), 1)], 1).double()
+    eye = torch.eye(a.shape[1], dtype=a.dtype, device=a.device)
     eye[-1, -1] = 0  # no penalty on the intercept
     w = torch.linalg.solve(a.T @ a + ridge * len(a) * eye, a.T @ train_y.double())
     resid = ((b @ w - test_y.double()) ** 2).sum(0)
@@ -140,7 +143,7 @@ def evaluate(snap: Snapshot, clips: Frame, d_s: int) -> dict[str, float]:
         "rank": effective_rank(z.reshape(p * c * t, -1)),
     }
     for h, err in rollout_errors(z, snap.step, snap.readout, d_s).items():
-        out[f"rollout{h}"] = err / var
+        out[f"rollout{h}"] = err / var if var > 0 else math.nan  # z collapsed
     states, _ = run_states(z, snap.step, snap.readout, d_s, t, 0)
     half = c // 2  # train on the first half of the clips of each phase
     targets = torch.cat([clips.state, clips.params], -1).reshape(p, c, t, -1)

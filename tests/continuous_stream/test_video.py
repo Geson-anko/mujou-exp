@@ -9,6 +9,7 @@ from experiments.continuous_stream.video import (
     Video,
     advance,
     eval_clips,
+    ordered,
     render,
 )
 
@@ -55,6 +56,18 @@ class TestPhysics:
         assert vel[0][axis] == pytest.approx(-sign * 0.5)
         assert vel[0][1 - axis] == 0.0
         assert 0.1 <= pos[0][axis] <= 0.9
+
+    def test_the_stream_keeps_moving(self):
+        """With the default episodes, the balls do not come to rest: the
+        stream is not mostly still frames."""
+        video = Video(physics=Physics(period=600.0), seed=0)
+        frames = [video.next() for _ in range(3600)]  # 2 minutes
+        moved = [
+            float((b.image - a.image).abs().max()) > 1e-2
+            for a, b in zip(frames, frames[1:], strict=False)
+            if not b.reset
+        ]
+        assert sum(moved) / len(moved) > 0.95
 
     def test_the_physics_follows_its_schedule_across_episodes(self):
         physics = Physics(period=10.0)
@@ -116,3 +129,61 @@ def test_thirty_minutes_take_less_than_a_minute():
         video.next()
     assert time.perf_counter() - start < 60
     assert math.isfinite(float(video.next().state.sum()))
+
+
+def _frames(n: int) -> list:
+    video = Video(episode=(1e9, 1e9), seed=0)
+    return [video.next() for _ in range(n)]
+
+
+class TestOrdered:
+    def _ordered(self, order: str, frames: int = 90):
+        return list(
+            ordered(
+                Video(episode=(1e9, 1e9), seed=0),
+                frames=frames,
+                order=order,
+                clip=10,
+                replay=30,
+                seed=0,
+            )
+        )
+
+    def test_stream_is_the_video(self):
+        want = _frames(20)
+        got = self._ordered("stream", 20)
+        assert all(live for _, live in got)
+        for (f, _), w in zip(got, want, strict=True):
+            assert torch.equal(f.state, w.state) and f.reset == w.reset
+
+    def test_shuffled_shows_each_clip_once_from_a_reset(self):
+        want = _frames(90)
+        got = self._ordered("shuffled")
+        assert len(got) == 90
+        clips = [got[i : i + 10] for i in range(0, 90, 10)]
+        firsts = []
+        for c in clips:
+            assert c[0][0].reset and not any(f.reset for f, _ in c[1:])
+            start = next(
+                i for i, w in enumerate(want) if torch.equal(w.state, c[0][0].state)
+            )
+            for j, (f, _) in enumerate(c):
+                assert torch.equal(f.state, want[start + j].state)
+            firsts.append(start)
+        assert sorted(firsts) == list(range(0, 90, 10))
+        assert firsts != sorted(firsts)
+
+    def test_replay_follows_each_live_clip_with_a_past_one(self):
+        want = _frames(90)
+        got = self._ordered("replay")
+        live = [f for f, is_live in got if is_live]
+        assert len(live) == 90 and len(got) == 180
+        for f, w in zip(live, want, strict=True):
+            assert torch.equal(f.state, w.state)
+        for i in range(0, 180, 20):  # 10 live frames, then 10 replayed
+            assert all(is_live for _, is_live in got[i : i + 10])
+            assert not any(is_live for _, is_live in got[i + 10 : i + 20])
+            replayed = got[i + 10][0]
+            seen = want[: i // 2 + 10]
+            assert replayed.reset
+            assert any(torch.equal(replayed.state, w.state) for w in seen[::10])

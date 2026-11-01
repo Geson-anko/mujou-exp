@@ -94,8 +94,15 @@ class Network(mujou.Network):
         torch.manual_seed(config.seed)
         g1, z = encoder_modules(d.size, m.d_z)
         standardize_(g1, z, d.size, seed=config.seed + 10_000)
+        step, readout = MinGRU(m.d_z, m.d_s), nn.Linear(m.d_s, m.d_z)
+        # Made on the CPU, so that the initial weights do not depend on the device.
+        dev = config.device
+        g1, z, step, readout = g1.to(dev), z.to(dev), step.to(dev), readout.to(dev)
         self.input = pc.Input(
-            x=TensorSpec((1, d.size, d.size)), y=TensorSpec((1,)), period=tau.period
+            x=TensorSpec((1, d.size, d.size)),
+            y=TensorSpec((1,)),
+            period=tau.period,
+            device=dev,
         )
         self.g1 = pc.Layer(
             g1,
@@ -103,6 +110,7 @@ class Network(mujou.Network):
             tau=tau,
             optimizer=optimizer_of("g1"),
             learn_interval=li,
+            device=dev,
         )
         self.z = pc.Layer(
             z,
@@ -110,13 +118,15 @@ class Network(mujou.Network):
             tau=tau,
             optimizer=optimizer_of("z"),
             learn_interval=li,
+            device=dev,
         )
         self.dynamics = Dynamics(
-            MinGRU(m.d_z, m.d_s),
+            step,
             act_spec=self.z.act_spec,
             tau=tau,
             optimizer=optimizer_of("dynamics"),
             learn_interval=li,
+            device=dev,
         )
         self.sigreg = SIGReg(
             act_spec=self.z.act_spec,
@@ -125,15 +135,18 @@ class Network(mujou.Network):
             capacity=m.buffer,
             tau=tau,
             seed=config.seed,
+            device=dev,
         )
         self.compare = Compare(
-            nn.Linear(m.d_s, m.d_z),
+            readout,
             s_spec=self.dynamics.act_spec,
             z_spec=self.z.act_spec,
             kappa=m.kappa,
             tau=tau,
             optimizer=optimizer_of("compare"),
             learn_interval=li,
+            stop_target=m.stop_target,
+            device=dev,
         )
         self.input.next.connect(self.g1.prev)
         self.g1.next.connect(self.z.prev)
