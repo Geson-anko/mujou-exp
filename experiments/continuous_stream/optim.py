@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from typing import Any, override
 
 import torch
+from mujou.pc import optim as pc_optim
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
+from experiments.continuous_stream.config import OptimConfig
 from mujou import Stateful
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "Grafted",
     "Projected",
     "Whitened",
+    "from_config",
 ]
 
 
@@ -403,3 +406,38 @@ class _BoundAdamDirection(BoundDirection):
                 mine.copy_(saved)
         self._c_m = float(state["c_m"])
         self._c_v = float(state["c_v"])
+
+
+def from_config(c: OptimConfig) -> Optimizer:
+    """The optimizer of the settings ``c``."""
+    if c.kind == "sgd":
+        return pc_optim.SGD(tau=c.tau)
+    if c.kind == "adamw":
+        return pc_optim.AdamW(
+            tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v, weight_decay=c.weight_decay
+        )
+    inner: DirectionOptimizer
+    if c.kind == "adam_direction":
+        inner = AdamDirection(tau=c.tau, tau_m=c.tau_m, tau_v=c.tau_v)
+    elif c.kind == "whitened":
+        inner = Whitened(
+            tau=c.tau,
+            tau_l=c.tau_l,
+            tau_r=c.tau_r,
+            a=c.a,
+            b=c.b,
+            eps=c.eps,
+            refresh=c.refresh,
+        )
+    elif c.kind == "projected":
+        inner = Projected(
+            tau=c.tau,
+            tau_l=c.tau_l,
+            tau_r=c.tau_r,
+            rank=c.rank,
+            eps=c.eps,
+            refresh=c.refresh,
+        )
+    else:
+        raise ValueError(f"unknown optimizer {c.kind!r}")
+    return Grafted(inner=inner) if c.graft else inner

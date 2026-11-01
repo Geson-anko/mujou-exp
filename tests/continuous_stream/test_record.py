@@ -39,7 +39,9 @@ class TestRun:
     def test_an_empty_run_writes_config_json(self, tmp_path):
         path = tmp_path / "c.json"
         path.write_text(Config(name="empty").to_json())
-        out = run.main(["--config", str(path), "--out", str(tmp_path / "runs")])
+        out = run.main(
+            ["--config", str(path), "--out", str(tmp_path / "runs"), "--dry"]
+        )
         assert (out / "config.json").is_file()
         assert out.name.endswith("-empty")
 
