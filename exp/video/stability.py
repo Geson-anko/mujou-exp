@@ -321,6 +321,28 @@ def spread_confirm() -> list[Config]:
     return out
 
 
+# The check above (README: M11, the spread streams): seeds 1 and 2 collapsed in the first minutes at the learning
+# rate 0.02 (seed 2 for good), and seed 1 stayed below the rank 32. So the step
+# rises from 0 over the first WARMUP seconds, and kappa is a little larger.
+WARMUP = 300.0
+WARM_KAPPAS = (0.13, 0.14)
+
+
+def spread_warm(
+    lr: float = 0.02, kappas: tuple[float, ...] = WARM_KAPPAS
+) -> list[Config]:
+    out = []
+    for kappa in kappas:
+        for seed in SEEDS:
+            for bp in (False, True):
+                name = f"m11-b{STREAMS}-spread-k{kappa:g}-warm{WARMUP:g}"
+                name += "-bp" if bp else "-pc"
+                dev = "cuda:1" if (seed + bp) % 2 else "cuda:0"
+                c = _spread(name, seed, kappa, lr, bp=bp, device=dev, seconds=1800.0)
+                out.append(replace(c, optim=replace(c.optim, warmup=WARMUP)))
+    return out
+
+
 def confirm() -> list[Config]:
     return [
         _config(
@@ -384,6 +406,8 @@ def main() -> None:
     parser.add_argument("--span", action="store_true", help="B streams, wide buffer")
     parser.add_argument("--spread", action="store_true", help="B streams, all phases")
     parser.add_argument("--spread-confirm", action="store_true", help="its check")
+    parser.add_argument("--spread-warm", action="store_true", help="with a warmup")
+    parser.add_argument("--spread-warm-fast", action="store_true", help="at lr 0.03")
     args = parser.parse_args()
     if args.what == "run":
         if args.confirm:
@@ -406,6 +430,10 @@ def main() -> None:
             todo = spread_configs()
         elif args.spread_confirm:
             todo = spread_confirm()
+        elif args.spread_warm:
+            todo = spread_warm()
+        elif args.spread_warm_fast:  # the margin of rollout10 at 0.02 was thin
+            todo = spread_warm(0.03, (0.13,))
         else:
             todo = open_configs() if args.open else configs()
         run_all(RUN_MODULE, todo, args.out, args.jobs)
