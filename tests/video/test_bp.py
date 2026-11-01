@@ -13,7 +13,11 @@ from torch import nn
 
 from exp.lib.host import Host
 from exp.lib.linear_stream import LinearStream
-from exp.video.bp import bp_chain
+from exp.lib.mingru import MinGRU
+from exp.lib.sigreg import sigreg
+from exp.video.bp import WorldBP, bp_chain
+from exp.video.model import DynamicsStack, Top
+from exp.video.nodes import compare_energy
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
@@ -134,3 +138,86 @@ class TestTwoLayers:
         if not bp:
             torch.testing.assert_close(net.layers[0].lam, credit, atol=1e-6, rtol=1e-5)
             assert net.layers[0].r.abs().max() < 1e-6
+
+
+class _Frozen(_Spy):
+    """Records the gradients of each step and moves nothing."""
+
+    @override
+    def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
+        steps = self.steps
+
+        class Bound(BoundOptimizer):
+            @override
+            def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
+                steps.append(([g.clone() for g in grads], elapsed))
+
+            @override
+            def state_dict(self):
+                return {}
+
+            @override
+            def load_state_dict(self, state, /):
+                pass
+
+        return Bound()
+
+
+class TestWorldBPBatch:
+    def test_it_learns_from_the_mean_of_the_per_sample_losses(self):
+        """B = 2 streams, the second resetting at the last frame (no target):
+        the gradient it learns by is that of autograd on the mean over the
+        samples of the prediction error (0 for the sample without a target)
+        plus SIGReg of the two current z (the sample without a target sends
+        none), at the weights and memory it holds."""
+        b, d_x, d_z, d_s, kappa = 2, 5, 4, 6, 0.05
+        torch.manual_seed(0)
+        encoder = nn.Linear(d_x, d_z)
+        step = DynamicsStack(MinGRU(d_z, d_s), [])
+        readout = nn.Linear(d_s, d_z)
+        inp = pc.Input(
+            x=TensorSpec((b, d_x)), y=TensorSpec((b, 1)), period=TAU.period, batch=b
+        )
+        spy = _Frozen(tau=1.0)
+        world = WorldBP(
+            (encoder, step, readout),
+            act_spec=inp.act_spec,
+            kappa=kappa,
+            directions=8,
+            capacity=10,
+            tau=TAU,
+            optimizer=spy,
+            learn_interval=25e-3,
+            min_samples=4,
+            seed=1,
+        )
+        net: Any = mujou.Network()
+        net.inp, net.world = inp, world
+        inp.next.connect(world.prev)
+        g = torch.Generator().manual_seed(2)
+        xs = torch.randn(5, b, d_x, generator=g)
+        with mujou.testing.run(net) as run:
+            host = Host(run, frame=FRAME, period=TAU.period)
+            for k in range(5):
+                reset = torch.tensor([k == 0, k in (0, 4)])
+                sample = pc.msg.Sample(
+                    x=xs[k], y=torch.zeros(b, 1), mask=~reset, reset=reset
+                )
+                spy.steps.clear()
+                host.show({inp.prev: sample}, world.next)
+        assert spy.steps and world.count + b >= 4  # SIGReg is on
+        grads, _ = spy.steps[-1]
+        params = [*encoder.parameters(), *step.parameters(), *readout.parameters()]
+        z = encoder(xs[4])
+        s = step(world.z_prev, world.s_prev)
+        err = compare_energy(nn.Sequential(Top(step.d_s), readout), s, z, kappa)
+        # Stream 1 reset: its error counts nothing and SIGReg gets no credit
+        # through its z.
+        z_sig = torch.stack([z[0], z[1].detach()])
+        loss = err[0] / b + kappa * sigreg(
+            z_sig, world.buffer[: world.count], world.directions
+        )
+        want = torch.autograd.grad(loss, params)
+        for got, w in zip(grads, want, strict=True):
+            torch.testing.assert_close(got, w, rtol=1e-4, atol=1e-7)
+        assert any(w.abs().max() > 1e-4 for w in want)

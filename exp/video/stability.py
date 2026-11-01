@@ -189,6 +189,39 @@ def adam_configs() -> list[Config]:
     return out
 
 
+# Added after the offline bound (README: M11): it needs many windows at once.
+# B streams side by side (DataConfig.streams); with B, the weight of SIGReg
+# against the prediction per sample is kappa B / (1 - kappa), so the offline
+# 15-20 is kappa 0.10-0.15 at B = 128. The SIGReg term reaches the parameters
+# as a sum over the B streams: at the learning rates 0.03-0.1 of one stream,
+# every setting collapsed within a minute; 0.01 holds (a 10-minute screen by BP
+# of kappa 0.12-0.2).
+STREAMS = 128
+PARALLEL = (  # (kappa, lr, bp, device)
+    (0.15, 0.01, False, "cuda:0"),
+    (0.2, 0.01, False, "cuda:1"),
+    (0.15, 0.01, True, "cuda:0"),
+    (0.2, 0.01, True, "cuda:1"),
+)
+
+
+def streams_configs() -> list[Config]:
+    out = []
+    for kappa, lr, bp, device in PARALLEL:
+        model = ModelConfig(
+            kappa=kappa,
+            stop_target=False,
+            z_norm=True,
+            open_loop=0.5,
+            open_cycle=20,
+            buffer=1023,
+        )
+        name = f"m11-b{STREAMS}-k{kappa:g}-{'bp' if bp else 'pc'}"
+        c = _config(name, 0, model, lr, bp=bp, device=device, seconds=1800.0)
+        out.append(replace(c, data=replace(c.data, streams=STREAMS)))
+    return out
+
+
 def confirm() -> list[Config]:
     return [
         _config(
@@ -248,6 +281,7 @@ def main() -> None:
     parser.add_argument("--blur", action="store_true", help="blurred frames")
     parser.add_argument("--long", action="store_true", help="3 hours by BP")
     parser.add_argument("--adam", action="store_true", help="AdamW by BP")
+    parser.add_argument("--streams", action="store_true", help="B streams at once")
     args = parser.parse_args()
     if args.what == "run":
         if args.confirm:
@@ -262,6 +296,8 @@ def main() -> None:
             todo = long_configs()
         elif args.adam:
             todo = adam_configs()
+        elif args.streams:
+            todo = streams_configs()
         else:
             todo = open_configs() if args.open else configs()
         run_all(RUN_MODULE, todo, args.out, args.jobs)

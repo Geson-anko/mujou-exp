@@ -6,6 +6,7 @@ import torch
 
 from exp.video.balls import (
     Physics,
+    Streams,
     Video,
     advance,
     eval_clips,
@@ -187,3 +188,26 @@ class TestOrdered:
             seen = want[: i // 2 + 10]
             assert replayed.reset
             assert any(torch.equal(replayed.state, w.state) for w in seen[::10])
+
+
+class TestStreams:
+    def test_stream_0_is_the_video_of_the_seed_and_the_others_differ(self):
+        streams = Streams(3, seed=5)
+        alone = Video(seed=5)
+        stacks = [streams.next() for _ in range(4)]
+        for f in stacks:
+            want = alone.next()
+            assert f.image.shape == (3, 1, 32, 32)
+            assert torch.as_tensor(f.reset).shape == (3,)
+            assert torch.equal(f.image[0], want.image)
+            assert torch.equal(f.state[0], want.state)
+        last = stacks[-1]
+        assert not torch.equal(last.image[0], last.image[1])
+        assert not torch.equal(last.image[1], last.image[2])
+
+    def test_each_stream_starts_its_episodes_on_its_own(self):
+        streams = Streams(2, seed=0, episode=(0.1, 0.5))
+        resets = torch.stack([torch.as_tensor(streams.next().reset) for _ in range(60)])
+        assert resets[0].all()  # every video starts with a reset
+        assert resets[1:, 0].any() and resets[1:, 1].any()
+        assert (resets[1:, 0] != resets[1:, 1]).any()

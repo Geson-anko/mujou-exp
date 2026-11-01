@@ -319,10 +319,223 @@ class TestOpenLoop:
                 last = {"z": z_of(), "z_hat": run_.read(net.next)["y_hat"]}
 
 
-def _video_run(tmp_path, name: str, **changes) -> list[dict]:
-    config = replace(
-        SMALL, name=name, data=DataConfig(kind="video", seconds=2.0), **changes
+def _batch_sample(images: torch.Tensor, resets: list[bool]) -> pc.msg.Sample:
+    reset = torch.tensor(resets)
+    return pc.msg.Sample(
+        x=images, y=torch.zeros(len(resets), 1), mask=~reset, reset=reset
     )
+
+
+def _single_sample(f, reset: bool) -> pc.msg.Sample:
+    return pc.msg.Sample(
+        x=f.image,
+        y=torch.zeros(1),
+        mask=torch.tensor(not reset),
+        reset=torch.tensor(reset),
+    )
+
+
+def _hold(run_, net, sample, steps: int = 17) -> None:
+    run_.write({net.prev: sample})
+    for _ in range(steps):
+        run_.step(net.tau.period)
+
+
+class TestStreams:
+    """``data.streams`` = B: a batch of B independent streams."""
+
+    @pytest.mark.parametrize(
+        ("stop", "weight", "z_norm", "residual"),
+        [(False, 0.0, False, False), (True, 0.3, True, True)],
+        ids=["", "target_weight-z_norm-residual"],
+    )
+    def test_lam_is_the_credit_of_bp_per_sample_at_the_fixed_point(
+        self, stop, weight, z_norm, residual
+    ):
+        """Hold a frame of two different streams with learning off: each node's
+        lam, per sample, is -B dL/dh_b of the loss L of the batch (the mean over
+        the samples of the prediction error, plus the one SIGReg of the two
+        current z with the buffer), by autograd through the same modules."""
+        b = 2
+        config = replace(
+            SMALL,
+            time=TimeConfig(learn_interval=math.inf),
+            model=replace(
+                SMALL.model,
+                stop_target=stop,
+                target_weight=weight,
+                z_norm=z_norm,
+                residual=residual,
+            ),
+            data=DataConfig(streams=b),
+        )
+        net = Network(config)
+        if residual:  # W_o starts at 0: give it weights to carry credit back
+            torch.nn.init.normal_(net.compare.module.weight, std=0.3)
+        videos = [Video(seed=0), Video(seed=1)]
+        fs = [v.next() for v in videos]  # the frames shown, the last of them held
+        with mujou.testing.run(net) as run_:
+            for k in range(12):  # fills the buffer past min_samples
+                if k:
+                    fs = [v.next() for v in videos]
+                _hold(
+                    run_,
+                    net,
+                    _batch_sample(torch.stack([f.image for f in fs]), [k == 0] * b),
+                )
+            for _ in range(3000):  # hold the last frame: 6 s
+                run_.step(net.tau.period)
+        x = torch.stack([f.image for f in fs])
+        h1 = net.g1.module(x).detach().requires_grad_()
+        z = net.z.module(h1)
+        z_leaf = z.detach().requires_grad_()
+        d = net.dynamics
+        s = d.module(d.z_prev, d.s_prev).detach().requires_grad_()
+        sr = net.sigreg
+        assert sr.count + b >= 16  # SIGReg is on
+        w = weight if stop else 1.0
+        target = w * z_leaf + (1 - w) * z_leaf.detach()
+        base = d.z_prev if residual else None
+        energy = compare_energy(net.compare.module, s, target, 0.05, base)
+        sig = sigreg(z_leaf, sr.buffer[: sr.count], sr.directions)
+        loss = energy.mean() + 0.05 * sig
+        g_z, g_s = torch.autograd.grad(b * loss, [z_leaf, s])
+        (g_h1,) = torch.autograd.grad(z, h1, g_z)
+        torch.testing.assert_close(net.z.lam, -g_z, rtol=1e-3, atol=1e-6)
+        torch.testing.assert_close(d.lam, -g_s, rtol=1e-3, atol=1e-6)
+        torch.testing.assert_close(net.g1.lam, -g_h1, rtol=1e-3, atol=1e-7)
+        assert g_z.abs().max() > 1e-4  # the credit is not trivially zero
+        for r in (net.g1.r, net.z.r, d.r):
+            assert r.abs().max() < 1e-6
+
+    @pytest.mark.parametrize(
+        "model",
+        [{}, {"open_loop": 0.5, "open_cycle": 3, "residual": True, "dyn_nodes": 2}],
+        ids=["", "open_loop-residual-dyn_nodes"],
+    )
+    def test_identical_streams_are_one_stream(self, model):
+        """B streams of the same frames and resets, with learning on: every
+        sample has the activities of the one stream, and the parameters have
+        moved as for the one stream (the mean of identical gradients). Few
+        enough frames (B * frames < 16) that SIGReg, which sees the batch as more samples, is
+        not on yet."""
+        config = replace(
+            SMALL,
+            model=replace(SMALL.model, **model),
+            time=TimeConfig(learn_interval=25e-3),
+        )
+        streams = 3
+        one = Network(config)
+        many = Network(replace(config, data=DataConfig(streams=streams)))
+        video = Video(seed=3, episode=(100.0, 100.0))
+        frames = [video.next() for _ in range(5)]
+        with mujou.testing.run(one) as r1, mujou.testing.run(many) as r2:
+            for k, f in enumerate(frames):
+                reset = k in (0, 3)  # a second video from frame 3
+                _hold(r1, one, _single_sample(f, reset))
+                images = f.image.expand(streams, -1, -1, -1)
+                _hold(r2, many, _batch_sample(images, [reset] * streams))
+            z1, z2 = r1.read(one.z.next)["h"], r2.read(many.z.next)["h"]
+            s1, s2 = r1.read(one.dynamics.next)["h"], r2.read(many.dynamics.next)["h"]
+            p1, p2 = r1.read(one.compare.next), r2.read(many.compare.next)
+        for b in range(streams):
+            torch.testing.assert_close(z2[b], z1, rtol=1e-3, atol=1e-5)
+            torch.testing.assert_close(s2[b], s1, rtol=1e-3, atol=1e-5)
+            torch.testing.assert_close(
+                p2["y_hat"][b], p1["y_hat"], rtol=1e-3, atol=1e-5
+            )
+        assert p1["mask"] and p2["mask"].all()
+        for name in ("g1", "z", "dynamics", "compare"):
+            got, want = getattr(many, name).module, getattr(one, name).module
+            for a, b_ in zip(got.parameters(), want.parameters(), strict=True):
+                torch.testing.assert_close(a, b_, rtol=1e-3, atol=1e-6)
+
+    def test_streams_are_independent_when_only_one_resets(self):
+        """With learning off, each stream of a batch predicts what it does
+        alone, though only stream 1 resets at frame 3."""
+        config = replace(
+            SMALL,
+            time=TimeConfig(learn_interval=math.inf),
+            model=replace(SMALL.model, dyn_nodes=2),
+        )
+        both = Network(replace(config, data=DataConfig(streams=2)))
+        alone = [Network(config), Network(config)]
+        videos = [Video(seed=s, episode=(100.0, 100.0)) for s in (4, 5)]
+        frames = [[v.next() for v in videos] for _ in range(6)]
+        resets = [[k == 0, k in (0, 3)] for k in range(6)]
+        preds, singles = [], [[], []]
+        with (
+            mujou.testing.run(both) as run_,
+            mujou.testing.run(alone[0]) as run0,
+            mujou.testing.run(alone[1]) as run1,
+        ):
+            for k in range(6):
+                images = torch.stack([f.image for f in frames[k]])
+                _hold(run_, both, _batch_sample(images, resets[k]))
+                preds.append(run_.read(both.compare.next))
+                if k == 3:
+                    assert both.dynamics.has_prev.tolist() == [True, False]
+                    assert both.dynamics.predictions.tolist() == [3, 0]
+                    assert both.dynamics2.first.tolist() == [False, True]
+                for i, (net, r) in enumerate(zip(alone, (run0, run1), strict=True)):
+                    _hold(r, net, _single_sample(frames[k][i], resets[k][i]))
+                    singles[i].append(r.read(net.compare.next))
+        for k in range(6):
+            for i in range(2):
+                assert bool(preds[k]["mask"][i]) == bool(singles[i][k]["mask"])
+                torch.testing.assert_close(
+                    preds[k]["y"][i], singles[i][k]["y"], rtol=1e-3, atol=1e-5
+                )
+                if bool(singles[i][k]["mask"]):
+                    torch.testing.assert_close(
+                        preds[k]["y_hat"][i],
+                        singles[i][k]["y_hat"],
+                        rtol=1e-3,
+                        atol=1e-5,
+                    )
+
+    @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
+    def test_open_predictions_are_decided_per_stream(self, bp):
+        """Streams out of phase (stream 1 resets again at frame 2): in a cycle
+        of 4 with half open, at some frame one stream remembers its own
+        prediction of the frame before as z_{k-1} and the other the observed
+        z; each row is the right one."""
+        config = replace(
+            SMALL,
+            time=TimeConfig(learn_interval=math.inf),
+            model=replace(SMALL.model, open_loop=0.5, open_cycle=4),
+            data=DataConfig(streams=2),
+        )
+        net: Any = WorldBPNetwork(config) if bp else Network(config)
+        videos = [Video(seed=s, episode=(100.0, 100.0)) for s in (6, 7)]
+        node = net.world if bp else net.dynamics
+        resets = [[k == 0, k in (0, 2)] for k in range(10)]
+        counts = [0, 0]  # the predictions of each video so far
+        last: dict[str, torch.Tensor] = {}
+        differed = False
+        with mujou.testing.run(net) as run_:
+            for k in range(10):
+                images = torch.stack([v.next().image for v in videos])
+                _hold(run_, net, _batch_sample(images, resets[k]))
+                is_open_rows = []
+                for b in range(2):
+                    counts[b] = 0 if resets[k][b] else counts[b] + 1
+                    is_open_rows.append(counts[b] > 1 and is_open(counts[b], 0.5, 4))
+                differed |= is_open_rows[0] != is_open_rows[1]
+                if k:
+                    for b in range(2):
+                        if resets[k][b]:
+                            continue  # no z_{k-1}: the memory is not read
+                        want = last["z_hat"][b] if is_open_rows[b] else last["z"][b]
+                        torch.testing.assert_close(node.z_prev[b], want)
+                z = node.z_last if bp else run_.read(net.z.next)["h"]
+                last = {"z": z, "z_hat": run_.read(net.next)["y_hat"]}
+        assert differed
+
+
+def _video_run(tmp_path, name: str, streams: int = 1, **changes) -> list[dict]:
+    data = DataConfig(kind="video", seconds=2.0, streams=streams)
+    config = replace(SMALL, name=name, data=data, **changes)
     path = tmp_path / f"{name}.json"
     path.write_text(config.to_json())
     out = run.main(["--config", str(path), "--out", str(tmp_path)])
@@ -338,6 +551,18 @@ class TestRunVideo:
         without = _video_run(tmp_path, "b", eval_interval=100.0)
         assert any("rank" in r for r in with_eval)
         assert [r.get("error") for r in with_eval] == [r.get("error") for r in without]
+
+    @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
+    def test_four_streams_run_through_and_log_the_mean(self, tmp_path, bp):
+        records = _video_run(
+            tmp_path, f"four-{bp}", streams=4, bp=bp, eval_interval=1.0
+        )
+        assert len(records) == 60
+        errors = [r["error"] for r in records if "error" in r]
+        assert len(errors) == 59  # every stream resets in the first frame only
+        assert all(math.isfinite(e) for e in errors)
+        assert all(math.isfinite(r["z_rms"]) for r in records)
+        assert sum("rank" in r for r in records) == 2
 
     @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
     def test_ten_seconds_of_video_stream_through(self, tmp_path, bp):

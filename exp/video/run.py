@@ -5,6 +5,7 @@ uv run python -m exp.video.run --config <path>
 
 import argparse
 import copy
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +18,12 @@ from torch import nn
 from exp.lib.host import Host, RealtimeHost
 from exp.lib.linear_stream import LinearStream
 from exp.lib.record import REPO_ROOT, Recorder
-from exp.video.balls import Frame, Physics, Video, eval_clips, ordered
+from exp.video.balls import Frame, Physics, Streams, Video, eval_clips, ordered
 from exp.video.bp import WorldBPNetwork, bp_chain
 from exp.video.config import Config, make_optimizer
 from exp.video.evaluate import Snapshot, evaluate
 from exp.video.model import Network
-from exp.video.nodes import is_open
+from exp.video.nodes import open_mask
 from mujou import TensorSpec
 
 
@@ -104,13 +105,17 @@ def _source(config: Config) -> tuple[Any, Frame]:
 
         return EgoDexStream(d.path), egodex_clips(d.path)
     physics = Physics(period=d.physics_period)
-    video = Video(
+    kwargs: dict[str, Any] = dict(
         size=d.size,
         balls=d.balls,
         frame=t.frame,
         physics=physics,
         episode=(d.episode_min, d.episode_max),
-        seed=config.seed,
+    )
+    video = (
+        Video(seed=config.seed, **kwargs)
+        if d.streams == 1
+        else Streams(d.streams, seed=config.seed, **kwargs)
     )
     clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
     return video, clips
@@ -123,7 +128,9 @@ def run_video(config: Config, recorder: Recorder) -> None:
     Each frame records the prequential ``error`` (1/D ||z_hat - z||^2, on the
     frames with a prediction from the observed z; ``open_error`` on those from
     the model's own, with ``model.open_loop``) and ``z_rms`` (the root mean
-    square of z); each ``eval_interval`` seconds, the metrics of
+    square of z); with ``data.streams`` = B > 1 streams, each is the mean over
+    the streams that have such a prediction in the frame (and ``z_rms`` over
+    all of them); each ``eval_interval`` seconds, the metrics of
     ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
     of each node's gradients over the interval. The frames come in
     ``data.order`` (``balls.ordered``); a replayed frame records only its
@@ -141,16 +148,20 @@ def run_video(config: Config, recorder: Recorder) -> None:
     d_state = config.model.d_s * config.model.dyn_nodes
     frames = round(d.seconds / t.frame)
     every = max(1, round(config.eval_interval / t.frame))
-    shown = ordered(
-        video,
-        frames=frames,
-        order=d.order,
-        clip=round(d.clip / t.frame),
-        replay=d.replay,
-        seed=config.seed + 1,
-    )
+    shown: Iterator[tuple[Frame, bool]]
+    if isinstance(video, Streams):
+        shown = ((video.next(), True) for _ in range(frames))
+    else:
+        shown = ordered(
+            video,
+            frames=frames,
+            order=d.order,
+            clip=round(d.clip / t.frame),
+            replay=d.replay,
+            seed=config.seed + 1,
+        )
     k = 0  # the live frames shown
-    count = 0
+    count = torch.zeros(d.batch, dtype=torch.int64)  # predictions of each video
     if config.realtime:
         context = mujou.run(net)
     else:
@@ -161,11 +172,9 @@ def run_video(config: Config, recorder: Recorder) -> None:
         else:
             host = RealtimeHost(run, frame=t.frame)
         for f, live in shown:
+            reset = torch.as_tensor(f.reset)
             sample = pc.msg.Sample(
-                x=f.image,
-                y=torch.zeros(1),
-                mask=torch.tensor(not f.reset),
-                reset=torch.tensor(f.reset),
+                x=f.image, y=torch.zeros(*d.batch, 1), mask=~reset, reset=reset
             )
             p, written = host.show({net.prev: sample}, net.next)
             if not live:
@@ -174,14 +183,20 @@ def run_video(config: Config, recorder: Recorder) -> None:
                     recorder.log(float(written), replay_error=error)
                 continue
             values: dict[str, float | int] = {"frame": k}
-            count = 0 if f.reset else count + 1  # the predictions of the video
+            count = (count + 1).masked_fill(reset, 0)  # of each video so far
             m = config.model
-            opened = count > 1 and is_open(count, m.open_loop, m.open_cycle)
+            opened = (count > 1) & open_mask(count, m.open_loop, m.open_cycle)
             if p is None:  # real time: no prediction of the frame in time
-                values["missed"] = int(not f.reset)
-            elif bool(p["mask"]):
-                error = float(((p["y_hat"] - p["y"]) ** 2).mean())
-                values["open_error" if opened else "error"] = error
+                values["missed"] = int((~reset).sum())
+            else:
+                has = p["mask"].cpu()
+                error = ((p["y_hat"] - p["y"]) ** 2).mean(-1).cpu()
+                for key, which in (
+                    ("error", has & ~opened),
+                    ("open_error", has & opened),
+                ):
+                    if bool(which.any()):
+                        values[key] = float(error[which].mean())
             if p is not None:  # the root mean square of z_k: 1 for N(0, I)
                 values["z_rms"] = float(p["y"].pow(2).mean().sqrt())
             # The modules are read between steps only: not while a real-time run runs.

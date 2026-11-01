@@ -246,7 +246,9 @@ class Network(mujou.Network):
     """The world model, made from ``config`` after ``torch.manual_seed(config.seed)``.
 
     The host writes a ``pc.msg.Sample`` (``x``: the image of ``image_shape``,
-    ``y``: unused zeros ``(1,)``) to ``prev`` and reads the prequential
+    ``y``: unused zeros ``(1,)``; with ``data.streams`` = B > 1, each with a
+    leading B, and ``mask`` and ``reset`` of ``(B,)``) to ``prev`` and reads the
+    prequential
     prediction of $z_k$ from ``next`` (``Compare.next``). The nodes of the
     encoder are ``encoder_names`` (the last is ``z``), those of the dynamics
     ``dynamics_names`` (the first is ``dynamics``).
@@ -288,9 +290,10 @@ class Network(mujou.Network):
         step, readout = step.to(dev), readout.to(dev)
         layers = [layer.to(dev) for layer in layers]
         self.input = pc.Input(
-            x=TensorSpec(image_shape(d)),
-            y=TensorSpec((1,)),
+            x=TensorSpec((*d.batch, *image_shape(d))),
+            y=TensorSpec((*d.batch, 1)),
             period=tau.period,
+            batch=d.batch,
             device=dev,
         )
         n = len(stages)

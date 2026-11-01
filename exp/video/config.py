@@ -130,6 +130,30 @@ class DataConfig:
     replay: int = 4096
     # EgoDex (stage 3).
     path: str = "datasets/egodex64"
+    # The number B of independent streams of the synthetic video that the network
+    # sees side by side in every frame, as a batch (1: one stream, the batch
+    # ``()``). Stream i is ``balls.Video(seed=seed + 1_000_000 * i)``; every node
+    # learns from the mean over the B streams, except that the SIGReg term acts
+    # on the parameters as the sum of B per-sample terms against the mean of the
+    # prediction errors: the same kappa is a stronger SIGReg as B grows (per
+    # sample, kappa * B / (1 - kappa) against the prediction). SIGReg relies on
+    # the host writing mask = ~reset. Only for ``kind == "video"`` and
+    # ``order == "stream"``.
+    streams: int = 1
+
+    def __post_init__(self) -> None:
+        if self.streams < 1:
+            raise ValueError(f"streams must be at least 1, not {self.streams}")
+        if self.streams > 1 and (self.kind != "video" or self.order != "stream"):
+            raise ValueError(
+                "streams > 1 is for the synthetic video in stream order, not "
+                f"kind={self.kind!r}, order={self.order!r}"
+            )
+
+    @property
+    def batch(self) -> tuple[int, ...]:
+        """The batch of the streams: ``()`` for one, ``(streams,)`` for more."""
+        return () if self.streams == 1 else (self.streams,)
 
 
 @dataclass(frozen=True, kw_only=True)

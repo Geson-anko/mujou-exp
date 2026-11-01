@@ -13,7 +13,7 @@ from typing import Any, override
 
 import mujou.pc as pc
 import torch
-from mujou.pc.msg import Activity
+from mujou.pc.msg import Activity, rows
 from mujou.pc.optim import Optimizer
 from mujou.types import Device
 from torch import nn
@@ -31,7 +31,7 @@ from exp.video.model import (
     standardize_,
     target_weight,
 )
-from exp.video.nodes import compare_energy, is_open
+from exp.video.nodes import compare_energy, open_mask
 from mujou import DictSpec, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = ["WorldBP", "WorldBPNetwork", "bp_chain"]
@@ -64,6 +64,12 @@ class WorldBP(Node):
     updates the buffer and the directions, and sends the prequential
     prediction (a ``pc.msg.Prediction``) and its ``error``. When its clock
     says, it learns all the modules from the gradient of $L_k$.
+
+    With a batch of ``B`` streams, the memories are per stream, and the loss is
+    the mean over the samples of the per-sample prediction error plus
+    $\kappa\,\mathrm{SIGReg}$ of the ``B`` current $z$ with the buffer (the
+    same loss as the nodes of ``model.Network`` have, with the credit that
+    ``SIGReg`` sends); a sample without a prediction adds nothing.
     """
 
     def __init__(
@@ -106,29 +112,32 @@ class WorldBP(Node):
         self.optimizer = optimizer.bind(self._params)
         d_z, d_s = readout.out_features, step.d_state
         dev = self.device
+        batch = act_spec.field("mask", TensorSpec).shape
+        self._samples = math.prod(batch)  # B
         self.buffer = torch.zeros(capacity, d_z, device=dev)
         self.count = 0
         self.register_state("count")
         self.directions = torch.zeros(directions, d_z, device=dev)
         self.z_prev, self.s_prev = (
-            torch.zeros(d_z, device=dev),
-            torch.zeros(d_s, device=dev),
+            torch.zeros(*batch, d_z, device=dev),
+            torch.zeros(*batch, d_s, device=dev),
         )
         self.z_last, self.s_last = (
-            torch.zeros(d_z, device=dev),
-            torch.zeros(d_s, device=dev),
+            torch.zeros(*batch, d_z, device=dev),
+            torch.zeros(*batch, d_s, device=dev),
         )
-        self.has_prev = False
+        # Per stream: whether z_prev is of this video, and the predictions of it.
+        self.has_prev = torch.zeros(batch, dtype=torch.bool, device=dev)
         self.register_state("has_prev")
-        self.predictions = 0  # of this video so far
+        self.predictions = torch.zeros(batch, dtype=torch.int64, device=dev)
         self.register_state("predictions")
-        self.z_hat_last = torch.zeros(d_z, device=dev)
+        self.z_hat_last = torch.zeros(*batch, d_z, device=dev)
         self.started = False  # whether a frame came before
         self.register_state("started")
         self.frames = 0  # the frames before the current one
         self.register_state("frames")
         x = act_spec.field("h", TensorSpec)
-        z_spec = TensorSpec((d_z,))
+        z_spec = TensorSpec((*batch, d_z))
         self.prev = Port(send=x, recv=act_spec)
         self.next = Port(
             send=DictSpec(
@@ -148,10 +157,10 @@ class WorldBP(Node):
         tick = self.clock.tick(dt, act["time"], self.timer.now())
         if tick.new:
             self._new_frame(act)
-        mask = bool(act["mask"]) and self.has_prev
-        if tick.learn and mask:
+        mask = act["mask"] & self.has_prev
+        if tick.learn and bool(mask.any()):
             with torch.enable_grad():
-                loss = self._loss(act["h"])
+                loss = self._loss(act["h"], mask)
                 grads = torch.autograd.grad(  # mujou: local-autograd
                     loss, self._params, materialize_grads=True
                 )
@@ -166,44 +175,49 @@ class WorldBP(Node):
             self.directions.shape, generator=self.generator, device=self.device
         )
         self.directions = a / torch.linalg.vector_norm(a, dim=1, keepdim=True)
-        if bool(act["reset"]):
-            self.s_prev = torch.zeros_like(self.s_prev)
-            self.s_last = torch.zeros_like(self.s_last)
-            self.has_prev = False
-            self.predictions = 0
-        else:
-            self.predictions = self.predictions + 1 if self.has_prev else 1
-            opened = self.predictions > 1 and is_open(
-                self.predictions, self._open_loop, self._open_cycle
-            )
-            self.z_prev = self.z_hat_last if opened else self.z_last
-            self.s_prev = self.s_last
-            self.has_prev = True
+        # The streams that reset start a new video: s := 0, and no z before.
+        reset = act["reset"]
+        predictions = torch.where(self.has_prev, self.predictions + 1, 1)
+        opened = (predictions > 1) & open_mask(
+            predictions, self._open_loop, self._open_cycle
+        )
+        z_prev = torch.where(rows(opened, self.z_last), self.z_hat_last, self.z_last)
+        self.z_prev = torch.where(rows(reset, z_prev), self.z_prev, z_prev)
+        self.s_last = torch.where(rows(reset, self.s_last), 0.0, self.s_last)
+        self.s_prev = self.s_last
+        self.has_prev = ~reset
+        self.predictions = predictions.masked_fill(reset, 0)
         with torch.no_grad():
             z = self.encoder(act["h"])
-            s = self.step(self.z_prev, self.s_prev) if self.has_prev else self.s_prev
+            has_prev = rows(self.has_prev, self.s_prev)
+            s = self.s_prev
+            if bool(self.has_prev.any()):
+                s = torch.where(has_prev, self.step(self.z_prev, self.s_prev), s)
             z_hat = self.readout(s)
-            if self.residual and self.has_prev:
-                z_hat = self.z_prev + z_hat
+            if self.residual:
+                z_hat = torch.where(has_prev, self.z_prev + z_hat, z_hat)
         self.z_last, self.s_last, self.z_hat_last = z, s, z_hat
-        mask = bool(act["mask"]) and self.has_prev
-        self.next.send(
-            {"y_hat": z_hat, "y": z, "mask": torch.tensor(mask), "time": act["time"]}
-        )
-        if mask:
-            self.error.send(((z_hat - z) ** 2).mean())
+        mask = act["mask"] & self.has_prev
+        self.next.send({"y_hat": z_hat, "y": z, "mask": mask, "time": act["time"]})
+        if bool(mask.any()):
+            self.error.send(((z_hat - z) ** 2)[mask].mean())
 
-    def _loss(self, x: torch.Tensor) -> torch.Tensor:
-        """$L_k$ at the current weights (the memory is constant)."""
+    def _loss(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """$L_k$ at the current weights (the memory is constant): the mean over
+        the samples of the prediction errors of those in ``mask``, plus SIGReg
+        of the current $z$ of those."""
         z = self.encoder(x)
         s = self.step(self.z_prev, self.s_prev)
         w = self._target_weight  # the value is z; its gradient is w times
         target = w * z + (1 - w) * z.detach()
         base = self.z_prev if self.residual else None
-        loss = compare_energy(self.readout, s, target, self._kappa, base)
-        if self.count + 1 >= self._min:
+        energy = compare_energy(self.readout, s, target, self._kappa, base)
+        loss = torch.where(mask, energy, 0.0).sum() / self._samples
+        if self.count + self._samples >= self._min:
+            # A sample without a prediction sends SIGReg no credit.
+            z_sig = torch.where(rows(mask, z), z, z.detach())
             loss = loss + self._kappa * sigreg(
-                z, self.buffer[: self.count], self.directions
+                z_sig, self.buffer[: self.count], self.directions
             )
         return loss
 
@@ -229,9 +243,10 @@ class WorldBPNetwork(mujou.Network):
         dev = config.device
         encoder, step, readout = encoder.to(dev), step.to(dev), readout.to(dev)
         self.input = pc.Input(
-            x=TensorSpec(image_shape(d)),
-            y=TensorSpec((1,)),
+            x=TensorSpec((*d.batch, *image_shape(d))),
+            y=TensorSpec((*d.batch, 1)),
             period=tau.period,
+            batch=d.batch,
             device=dev,
         )
         self.world = WorldBP(

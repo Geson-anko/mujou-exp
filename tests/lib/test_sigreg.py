@@ -133,9 +133,17 @@ class TestInsert:
 
 
 class _SIGRegNet(mujou.Network):
-    def __init__(self, every: int = 1) -> None:
+    def __init__(self, every: int = 1, streams: int = 0) -> None:
         super().__init__()
-        self.z_in = _inputs(("z", D))["z"]
+        if streams:
+            self.z_in = pc.Input(
+                x=TensorSpec((streams, D)),
+                y=TensorSpec((streams, 1)),
+                period=TAU.period,
+                batch=streams,
+            )
+        else:
+            self.z_in = _inputs(("z", D))["z"]
         self.sigreg = SIGReg(
             act_spec=self.z_in.act_spec,
             kappa=KAPPA,
@@ -217,3 +225,124 @@ class TestSums:
         (g_got,) = torch.autograd.grad(got, z)
         torch.testing.assert_close(got, want)
         torch.testing.assert_close(g_got, g_want)
+
+
+class TestBatch:
+    """B streams: the statistic of the B current z and the buffer together."""
+
+    def test_the_statistic_is_that_of_the_concatenated_samples(self):
+        g = torch.Generator().manual_seed(8)
+        buffer = torch.randn(20, D, generator=g, dtype=torch.float64)
+        z = 2 * torch.randn(3, D, generator=g, dtype=torch.float64)
+        a = torch.randn(16, D, generator=g, dtype=torch.float64)
+        a = a / a.norm(dim=1, keepdim=True)
+        want = epps_pulley(torch.cat([z, buffer]) @ a.T).mean()
+        torch.testing.assert_close(sigreg(z, buffer, a), want)
+
+    def test_the_sums_give_the_value_and_gradient_of_the_batch(self):
+        g = torch.Generator().manual_seed(9)
+        buffer = torch.randn(40, D, generator=g, dtype=torch.float64)
+        a = torch.randn(32, D, generator=g, dtype=torch.float64)
+        a = a / a.norm(dim=1, keepdim=True)
+        z = (2 * torch.randn(4, D, generator=g, dtype=torch.float64)).requires_grad_()
+        want = sigreg(z, buffer, a)
+        (g_want,) = torch.autograd.grad(want, z)
+        got = sigreg_from_sums(z, ecf_sums(buffer, a), len(buffer) + 4, a)
+        (g_got,) = torch.autograd.grad(got, z)
+        torch.testing.assert_close(got, want)
+        torch.testing.assert_close(g_got, g_want)
+
+    def test_insert_fills_rows_in_order_then_replaces_drawn_rows(self):
+        buffer = torch.zeros(5, 1)
+        g = torch.Generator().manual_seed(0)
+        z = torch.arange(1.0, 4.0)[:, None]
+        count = insert_(buffer, 0, z, g)
+        assert count == 3 and buffer[:3].flatten().tolist() == [1, 2, 3]
+        count = insert_(buffer, count, z + 3, g)  # 2 fit, the third replaces
+        assert count == 5
+        kept = [v for v in buffer.flatten().tolist() if v != 6]
+        assert len(kept) == 4  # the third row replaced one of the five
+        assert set(kept) <= {1, 2, 3, 4, 5}
+
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "cpu",
+            pytest.param(
+                "cuda",
+                marks=pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="no CUDA"
+                ),
+            ),
+        ],
+    )
+    def test_several_rows_replace_distinct_rows_the_same_way_each_time(self, device):
+        capacity, k = 16, 12  # many rows: draws with replacement would collide
+
+        def fill(seed: int) -> torch.Tensor:
+            buffer = torch.zeros(capacity, 1, device=device)
+            g = torch.Generator(device).manual_seed(seed)
+            z = torch.arange(1.0, k + 1, device=device)[:, None]
+            insert_(buffer, capacity, z, g)
+            return buffer
+
+        a = fill(3)
+        assert torch.equal(a, fill(3))
+        assert sorted(v for v in a.flatten().tolist() if v) == [
+            float(i) for i in range(1, k + 1)
+        ]  # every row landed, each in its own place
+
+    def test_more_rows_than_the_capacity_keep_the_last_ones(self):
+        buffer = torch.zeros(3, 1)
+        g = torch.Generator().manual_seed(0)
+        z = torch.arange(1.0, 8.0)[:, None]
+        assert insert_(buffer, 0, z, g) == 3  # 1-3 fill it, 4-7 replace: 5-7 stay
+        assert sorted(buffer.flatten().tolist()) == [5, 6, 7]
+
+    def test_one_sample_draws_the_row_as_a_single_z_always_did(self):
+        """The same generator state gives the same row to replace whether z
+        is ``(D,)`` or ``(1, D)``, and the row is the one ``randint`` draws."""
+        capacity = 8
+        for z in (torch.ones(2), torch.ones(1, 2)):
+            buffer = torch.zeros(capacity, 2)
+            g = torch.Generator().manual_seed(4)
+            insert_(buffer, capacity, z, g)
+            want = int(
+                torch.randint(capacity, (), generator=torch.Generator().manual_seed(4))
+            )
+            assert buffer[want].tolist() == [1, 1]
+            assert int((buffer[:, 0] == 1).sum()) == 1
+
+    def test_the_node_sends_b_times_kappa_times_the_gradient_per_sample(self):
+        """Each sample gets kappa * B * dS/dz_b of the one statistic S of the
+        current z and the buffer, and none when it has no target."""
+        b = 3
+        net = _SIGRegNet(streams=b)
+        g = torch.Generator().manual_seed(10)
+        zs = torch.randn(12, b, D, generator=g)
+        with mujou.testing.run(net) as run:
+            for k in range(len(zs)):
+                mask = torch.tensor([True, True, k != 7])
+                sample = pc.msg.Sample(
+                    x=zs[k],
+                    y=torch.zeros(b, 1),
+                    mask=mask,
+                    reset=torch.tensor([k == 0] * b),
+                )
+                run.write({net.z_in.prev: sample})
+                for _ in range(16):
+                    run.step(TAU.period)
+                sent = run.read(net.sigreg.prev)
+                node = net.sigreg
+                assert node.count == min(b * k, 10)  # b rows per frame
+                if node.count + b < 4:
+                    assert not sent.any()
+                    continue
+                buffer = node.buffer[: node.count].double()
+                a = node.directions.double()
+                want = KAPPA * b * _fd(lambda v: sigreg(v, buffer, a), zs[k].double())
+                want[~mask] = 0
+                torch.testing.assert_close(sent.double(), want, rtol=1e-4, atol=1e-7)
+                assert not sent[~mask].any()
+                if k == 2:  # before it is full: the frames before, in order
+                    torch.testing.assert_close(node.buffer[:6], zs[:2].reshape(6, D))
