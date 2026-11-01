@@ -340,8 +340,13 @@ exp/video/
   run.py        1 回の実行（uv run python -m exp.video.run --config ...）
 exp/lib/
   optim.py      grafting・時間で白色化・射影・Muon 型の optimizer
+  sigreg.py     SIGReg のノード
+  mingru.py     minGRU
+  metrics.py    実効ランクと probe の R²
 tests/video/
   理論のオラクルで検証するテスト（下記）
+tests/lib/
+  exp/lib/ のテスト（同じ形でミラー）
 ```
 
 - 出力は `runs/<日付>-<名前>/` に `config.json`（mujou の SHA を含む）と `metrics.jsonl`。commit しない

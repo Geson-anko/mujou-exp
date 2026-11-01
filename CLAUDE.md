@@ -17,9 +17,9 @@
 
 - mujou は git submodule（`mujou/`）で、そこから editable でインストールする（`pyproject.toml` の `[tool.uv.sources]`）。PyPI 版は使わない
 - 実験で mujou に足りない機能が見つかったら、**その場で `mujou/` に追加し、mujou へ PR を送りながら**実験を進める。実験側にライブラリの代用品を溜めない
-- コードは 3 層に分ける。迷ったときの判定は「mujou の利用者に説明できる機能か（→ mujou）、実験の運用の道具か（→ lib）」（詳細は [exp/README.md](exp/README.md)）
+- 実験は 1 実験 1 パッケージ（`exp/<name>/`）。コードは 3 層に分ける。迷ったときの判定は「mujou の利用者に説明できる機能か（→ mujou）、実験の運用の道具か（→ lib）」（詳細は [exp/README.md](exp/README.md)）
   1. **mujou に足す**: ノード・ポート・実行・学習則・optimizer の基盤など、mujou の利用者一般が使う機能と、mujou の抽象に足りないもの
-  2. **`exp/lib/` に置く**: 2 つ以上の実験が使う、または特定の実験に閉じない補助コード（記録・掃引・ホスト・設定・指標）と、研究中の部品。mujou の公開 API・torch・標準ライブラリだけに依存し、`exp/<name>/` を import しない
+  2. **`exp/lib/` に置く**: 2 つ以上の実験が使う、または特定の実験に閉じない補助コード（記録・掃引・ホスト・設定・指標）と、研究中の部品。mujou・torch・標準ライブラリだけに依存し、`exp/<name>/` を import しない
   3. **`exp/<name>/` に置く**: その実験の設定・データ・モデル・スクリプトと、実験の都合だけの暫定物。他の実験を import しない（lib は import してよい）
 
 ## 開発原則

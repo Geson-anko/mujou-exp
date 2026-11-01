@@ -1,5 +1,7 @@
 # video（旧 continuous_stream）: 動画のストリームから世界のシミュレータを PC-ALM で学ぶ
 
+2026-11-01 に `experiments/continuous_stream/` から `exp/video/` に移し、`video.py` を `balls.py` に改名し、汎用部を `exp/lib/` に移した。振る舞いは変えていない（移動前後で `metrics.jsonl` が一致）。以下の結果の節のファイル名は当時のもの。
+
 計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。
 
 ## 決定事項（2026-11-01）
@@ -8,7 +10,6 @@
 
 - optimizer は SGD、学習率 0.01。AdamW・白色化・射影はまだ使わない
 - `stop_target` を入れる
-- 2026-11-01: `experiments/continuous_stream/` を `exp/video/` に移し、`video.py` を `balls.py` に改名し、汎用部を `exp/lib/` に移した。振る舞いは変えていない（移動前後で `metrics.jsonl` が一致）
 - SIGReg の重みは $\kappa=0.8$
 - エンコーダの初期化は `model.standardize_`
 - 学習規則は PC-ALM、`learn_interval` は 25 ms、relaxer は `pc.relax.Euler`
@@ -199,7 +200,7 @@ uv run python -m exp.video.run --config <path>  # 設定は JSON（config.py の
 - 原因: 抵抗と壁での損失で、円は約 20 秒で床に止まる。速さはエピソードの 1〜5 秒で 0.32、5〜20 秒で 0.064、20 秒より後で 0.006 になる。エピソードは 30〜90 秒なので、ストリームの約 6 割は止まった円で、25% のフレームは前のフレームと同じ（画素の差の最大が 1e-3 未満）だった。評価クリップは動き始めの 128 フレームなので、止まったフレームは無い
   - `preq` の大半は止まった絵の予測（1 フレームあたり 6e-6 前後）で、世界のシミュレータの良さを測っていなかった。評価は、ストリームにほとんど出てこない場面を測っていた
   - 段 1 の「尺度の崩壊」も、止まった世界に合わせて $z$ が縮んだ結果だった可能性がある
-- 対策（コード）: エピソードを 3〜6 秒にした（評価クリップと同じくらい）。前のフレームから動くフレームの割合が、2 分のストリームで 53% から 95% 超になる（`test_video.py` の `test_the_stream_keeps_moving`）。そのうえで段 1 から回し直す
+- 対策（コード）: エピソードを 3〜6 秒にした（評価クリップと同じくらい）。前のフレームから動くフレームの割合が、2 分のストリームで 53% から 95% 超になる（`test_video.py`（現 `tests/video/test_balls.py`）の `test_the_stream_keeps_moving`）。そのうえで段 1 から回し直す
 - `pc.optim.AdamW`（要素ごと、学習率 1e-3）は 3 seed とも $z$ が崩壊した。seed 0/1 は実効ランクが 2 前後で rollout が発散し、seed 2 は 1260 秒で $z$ が定数になって評価が止まった（分散 0 で割った）。崩壊した $z$ は自分を予測するのが易しいので `preq` が小さく、そのまま基準に入れると比較が壊れる
 - 記録のために、下の規則を足した判定も書いておく: H2 は棄却（射影は `rollout10` を 7〜17% 下げるが `preq` を 14〜49% 上げる）、H3・H4 も棄却。前提は満たさない
 

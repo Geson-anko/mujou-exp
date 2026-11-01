@@ -1,6 +1,12 @@
 # マイルストーン: 最初の実験（段 0〜2）
 
-> 2026-11-01 に `exp/video/` へ移した（旧 `experiments/continuous_stream/`）。`video.py` は `balls.py`、`record.py`・`host.py`・`stream0.py` は `exp/lib/`（`stream0.py` は `linear_stream.py`）。以下のファイル名は当時のもの。
+> 2026-11-01 に `exp/video/` へ移した（旧 `experiments/continuous_stream/`）。以下のパスは新しい場所に読み替えたが、ファイル名とその中身は当時のもの。今の場所は次のとおり（テストも同じ形で `tests/lib/` へ移した）。
+>
+> - `video.py` → `exp/video/balls.py`
+> - `record.py`・`host.py`・`optim.py` → `exp/lib/` の同名のモジュール。`stream0.py` → `exp/lib/linear_stream.py`
+> - `nodes.py` の SIGReg・MinGRU → `exp/lib/sigreg.py`・`exp/lib/mingru.py`
+> - `evaluate.py` の `effective_rank`・`probe_r2` → `exp/lib/metrics.py`
+> - `config.py` の `_from_dict` → `exp/lib/config.py` の `from_dict`。`stage0.py` の `run_all`（sweep）→ `exp/lib/sweep.py`
 
 [PLAN.md](PLAN.md) の段 0〜2（合成動画まで）を、実装と検証の単位に分けたもの。段 3（EgoDex）は使い方が決まってから足す。
 
@@ -11,7 +17,7 @@
 - 実験（M6〜M8）は、回す前に PLAN.md の判定基準を確定させ、回した後に結果の数字を `README.md` に書く
 - 完了の条件はどれも `just run` が通ることを含む（下では省く）
 - 時間のかかるテスト（数十秒以上）には `@pytest.mark.slow` を付ける。反復中は `just test-fast`
-- テストは `tests/video/` に置き、`exp/video/` のモジュールと 1 対 1 にする（`test_optim.py` など）
+- テストは `tests/` にミラーし、モジュールと 1 対 1 にする（`exp/lib/optim.py` ↔ `tests/lib/test_optim.py` など）
 
 ```text
 M0 足場 ──┬─▶ M1 optimizer ──────────┬─▶ M2 段 0 の部品 ─▶ M6 段 0 の実験

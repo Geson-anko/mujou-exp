@@ -6,6 +6,7 @@ import pytest
 from exp.lib.record import REPO_ROOT
 from exp.video import run
 from exp.video.config import Config, DataConfig, OptimConfig
+from exp.video.stage0 import RUN_MODULE
 
 
 def _run(tmp_path, config: Config):
@@ -55,7 +56,7 @@ class TestRun:
                 "run",
                 "python",
                 "-m",
-                "exp.video.run",
+                RUN_MODULE,
                 "--help",
             ],
             cwd=REPO_ROOT,
