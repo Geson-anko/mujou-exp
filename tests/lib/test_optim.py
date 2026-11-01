@@ -13,6 +13,7 @@ from exp.lib.optim import (
     Grafted,
     Orthogonalized,
     Projected,
+    Warmup,
     Whitened,
     _eigh,
 )
@@ -290,3 +291,73 @@ class TestEigh:
         self._failing_once(monkeypatch)
         with pytest.raises(RuntimeError):
             _eigh(a)
+
+
+class TestWarmup:
+    @staticmethod
+    def _moved(elapsed: list[float], tau=0.5, seconds=2.0) -> torch.Tensor:
+        p = torch.zeros(3, dtype=torch.float64)
+        bound = Warmup(inner=pc.optim.SGD(tau=tau), seconds=seconds).bind([p])
+        g = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+        for e in elapsed:
+            bound.step_([g], e)
+        return -p / g * tau  # the time SGD weighed in all
+
+    @pytest.mark.parametrize(
+        ("elapsed", "ramped"),
+        [
+            ([1.0], 1.0**2 / (2 * 2.0)),  # within the ramp: t^2 / 2T
+            ([3.0], 3.0 - 2.0 / 2),  # past it: t - T / 2
+            ([0.5] * 10, 5.0 - 2.0 / 2),
+        ],
+    )
+    def test_the_time_weighed_is_the_integral_of_the_ramp(self, elapsed, ramped):
+        torch.testing.assert_close(
+            self._moved(elapsed), torch.full((3,), ramped, dtype=torch.float64)
+        )
+
+    def test_a_step_across_the_end_of_the_ramp(self):
+        moved = self._moved([1.5, 1.0])  # 1.5 -> 2.5 with T = 2: 0.5625 + 0.9375
+        torch.testing.assert_close(moved, torch.full((3,), 1.5, dtype=torch.float64))
+
+    def test_a_step_of_no_time_moves_nothing(self):
+        torch.testing.assert_close(self._moved([0.0, 1.0]), self._moved([1.0]))
+
+    @pytest.mark.parametrize("seconds", [0.0, -1.0, math.inf])
+    def test_seconds_must_be_finite_and_positive(self, seconds):
+        with pytest.raises(ValueError, match="seconds"):
+            Warmup(inner=pc.optim.SGD(tau=1.0), seconds=seconds)
+
+    def test_it_does_not_depend_on_the_steps(self):
+        torch.testing.assert_close(self._moved([0.03] * 100), self._moved([3.0]))
+
+    def test_past_the_ramp_a_step_is_sgd(self):
+        params = _params(*SHAPES)
+        grads = _grads(params, 5)
+        bound = Warmup(inner=pc.optim.SGD(tau=0.5), seconds=1.0).bind(params)
+        bound.step_([torch.zeros_like(p) for p in params], 1.0)  # through the ramp
+        expected = _trajectory(pc.optim.SGD(tau=0.5), params, grads)
+        for gs in grads:
+            bound.step_(gs, 0.03)
+        for x, y in zip(params, expected, strict=True):
+            torch.testing.assert_close(x, y)
+
+    def test_state_dict_round_trip(self):
+        opt = Warmup(
+            inner=Grafted(inner=AdamDirection(tau=0.5, tau_m=0.3, tau_v=3.0)),
+            seconds=0.2,
+        )
+        params = _params(*SHAPES)
+        grads = _grads(params, 12)
+        a = [p.clone() for p in params]
+        bound_a = opt.bind(a)
+        for gs in grads[:5]:
+            bound_a.step_(gs, 0.03)
+        b = [p.clone() for p in a]
+        bound_b = opt.bind(b)
+        bound_b.load_state_dict(bound_a.state_dict())
+        for gs in grads[5:]:
+            bound_a.step_(gs, 0.03)
+            bound_b.step_(gs, 0.03)
+        for x, y in zip(a, b, strict=True):
+            torch.testing.assert_close(x, y, rtol=0, atol=0)

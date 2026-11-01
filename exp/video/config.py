@@ -16,6 +16,7 @@ from exp.lib.optim import (
     Grafted,
     Orthogonalized,
     Projected,
+    Warmup,
     Whitened,
 )
 
@@ -62,6 +63,9 @@ class OptimConfig:
     rank: int = 4  # the eigenvectors that "projected" removes on each side
     eps: float = 1e-4  # relative to the largest eigenvalue
     refresh: float = 1.0  # seconds between two eigendecompositions
+    # Seconds over which the time of the optimizer rises from 0 (0: none); for
+    # SGD, the learning rate (exp.lib.optim.Warmup).
+    warmup: float = 0.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -195,6 +199,9 @@ class Config:
 
 def make_optimizer(c: OptimConfig) -> Optimizer:
     """The optimizer of the settings ``c``."""
+    if c.warmup > 0:
+        stepped = make_optimizer(dataclasses.replace(c, warmup=0.0))
+        return Warmup(inner=stepped, seconds=c.warmup)
     if c.kind == "sgd":
         return pc_optim.SGD(tau=c.tau)
     if c.kind == "adamw":
