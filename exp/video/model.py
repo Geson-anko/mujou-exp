@@ -7,6 +7,7 @@ and ``dyn_nodes``): the encoder of EgoDex (``egodex_stages``) into up to three
 top of it (``DynamicsStack`` is the same computation as one module).
 """
 
+import math
 from collections.abc import Sequence
 from typing import Any, override
 
@@ -14,6 +15,7 @@ import mujou.pc as pc
 import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
+from torch.nn import functional as F
 
 import mujou
 from exp.lib.mingru import MinGRU, ResidualMinGRU
@@ -26,6 +28,7 @@ from mujou import TensorSpec
 
 __all__ = [
     "DynamicsStack",
+    "GaussianBlur",
     "Network",
     "Top",
     "calibration_images",
@@ -39,14 +42,37 @@ __all__ = [
 ]
 
 
+class GaussianBlur(nn.Module):
+    """A fixed Gaussian blur of standard deviation ``sigma`` pixels of grey
+    images ``(1, H, W)`` or a batch of them, of the same size (zero padding).
+    It has no parameters."""
+
+    kernel: torch.Tensor
+
+    def __init__(self, sigma: float) -> None:
+        super().__init__()
+        r = math.ceil(3 * sigma)
+        x = torch.arange(-r, r + 1, dtype=torch.float32)
+        k = torch.exp(-(x**2) / (2 * sigma**2))
+        k = k / k.sum()
+        self.register_buffer("kernel", (k[:, None] * k)[None, None])  # (1, 1, K, K)
+        self.r = r
+
+    @override
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.conv2d(x, self.kernel, padding=self.r)
+
+
 def encoder_modules(
-    size: int, d_z: int, *, z_norm: bool = False
+    size: int, d_z: int, *, z_norm: bool = False, blur: float = 0.0
 ) -> tuple[nn.Module, nn.Module]:
     """``G1`` and ``Z`` of the CNN (section 7): three convolutions of stride 2
     and a linear map to ``d_z``, scaled onto the sphere of radius
-    $\\sqrt{d_z}$ with ``z_norm``. They take ``(1, size, size)`` or a batch of
-    them."""
+    $\\sqrt{d_z}$ with ``z_norm``; ``G1`` blurs the frame first with
+    ``blur`` > 0 (``GaussianBlur``). They take ``(1, size, size)`` or a batch
+    of them."""
     g1 = nn.Sequential(
+        *([GaussianBlur(blur)] if blur > 0 else []),
         nn.Conv2d(1, 32, 3, stride=2, padding=1),
         nn.GELU(),
         nn.Conv2d(32, 64, 3, stride=2, padding=1),
@@ -103,7 +129,9 @@ def encoder_stages(config: Config) -> list[nn.Module]:
     if d.kind != "egodex":
         if m.enc_nodes != 2:
             raise ValueError("the encoder of the synthetic video has two nodes")
-        return list(encoder_modules(d.size, m.d_z, z_norm=m.z_norm))
+        return list(encoder_modules(d.size, m.d_z, z_norm=m.z_norm, blur=m.blur))
+    if m.blur > 0:
+        raise ValueError("blur is for the synthetic video")
     e1, e2, e3 = egodex_stages(d.size, m.d_z, z_norm=m.z_norm)
     if m.enc_nodes == 3:
         return [e1, e2, e3]

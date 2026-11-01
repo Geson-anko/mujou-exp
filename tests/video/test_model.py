@@ -251,6 +251,27 @@ class TestMoreNodes:
         assert torch.allclose(zs[0].pow(2).mean(-1), torch.ones(4), atol=1e-4)
 
 
+class TestBlur:
+    def test_an_impulse_spreads_as_the_gaussian(self):
+        """The blur of one lit pixel, away from the edges, is the Gaussian of
+        the distance to it, normalized to sum to 1."""
+        sigma = 1.5
+        x = torch.zeros(1, 1, 21, 21)
+        x[0, 0, 10, 10] = 1.0
+        y = model.GaussianBlur(sigma)(x)[0, 0]
+        i = torch.arange(21.0) - 10
+        g = torch.exp(-(i[:, None] ** 2 + i**2) / (2 * sigma**2))
+        g = g * (i.abs()[:, None] <= 5) * (i.abs() <= 5)  # cut at 3 sigma
+        torch.testing.assert_close(y, g / g.sum())
+
+    def test_it_adds_no_parameters_to_learn(self):
+        def shapes(blur: float) -> list[torch.Size]:
+            config = replace(SMALL, model=replace(SMALL.model, blur=blur))
+            return [p.shape for p in Network(config).g1.module.parameters()]
+
+        assert shapes(2.0) == shapes(0.0)
+
+
 class TestResidual:
     def test_the_first_prediction_is_the_frame_before(self):
         """W_o starts at 0, so the residual prediction starts as z_{k-1}."""

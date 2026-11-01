@@ -81,6 +81,10 @@ class ModelConfig:
     # Whether z is scaled onto the sphere of radius sqrt(D), where N(0, I_D)
     # concentrates, so that SIGReg cannot push |z| out without bound.
     z_norm: bool = False
+    # The standard deviation, in pixels, of a fixed Gaussian blur of the frame
+    # before the encoder of the synthetic video (0: none), so that z varies
+    # smoothly with the positions of the balls.
+    blur: float = 0.0
     # The fraction of the predictions, the last ones of every open_cycle of a
     # video, that start from the model's own prediction (nodes.is_open).
     open_loop: float = 0.0
