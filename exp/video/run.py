@@ -6,6 +6,7 @@ uv run python -m exp.video.run --config <path>
 import argparse
 import copy
 from pathlib import Path
+from typing import Any
 
 import mujou.pc as pc
 import mujou.testing
@@ -16,11 +17,12 @@ from torch import nn
 from exp.lib.host import Host, RealtimeHost
 from exp.lib.linear_stream import LinearStream
 from exp.lib.record import REPO_ROOT, Recorder
-from exp.video.balls import Physics, Video, eval_clips, ordered
+from exp.video.balls import Frame, Physics, Video, eval_clips, ordered
 from exp.video.bp import WorldBPNetwork, bp_chain
 from exp.video.config import Config, make_optimizer
 from exp.video.evaluate import Snapshot, evaluate
 from exp.video.model import Network
+from exp.video.nodes import is_open
 from mujou import TensorSpec
 
 
@@ -85,23 +87,22 @@ def snapshot(net: Network | WorldBPNetwork) -> Snapshot:
     if isinstance(net, WorldBPNetwork):
         w = net.world
         return Snapshot(
-            copy.deepcopy(w.encoder), copy.deepcopy(w.step), copy.deepcopy(w.readout)
+            copy.deepcopy(w.encoder),
+            copy.deepcopy(w.step),
+            copy.deepcopy(w.readout),
+            w.residual,
         )
     return Snapshot.of(net)
 
 
-def run_video(config: Config, recorder: Recorder) -> None:
-    """Stages 1-2: the world model on the synthetic video, by PC-ALM or BP
-    (``config.bp``).
-
-    Each frame records the prequential ``error`` (1/D ||z_hat - z||^2, on the
-    frames with a prediction); each ``eval_interval`` seconds, the metrics of
-    ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
-    of each node's gradients over the interval. The frames come in
-    ``data.order`` (``balls.ordered``); a replayed frame records only its
-    ``replay_error``, and the metrics count the live frames.
-    """
+def _source(config: Config) -> tuple[Any, Frame]:
+    """The stream of frames (``next()`` gives a ``Frame``) and the clips to
+    evaluate on."""
     d, t = config.data, config.time
+    if d.kind == "egodex":
+        from exp.video.egodex import EgoDexStream, egodex_clips
+
+        return EgoDexStream(d.path), egodex_clips(d.path)
     physics = Physics(period=d.physics_period)
     video = Video(
         size=d.size,
@@ -112,6 +113,24 @@ def run_video(config: Config, recorder: Recorder) -> None:
         seed=config.seed,
     )
     clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
+    return video, clips
+
+
+def run_video(config: Config, recorder: Recorder) -> None:
+    """Stages 1-3: the world model on the synthetic video or EgoDex, by PC-ALM
+    or BP (``config.bp``).
+
+    Each frame records the prequential ``error`` (1/D ||z_hat - z||^2, on the
+    frames with a prediction from the observed z; ``open_error`` on those from
+    the model's own, with ``model.open_loop``) and ``z_rms`` (the root mean
+    square of z); each ``eval_interval`` seconds, the metrics of
+    ``evaluate`` on the clips and, for PC-ALM, the correlation ``rho_<node>_<lag>``
+    of each node's gradients over the interval. The frames come in
+    ``data.order`` (``balls.ordered``); a replayed frame records only its
+    ``replay_error``, and the metrics count the live frames.
+    """
+    d, t = config.data, config.time
+    video, clips = _source(config)
     dev = config.device
     clips = clips._replace(
         image=clips.image.to(dev),
@@ -119,6 +138,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
         params=clips.params.to(dev),
     )
     net = WorldBPNetwork(config) if config.bp else Network(config, correlation=True)
+    d_state = config.model.d_s * config.model.dyn_nodes
     frames = round(d.seconds / t.frame)
     every = max(1, round(config.eval_interval / t.frame))
     shown = ordered(
@@ -130,6 +150,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
         seed=config.seed + 1,
     )
     k = 0  # the live frames shown
+    count = 0
     if config.realtime:
         context = mujou.run(net)
     else:
@@ -153,13 +174,19 @@ def run_video(config: Config, recorder: Recorder) -> None:
                     recorder.log(float(written), replay_error=error)
                 continue
             values: dict[str, float | int] = {"frame": k}
+            count = 0 if f.reset else count + 1  # the predictions of the video
+            m = config.model
+            opened = count > 1 and is_open(count, m.open_loop, m.open_cycle)
             if p is None:  # real time: no prediction of the frame in time
                 values["missed"] = int(not f.reset)
             elif bool(p["mask"]):
-                values["error"] = float(((p["y_hat"] - p["y"]) ** 2).mean())
+                error = float(((p["y_hat"] - p["y"]) ** 2).mean())
+                values["open_error" if opened else "error"] = error
+            if p is not None:  # the root mean square of z_k: 1 for N(0, I)
+                values["z_rms"] = float(p["y"].pow(2).mean().sqrt())
             # The modules are read between steps only: not while a real-time run runs.
             if (k + 1) % every == 0 and not config.realtime:
-                values.update(evaluate(snapshot(net), clips, config.model.d_s))
+                values.update(evaluate(snapshot(net), clips, d_state))
                 if isinstance(net, Network):
                     for name, corr in net.correlations.items():
                         for lag, rho in corr.take().items():
@@ -167,7 +194,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
             recorder.log(float(written), **values)
             k += 1
     if config.realtime:  # once the run has stopped
-        recorder.log(d.seconds, **evaluate(snapshot(net), clips, config.model.d_s))
+        recorder.log(d.seconds, **evaluate(snapshot(net), clips, d_state))
 
 
 def main(argv: list[str] | None = None) -> Path:
@@ -186,7 +213,7 @@ def main(argv: list[str] | None = None) -> Path:
     with Recorder(config, args.out) as recorder:
         if not args.dry and config.data.kind == "linear":
             run_linear(config, recorder)
-        elif not args.dry and config.data.kind == "video":
+        elif not args.dry and config.data.kind in ("video", "egodex"):
             run_video(config, recorder)
         return recorder.dir
 

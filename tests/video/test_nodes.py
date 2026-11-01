@@ -49,7 +49,7 @@ def _sample(
 
 
 class _CompareNet(mujou.Network):
-    def __init__(self) -> None:
+    def __init__(self, target_weight: float = 1.0) -> None:
         super().__init__()
         ins = _inputs(("s", S), ("z", D))
         self.s_in, self.z_in = ins["s"], ins["z"]
@@ -62,6 +62,7 @@ class _CompareNet(mujou.Network):
             tau=TAU,
             optimizer=pc.optim.SGD(tau=1.0),
             learn_interval=math.inf,
+            target_weight=target_weight,
         )
         self.s_in.next.connect(self.compare.s)
         self.z_in.next.connect(self.compare.z)
@@ -84,6 +85,20 @@ class TestCompare:
         torch.testing.assert_close(g_s.double(), want_s, rtol=1e-4, atol=1e-6)
         torch.testing.assert_close(g_z.double(), want_z, rtol=1e-4, atol=1e-6)
         assert bool(p["mask"])
+
+    def test_the_target_gets_target_weight_times_its_gradient(self):
+        g = torch.Generator().manual_seed(3)
+        s, z = torch.randn(S, generator=g), torch.randn(D, generator=g)
+        sent = {}
+        for w in (1.0, 0.25, 0.0):
+            net = _CompareNet(target_weight=w)
+            writes = {net.s_in.prev: _sample(s), net.z_in.prev: _sample(z)}
+            with mujou.testing.run(net, inputs=writes) as run:
+                run.step(TAU.period)
+                sent[w] = (run.read(net.compare.s), run.read(net.compare.z))
+        torch.testing.assert_close(sent[0.25][1], 0.25 * sent[1.0][1])
+        assert not sent[0.0][1].any()
+        torch.testing.assert_close(sent[0.0][0], sent[1.0][0])  # s is unchanged
 
     def test_without_a_prediction_it_sends_no_credit(self):
         net = _CompareNet()

@@ -75,13 +75,33 @@ class ModelConfig:
     # Whether the prediction error sends no credit to its target z_k (a stop
     # gradient), so that only SIGReg shapes the encoder from its side.
     stop_target: bool = False
+    # With stop_target, the fraction of that credit still sent (0: none), so
+    # that the encoder also learns to make z predictable.
+    target_weight: float = 0.0
+    # Whether z is scaled onto the sphere of radius sqrt(D), where N(0, I_D)
+    # concentrates, so that SIGReg cannot push |z| out without bound.
+    z_norm: bool = False
+    # The fraction of the predictions, the last ones of every open_cycle of a
+    # video, that start from the model's own prediction (nodes.is_open).
+    open_loop: float = 0.0
+    open_cycle: int = 20
+    # Whether the prediction is z_{k-1} + W_o s_k (the change from the input
+    # the dynamics remembered) rather than W_o s_k; W_o starts at 0.
+    residual: bool = False
+    # The nodes of the encoder (the synthetic video: 2, G1 and Z; EgoDex: 1-3)
+    # and of the dynamics (Dynamics and dyn_nodes - 1 DynamicsLayer on top).
+    enc_nodes: int = 2
+    dyn_nodes: int = 1
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
+    buffer_every: int = 1  # SIGReg keeps the z of one frame in buffer_every
 
 
 @dataclass(frozen=True, kw_only=True)
 class DataConfig:
-    """The stream. ``kind`` is ``"linear"`` (stage 0) or ``"video"`` (stages 1-2)."""
+    """The stream. ``kind`` is ``"linear"`` (stage 0), ``"video"`` (stages 1-2)
+    or ``"egodex"`` (stage 3, from the frames ``egodex.py`` prepared in ``path``;
+    ``size`` 64)."""
 
     kind: str = "video"
     seconds: float = 600.0  # the length of the stream, on the run's timer
@@ -104,6 +124,8 @@ class DataConfig:
     order: str = "stream"
     clip: float = 1.0
     replay: int = 4096
+    # EgoDex (stage 3).
+    path: str = "datasets/egodex64"
 
 
 @dataclass(frozen=True, kw_only=True)
