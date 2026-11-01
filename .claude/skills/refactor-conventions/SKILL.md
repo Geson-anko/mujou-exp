@@ -21,10 +21,13 @@ CLAUDE.md の開発原則を補完し、判断基準と具体例を示す。テ�
 
 ## 実験のパッケージ構成
 
-- 1 実験 1 パッケージ（`experiments/<name>/`）。実行は `uv run python -m experiments.<name>.<script>`
-- 実験をまたいで使うコード・特定の実験に閉じないコードは、`experiments/` に共通モジュールを作らず mujou に足す（skill `mujou-upstream`）
+- 1 実験 1 パッケージ（`exp/<name>/`）。実行は `uv run python -m exp.<name>.<script>`
+- 置き場所は 3 層で分ける
+  - mujou: 利用者一般が使う機能と、mujou の抽象の不足（skill `mujou-upstream`）。実験側に mujou の代用品を溜めない
+  - `exp/lib/`: 実験を回す補助（記録・ホストのループ・sweep など）と、複数の実験が使う研究中の部品。mujou・torch・標準ライブラリだけに依存し、`exp/<name>/` を import しない。mujou の抽象に属すと分かったら mujou へ移す
+  - `exp/<name>/`: その実験だけのもの。多少の重複は許し、シンプルさを優先する
 - 実験の都合だけの暫定物は、その実験のパッケージの中に置く
-- 他の実験のパッケージを import しない
+- 他の実験のパッケージを import しない（共有するものは `exp/lib/` に移す）
 
 ## 設定と再現性
 

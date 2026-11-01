@@ -32,10 +32,11 @@ mujou 自身の振る舞いは mujou のテスト（`cd mujou && just test`）�
 
 ## テストレイアウト
 
-`tests/<name>/` は `experiments/<name>/` を 1 対 1 でミラーリングする（1 source 1 test ファイル）。`tests/<name>/__init__.py` を置く。
+`tests/<name>/` は `exp/<name>/` を、`tests/lib/` は `exp/lib/` を 1 対 1 でミラーリングする（1 source 1 test ファイル）。各ディレクトリに `__init__.py` を置く。
 
 ```
-experiments/<name>/<module>.py  ↔ tests/<name>/test_<module>.py
+exp/<name>/<module>.py  ↔ tests/<name>/test_<module>.py
+exp/lib/<module>.py     ↔ tests/lib/test_<module>.py
 ```
 
 ミラーの外に置くのは次のものだけ。

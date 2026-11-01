@@ -23,7 +23,7 @@ test:
 test-fast:
     uv run pytest -v -m "not slow"
 
-# Run pyright over experiments/ and tests/
+# Run pyright over exp/ and tests/
 type:
     uv run pyright
 

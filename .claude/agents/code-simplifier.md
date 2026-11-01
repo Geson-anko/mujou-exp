@@ -14,7 +14,7 @@ skills:
 ## 役割
 
 1. **簡素化** — 公開 IF を変えずに内部実装を整理する
-2. **ドキュメント同期** — 今回の変更で古くなった docstring と、実験のドキュメント（`experiments/<name>/` の `README.md`・`PLAN.md` など）を直す
+2. **ドキュメント同期** — 今回の変更で古くなった docstring と、実験のドキュメント（`exp/<name>/` の `README.md`・`PLAN.md` など）を直す
 
 レビュー（バグ指摘・verdict）は `code-reviewer` / `algorithm-reviewer` の担当。この agent は実行に専念する。
 

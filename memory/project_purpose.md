@@ -9,4 +9,4 @@ metadata:
 
 **Why:** ライブラリの設計は実際に使わないと固まらない。実験で足りない機能が見つかったらその場で mujou に足し、mujou へ PR を送り、実験を止めない。
 
-**How to apply:** 実験側にライブラリ機能の代用品を溜めず、`mujou/` に足す（手順は skill `mujou-upstream`）。実験の都合だけの暫定物は実験側に置く。判断が割れたらユーザーに確認する。関連: [[project-mujou-submodule]]
+**How to apply:** 実験側にライブラリ機能の代用品を溜めず、`mujou/` に足す（手順は skill `mujou-upstream`）。実験の都合だけの暫定物は実験側に置く。実験横断の補助コードは `exp/lib/`（[[project-exp-lib]]）。判断が割れたらユーザーに確認する。関連: [[project-mujou-submodule]]

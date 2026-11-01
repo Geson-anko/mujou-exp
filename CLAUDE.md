@@ -9,7 +9,7 @@
 - 散文・説明・要約・確認・質問・計画は日本語で書く
 - コード・コマンド・ファイルパス・識別子・ログ/エラーの引用は原語のまま残す
 - コミットメッセージ・PR タイトルは「Git 運用」の規約に従い、日本語化しない
-- README（ルートと `experiments/` 配下の実験ごとのもの）・計画書・skill・memory は日本語で書く。docstring とコードのコメントは英語
+- README（ルートと `exp/` 配下の実験ごとのもの）・計画書・skill・memory は日本語で書く。docstring とコードのコメントは英語
 
 ## プロジェクト概要
 
@@ -17,7 +17,10 @@
 
 - mujou は git submodule（`mujou/`）で、そこから editable でインストールする（`pyproject.toml` の `[tool.uv.sources]`）。PyPI 版は使わない
 - 実験で mujou に足りない機能が見つかったら、**その場で `mujou/` に追加し、mujou へ PR を送りながら**実験を進める。実験側にライブラリの代用品を溜めない
-- 実験は `experiments/<name>/` に 1 実験 1 パッケージで置く（[experiments/README.md](experiments/README.md)）
+- 実験は 1 実験 1 パッケージ（`exp/<name>/`）。コードは 3 層に分ける。迷ったときの判定は「mujou の利用者に説明できる機能か（→ mujou）、実験の運用の道具か（→ lib）」（詳細は [exp/README.md](exp/README.md)）
+  1. **mujou に足す**: ノード・ポート・実行・学習則・optimizer の基盤など、mujou の利用者一般が使う機能と、mujou の抽象に足りないもの
+  2. **`exp/lib/` に置く**: 2 つ以上の実験が使う、または特定の実験に閉じない補助コード（記録・掃引・ホスト・設定・指標）と、研究中の部品。mujou・torch・標準ライブラリだけに依存し、`exp/<name>/` を import しない
+  3. **`exp/<name>/` に置く**: その実験の設定・データ・モデル・スクリプトと、実験の都合だけの暫定物。他の実験を import しない（lib は import してよい）
 
 ## 開発原則
 
@@ -50,7 +53,7 @@ mujou の hook と skill は、このリポジトリのルートで起動した 
 - パッケージ・環境管理: `uv`（`uv.lock` をコミットする）。**`pip install` は使わない**（hook がブロックする）。依存追加は `uv add` / `uv add --dev`。mujou の依存を変えるときは mujou 側の `pyproject.toml` を直す
 - Python: 3.14 以上。mujou に合わせて**開発は free-threaded 版の 3.14t**（`.python-version`）
 - タスクランナー: `just`（1.58 以上）
-- 型チェッカー: `pyright`（`experiments/` と `tests/`、standard）。`mujou/` は対象外（mujou 自身が strict で検査する）
+- 型チェッカー: `pyright`（`exp/` と `tests/`、standard）。`mujou/` は対象外（mujou 自身が strict で検査する）
 - リンター/フォーマッター: `ruff`（line-length 88）、pre-commit。`mujou/` は pre-commit の対象外
 - `uv sync` は mujou の Rust 拡張を maturin でビルドするので Rust（rustup）が要る。ホストに無ければ dev container で作業する
 

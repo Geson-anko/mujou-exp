@@ -1,11 +1,11 @@
 ---
 name: experiment-report
-description: 実験の結果を、図と動画で読める 1 枚の HTML 資料（experiments/<name>/report.html）にまとめる手順。手本は experiments/continuous_stream/report.html。データは runs/ から抜き出して埋め込み、外部ファイルなしでブラウザで開ける形にする。日本語の本文は必ず skill yomiyasu で推敲する。「レポートを作って」「結果を資料にまとめて」「report.html のような資料」「分かりやすい資料」と言われたときに参照する。
+description: 実験の結果を、図と動画で読める 1 枚の HTML 資料（exp/<name>/report.html）にまとめる手順。手本は exp/video/report.html。データは runs/ から抜き出して埋め込み、外部ファイルなしでブラウザで開ける形にする。日本語の本文は必ず skill yomiyasu で推敲する。「レポートを作って」「結果を資料にまとめて」「report.html のような資料」「分かりやすい資料」と言われたときに参照する。
 ---
 
 # 実験の結果を 1 枚の HTML 資料にまとめる
 
-実験の `README.md` は数字の記録で、読み手は実験した本人を想定している。この skill で作る `report.html` は、実験に関わっていない人が上から読んで「何をして、何が分かったか」を掴むための資料にする。手本は [experiments/continuous_stream/report.html](../../../experiments/continuous_stream/report.html)。迷ったらこれを開いて構成と書き方を真似る。
+実験の `README.md` は数字の記録で、読み手は実験した本人を想定している。この skill で作る `report.html` は、実験に関わっていない人が上から読んで「何をして、何が分かったか」を掴むための資料にする。手本は [exp/video/report.html](../../../exp/video/report.html)。迷ったらこれを開いて構成と書き方を真似る。
 
 関連: skill [yomiyasu](../yomiyasu/SKILL.md)（日本語の推敲。**必須**）、skill `dataviz`（グラフの形と色を選ぶとき）。
 
@@ -23,7 +23,7 @@ description: 実験の結果を、図と動画で読める 1 枚の HTML 資料�
 
 | 節                   | 中身                                                                                                                                   |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| ヘッダー             | eyebrow（`mujou-exp · experiments/<name> · 期間`）、`h1` は実験の問いを平たく言ったもの、リード文 2〜3 文、メタ情報（学習則、mujou の SHA、PR 番号、計算環境）、目次 |
+| ヘッダー             | eyebrow（`mujou-exp · exp/<name> · 期間`）、`h1` は実験の問いを平たく言ったもの、リード文 2〜3 文、メタ情報（学習則、mujou の SHA、PR 番号、計算環境）、目次 |
 | 分かったこと         | 結論を 2〜4 枚のカードで。各カードに対応するマイルストーン（`M9` など）と、1〜3 文の結果を書く                                       |
 | 実験の仕組み         | モデルとノードの構成図（インライン SVG）。続けて「指標の読み方」を `dl` で。指標ごとに、何を測り、大きい／小さいどちらが良いかを書く |
 | 入力                 | 入力データが目に見えるもの（動画・画像）なら、実際に見られるようにする（canvas で再生、区間の切替、スクラブ）                         |
@@ -61,7 +61,7 @@ description: 実験の結果を、図と動画で読める 1 枚の HTML 資料�
 
 ### 1. 材料を集める
 
-`experiments/<name>/README.md`（数字の正）、`PLAN.md`、`MILESTONES.md`、`runs/` の中身を読み、どの節にどの数字と図を置くかを決める。`runs/` に必要なログが無ければ、run をやり直す前にユーザーに確認する。
+`exp/<name>/README.md`（数字の正）、`PLAN.md`、`MILESTONES.md`、`runs/` の中身を読み、どの節にどの数字と図を置くかを決める。`runs/` に必要なログが無ければ、run をやり直す前にユーザーに確認する。
 
 ### 2. データを抜き出す
 
@@ -69,7 +69,7 @@ scratchpad に Python のスクリプトを書き、`runs/` から図に要る�
 
 ### 3. HTML を書く
 
-構成の表に沿って `experiments/<name>/report.html` を書く。手本の `lineChart` のような小さな描画関数を作って使い回し、図ごとに描画コードを書き散らさない。JSON は手順 2 の出力を `<script type="application/json" id="data">` に流し込む（手で貼らず、スクリプトで HTML に差し込むと作り直しが楽）。
+構成の表に沿って `exp/<name>/report.html` を書く。手本の `lineChart` のような小さな描画関数を作って使い回し、図ごとに描画コードを書き散らさない。JSON は手順 2 の出力を `<script type="application/json" id="data">` に流し込む（手で貼らず、スクリプトで HTML に差し込むと作り直しが楽）。
 
 ### 4. 確かめる
 
@@ -83,6 +83,6 @@ scratchpad に Python のスクリプトを書き、`runs/` から図に要る�
 
 ### 6. リンクして commit する
 
-`experiments/<name>/README.md` の冒頭付近に、資料の範囲（どのマイルストーンか）と開き方を 1 文で書いてリンクする（手本: 「M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)」）。`just run` を通してから `docs(<name>): add a report page of ...` で commit する。
+`exp/<name>/README.md` の冒頭付近に、資料の範囲（どのマイルストーンか）と開き方を 1 文で書いてリンクする（手本: 「M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)」）。`just run` を通してから `docs(<name>): add a report page of ...` で commit する。
 
 資料を claude.ai で共有したいと言われたら、Artifact ツールで同じファイルを publish する。言われなければ publish しない。

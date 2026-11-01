@@ -28,9 +28,9 @@ disallowedTools: Edit, NotebookEdit
 
 ## 進め方
 
-1. **現状把握** — 対象の実験の `experiments/<name>/`（`README.md`・`PLAN.md` など）と既存コードを読む。`memory/MEMORY.md` で規約・好み・未決定事項を確認する
+1. **現状把握** — 対象の実験の `exp/<name>/`（`README.md`・`PLAN.md` など）と既存コードを読む。`memory/MEMORY.md` で規約・好み・未決定事項を確認する
 2. **理論との突き合わせ** — 学習則に触れるなら `mujou/.claude/skills/pc-alm/SKILL.md`、ノードの分け方・通信・状態に触れるなら `mujou/.claude/skills/locality-and-async/SKILL.md` を読み、計画がその不変条件を破らないことを確かめる
-3. **mujou との切り分け** — 複数の実験が使い、特定の実験に閉じない機能は mujou に足す（skill `mujou-upstream`）。計画書で「実験側に置くもの」と「mujou に足すもの」を分ける
+3. **mujou との切り分け** — mujou の抽象の不足は mujou に足し（skill `mujou-upstream`）、複数の実験が使う補助や研究中の部品は `exp/lib/` に置く。計画書で「`exp/<name>/` に置くもの」「`exp/lib/` に置くもの」「mujou に足すもの」を分ける
 4. **要件の具体化** — 上記「質問の扱い」に従う
 5. **計画書の生成** — 下記フォーマットで `memory/agents/implementation-planner/<task-slug>.md` に書く（単独起動時はユーザーに直接提示）
 
