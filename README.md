@@ -28,7 +28,7 @@ just container just run
 
 dev container は Docker Compose（ルートの `compose.yaml`）で立ち上げる。Compose がルートの `.env` を読むので、ホスト側のパスは `.env` に書く。
 
-EgoDex（[experiments/continuous_stream/](experiments/continuous_stream/) の段 3）は、ホストのディレクトリをコンテナの `/datasets/egodex` に読み取り専用でマウントする。`.env.example` を `.env` にコピーし、`EGODEX_DIR` にホストのパスを書く。コンテナの中では `EGODEX_DIR=/datasets/egodex` が設定される。
+EgoDex（[exp/video/](exp/video/) の段 3）は、ホストのディレクトリをコンテナの `/datasets/egodex` に読み取り専用でマウントする。`.env.example` を `.env` にコピーし、`EGODEX_DIR` にホストのパスを書く。コンテナの中では `EGODEX_DIR=/datasets/egodex` が設定される。
 
 ```sh
 cp .env.example .env  # EGODEX_DIR=/path/to/egodex を書き換える
@@ -44,7 +44,7 @@ cp .env.example .env  # EGODEX_DIR=/path/to/egodex を書き換える
 | `just format`       | pre-commit フックを全ファイルに実行                               |
 | `just test`         | このプロジェクトの pytest                                         |
 | `just test-fast`    | `slow` を除いた pytest                                            |
-| `just type`         | `experiments/` と `tests/` への pyright                           |
+| `just type`         | `exp/` と `tests/` への pyright                                   |
 | `just run`          | format → test → type。**コミット前に実行する**                    |
 | `just mujou-status` | submodule の状態。コミットが origin に無ければ失敗する            |
 | `just mujou-update` | submodule を `origin/main` の最新へ進める                         |

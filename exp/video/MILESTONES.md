@@ -1,5 +1,7 @@
 # マイルストーン: 最初の実験（段 0〜2）
 
+> 2026-11-01 に `exp/video/` へ移した（旧 `experiments/continuous_stream/`）。`video.py` は `balls.py`、`record.py`・`host.py`・`stream0.py` は `exp/lib/`（`stream0.py` は `linear_stream.py`）。以下のファイル名は当時のもの。
+
 [PLAN.md](PLAN.md) の段 0〜2（合成動画まで）を、実装と検証の単位に分けたもの。段 3（EgoDex）は使い方が決まってから足す。
 
 ## 進め方
@@ -9,7 +11,7 @@
 - 実験（M6〜M8）は、回す前に PLAN.md の判定基準を確定させ、回した後に結果の数字を `README.md` に書く
 - 完了の条件はどれも `just run` が通ることを含む（下では省く）
 - 時間のかかるテスト（数十秒以上）には `@pytest.mark.slow` を付ける。反復中は `just test-fast`
-- テストは `tests/continuous_stream/` に置き、`experiments/continuous_stream/` のモジュールと 1 対 1 にする（`test_optim.py` など）
+- テストは `tests/video/` に置き、`exp/video/` のモジュールと 1 対 1 にする（`test_optim.py` など）
 
 ```text
 M0 足場 ──┬─▶ M1 optimizer ──────────┬─▶ M2 段 0 の部品 ─▶ M6 段 0 の実験
@@ -27,10 +29,10 @@ M1・M3・M4 は互いに独立で、並べて進められる。
 
 **作るもの**
 
-- `experiments/continuous_stream/__init__.py`、`README.md`（仮説・実行方法・結果の枠だけ）
+- `exp/video/__init__.py`、`README.md`（仮説・実行方法・結果の枠だけ）
 - `config.py`: 設定の dataclass（seed、寸法、時定数、optimizer、データ）。JSON との往復
 - `record.py`: 実行ごとの出力 `runs/<日付>-<名前>/`。`config.json`（mujou の SHA、このリポジトリの SHA、未コミットの変更の有無を含む）と `metrics.jsonl`（1 行 1 記録、タイマーの時刻つき）
-- `run.py`: `uv run python -m experiments.continuous_stream.run --config <path>` の入口（中身は後のマイルストーンで足す）
+- `run.py`: `uv run python -m exp.video.run --config <path>` の入口（中身は後のマイルストーンで足す）
 
 **オラクル**
 

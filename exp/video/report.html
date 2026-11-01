@@ -1,4 +1,4 @@
-<title>continuous_stream 実験報告</title>
+<title>video 実験報告</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -178,7 +178,7 @@ pre.cmd { background: var(--panel); border: 1px solid var(--rule); border-radius
 
 <main>
 <header class="hero">
-  <div class="eyebrow">mujou-exp · experiments/continuous_stream · 2026-10-30〜31</div>
+  <div class="eyebrow">mujou-exp · exp/video · 2026-10-30〜31</div>
   <h1>動画ストリームで世界モデルを学ぶ</h1>
   <p class="lead">32×32 ピクセルの合成動画を 1 フレームずつ流し、モデルに次のフレームの中身を予測させ続けました。学習と予測は同時に進み、同じフレームが二度来ることはありません。このような流れ続けるデータに合う optimizer を探すことが、この実験の中心の問いです。段 0〜2（マイルストーン M0〜M10）まで終えたので、その結果をまとめます。</p>
   <div class="meta">
@@ -483,13 +483,13 @@ pre.cmd { background: var(--panel); border: 1px solid var(--rule); border-radius
 <section aria-labelledby="h-repro">
   <div class="sec-head"><div class="eyebrow">付録</div><h2 id="h-repro">再現</h2></div>
   <div class="prose">
-    <p>mujou は <code>881c4ee</code> です。run の記録（<code>runs/</code>）は git に入れていません。数字はすべて <code>experiments/continuous_stream/README.md</code> にあります。</p>
+    <p>mujou は <code>881c4ee</code> です。run の記録（<code>runs/</code>）は git に入れていません。数字はすべて <code>exp/video/README.md</code> にあります。</p>
   </div>
-  <pre class="cmd">uv run python -m experiments.continuous_stream.collapse run --out runs/collapse
-uv run python -m experiments.continuous_stream.collapse run --confirm --out runs/collapse-confirm
-uv run python -m experiments.continuous_stream.stage2 run --out runs/stage2-m10
-uv run python -m experiments.continuous_stream.stage2 run --realtime --out runs/stage2-m10-realtime --jobs 1
-uv run python -m experiments.continuous_stream.stage2 summarize --out runs/stage2-m10</pre>
+  <pre class="cmd">uv run python -m exp.video.collapse run --out runs/collapse
+uv run python -m exp.video.collapse run --confirm --out runs/collapse-confirm
+uv run python -m exp.video.stage2 run --out runs/stage2-m10
+uv run python -m exp.video.stage2 run --realtime --out runs/stage2-m10-realtime --jobs 1
+uv run python -m exp.video.stage2 summarize --out runs/stage2-m10</pre>
 </section>
 </main>
 <div id="tip" hidden></div>

@@ -1,4 +1,4 @@
-"""One run of the continuous-stream experiment.
+"""One run of the video experiment.
 
 uv run python -m exp.video.run --config <path>
 """
@@ -172,9 +172,7 @@ def run_video(config: Config, recorder: Recorder) -> None:
 
 def main(argv: list[str] | None = None) -> Path:
     """Run the stream of the settings, and return the directory of the run."""
-    parser = argparse.ArgumentParser(
-        description="One run of the continuous-stream experiment."
-    )
+    parser = argparse.ArgumentParser(description="One run of the video experiment.")
     parser.add_argument(
         "--config", type=Path, help="settings (JSON); the defaults if left out"
     )

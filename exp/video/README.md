@@ -1,4 +1,4 @@
-# continuous_stream: 動画のストリームから世界のシミュレータを PC-ALM で学ぶ
+# video（旧 continuous_stream）: 動画のストリームから世界のシミュレータを PC-ALM で学ぶ
 
 計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。
 
@@ -8,6 +8,7 @@
 
 - optimizer は SGD、学習率 0.01。AdamW・白色化・射影はまだ使わない
 - `stop_target` を入れる
+- 2026-11-01: `experiments/continuous_stream/` を `exp/video/` に移し、`video.py` を `balls.py` に改名し、汎用部を `exp/lib/` に移した。振る舞いは変えていない（移動前後で `metrics.jsonl` が一致）
 - SIGReg の重みは $\kappa=0.8$
 - エンコーダの初期化は `model.standardize_`
 - 学習規則は PC-ALM、`learn_interval` は 25 ms、relaxer は `pc.relax.Euler`
@@ -21,7 +22,7 @@ PLAN.md 8 節の H0〜H4。各段の冒頭で閾値を確定させ、ここに�
 ## 実行方法
 
 ```bash
-uv run python -m experiments.continuous_stream.run --config <path>  # 設定は JSON（config.py の Config）
+uv run python -m exp.video.run --config <path>  # 設定は JSON（config.py の Config）
 ```
 
 出力は `runs/<日付>-<名前>/` の `config.json`（設定、mujou とこのリポジトリの SHA、未コミットの変更の有無）と `metrics.jsonl`。commit しない。
@@ -37,7 +38,7 @@ uv run python -m experiments.continuous_stream.run --config <path>  # 設定は 
 - SGD は `tau=10`（1 フレームあたりの学習率 1/300）
 - AdamW の向き（`AdamDirection`）は `tau_m` $\in\{0.1,0.3,1,3\}$ 秒、`tau_v=30` 秒。grafting あり（大きさを SGD にそろえる）となし（`tau=10`、要素ごとの歩幅 1/300）
 - 指標は後半 300 秒の $\lVert w-w_*\rVert$ の時間平均
-- 実行: `uv run python -m experiments.continuous_stream.stage0 run|summarize`（120 本、8 並列で約 25 分）
+- 実行: `uv run python -m exp.video.stage0 run|summarize`（120 本、8 並列で約 25 分）
 
 閾値は PLAN.md 8 節のまま（1.5 倍、10%）で、回す前に変えていない。
 

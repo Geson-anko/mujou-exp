@@ -326,20 +326,21 @@ Hoque ら, [arXiv:2505.11709](https://arxiv.org/abs/2505.11709)、[apple/ml-egod
 ## 10. 実装の構成
 
 ```text
-experiments/continuous_stream/
+exp/video/
   PLAN.md       この計画書
   MILESTONES.md 実装と検証のマイルストーン
   README.md     仮説・実行方法・結果（段ごとに追記）
   __init__.py
-  config.py     設定の dataclass（seed、寸法、時定数、optimizer）
-  video.py      合成動画の生成（物理と描画）
+  config.py     設定の dataclass（seed、寸法、時定数、optimizer）と make_optimizer
+  balls.py      合成動画の生成（物理と描画）
   egodex.py     EgoDex の読み込みと縮小（段 3）
-  nodes.py      Dynamics・Compare・SIGReg
-  optim.py      grafting・時間で白色化・射影・Muon 型の optimizer
-  evaluate.py   評価用クリップ、rollout、probe、実効ランク
+  nodes.py      Dynamics・Compare（SIGReg と MinGRU は exp/lib/ の sigreg.py・mingru.py）
+  evaluate.py   評価用クリップ、rollout（probe と実効ランクは exp/lib/metrics.py）
   bp.py         BP の基準
-  run.py        1 回の実行（uv run python -m experiments.continuous_stream.run --config ...）
-tests/continuous_stream/
+  run.py        1 回の実行（uv run python -m exp.video.run --config ...）
+exp/lib/
+  optim.py      grafting・時間で白色化・射影・Muon 型の optimizer
+tests/video/
   理論のオラクルで検証するテスト（下記）
 ```
 
