@@ -46,6 +46,31 @@ def _sample(image: torch.Tensor, reset: bool) -> pc.msg.Sample:
     )
 
 
+class TestEncoderWidth:
+    def test_the_width_sets_the_channels(self):
+        g1, z = model.encoder_modules(32, 16, width=64)
+        convs = [
+            m for s in (g1, z) for m in s.modules() if isinstance(m, torch.nn.Conv2d)
+        ]
+        assert [c.out_channels for c in convs] == [64, 128, 256]
+        assert z(g1(torch.zeros(5, 1, 32, 32))).shape == (5, 16)
+
+    def test_the_default_is_the_encoder_before(self):
+        g1, z = model.encoder_modules(32, 64)
+        count = sum(p.numel() for p in (*g1.parameters(), *z.parameters()))
+        # 3x3 convolutions 1->32->64->128 and the linear map of 128*4*4 to 64.
+        want = (9 * 32 + 32) + (9 * 32 * 64 + 64) + (9 * 64 * 128 + 128)
+        assert count == want + 128 * 16 * 64 + 64
+
+    def test_the_config_reaches_the_network(self):
+        config = replace(SMALL, model=replace(SMALL.model, width=8))
+        stages = model.encoder_stages(config)
+        convs = [
+            m for s in stages for m in s.modules() if isinstance(m, torch.nn.Conv2d)
+        ]
+        assert [c.out_channels for c in convs] == [8, 16, 32]
+
+
 class TestNetwork:
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize(

@@ -12,7 +12,10 @@ e(t) = e_0 (1 + a_e \sin(2\pi t / T + \pi / 2)).
 $$
 
 Each episode lasts a uniform time in ``episode`` seconds; a new one draws the
-positions and velocities anew (its first frame has ``reset``). A frame is a
+positions and velocities anew (its first frame has ``reset``). With
+``episode=None``, the balls are drawn once and the stream never starts anew
+(M13: the frames change continuously; with $e = 1$ and no drag the balls keep
+their energy and do not come to rest). A frame is a
 ``size`` x ``size`` grey image of Gaussian blobs, one per ball, of standard
 deviation half the radius, in $[0, 1]$.
 """
@@ -39,6 +42,13 @@ class Physics:
     e_amp: float = 0.5
     drag: float = 0.1
     period: float = 600.0  # T
+    # Whether a bounce keeps the energy that semi-implicit Euler keeps between
+    # the bounces (``_reflected``); without, each bounce off the floor or the
+    # ceiling changes it by up to gamma h |v_y| (h the step), with the sign of
+    # where in the step the ball hits, and with e = 1 the energy of a ball
+    # drifts by up to about 10% over minutes. Off by default: the physics of
+    # the runs before M13.
+    conserve: bool = False
 
     def gamma(self, t: float) -> float:
         return self.gamma0 * (
@@ -59,6 +69,17 @@ class Frame(NamedTuple):
     reset: bool | torch.Tensor  # the first frame of an episode (a tensor: a stack)
 
 
+def _reflected(v: float, dy: float, g: float, h: float, up: bool) -> float:
+    r"""The velocity along an axis after a bounce that moves the position by
+    ``dy`` against the acceleration $-g$, such that the energy semi-implicit
+    Euler keeps in steps of ``h``, $\tilde E = v^2 / 2 + g y - g h v / 2$, is
+    the same as before: the root of $v'^2 - g h v' = v^2 - g h v - 2 g\,dy$
+    that points away from the wall (``up``: toward larger coordinates)."""
+    c = v * v - g * h * v - 2 * g * dy
+    root = math.sqrt(max(g * g * h * h + 4 * c, 0.0))
+    return (g * h + root) / 2 if up else (g * h - root) / 2
+
+
 def _step(
     pos: list[list[float]],
     vel: list[list[float]],
@@ -67,21 +88,26 @@ def _step(
     gamma: float,
     e: float,
     drag: float,
+    conserve: bool = False,
 ) -> None:
     """One step of semi-implicit Euler, in place: the velocity first, then the
-    position with the new velocity, then the bounces off the walls."""
+    position with the new velocity, then the bounces off the walls. With
+    ``conserve``, the speed after a bounce is ``e`` times that of
+    ``_reflected``, rather than ``e`` times that before."""
     for p, v, r in zip(pos, vel, radii, strict=True):
         v[0] += h * (-drag * v[0])
         v[1] += h * (-gamma - drag * v[1])
         p[0] += h * v[0]
         p[1] += h * v[1]
-        for i in (0, 1):
-            if p[i] < r:
-                p[i] = r + e * (r - p[i])
-                v[i] = -e * v[i]
-            elif p[i] > 1 - r:
-                p[i] = 1 - r - e * (p[i] - (1 - r))
-                v[i] = -e * v[i]
+        for i, g in ((0, 0.0), (1, gamma)):
+            if p[i] < r or p[i] > 1 - r:
+                wall = r if p[i] < r else 1 - r
+                q = wall + e * (wall - p[i])
+                if conserve:
+                    v[i] = e * _reflected(v[i], q - p[i], g, h, up=p[i] < r)
+                else:
+                    v[i] = -e * v[i]
+                p[i] = q
 
 
 def render(states: torch.Tensor, size: int, radii: tuple[float, ...]) -> torch.Tensor:
@@ -106,7 +132,8 @@ class Video:
         balls: How many balls (up to ``len(RADII)``).
         frame: The time between two frames, in seconds.
         physics: The physics.
-        episode: The shortest and longest episode, in seconds.
+        episode: The shortest and longest episode, in seconds; ``None``: one
+            episode, the whole stream.
         substeps: The steps of the integration per frame.
         seed: Seeds every draw.
         start: The time of the first frame on the clock of the physics.
@@ -119,7 +146,7 @@ class Video:
         balls: int = 3,
         frame: float = 1 / 30,
         physics: Physics = Physics(),
-        episode: tuple[float, float] = (3.0, 6.0),
+        episode: tuple[float, float] | None = (3.0, 6.0),
         substeps: int = 8,
         seed: int,
         start: float = 0.0,
@@ -136,9 +163,12 @@ class Video:
         self._vel: list[list[float]] = []
 
     def _new_episode(self) -> None:
-        lo, hi = self._episode
-        seconds = lo + (hi - lo) * float(torch.rand((), generator=self._g))
-        self._end = self.k + max(1, round(seconds / self._frame))
+        if self._episode is None:
+            self._end = -1  # never again
+        else:
+            lo, hi = self._episode
+            seconds = lo + (hi - lo) * float(torch.rand((), generator=self._g))
+            self._end = self.k + max(1, round(seconds / self._frame))
         self._pos, self._vel = draw_balls(self.radii, self._g)
 
     def _state(self) -> torch.Tensor:
@@ -237,7 +267,14 @@ def advance(
     for i in range(substeps):
         s = t + i * h
         _step(
-            pos, vel, radii, h, physics.gamma(s), physics.restitution(s), physics.drag
+            pos,
+            vel,
+            radii,
+            h,
+            physics.gamma(s),
+            physics.restitution(s),
+            physics.drag,
+            physics.conserve,
         )
 
 

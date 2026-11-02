@@ -1,5 +1,6 @@
 import pytest
 
+from exp.video.balls import Physics
 from exp.video.config import Config, DataConfig, OptimConfig
 
 
@@ -39,6 +40,35 @@ class TestStreams:
     def test_streams_are_for_the_synthetic_video_in_stream_order(self, changes):
         with pytest.raises(ValueError, match="streams"):
             DataConfig(**changes)
+
+
+class TestPhysics:
+    def test_the_default_is_the_physics_of_the_video(self):
+        assert DataConfig().physics() == Physics()
+
+    def test_each_field_reaches_the_physics(self):
+        d = DataConfig(
+            gamma0=2.0,
+            gamma_amp=0.0,
+            e0=1.0,
+            e_amp=0.0,
+            drag=0.0,
+            conserve=True,
+            physics_period=60.0,
+        )
+        assert d.physics() == Physics(
+            gamma0=2.0,
+            gamma_amp=0.0,
+            e0=1.0,
+            e_amp=0.0,
+            drag=0.0,
+            conserve=True,
+            period=60.0,
+        )
+
+    def test_json_round_trip(self):
+        config = Config(data=DataConfig(e0=1.0, drag=0.0, redraw=False))
+        assert Config.from_json(config.to_json()) == config
 
 
 class TestCheckpoints:

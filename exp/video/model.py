@@ -64,26 +64,27 @@ class GaussianBlur(nn.Module):
 
 
 def encoder_modules(
-    size: int, d_z: int, *, z_norm: bool = False, blur: float = 0.0
+    size: int, d_z: int, *, z_norm: bool = False, blur: float = 0.0, width: int = 32
 ) -> tuple[nn.Module, nn.Module]:
     """``G1`` and ``Z`` of the CNN (section 7): three convolutions of stride 2
-    and a linear map to ``d_z``, scaled onto the sphere of radius
+    (``width``, twice and four times ``width`` channels) and a linear map to
+    ``d_z``, scaled onto the sphere of radius
     $\\sqrt{d_z}$ with ``z_norm``; ``G1`` blurs the frame first with
     ``blur`` > 0 (``GaussianBlur``). They take ``(1, size, size)`` or a batch
     of them."""
     g1 = nn.Sequential(
         *([GaussianBlur(blur)] if blur > 0 else []),
-        nn.Conv2d(1, 32, 3, stride=2, padding=1),
+        nn.Conv2d(1, width, 3, stride=2, padding=1),
         nn.GELU(),
-        nn.Conv2d(32, 64, 3, stride=2, padding=1),
+        nn.Conv2d(width, 2 * width, 3, stride=2, padding=1),
         nn.GELU(),
     )
     side = size // 8
     z = nn.Sequential(
-        nn.Conv2d(64, 128, 3, stride=2, padding=1),
+        nn.Conv2d(2 * width, 4 * width, 3, stride=2, padding=1),
         nn.GELU(),
         nn.Flatten(-3),
-        nn.Linear(128 * side * side, d_z),
+        nn.Linear(4 * width * side * side, d_z),
     )
     if z_norm:
         z.append(nn.RMSNorm(d_z, elementwise_affine=False))
@@ -129,9 +130,11 @@ def encoder_stages(config: Config) -> list[nn.Module]:
     if d.kind != "egodex":
         if m.enc_nodes != 2:
             raise ValueError("the encoder of the synthetic video has two nodes")
-        return list(encoder_modules(d.size, m.d_z, z_norm=m.z_norm, blur=m.blur))
-    if m.blur > 0:
-        raise ValueError("blur is for the synthetic video")
+        return list(
+            encoder_modules(d.size, m.d_z, z_norm=m.z_norm, blur=m.blur, width=m.width)
+        )
+    if m.blur > 0 or m.width != 32:
+        raise ValueError("blur and width are for the synthetic video")
     e1, e2, e3 = egodex_stages(d.size, m.d_z, z_norm=m.z_norm)
     if m.enc_nodes == 3:
         return [e1, e2, e3]

@@ -19,6 +19,7 @@ from exp.lib.optim import (
     Warmup,
     Whitened,
 )
+from exp.video.balls import Physics
 
 __all__ = [
     "Config",
@@ -85,6 +86,9 @@ class ModelConfig:
     # Whether z is scaled onto the sphere of radius sqrt(D), where N(0, I_D)
     # concentrates, so that SIGReg cannot push |z| out without bound.
     z_norm: bool = False
+    # The channels of the first convolution of the encoder of the synthetic
+    # video (then twice and four times as many).
+    width: int = 32
     # The standard deviation, in pixels, of a fixed Gaussian blur of the frame
     # before the encoder of the synthetic video (0: none), so that z varies
     # smoothly with the positions of the balls.
@@ -121,11 +125,23 @@ class DataConfig:
     # The synthetic video of stages 1-2.
     size: int = 32
     balls: int = 3
+    # The physics (balls.Physics): gamma(t) = gamma0 (1 + gamma_amp sin(2 pi t / T)),
+    # e(t) = e0 (1 + e_amp cos(2 pi t / T)) and the drag.
+    gamma0: float = 1.0
+    gamma_amp: float = 0.5
+    e0: float = 0.6
+    e_amp: float = 0.5
+    drag: float = 0.1
+    conserve: bool = False  # the bounces keep the energy (balls.Physics)
     physics_period: float = 600.0  # T of gamma(t) and e(t)
     # About an evaluation clip (128 frames): with the drag and the loss at the
     # walls, the balls rest on the floor after about 20 s.
     episode_min: float = 3.0
     episode_max: float = 6.0
+    # Whether new balls are drawn every episode_min to episode_max seconds;
+    # without, one episode runs the whole stream (M13; for e = 1 and no drag,
+    # or the balls come to rest).
+    redraw: bool = True
     # The order of the frames: "stream" (as they come), "shuffled" (clips of
     # clip seconds in a random order, each a new episode) or "replay" (each
     # live clip followed by one drawn from a reservoir of replay frames).
@@ -156,6 +172,18 @@ class DataConfig:
                 "streams > 1 is for the synthetic video in stream order, not "
                 f"kind={self.kind!r}, order={self.order!r}"
             )
+
+    def physics(self) -> Physics:
+        """The physics of the synthetic video."""
+        return Physics(
+            gamma0=self.gamma0,
+            gamma_amp=self.gamma_amp,
+            e0=self.e0,
+            e_amp=self.e_amp,
+            drag=self.drag,
+            period=self.physics_period,
+            conserve=self.conserve,
+        )
 
     @property
     def batch(self) -> tuple[int, ...]:

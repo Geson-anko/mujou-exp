@@ -1,5 +1,6 @@
 import math
 import time
+from dataclasses import replace
 
 import pytest
 import torch
@@ -14,6 +15,9 @@ from exp.video.balls import (
     render,
 )
 
+CONSERVED = Physics(
+    gamma0=1.0, gamma_amp=0.0, e0=1.0, e_amp=0.0, drag=0.0, conserve=True
+)
 STILL = Physics(gamma0=0.0, gamma_amp=0.0, e0=1.0, e_amp=0.0, drag=0.0)
 FRAME = 1 / 30
 
@@ -58,6 +62,53 @@ class TestPhysics:
         assert vel[0][1 - axis] == 0.0
         assert 0.1 <= pos[0][axis] <= 0.9
 
+    @pytest.mark.slow
+    def test_the_energy_stays_bounded_for_thirty_minutes(self):
+        """M13: with e = 1, no drag and a constant gravity, one stream runs
+        for 30 minutes without new balls; its energy does not drift."""
+        video = Video(physics=CONSERVED, episode=None, seed=1)
+        e = _energy(_states(video, 54_000), gamma=1.0)
+        dev = (e - e[0]).abs()
+        early = float(dev[:1800].max())  # the first minute
+        assert float(dev.max()) < 2 * early + 1e-3
+        assert float(dev.max()) < 0.05 * float(e[0])
+
+    def test_conserve_keeps_the_modified_energy_of_each_ball_exactly(self):
+        """Semi-implicit Euler keeps $\tilde E = v^2/2 + \\gamma y - \\gamma h v_y / 2$
+        exactly between the bounces ($h$ the step); with ``conserve``, the
+        bounces keep it too, so it holds to rounding over any time."""
+        video = Video(physics=CONSERVED, episode=None, seed=1)
+        s = _states(video, 18_000).reshape(18_000, -1, 4).double()  # 10 minutes
+        h = FRAME / 8
+        e = 0.5 * (s[..., 2] ** 2 + s[..., 3] ** 2) + s[..., 1] - 0.5 * h * s[..., 3]
+        torch.testing.assert_close(e, e[:1].expand_as(e), rtol=0, atol=1e-5)
+
+    def test_without_conserve_the_bounces_change_the_energy(self):
+        """The reflection at the floor changes $\tilde E$ by
+        $\\gamma (2 \\delta - h |v_y|)$ ($\\delta$ how far the ball went past the
+        wall), so it is kept only with ``conserve``: the default is the
+        physics of the runs before M13."""
+        physics = replace(CONSERVED, conserve=False)
+        video = Video(physics=physics, episode=None, seed=1)
+        s = _states(video, 1800).reshape(1800, -1, 4).double()
+        h = FRAME / 8
+        e = 0.5 * (s[..., 2] ** 2 + s[..., 3] ** 2) + s[..., 1] - 0.5 * h * s[..., 3]
+        assert float((e - e[0]).abs().max()) > 1e-4
+
+    @pytest.mark.parametrize("wall", ["bottom", "top"])
+    def test_conserve_keeps_e_of_the_speed_at_a_wall(self, wall):
+        """Off the floor or the ceiling with gravity, the speed after the
+        bounce is about e times that before (up to O(gamma h))."""
+        physics = Physics(gamma0=1.0, gamma_amp=0.0, e0=0.5, e_amp=0.0, drag=0.0)
+        physics = replace(physics, conserve=True)
+        sign = -1 if wall == "bottom" else 1
+        pos, vel = [[0.5, 0.5]], [[0.0, sign * 3.0]]
+        before = vel[0][1]
+        while (before > 0) == (vel[0][1] > 0):  # hits within 0.2 s
+            before = vel[0][1]
+            advance(pos, vel, (0.1,), physics, 0.0, 1 / 240, 1)
+        assert vel[0][1] == pytest.approx(-0.5 * before, abs=0.02)
+
     def test_the_stream_keeps_moving(self):
         """With the default episodes, the balls do not come to rest: the
         stream is not mostly still frames."""
@@ -88,6 +139,36 @@ class TestPhysics:
             fa, fb = a.next(), b.next()
             assert torch.equal(fa.image, fb.image) and torch.equal(fa.state, fb.state)
             assert fa.reset == fb.reset
+
+
+class TestNoRedraw:
+    """M13: ``episode=None`` draws the balls once, so the frames change
+    continuously."""
+
+    PHYSICS = CONSERVED
+
+    def test_only_the_first_frame_resets(self):
+        video = Video(physics=self.PHYSICS, episode=None, seed=0)
+        resets = [bool(video.next().reset) for _ in range(900)]  # 30 s
+        assert resets[0] and not any(resets[1:])
+
+    def test_each_frame_moves_the_balls_by_at_most_one_frame_of_motion(self):
+        """The speed of a ball never exceeds sqrt(2 E) (E its energy per unit
+        mass, kept at e = 1 without drag), so two frames are no farther apart
+        than that speed times the frame, at the walls too (the bounce reflects
+        the position)."""
+        video = Video(physics=self.PHYSICS, episode=None, seed=0)
+        s = _states(video, 900).reshape(900, -1, 4).double()
+        radii = torch.tensor(video.radii, dtype=torch.float64)
+        energy = 0.5 * (s[0, :, 2] ** 2 + s[0, :, 3] ** 2) + (s[0, :, 1] - radii)
+        v_max = (2 * energy).sqrt()  # the speed with the ball on the floor
+        step = (s[1:, :, :2] - s[:-1, :, :2]).norm(dim=-1)  # (899, balls)
+        assert (step <= 1.01 * v_max * FRAME).all()
+        assert (step > 0).all()  # and they keep moving
+
+    def test_the_default_still_redraws(self):
+        video = Video(seed=0)
+        assert sum(bool(video.next().reset) for _ in range(900)) >= 5
 
 
 class TestRender:
