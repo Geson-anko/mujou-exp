@@ -2,9 +2,11 @@ import json
 import subprocess
 
 import pytest
+import torch
 
 from exp.lib.record import REPO_ROOT
 from exp.video import run
+from exp.video.balls import Video
 from exp.video.config import Config, DataConfig, OptimConfig
 from exp.video.stage0 import RUN_MODULE
 
@@ -37,6 +39,35 @@ class TestRunLinear:
         assert records[0]["dist"] > 0.5
         tail = [r["dist"] for r in records[-300:]]
         assert sum(tail) / len(tail) < 0.1
+
+
+class TestSource:
+    def test_the_default_physics_gives_the_frames_of_the_video(self):
+        """M13 made the physics a setting; left at its defaults, the stream is
+        the one of the runs before it."""
+        video, _ = run.source(Config(seed=3))
+        want = Video(seed=3)
+        for _ in range(300):  # 10 s, across episodes
+            a, b = video.next(), want.next()
+            assert torch.equal(a.image, b.image) and a.reset == b.reset
+
+    def test_the_settings_reach_the_stream_and_the_clips(self):
+        data = DataConfig(
+            gamma_amp=0.0,
+            e0=1.0,
+            e_amp=0.0,
+            drag=0.0,
+            redraw=False,
+            streams=2,
+            radii=(0.1, 0.1),
+        )
+        video, clips = run.source(Config(data=data))
+        assert clips.state.shape[-1] == 8  # two balls
+        resets = torch.stack([torch.as_tensor(video.next().reset) for _ in range(300)])
+        assert resets[0].all() and not resets[1:].any()
+        torch.testing.assert_close(
+            clips.params, torch.tensor([1.0, 1.0]).expand_as(clips.params)
+        )
 
 
 class TestRun:

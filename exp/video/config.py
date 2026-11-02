@@ -19,6 +19,7 @@ from exp.lib.optim import (
     Warmup,
     Whitened,
 )
+from exp.video.balls import Physics
 
 __all__ = [
     "Config",
@@ -85,6 +86,9 @@ class ModelConfig:
     # Whether z is scaled onto the sphere of radius sqrt(D), where N(0, I_D)
     # concentrates, so that SIGReg cannot push |z| out without bound.
     z_norm: bool = False
+    # The channels of the first convolution of the encoder of the synthetic
+    # video (then twice and four times as many).
+    width: int = 32
     # The standard deviation, in pixels, of a fixed Gaussian blur of the frame
     # before the encoder of the synthetic video (0: none), so that z varies
     # smoothly with the positions of the balls.
@@ -100,6 +104,16 @@ class ModelConfig:
     # and of the dynamics (Dynamics and dyn_nodes - 1 DynamicsLayer on top).
     enc_nodes: int = 2
     dyn_nodes: int = 1
+    # The weight beta of the reconstruction of the frame from z (M13): a node
+    # with a decoder of z (model.decoder) whose energy is beta times the mean
+    # squared error per pixel (nodes.Reconstruct), so that z keeps what the
+    # frame shows (0: none).
+    recon: float = 0.0
+    # Whether the dynamics learn through time (M13): each node of the dynamics
+    # keeps the eligibility traces of its minGRU (exp.lib.mingru.MinGRUTrace),
+    # ds_k/dtheta through its own state with the inputs it remembered held, and
+    # learns by its credit times them; without, the gradient stops at s_{k-1}.
+    trace: bool = False
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
     buffer_every: int = 1  # SIGReg keeps the z of one frame in buffer_every
@@ -121,11 +135,26 @@ class DataConfig:
     # The synthetic video of stages 1-2.
     size: int = 32
     balls: int = 3
+    # The radii of the balls instead of the first ``balls`` of balls.RADII
+    # (None), for streams of fewer or larger balls (M13).
+    radii: tuple[float, ...] | None = None
+    # The physics (balls.Physics): gamma(t) = gamma0 (1 + gamma_amp sin(2 pi t / T)),
+    # e(t) = e0 (1 + e_amp cos(2 pi t / T)) and the drag.
+    gamma0: float = 1.0
+    gamma_amp: float = 0.5
+    e0: float = 0.6
+    e_amp: float = 0.5
+    drag: float = 0.1
+    conserve: bool = False  # the bounces keep the energy (balls.Physics)
     physics_period: float = 600.0  # T of gamma(t) and e(t)
     # About an evaluation clip (128 frames): with the drag and the loss at the
     # walls, the balls rest on the floor after about 20 s.
     episode_min: float = 3.0
     episode_max: float = 6.0
+    # Whether new balls are drawn every episode_min to episode_max seconds;
+    # without, one episode runs the whole stream (M13; for e = 1 and no drag,
+    # or the balls come to rest).
+    redraw: bool = True
     # The order of the frames: "stream" (as they come), "shuffled" (clips of
     # clip seconds in a random order, each a new episode) or "replay" (each
     # live clip followed by one drawn from a reservoir of replay frames).
@@ -149,6 +178,8 @@ class DataConfig:
     spread: bool = False
 
     def __post_init__(self) -> None:
+        if self.radii is not None:  # JSON gives a list
+            object.__setattr__(self, "radii", tuple(self.radii))
         if self.streams < 1:
             raise ValueError(f"streams must be at least 1, not {self.streams}")
         if self.streams > 1 and (self.kind != "video" or self.order != "stream"):
@@ -156,6 +187,18 @@ class DataConfig:
                 "streams > 1 is for the synthetic video in stream order, not "
                 f"kind={self.kind!r}, order={self.order!r}"
             )
+
+    def physics(self) -> Physics:
+        """The physics of the synthetic video."""
+        return Physics(
+            gamma0=self.gamma0,
+            gamma_amp=self.gamma_amp,
+            e0=self.e0,
+            e_amp=self.e_amp,
+            drag=self.drag,
+            period=self.physics_period,
+            conserve=self.conserve,
+        )
 
     @property
     def batch(self) -> tuple[int, ...]:
@@ -178,6 +221,10 @@ class Config:
     device: str = "cpu"  # where every node computes, and the evaluation ("cuda")
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
+    # The optimizer of the dynamics and the readout (the nodes of the
+    # prediction), instead of ``optim``, which the encoder and the decoder keep
+    # (M13); None: ``optim`` for all.
+    dynamics_optim: OptimConfig | None = None
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
 

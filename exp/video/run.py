@@ -18,7 +18,7 @@ from torch import nn
 from exp.lib.host import Host, RealtimeHost
 from exp.lib.linear_stream import LinearStream
 from exp.lib.record import REPO_ROOT, Recorder
-from exp.video.balls import Frame, Physics, Streams, Video, eval_clips, ordered
+from exp.video.balls import Frame, Streams, Video, eval_clips, ordered
 from exp.video.bp import WorldBPNetwork, bp_chain
 from exp.video.config import Config, make_optimizer
 from exp.video.evaluate import Snapshot, evaluate
@@ -118,20 +118,23 @@ def source(config: Config) -> tuple[Any, Frame]:
         from exp.video.egodex import EgoDexStream, egodex_clips
 
         return EgoDexStream(d.path), egodex_clips(d.path)
-    physics = Physics(period=d.physics_period)
+    physics = d.physics()
     kwargs: dict[str, Any] = dict(
         size=d.size,
         balls=d.balls,
+        radii=d.radii,
         frame=t.frame,
         physics=physics,
-        episode=(d.episode_min, d.episode_max),
+        episode=(d.episode_min, d.episode_max) if d.redraw else None,
     )
     video = (
         Video(seed=config.seed, **kwargs)
         if d.streams == 1
         else Streams(d.streams, seed=config.seed, spread=d.spread, **kwargs)
     )
-    clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
+    clips = eval_clips(
+        size=d.size, balls=d.balls, radii=d.radii, frame=t.frame, physics=physics
+    )
     return video, clips
 
 

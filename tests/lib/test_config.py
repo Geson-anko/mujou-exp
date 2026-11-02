@@ -13,6 +13,7 @@ class _Inner:
 @dataclass(frozen=True)
 class _Outer:
     optim: _Inner = field(default_factory=_Inner)
+    other: _Inner | None = None
 
 
 class TestFromDict:
@@ -24,3 +25,7 @@ class TestFromDict:
     def test_an_unknown_key_is_an_error(self):
         with pytest.raises(TypeError, match="lr"):
             from_dict(_Outer, {"optim": {"lr": 0.1}})
+
+    def test_an_optional_dataclass_reads_as_one_or_none(self):
+        assert from_dict(_Outer, {"other": None}).other is None
+        assert from_dict(_Outer, {"other": {"tau": 3}}).other == _Inner(tau=3.0)

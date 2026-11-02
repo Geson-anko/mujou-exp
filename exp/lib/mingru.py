@@ -1,11 +1,12 @@
-"""The minGRU cell, and its residual form for stacking."""
+"""The minGRU cell, its residual form for stacking, and the eligibility traces
+that learn it through time online."""
 
 from typing import override
 
 import torch
 from torch import nn
 
-__all__ = ["MinGRU", "ResidualMinGRU"]
+__all__ = ["MinGRU", "MinGRUTrace", "ResidualMinGRU"]
 
 
 class MinGRU(nn.Module):
@@ -36,3 +37,72 @@ class ResidualMinGRU(nn.Module):
     @override
     def forward(self, x: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
         return x + self.cell(nn.functional.gelu(x), h_prev)
+
+
+class MinGRUTrace:
+    r"""The eligibility traces $e_k = \partial s_k / \partial \theta$ of a
+    ``MinGRU`` through its own state, with its inputs held: real-time recurrent
+    learning, exact as the recurrence is diagonal in $s$.
+
+    With $a = W_u x + b_u$, $u = \sigma(a)$, $c = W_s x + b_s$ and
+    $s_k = (1 - u) \odot s_{k-1} + u \odot c$, each row $i$ of a weight moves
+    only $s_i$:
+
+    $$
+    e^{W_u}_{k,ij} = (1 - u_i)\, e^{W_u}_{k-1,ij} + u_i (1 - u_i)(c_i - s_{k-1,i})\, x_j,
+    \qquad
+    e^{W_s}_{k,ij} = (1 - u_i)\, e^{W_s}_{k-1,ij} + u_i\, x_j,
+    $$
+
+    and the biases with $x_j = 1$. Each sample of the ``batch`` has its own
+    traces, of the size of the weights. ``grads(delta)`` is
+    $\sum_i \delta_i e_{k,i\cdot}$ summed over the batch: the gradient of
+    $\delta \cdot s_k$ through all the steps since the last reset.
+    """
+
+    def __init__(self, cell: MinGRU, batch: tuple[int, ...]) -> None:
+        self._cell = cell
+        w = cell.gate.weight
+        d_s, d_x = w.shape
+        self._e_wu = w.new_zeros(*batch, d_s, d_x)
+        self._e_bu = w.new_zeros(*batch, d_s)
+        self._e_ws = w.new_zeros(*batch, d_s, d_x)
+        self._e_bs = w.new_zeros(*batch, d_s)
+
+    @torch.no_grad()
+    def step_(self, x: torch.Tensor, s_prev: torch.Tensor) -> None:
+        """Move the traces to $s_k$ = ``cell(x, s_prev)``, at the cell's
+        current weights."""
+        u = torch.sigmoid(self._cell.gate(x))
+        c = self._cell.candidate(x)
+        keep = 1 - u
+        du = u * keep * (c - s_prev)  # ds/da
+        outer = x.unsqueeze(-2)  # (..., 1, d_x)
+        self._e_wu.mul_(keep.unsqueeze(-1)).add_(du.unsqueeze(-1) * outer)
+        self._e_bu.mul_(keep).add_(du)
+        self._e_ws.mul_(keep.unsqueeze(-1)).add_(u.unsqueeze(-1) * outer)
+        self._e_bs.mul_(keep).add_(u)
+
+    @torch.no_grad()
+    def reset_(self, which: torch.Tensor) -> None:
+        """Zero the traces of the samples where ``which`` (``batch``) holds:
+        their state starts again from 0."""
+        for e in (self._e_wu, self._e_ws):
+            e.masked_fill_(which[..., None, None], 0.0)
+        for e in (self._e_bu, self._e_bs):
+            e.masked_fill_(which[..., None], 0.0)
+
+    @torch.no_grad()
+    def grads(self, delta: torch.Tensor) -> list[torch.Tensor]:
+        r"""The gradients of $\delta \cdot s_k$ (``delta``: ``(*batch, d_s)``)
+        for the parameters of the cell, in their order, summed over the batch."""
+        d = delta.reshape(-1, delta.shape[-1])
+        n = d.shape[0]
+        e_wu = self._e_wu.reshape(n, *self._e_wu.shape[-2:])
+        e_ws = self._e_ws.reshape(n, *self._e_ws.shape[-2:])
+        return [
+            torch.einsum("bi,bij->ij", d, e_wu),
+            (d * self._e_bu.reshape(n, -1)).sum(0),
+            torch.einsum("bi,bij->ij", d, e_ws),
+            (d * self._e_bs.reshape(n, -1)).sum(0),
+        ]
