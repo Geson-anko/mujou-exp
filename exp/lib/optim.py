@@ -32,6 +32,7 @@ __all__ = [
     "Grafted",
     "Orthogonalized",
     "Projected",
+    "Warmup",
     "Whitened",
 ]
 
@@ -535,3 +536,56 @@ class _BoundCorrelation(BoundOptimizer):
     @override
     def load_state_dict(self, state: Mapping[str, Any], /) -> None:
         self._inner.load_state_dict(state)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Warmup(Optimizer):
+    r"""``inner`` with its time weighed by the ramp $r(t) = \min(1, t / T)$ over
+    the first ``seconds`` $T$ of the steps of one node: a step of ``elapsed``
+    seconds from $t$ is a step of $\int_t^{t + \text{elapsed}} r(s)\,ds$ of
+    ``inner`` (for SGD, the learning rate rises linearly from 0 over $T$). The
+    time $t$ is the sum of the steps' ``elapsed``, kept in the state, so the
+    ramp is the same however the time is cut into steps.
+
+    All the time of ``inner`` is reparametrized, not only its step size: an
+    inner with a state (AdamW's moments, the EMAs and ``refresh`` here) also
+    sees its time constants stretched by $1 / r(t)$ within the ramp.
+    """
+
+    inner: Optimizer
+    seconds: float
+
+    def __post_init__(self) -> None:
+        if not 0 < self.seconds < math.inf:
+            raise ValueError(f"seconds must be finite and > 0, got {self.seconds!r}")
+
+    @override
+    def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
+        return _BoundWarmup(self.inner.bind(params), self.seconds)
+
+
+class _BoundWarmup(BoundOptimizer):
+    def __init__(self, inner: BoundOptimizer, seconds: float) -> None:
+        self._inner = inner
+        self._seconds = seconds
+        self._t = torch.zeros((), dtype=torch.float64)
+
+    def _ramped(self, t: float) -> float:
+        r"""$\int_0^t r(s)\,ds$."""
+        T = self._seconds
+        return t * t / (2 * T) if t <= T else t - T / 2
+
+    @override
+    def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
+        t = float(self._t)
+        self._t.fill_(t + elapsed)
+        self._inner.step_(grads, self._ramped(t + elapsed) - self._ramped(t))
+
+    @override
+    def state_dict(self) -> Any:
+        return {"t": self._t, "inner": self._inner.state_dict()}
+
+    @override
+    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
+        self._t.copy_(state["t"])
+        self._inner.load_state_dict(state["inner"])

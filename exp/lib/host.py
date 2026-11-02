@@ -71,7 +71,7 @@ class RealtimeHost:
 
     ``show`` has the meaning of ``Host.show``; it returns once the frame's time
     is over, with the first message of ``watch`` made from this write whose
-    ``"mask"`` is set (the nodes run on their own, so the first one of the write
+    ``"mask"`` is set (for any sample of a batch; the nodes run on their own, so the first one of the write
     may come before the prediction caught up), or ``None`` if there was none in
     the frame.
     """
@@ -96,7 +96,7 @@ class RealtimeHost:
             left = end - (self.run.timer.now() - self._start)
             first, _ = self.run.wait_for(
                 watch,
-                lambda m: m["time"] == written and bool(m["mask"]),
+                lambda m: m["time"] == written and bool(m["mask"].any()),
                 timeout=max(left, 0.0),
             )
         except TimeoutError:

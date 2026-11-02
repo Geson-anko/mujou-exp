@@ -16,6 +16,7 @@ from exp.lib.optim import (
     Grafted,
     Orthogonalized,
     Projected,
+    Warmup,
     Whitened,
 )
 
@@ -62,6 +63,9 @@ class OptimConfig:
     rank: int = 4  # the eigenvectors that "projected" removes on each side
     eps: float = 1e-4  # relative to the largest eigenvalue
     refresh: float = 1.0  # seconds between two eigendecompositions
+    # Seconds over which the time of the optimizer rises from 0 (0: none); for
+    # SGD, the learning rate (exp.lib.optim.Warmup).
+    warmup: float = 0.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,13 +79,37 @@ class ModelConfig:
     # Whether the prediction error sends no credit to its target z_k (a stop
     # gradient), so that only SIGReg shapes the encoder from its side.
     stop_target: bool = False
+    # With stop_target, the fraction of that credit still sent (0: none), so
+    # that the encoder also learns to make z predictable.
+    target_weight: float = 0.0
+    # Whether z is scaled onto the sphere of radius sqrt(D), where N(0, I_D)
+    # concentrates, so that SIGReg cannot push |z| out without bound.
+    z_norm: bool = False
+    # The standard deviation, in pixels, of a fixed Gaussian blur of the frame
+    # before the encoder of the synthetic video (0: none), so that z varies
+    # smoothly with the positions of the balls.
+    blur: float = 0.0
+    # The fraction of the predictions, the last ones of every open_cycle of a
+    # video, that start from the model's own prediction (nodes.is_open).
+    open_loop: float = 0.0
+    open_cycle: int = 20
+    # Whether the prediction is z_{k-1} + W_o s_k (the change from the input
+    # the dynamics remembered) rather than W_o s_k; W_o starts at 0.
+    residual: bool = False
+    # The nodes of the encoder (the synthetic video: 2, G1 and Z; EgoDex: 1-3)
+    # and of the dynamics (Dynamics and dyn_nodes - 1 DynamicsLayer on top).
+    enc_nodes: int = 2
+    dyn_nodes: int = 1
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
+    buffer_every: int = 1  # SIGReg keeps the z of one frame in buffer_every
 
 
 @dataclass(frozen=True, kw_only=True)
 class DataConfig:
-    """The stream. ``kind`` is ``"linear"`` (stage 0) or ``"video"`` (stages 1-2)."""
+    """The stream. ``kind`` is ``"linear"`` (stage 0), ``"video"`` (stages 1-2)
+    or ``"egodex"`` (stage 3, from the frames ``egodex.py`` prepared in ``path``;
+    ``size`` 64)."""
 
     kind: str = "video"
     seconds: float = 600.0  # the length of the stream, on the run's timer
@@ -104,6 +132,35 @@ class DataConfig:
     order: str = "stream"
     clip: float = 1.0
     replay: int = 4096
+    # EgoDex (stage 3).
+    path: str = "datasets/egodex64"
+    # The number B of independent streams of the synthetic video that the network
+    # sees side by side in every frame, as a batch (1: one stream, the batch
+    # ``()``). Stream i is ``balls.Video(seed=seed + 1_000_000 * i)``; every node
+    # learns from the mean over the B streams, except that the SIGReg term acts
+    # on the parameters as the sum of B per-sample terms against the mean of the
+    # prediction errors: the same kappa is a stronger SIGReg as B grows (per
+    # sample, kappa * B / (1 - kappa) against the prediction). SIGReg relies on
+    # the host writing mask = ~reset. Only for ``kind == "video"`` and
+    # ``order == "stream"``.
+    streams: int = 1
+    # With streams > 1, whether stream i starts at i / streams of the period of
+    # the physics (balls.Streams), so that every frame shows every phase.
+    spread: bool = False
+
+    def __post_init__(self) -> None:
+        if self.streams < 1:
+            raise ValueError(f"streams must be at least 1, not {self.streams}")
+        if self.streams > 1 and (self.kind != "video" or self.order != "stream"):
+            raise ValueError(
+                "streams > 1 is for the synthetic video in stream order, not "
+                f"kind={self.kind!r}, order={self.order!r}"
+            )
+
+    @property
+    def batch(self) -> tuple[int, ...]:
+        """The batch of the streams: ``()`` for one, ``(streams,)`` for more."""
+        return () if self.streams == 1 else (self.streams,)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -114,12 +171,22 @@ class Config:
     seed: int = 0
     bp: bool = False  # the baseline: the same modules by BP in one node
     eval_interval: float = 60.0  # seconds of the run's timer between evaluations
+    # Seconds of frames between two checkpoints of the modules (0: none), in
+    # ckpt/ of the run (run.load_checkpoint).
+    checkpoint_interval: float = 0.0
     realtime: bool = False  # mujou.run in real time, rather than stepped by hand
     device: str = "cpu"  # where every node computes, and the evaluation ("cuda")
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
+
+    def __post_init__(self) -> None:
+        c = self.checkpoint_interval
+        if c < 0 or c != round(c):  # the file of a checkpoint is named in seconds
+            raise ValueError(f"checkpoint_interval must be whole seconds, not {c}")
+        if c and self.realtime:  # the modules are read between steps only
+            raise ValueError("no checkpoints in a real-time run")
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -142,6 +209,9 @@ class Config:
 
 def make_optimizer(c: OptimConfig) -> Optimizer:
     """The optimizer of the settings ``c``."""
+    if c.warmup > 0:
+        stepped = make_optimizer(dataclasses.replace(c, warmup=0.0))
+        return Warmup(inner=stepped, seconds=c.warmup)
     if c.kind == "sgd":
         return pc_optim.SGD(tau=c.tau)
     if c.kind == "adamw":

@@ -1,3 +1,5 @@
+import pytest
+
 from exp.video.config import Config, DataConfig, OptimConfig
 
 
@@ -14,3 +16,37 @@ class TestConfig:
             data=DataConfig(kind="linear", tau_x=3.0, iid=True),
         )
         assert Config.from_json(config.to_json()) == config
+
+
+class TestStreams:
+    def test_the_batch_is_empty_for_one_stream_and_b_for_more(self):
+        assert DataConfig().batch == ()
+        assert DataConfig(streams=4).batch == (4,)
+
+    def test_json_round_trip(self):
+        config = Config(data=DataConfig(streams=8))
+        assert Config.from_json(config.to_json()) == config
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"streams": 0},
+            {"streams": 2, "kind": "egodex"},
+            {"streams": 2, "kind": "linear"},
+            {"streams": 2, "order": "shuffled"},
+        ],
+    )
+    def test_streams_are_for_the_synthetic_video_in_stream_order(self, changes):
+        with pytest.raises(ValueError, match="streams"):
+            DataConfig(**changes)
+
+
+class TestCheckpoints:
+    @pytest.mark.parametrize("seconds", [-1.0, 0.5])
+    def test_the_interval_is_whole_seconds(self, seconds):
+        with pytest.raises(ValueError, match="whole seconds"):
+            Config(checkpoint_interval=seconds)
+
+    def test_a_real_time_run_takes_none(self):
+        with pytest.raises(ValueError, match="real-time"):
+            Config(checkpoint_interval=60.0, realtime=True)

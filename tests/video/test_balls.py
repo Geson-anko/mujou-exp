@@ -6,6 +6,7 @@ import torch
 
 from exp.video.balls import (
     Physics,
+    Streams,
     Video,
     advance,
     eval_clips,
@@ -187,3 +188,43 @@ class TestOrdered:
             seen = want[: i // 2 + 10]
             assert replayed.reset
             assert any(torch.equal(replayed.state, w.state) for w in seen[::10])
+
+
+class TestStreams:
+    def test_stream_0_is_the_video_of_the_seed_and_the_others_differ(self):
+        streams = Streams(3, seed=5)
+        alone = Video(seed=5)
+        stacks = [streams.next() for _ in range(4)]
+        for f in stacks:
+            want = alone.next()
+            assert f.image.shape == (3, 1, 32, 32)
+            assert torch.as_tensor(f.reset).shape == (3,)
+            assert torch.equal(f.image[0], want.image)
+            assert torch.equal(f.state[0], want.state)
+        last = stacks[-1]
+        assert not torch.equal(last.image[0], last.image[1])
+        assert not torch.equal(last.image[1], last.image[2])
+
+    def test_each_stream_starts_its_episodes_on_its_own(self):
+        streams = Streams(2, seed=0, episode=(0.1, 0.5))
+        resets = torch.stack([torch.as_tensor(streams.next().reset) for _ in range(60)])
+        assert resets[0].all()  # every video starts with a reset
+        assert resets[1:, 0].any() and resets[1:, 1].any()
+        assert (resets[1:, 0] != resets[1:, 1]).any()
+
+    def test_spread_streams_start_at_their_phase_of_the_physics(self):
+        """Stream i of n starts at i T / n: its first parameters are those of
+        the physics at that time, and it goes on from there."""
+        physics = Physics(period=60.0)
+        streams = Streams(4, seed=0, spread=True, physics=physics, frame=0.5)
+        for k in range(3):
+            f = streams.next()
+            for i in range(4):
+                t = 15.0 * i + 0.5 * k
+                expected = torch.tensor([physics.gamma(t), physics.restitution(t)])
+                torch.testing.assert_close(f.params[i], expected)
+
+    def test_without_spread_every_stream_starts_at_zero(self):
+        physics = Physics(period=60.0)
+        f = Streams(3, seed=0, physics=physics).next()
+        torch.testing.assert_close(f.params, f.params[:1].expand(3, 2))

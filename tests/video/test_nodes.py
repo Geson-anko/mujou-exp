@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 import mujou.pc as pc
 import mujou.testing
@@ -49,7 +50,7 @@ def _sample(
 
 
 class _CompareNet(mujou.Network):
-    def __init__(self) -> None:
+    def __init__(self, target_weight: float = 1.0) -> None:
         super().__init__()
         ins = _inputs(("s", S), ("z", D))
         self.s_in, self.z_in = ins["s"], ins["z"]
@@ -62,6 +63,7 @@ class _CompareNet(mujou.Network):
             tau=TAU,
             optimizer=pc.optim.SGD(tau=1.0),
             learn_interval=math.inf,
+            target_weight=target_weight,
         )
         self.s_in.next.connect(self.compare.s)
         self.z_in.next.connect(self.compare.z)
@@ -84,6 +86,20 @@ class TestCompare:
         torch.testing.assert_close(g_s.double(), want_s, rtol=1e-4, atol=1e-6)
         torch.testing.assert_close(g_z.double(), want_z, rtol=1e-4, atol=1e-6)
         assert bool(p["mask"])
+
+    def test_the_target_gets_target_weight_times_its_gradient(self):
+        g = torch.Generator().manual_seed(3)
+        s, z = torch.randn(S, generator=g), torch.randn(D, generator=g)
+        sent = {}
+        for w in (1.0, 0.25, 0.0):
+            net = _CompareNet(target_weight=w)
+            writes = {net.s_in.prev: _sample(s), net.z_in.prev: _sample(z)}
+            with mujou.testing.run(net, inputs=writes) as run:
+                run.step(TAU.period)
+                sent[w] = (run.read(net.compare.s), run.read(net.compare.z))
+        torch.testing.assert_close(sent[0.25][1], 0.25 * sent[1.0][1])
+        assert not sent[0.0][1].any()
+        torch.testing.assert_close(sent[0.0][0], sent[1.0][0])  # s is unchanged
 
     def test_without_a_prediction_it_sends_no_credit(self):
         net = _CompareNet()
@@ -227,3 +243,117 @@ class TestLocality:
         )
         for before, m in moved:
             assert any(not torch.equal(b, p) for b, p in zip(before, m.parameters()))
+
+
+B = 3
+
+
+def _batch_inputs(*names_dims: tuple[str, int]) -> dict[str, pc.Input]:
+    return {
+        name: pc.Input(
+            x=TensorSpec((B, d)), y=TensorSpec((B, 1)), period=TAU.period, batch=B
+        )
+        for name, d in names_dims
+    }
+
+
+def _batch_sample(x: torch.Tensor, mask: list[bool], reset: list[bool]):
+    return pc.msg.Sample(
+        x=x, y=torch.zeros(B, 1), mask=torch.tensor(mask), reset=torch.tensor(reset)
+    )
+
+
+class TestBatchCompare:
+    def test_each_sample_gets_the_gradient_of_its_own_energy(self):
+        """Per sample: g_s, g_z are finite differences of its own energy, and
+        zeros for the sample without a prediction; the error is the mean over
+        the samples that have one."""
+        ins = _batch_inputs(("s", S), ("z", D))
+        net: Any = mujou.Network()
+        net.s_in, net.z_in = ins["s"], ins["z"]
+        torch.manual_seed(0)
+        net.compare = Compare(
+            nn.Linear(S, D),
+            s_spec=net.s_in.act_spec,
+            z_spec=net.z_in.act_spec,
+            kappa=KAPPA,
+            tau=TAU,
+            optimizer=pc.optim.SGD(tau=1.0),
+            learn_interval=math.inf,
+        )
+        net.s_in.next.connect(net.compare.s)
+        net.z_in.next.connect(net.compare.z)
+        g = torch.Generator().manual_seed(3)
+        s, z = torch.randn(B, S, generator=g), torch.randn(B, D, generator=g)
+        mask = [True, False, True]
+        no = [False] * B
+        writes = {
+            net.s_in.prev: _batch_sample(s, mask, no),
+            net.z_in.prev: _batch_sample(z, [True] * B, no),
+        }
+        with mujou.testing.run(net, inputs=writes) as run:
+            run.step(TAU.period)
+            g_s, g_z = run.read(net.compare.s), run.read(net.compare.z)
+            p = run.read(net.compare.next)
+            error = run.read(net.compare.error)
+        readout = net.compare.module.double()
+        for b in range(B):
+            want_s = torch.zeros(S, dtype=torch.float64)
+            want_z = torch.zeros(D, dtype=torch.float64)
+            if mask[b]:
+                sb, zb = s[b].double(), z[b].double()
+                want_s = _fd(lambda v: compare_energy(readout, v, zb, KAPPA), sb)
+                want_z = _fd(lambda v: compare_energy(readout, sb, v, KAPPA), zb)
+            torch.testing.assert_close(g_s[b].double(), want_s, rtol=1e-4, atol=1e-6)
+            torch.testing.assert_close(g_z[b].double(), want_z, rtol=1e-4, atol=1e-6)
+        assert p["mask"].tolist() == mask
+        err = ((p["y_hat"] - p["y"]) ** 2).mean(-1)[torch.tensor(mask)].mean()
+        torch.testing.assert_close(error, err)
+
+
+class _BatchDynamicsNet(mujou.Network):
+    def __init__(self) -> None:
+        super().__init__()
+        self.z_in = _batch_inputs(("z", D))["z"]
+        torch.manual_seed(0)
+        self.dynamics = Dynamics(
+            MinGRU(D, S),
+            act_spec=self.z_in.act_spec,
+            tau=TAU,
+            optimizer=pc.optim.SGD(tau=1.0),
+            learn_interval=math.inf,
+        )
+        self.z_in.next.connect(self.dynamics.z)
+
+
+class TestBatchDynamics:
+    def test_a_stream_that_resets_does_not_touch_the_others(self):
+        """Only stream 1 resets at frame 4: stream 0 and 2 go on as the
+        sequential minGRU of their own z, stream 1 restarts from s = 0."""
+        net = _BatchDynamicsNet()
+        g = torch.Generator().manual_seed(4)
+        zs = torch.randn(9, B, D, generator=g)
+        resets = torch.zeros(9, B, dtype=torch.bool)
+        resets[0] = True
+        resets[4, 1] = True
+        got, masks, counts = [], [], []
+        with mujou.testing.run(net) as run:
+            host = Host(run, frame=FRAME, period=TAU.period)
+            for k in range(9):
+                sample = _batch_sample(zs[k], (~resets[k]).tolist(), resets[k].tolist())
+                host.show({net.z_in.prev: sample}, net.dynamics.next)
+                act = run.read(net.dynamics.next)
+                got.append(act["h"])
+                masks.append(act["mask"])
+                counts.append(net.dynamics.predictions.clone())
+        module = net.dynamics.module
+        s = torch.zeros(B, S)
+        with torch.no_grad():
+            for k in range(9):
+                nxt = module(zs[k - 1], s)
+                s = torch.where(resets[k][:, None], torch.zeros(B, S), nxt)
+                torch.testing.assert_close(got[k], s)
+                assert masks[k].tolist() == (~resets[k]).tolist()
+        assert counts[3].tolist() == [3, 3, 3]
+        assert counts[4].tolist() == [4, 0, 4]  # stream 1 counts anew
+        assert counts[5].tolist() == [5, 1, 5]

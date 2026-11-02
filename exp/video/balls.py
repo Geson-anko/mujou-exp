@@ -20,11 +20,11 @@ deviation half the radius, in $[0, 1]$.
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import torch
 
-__all__ = ["Frame", "Physics", "Video", "eval_clips", "ordered"]
+__all__ = ["Frame", "Physics", "Streams", "Video", "eval_clips", "ordered"]
 
 RADII = (0.06, 0.08, 0.10)
 
@@ -56,7 +56,7 @@ class Frame(NamedTuple):
     image: torch.Tensor  # (1, size, size)
     state: torch.Tensor  # (4 * balls,): x, y, vx, vy of each ball
     params: torch.Tensor  # (2,): gamma and e at the frame's time
-    reset: bool  # the first frame of an episode
+    reset: bool | torch.Tensor  # the first frame of an episode (a tensor: a stack)
 
 
 def _step(
@@ -109,6 +109,7 @@ class Video:
         episode: The shortest and longest episode, in seconds.
         substeps: The steps of the integration per frame.
         seed: Seeds every draw.
+        start: The time of the first frame on the clock of the physics.
     """
 
     def __init__(
@@ -121,8 +122,10 @@ class Video:
         episode: tuple[float, float] = (3.0, 6.0),
         substeps: int = 8,
         seed: int,
+        start: float = 0.0,
     ) -> None:
         self._g = torch.Generator().manual_seed(seed)
+        self._start = start
         self._size, self._frame, self._substeps = size, frame, substeps
         self.radii = RADII[:balls]
         self.physics = physics
@@ -144,7 +147,7 @@ class Video:
     def next(self) -> Frame:
         """The next frame: a new episode starts at its first frame, otherwise the
         balls move by one frame first."""
-        t = self.k * self._frame
+        t = self._start + self.k * self._frame
         reset = self.k == self._end
         if reset:
             self._new_episode()
@@ -163,6 +166,48 @@ class Video:
         image = render(state.unsqueeze(0), self._size, self.radii)[0]
         params = torch.tensor([self.physics.gamma(t), self.physics.restitution(t)])
         return Frame(image, state, params, reset)
+
+
+STREAM_SEED_STRIDE = 1_000_000
+
+
+class Streams:
+    """``n`` independent ``Video`` streams shown side by side: ``next()`` gives
+    the next frame of each, stacked.
+
+    Stream ``i`` is ``Video(seed=seed + STREAM_SEED_STRIDE * i, **video)``, so
+    that stream 0 is the stream of ``seed`` itself and the seeds of the others
+    stay clear of the small offsets (10_000, 1000, 1) the runs add to ``seed``
+    for their other draws. Each stream starts its episodes on its own. With
+    ``spread``, stream ``i`` starts at ``i T / n`` on the clock of the physics
+    (``T`` its period), so that the streams cover every phase of the physics at
+    once; otherwise all start at 0.
+    """
+
+    def __init__(
+        self, n: int, *, seed: int, spread: bool = False, **video: Any
+    ) -> None:
+        period = video.get("physics", Physics()).period
+        self.videos = [
+            Video(
+                seed=seed + STREAM_SEED_STRIDE * i,
+                start=i * period / n if spread else 0.0,
+                **video,
+            )
+            for i in range(n)
+        ]
+
+    def next(self) -> Frame:
+        """The next frame of every stream: ``image`` ``(n, 1, size, size)``,
+        ``state`` ``(n, 4 * balls)``, ``params`` ``(n, 2)`` and ``reset``, a
+        bool tensor ``(n,)``."""
+        frames = [v.next() for v in self.videos]
+        return Frame(
+            torch.stack([f.image for f in frames]),
+            torch.stack([f.state for f in frames]),
+            torch.stack([f.params for f in frames]),
+            torch.tensor([bool(f.reset) for f in frames]),
+        )
 
 
 def draw_balls(

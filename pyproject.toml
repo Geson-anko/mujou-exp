@@ -5,6 +5,7 @@ description = "Experiments with mujou, the asynchronous distributed deep learnin
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "imageio-ffmpeg>=0.7.0",
     "mujou",
 ]
 
