@@ -1,5 +1,6 @@
 # The dev container (.devcontainer/devcontainer.json). Compose reads the .env next
-# to this file, so host paths such as EGODEX_DIR go there (see .env.example).
+# to this file, so host paths such as EGODEX_DIR and WALKING_TOURS_DIR go there
+# (see .env.example).
 services:
   dev:
     build:
@@ -8,3 +9,6 @@ services:
     volumes:
       # Without EGODEX_DIR, datasets/egodex of this checkout is mounted.
       - ${EGODEX_DIR:-./datasets/egodex}:/datasets/egodex:ro
+      # Writable: the videos are downloaded (and blurred) from inside the container.
+      # Without WALKING_TOURS_DIR, datasets/walking_tours of this checkout is mounted.
+      - ${WALKING_TOURS_DIR:-./datasets/walking_tours}:/datasets/walking_tours
