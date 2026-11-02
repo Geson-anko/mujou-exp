@@ -4,7 +4,7 @@
 import dataclasses
 import types
 import typing
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 __all__ = ["RunConfig", "from_dict"]
 
@@ -39,7 +39,7 @@ def from_dict[T](cls: type[T], d: dict[str, Any]) -> T:
             if len(inner) == 1 and dataclasses.is_dataclass(inner[0]):
                 hint = inner[0]
         if isinstance(hint, type) and dataclasses.is_dataclass(hint):
-            kwargs[name] = from_dict(hint, value)
+            kwargs[name] = from_dict(hint, cast(dict[str, Any], value))
         elif hint is float or (
             isinstance(hint, types.UnionType) and float in hint.__args__
         ):
