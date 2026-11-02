@@ -303,6 +303,53 @@ class TestTrace:
         assert max(float(wt.abs().max()) for wt in want) > 1e-5
 
 
+class TestDynamicsOptim:
+    """``Config.dynamics_optim``: the dynamics and the readout learn by their
+    own optimizer, the encoder and the decoder by ``optim``."""
+
+    def test_the_nodes_of_the_prediction_take_it(self, monkeypatch):
+        made: list[OptimConfig] = []
+
+        def recording(c):
+            made.append(c)
+            return pc.optim.SGD(tau=1.0)
+
+        monkeypatch.setattr(model, "make_optimizer", recording)
+        adam = OptimConfig(kind="adamw", tau=33.0)
+        m = replace(SMALL.model, dyn_nodes=2, recon=1.0)
+        Network(replace(SMALL, model=m, dynamics_optim=adam))
+        # g1, z, dynamics, dynamics2, compare, reconstruct
+        assert made == [SMALL.optim, SMALL.optim, adam, adam, adam, SMALL.optim]
+
+    def test_bp_steps_each_group_by_its_optimizer(self, monkeypatch):
+        recorders: list[_Recording] = []
+
+        def recording(_c):
+            recorders.append(_Recording())
+            return recorders[-1]
+
+        monkeypatch.setattr("exp.video.bp.make_optimizer", recording)
+        adam = OptimConfig(kind="adamw", tau=33.0)
+        config = replace(
+            SMALL, model=replace(SMALL.model, recon=1.0), dynamics_optim=adam
+        )
+        net: Any = WorldBPNetwork(config)
+        video = Video(seed=0, episode=(100.0, 100.0))
+        with mujou.testing.run(net) as run_:
+            for k in range(4):
+                run_.write({net.prev: _sample(video.next().image, k == 0)})
+                for _ in range(17):
+                    run_.step(net.tau.period)
+        base, dyn = recorders
+        w = net.world
+        assert w.decoder is not None
+        want_base = [*w.encoder.parameters(), *w.decoder.parameters()]
+        want_dyn = [*w.step.parameters(), *w.readout.parameters()]
+        assert base.steps and dyn.steps
+        assert [g.shape for g in base.steps[-1]] == [p.shape for p in want_base]
+        assert [g.shape for g in dyn.steps[-1]] == [p.shape for p in want_dyn]
+
+
 class TestMoreNodes:
     """The network cut into more nodes (``enc_nodes``, ``dyn_nodes``)."""
 

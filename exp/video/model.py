@@ -294,8 +294,11 @@ class Network(mujou.Network):
         # With correlation, each node records the correlation of its gradients.
         self.correlations: dict[str, Correlation] = {}
 
+        prediction = config.dynamics_optim or config.optim
+
         def optimizer_of(name: str) -> Optimizer:
-            optimizer = make_optimizer(config.optim)
+            dynamics = name.startswith("dynamics") or name == "compare"
+            optimizer = make_optimizer(prediction if dynamics else config.optim)
             if correlation:
                 optimizer = self.correlations[name] = Correlation(optimizer)
             return optimizer

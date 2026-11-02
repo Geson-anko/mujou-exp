@@ -221,6 +221,10 @@ class Config:
     device: str = "cpu"  # where every node computes, and the evaluation ("cuda")
     time: TimeConfig = field(default_factory=TimeConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
+    # The optimizer of the dynamics and the readout (the nodes of the
+    # prediction), instead of ``optim``, which the encoder and the decoder keep
+    # (M13); None: ``optim`` for all.
+    dynamics_optim: OptimConfig | None = None
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
 

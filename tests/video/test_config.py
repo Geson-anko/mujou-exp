@@ -80,3 +80,9 @@ class TestCheckpoints:
     def test_a_real_time_run_takes_none(self):
         with pytest.raises(ValueError, match="real-time"):
             Config(checkpoint_interval=60.0, realtime=True)
+
+
+class TestDynamicsOptim:
+    def test_json_round_trip(self):
+        config = Config(dynamics_optim=OptimConfig(kind="adamw", tau=33.0))
+        assert Config.from_json(config.to_json()) == config

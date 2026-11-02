@@ -19,7 +19,8 @@ class RunConfig(Protocol):
 
 
 def from_dict[T](cls: type[T], d: dict[str, Any]) -> T:
-    """Build the dataclass ``cls`` from ``d``, its nested dataclasses too.
+    """Build the dataclass ``cls`` from ``d``, its nested dataclasses too (and
+    those of a field typed ``SomeDataclass | None``).
 
     Raises:
         TypeError: ``d`` has a key that is not a field of ``cls``.
@@ -32,11 +33,17 @@ def from_dict[T](cls: type[T], d: dict[str, Any]) -> T:
     kwargs = {}
     for name, value in d.items():
         hint = hints[name]
+        if isinstance(hint, types.UnionType) and value is not None:
+            # A dataclass or None: the dataclass, when the value is not None.
+            inner = [a for a in hint.__args__ if a is not type(None)]
+            if len(inner) == 1 and dataclasses.is_dataclass(inner[0]):
+                hint = inner[0]
         if isinstance(hint, type) and dataclasses.is_dataclass(hint):
-            value = from_dict(hint, value)
+            kwargs[name] = from_dict(hint, value)
         elif hint is float or (
             isinstance(hint, types.UnionType) and float in hint.__args__
         ):
-            value = value if value is None else float(value)  # JSON may give 1
-        kwargs[name] = value
+            kwargs[name] = value if value is None else float(value)  # JSON: 1
+        else:
+            kwargs[name] = value
     return cls(**kwargs)

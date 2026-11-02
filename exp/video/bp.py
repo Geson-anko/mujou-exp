@@ -100,6 +100,7 @@ class WorldBP(Node):
         decoder: nn.Module | None = None,
         recon: float = 0.0,
         trace: bool = False,
+        dynamics_optimizer: Optimizer | None = None,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -121,7 +122,19 @@ class WorldBP(Node):
             *readout.parameters(),
             *([] if decoder is None else decoder.parameters()),
         ]
-        self.optimizer = optimizer.bind(self._params)
+        # With a dynamics_optimizer, it moves the dynamics and the readout, and
+        # optimizer the encoder and the decoder.
+        n_enc = len(list(encoder.parameters()))
+        n_dyn = len(list(step.parameters())) + len(list(readout.parameters()))
+        self._dynamics = slice(n_enc, n_enc + n_dyn)
+        if dynamics_optimizer is None:
+            self.optimizer = optimizer.bind(self._params)
+            self.dynamics_optimizer = None
+        else:
+            dyn = self._params[self._dynamics]
+            base = [p for p in self._params if all(p is not q for q in dyn)]
+            self.optimizer = optimizer.bind(base)
+            self.dynamics_optimizer = dynamics_optimizer.bind(dyn)
         d_z, d_s = readout.out_features, step.d_state
         dev = self.device
         batch = act_spec.field("mask", TensorSpec).shape
@@ -182,7 +195,14 @@ class WorldBP(Node):
         if tick.learn and bool(mask.any()):
             with torch.enable_grad():
                 grads = self._grads(act["h"], mask)
-            self.optimizer.step_(grads, tick.elapsed)
+            if self.dynamics_optimizer is None:
+                self.optimizer.step_(grads, tick.elapsed)
+            else:
+                d = self._dynamics
+                self.optimizer.step_(
+                    [*grads[: d.start], *grads[d.stop :]], tick.elapsed
+                )
+                self.dynamics_optimizer.step_(grads[d], tick.elapsed)
 
     def _new_frame(self, act: Activity) -> None:
         if self.started and self.frames % self._every == 0:
@@ -357,6 +377,11 @@ class WorldBPNetwork(mujou.Network):
             decoder=None if dec is None else dec.to(dev),
             recon=m.recon,
             trace=m.trace,
+            dynamics_optimizer=(
+                None
+                if config.dynamics_optim is None
+                else make_optimizer(config.dynamics_optim)
+            ),
             device=dev,
         )
         self.input.next.connect(self.world.prev)
