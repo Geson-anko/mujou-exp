@@ -13,7 +13,8 @@
 - [段 3 の知見](project_stage3_findings.md) — |z| 発散の機構と z_norm、rollout10 の物差し（定数で約 1.1、潜在の < 1 は動力学の証拠にならない）、EgoDex の実行の制約
 - [合成動画を先に](project_synthetic_first.md) — 2026-11-02、EgoDex は一旦止め、簡単にした合成動画で正確な予測の土台を作る（M13）
 - [M13 の知見](project_m13_findings.md) — w=1 のエンコーダは当てにくい玉を捨てる、再構成の項で保てる、オフラインの上限は 10 フレーム先 0.59 倍（未達）
-- [動力学だけに絞る](project_dynamics_only.md) — 2026-11-02、M13 を中断し、玉の状態を観測にして動力学だけを学ぶ M14 へ
+- [動力学と視覚を分ける](project_dynamics_only.md) — 2026-11-02、M13 を中断。M14 動力学だけ → M15 JEPA → M16 同時の学習（動力学はエンコーダに credit を送らない）
+- [デコーダはデバッグ用](project_decoder_for_debug.md) — 再構成の評価のデコーダは各チェックポイントに後から学ぶ。システムにも mujou の実行にも入れない
 
 ## feedback
 
