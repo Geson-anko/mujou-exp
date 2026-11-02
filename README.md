@@ -34,7 +34,9 @@ EgoDex（[exp/video/](exp/video/) の段 3）は、ホストのディレクト�
 cp .env.example .env  # EGODEX_DIR=/path/to/egodex を書き換える
 ```
 
-`EGODEX_DIR` が無いときは、checkout の `datasets/egodex`（git の管理外）がマウントされる。パスを変えたらコンテナを作り直す（"Rebuild Container"）。
+Walking Tours（[exp/video/](exp/video/) の M15 の実動画）は、ホストのディレクトリを `WALKING_TOURS_DIR` に書き、コンテナの `/datasets/walking_tours` にマウントする。動画はコンテナの中で YouTube から取るので、読み書きできる形でマウントする。コンテナの中では `WALKING_TOURS_DIR=/datasets/walking_tours` が設定される。
+
+`EGODEX_DIR`・`WALKING_TOURS_DIR` が無いときは、checkout の `datasets/egodex`・`datasets/walking_tours`（git の管理外）がマウントされる。パスを変えたらコンテナを作り直す（"Rebuild Container"）。
 
 ## コマンド
 

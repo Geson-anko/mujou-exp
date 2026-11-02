@@ -5,7 +5,7 @@
   "remoteUser": "vscode",
   "updateRemoteUserUID": true,
   "workspaceFolder": "${localWorkspaceFolder}",
-  "initializeCommand": "mkdir -p \"$HOME/.claude\" \"$HOME/.config/gh\" \"$HOME/.ssh\" datasets/egodex && touch \"$HOME/.claude.json\" \"$HOME/.gitconfig\"",
+  "initializeCommand": "mkdir -p \"$HOME/.claude\" \"$HOME/.config/gh\" \"$HOME/.ssh\" datasets/egodex datasets/walking_tours && touch \"$HOME/.claude.json\" \"$HOME/.gitconfig\"",
   "mounts": [
     "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind",
@@ -21,6 +21,7 @@
     "UV_PROJECT_ENVIRONMENT": ".venv-devcontainer",
     "UV_LINK_MODE": "copy",
     "EGODEX_DIR": "/datasets/egodex",
+    "WALKING_TOURS_DIR": "/datasets/walking_tours",
     "GIT_CONFIG_COUNT": "2",
     "GIT_CONFIG_KEY_0": "core.fileMode",
     "GIT_CONFIG_VALUE_0": "false",

@@ -9,4 +9,4 @@ M15・M16 の実動画は Walking Tours（DoRA、ICLR 2024、https://huggingface
 
 **Why:** EgoDex はレポートにフレームを直接載せられない。Walking Tours は出典を書けば載せられ、1 本の長い連続したストリームとして流せる。Ego4D はフレームを載せてよいかが不明なので外した。
 
-**How to apply:** 取るときに動画ごとの YouTube のライセンスと、顔・ナンバーのぼかしの有無を確かめる。レポートには出典（論文と動画）を書く。物を扱う動きが要るなら EPIC-KITCHENS-100 を候補にする。全体の方針は [[project-dynamics-only]]。
+**How to apply:** 置き場所はホストの `WALKING_TOURS_DIR`（`.env`）で、dev container の `/datasets/walking_tours` に読み書きできる形でマウントする（無ければ checkout の `datasets/walking_tours`）。取るときに動画ごとの YouTube のライセンスと、顔・ナンバーのぼかしの有無を確かめる。レポートには出典（論文と動画）を書く。物を扱う動きが要るなら EPIC-KITCHENS-100 を候補にする。全体の方針は [[project-dynamics-only]]。
