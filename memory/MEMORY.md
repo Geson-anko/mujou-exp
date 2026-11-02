@@ -12,6 +12,7 @@
 - [PC-ALM が中心](project_pc_alm_central.md) — 学習則は mujou.pc。BP は基準だけ。手法は局所的な形で組む
 - [段 3 の知見](project_stage3_findings.md) — |z| 発散の機構と z_norm、rollout10 の物差し（定数で約 1.1、潜在の < 1 は動力学の証拠にならない）、EgoDex の実行の制約
 - [合成動画を先に](project_synthetic_first.md) — 2026-11-02、EgoDex は一旦止め、簡単にした合成動画で正確な予測の土台を作る（M13）
+- [M13 の知見](project_m13_findings.md) — w=1 のエンコーダは当てにくい玉を捨てる、再構成の項で保てる、オフラインの上限は 10 フレーム先 0.59 倍（未達）
 
 ## feedback
 
