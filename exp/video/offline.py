@@ -13,7 +13,8 @@ stream (over all its streams) are kept, and each window has 32 frames of one
 stream within an episode (``window_starts``): the model observes the first 16
 and then runs open loop on its own predictions, and the loss is the mean
 prediction error over the 31 predictions. With ``--learn-encoder``, the
-encoder learns too, with the full credit to the targets, and SIGReg on the z
+encoder learns too, with the credit to the targets weighted as the nodes
+weight it (``model.target_weight``: full, unless ``stop_target``), and SIGReg on the z
 of the batch weighted by ``--sigreg`` per sample (about kappa / (1 - kappa)
 of the nodes); ``--local`` stops the gradient where the nodes stop it, at the
 context $z_{k-1}$ and at the prediction fed back. Prints the evaluation on the
@@ -40,6 +41,7 @@ from exp.video.model import (
     dynamics_modules,
     encoder_stages,
     standardize_,
+    target_weight,
 )
 from exp.video.run import save_checkpoint, source
 
@@ -131,6 +133,11 @@ def main() -> None:
     def held(x: torch.Tensor) -> torch.Tensor:  # where the nodes stop the credit
         return x.detach() if args.local else x
 
+    w = target_weight(m)
+
+    def target(x: torch.Tensor) -> torch.Tensor:  # its credit times w
+        return x if w == 1 else w * x + (1 - w) * x.detach()
+
     for i in range(args.steps):
         t, which = starts[torch.randint(len(starts), (b,))].unbind(1)
         x = images[t[:, None] + torch.arange(WINDOW), which[:, None]]  # (B, T, C, H, W)
@@ -142,7 +149,7 @@ def main() -> None:
         for k in range(1, WINDOW):
             s = step(z_in, s)
             z_hat = z_in + readout(s) if m.residual else readout(s)
-            loss = loss + ((z_hat - z[:, k]) ** 2).mean() / (WINDOW - 1)
+            loss = loss + ((z_hat - target(z[:, k])) ** 2).mean() / (WINDOW - 1)
             z_in = held(z[:, k]) if k < OBSERVED else held(z_hat)
         if args.learn_encoder:  # the mean over samples, times the weight
             a = torch.randn(m.d_z, m.directions, device=dev)
