@@ -346,6 +346,7 @@ class Network(mujou.Network):
             open_loop=m.open_loop,
             open_cycle=m.open_cycle,
             residual=m.residual,
+            trace=m.trace,
             device=dev,
         )
         self.dynamics_names = ("dynamics",) + tuple(
@@ -359,6 +360,7 @@ class Network(mujou.Network):
                 tau=tau,
                 optimizer=optimizer_of(name),
                 learn_interval=li,
+                trace=m.trace,
                 device=dev,
             )
             setattr(self, name, node)

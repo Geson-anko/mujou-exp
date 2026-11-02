@@ -1,7 +1,7 @@
 import json
 import math
 from dataclasses import replace
-from typing import Any
+from typing import Any, override
 
 import mujou.pc as pc
 import mujou.testing
@@ -185,6 +185,122 @@ class TestNetwork:
             assert not hasattr(pcn, "reconstruct") and w.decoder is None
         for a, b in zip(mine, theirs, strict=True):
             assert torch.equal(a, b)
+
+
+class _Recording(pc.optim.Optimizer):
+    """Records the gradients of each step and moves nothing."""
+
+    def __init__(self) -> None:
+        self.steps: list[list[torch.Tensor]] = []
+
+    @override
+    def bind(self, params):
+        steps = self.steps
+
+        class Bound(pc.optim.BoundOptimizer):
+            @override
+            def step_(self, grads, elapsed):
+                steps.append([g.clone() for g in grads])
+
+            @override
+            def state_dict(self):
+                return {}
+
+            @override
+            def load_state_dict(self, state, /):
+                pass
+
+        return Bound()
+
+
+class TestTrace:
+    """``ModelConfig.trace``: the dynamics learn through time by eligibility
+    traces, with the inputs it remembered held."""
+
+    @pytest.mark.parametrize("bp", [False, True], ids=["pc", "bp"])
+    def test_the_dynamics_learn_by_bp_through_its_state(self, monkeypatch, bp):
+        """After K frames of a video and a frame held, the gradient the
+        dynamics learns by is that of autograd through s_K, ..., s_1 from s = 0
+        with the z the encoder gave each frame held (the weights do not move):
+        for PC-ALM, of delta . s_K with delta = r + lam; for BP, of its loss."""
+        recorders: list[_Recording] = []
+
+        def recording(_c):
+            recorders.append(_Recording())
+            return recorders[-1]
+
+        monkeypatch.setattr(model, "make_optimizer", recording)
+        monkeypatch.setattr("exp.video.bp.make_optimizer", recording)
+        config = replace(SMALL, model=replace(SMALL.model, trace=True, z_norm=True))
+        net: Any = WorldBPNetwork(config) if bp else Network(config)
+        video = Video(seed=0, episode=(100.0, 100.0))
+        frames = [video.next() for _ in range(5)]
+        with mujou.testing.run(net) as run_:
+            for k, f in enumerate(frames):
+                run_.write({net.prev: _sample(f.image, k == 0)})
+                for _ in range(17 if k < 4 else 1500):
+                    run_.step(net.tau.period)
+        if bp:
+            w = net.world
+            encoder, cell = w.encoder, w.step.first
+            got = recorders[0].steps[-1][len(list(encoder.parameters())) :][:4]
+        else:
+            encoder = torch.nn.Sequential(net.g1.module, net.z.module)
+            cell = net.dynamics.module
+            got = recorders[2].steps[-1]
+        with torch.no_grad():
+            zs = [encoder(f.image) for f in frames]
+        s = torch.zeros(cell.gate.out_features)
+        for z in zs[:-1]:
+            s = cell(z, s)
+        if bp:
+            loss = compare_energy(net.world.readout, s, zs[-1], config.model.kappa)
+        else:
+            d = net.dynamics
+            loss = ((d.r + d.lam) * s).sum()
+        want = torch.autograd.grad(loss, list(cell.parameters()))
+        for g, wt in zip(got, want, strict=True):
+            torch.testing.assert_close(g, wt, rtol=2e-3, atol=1e-6)
+        assert max(float(wt.abs().max()) for wt in want) > 1e-5
+
+    def test_a_layer_of_the_dynamics_learns_through_its_own_state(self, monkeypatch):
+        """With two dynamics nodes, the second learns by BP through its own
+        state h_K, ..., h_1 with its inputs y1 held (those of the first)."""
+        recorders: list[_Recording] = []
+
+        def recording(_c):
+            recorders.append(_Recording())
+            return recorders[-1]
+
+        monkeypatch.setattr(model, "make_optimizer", recording)
+        m = replace(SMALL.model, trace=True, z_norm=True, dyn_nodes=2)
+        net = Network(replace(SMALL, model=m))
+        video = Video(seed=0, episode=(100.0, 100.0))
+        frames = [video.next() for _ in range(5)]
+        with mujou.testing.run(net) as run_:
+            for k, f in enumerate(frames):
+                run_.write({net.prev: _sample(f.image, k == 0)})
+                for _ in range(17 if k < 4 else 1500):
+                    run_.step(net.tau.period)
+        got = recorders[3].steps[-1]  # g1, z, dynamics, dynamics2
+        encoder = torch.nn.Sequential(net.g1.module, net.z.module)
+        cell, layer = net.dynamics.module, net.dynamics2.module
+        with torch.no_grad():
+            s = torch.zeros(cell.gate.out_features)
+            y1s = []
+            for f in frames[:-1]:
+                s = cell(encoder(f.image), s)
+                y1s.append(s)
+        h, y = torch.zeros_like(s), s
+        for y1 in y1s:
+            y = layer(y1, h)
+            h = y - y1
+        d2 = net.dynamics2
+        loss = ((d2.r + d2.lam) * y).sum()
+        want = torch.autograd.grad(loss, list(layer.parameters()))
+        for g, wt in zip(got, want, strict=True):
+            torch.testing.assert_close(g, wt, rtol=2e-3, atol=1e-6)
+        assert max(float(wt.abs().max()) for wt in want) > 1e-5
 
 
 class TestMoreNodes:

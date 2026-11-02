@@ -9,7 +9,7 @@ of one ``nn.Sequential`` of all the modules is BP in one node, with the same
 
 import math
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any, cast, override
 
 import mujou.pc as pc
 import torch
@@ -19,6 +19,7 @@ from mujou.types import Device
 from torch import nn
 
 import mujou
+from exp.lib.mingru import MinGRUTrace, ResidualMinGRU
 from exp.lib.sigreg import insert_, sigreg
 from exp.video.config import Config, make_optimizer
 from exp.video.model import (
@@ -60,7 +61,11 @@ class WorldBP(Node):
     ``target_weight`` (0: detached), as ``Compare`` scales its credit; with
     ``open_loop``, it remembers its own prediction for the predictions that
     ``nodes.is_open`` says, as ``Dynamics`` does; with ``residual``, it
-    predicts $z_{k-1} + W_o s_k$, as ``Compare`` does.
+    predicts $z_{k-1} + W_o s_k$, as ``Compare`` does; with ``trace``, it
+    learns the minGRU of each layer of the dynamics by the gradient of $L_k$
+    with respect to the layer's output times the layer's eligibility traces
+    (``MinGRUTrace``, moved in the update that first sees a frame, with the
+    layer's inputs held), as the nodes do.
 
     In the update that first sees a frame, it remembers the frame before,
     updates the buffer and the directions, and sends the prequential
@@ -94,6 +99,7 @@ class WorldBP(Node):
         residual: bool = False,
         decoder: nn.Module | None = None,
         recon: float = 0.0,
+        trace: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -120,6 +126,15 @@ class WorldBP(Node):
         dev = self.device
         batch = act_spec.field("mask", TensorSpec).shape
         self._samples = math.prod(batch)  # B
+        self._traces = (
+            [MinGRUTrace(step.first, tuple(batch))]
+            + [
+                MinGRUTrace(cast(ResidualMinGRU, layer).cell, tuple(batch))
+                for layer in step.rest
+            ]
+            if trace
+            else None
+        )
         self.buffer = torch.zeros(capacity, d_z, device=dev)
         self.count = 0
         self.register_state("count")
@@ -166,10 +181,7 @@ class WorldBP(Node):
         mask = act["mask"] & self.has_prev
         if tick.learn and bool(mask.any()):
             with torch.enable_grad():
-                loss = self._loss(act["h"], mask)
-                grads = torch.autograd.grad(  # mujou: local-autograd
-                    loss, self._params, materialize_grads=True
-                )
+                grads = self._grads(act["h"], mask)
             self.optimizer.step_(grads, tick.elapsed)
 
     def _new_frame(self, act: Activity) -> None:
@@ -195,6 +207,8 @@ class WorldBP(Node):
         self.predictions = predictions.masked_fill(reset, 0)
         with torch.no_grad():
             z = self.encoder(act["h"])
+            if self._traces is not None:  # to s_k; a video that starts has none
+                self._step_traces(reset)
             has_prev = rows(self.has_prev, self.s_prev)
             s = self.s_prev
             if bool(self.has_prev.any()):
@@ -208,13 +222,79 @@ class WorldBP(Node):
         if bool(mask.any()):
             self.error.send(((z_hat - z) ** 2)[mask].mean())
 
-    def _loss(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def _step_traces(self, reset: torch.Tensor) -> None:
+        """Move the trace of each layer to the state of this frame, from the
+        remembered $z_{k-1}$ and state."""
+        assert self._traces is not None
+        st = self.step
+        parts = self.s_prev.split(st.d_s, -1)
+        self._traces[0].step_(self.z_prev, parts[0])
+        y = st.first(self.z_prev, parts[0])
+        for trace, layer, h in zip(self._traces[1:], st.rest, parts[1:], strict=True):
+            trace.step_(nn.functional.gelu(y), h)
+            y = layer(y, h)
+        for trace in self._traces:
+            trace.reset_(reset)
+
+    def _grads(self, x: torch.Tensor, mask: torch.Tensor) -> list[torch.Tensor]:
+        """The gradients of $L_k$ for the parameters; with traces, those of the
+        dynamics are the traces times the gradient for each layer's output."""
+        if self._traces is None:
+            loss = self._loss(x, mask)
+            return list(
+                torch.autograd.grad(  # mujou: local-autograd
+                    loss, self._params, materialize_grads=True
+                )
+            )
+        ys: list[torch.Tensor] = []
+        loss = self._loss(x, mask, ys)
+        encoder = list(self.encoder.parameters())
+        n_step = len(list(self.step.parameters()))
+        rest = self._params[len(encoder) + n_step :]
+        (*g,) = torch.autograd.grad(  # mujou: local-autograd
+            loss, [*encoder, *rest, *ys], materialize_grads=True
+        )
+        g_enc, g_rest, g_ys = (
+            g[: len(encoder)],
+            g[len(encoder) : -len(ys)],
+            g[-len(ys) :],
+        )
+        g_step = [
+            grad
+            for trace, d in zip(self._traces, g_ys, strict=True)
+            for grad in trace.grads(d)
+        ]
+        return [*g_enc, *g_step, *g_rest]
+
+    def _state(self, ys: list[torch.Tensor] | None) -> torch.Tensor:
+        """The state $s_k$ from the memory; with ``ys``, the output of each
+        layer appended to it."""
+        if ys is None:
+            return self.step(self.z_prev, self.s_prev)
+        st = self.step
+        parts = self.s_prev.split(st.d_s, -1)
+        y = st.first(self.z_prev, parts[0])
+        ys.append(y)
+        out = [y]
+        for layer, h in zip(st.rest, parts[1:], strict=True):
+            y_next = layer(y, h)
+            out.append(y_next - y)
+            y = y_next
+            ys.append(y)
+        return torch.cat(out, -1)
+
+    def _loss(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        ys: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         """$L_k$ at the current weights (the memory is constant): the mean over
         the samples of the prediction errors of those in ``mask`` (and, with a
         decoder, of their ``recon_energy``), plus SIGReg of the current $z$ of
         those."""
         z = self.encoder(x)
-        s = self.step(self.z_prev, self.s_prev)
+        s = self._state(ys)
         w = self._target_weight  # the value is z; its gradient is w times
         target = w * z + (1 - w) * z.detach()
         base = self.z_prev if self.residual else None
@@ -276,6 +356,7 @@ class WorldBPNetwork(mujou.Network):
             residual=m.residual,
             decoder=None if dec is None else dec.to(dev),
             recon=m.recon,
+            trace=m.trace,
             device=dev,
         )
         self.input.next.connect(self.world.prev)

@@ -27,7 +27,7 @@ from mujou.pc.optim import Optimizer
 from mujou.types import Device
 from torch import nn
 
-from exp.lib.mingru import MinGRU, ResidualMinGRU
+from exp.lib.mingru import MinGRU, MinGRUTrace, ResidualMinGRU
 from mujou import DictSpec, MultiPort, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = [
@@ -98,6 +98,11 @@ class Dynamics(Node):
     With ``residual``, it also sends the $z_{k-1}$ it remembered on ``base``,
     for ``Compare`` to predict $\hat z_k = z_{k-1} + W_o s_k$.
 
+    With ``trace``, it learns through time: in the update that first sees a
+    frame, it moves the eligibility traces of its minGRU to $s_k$ (``MinGRUTrace``,
+    with the $z$ it remembered held) and learns by ``delta`` times them, the
+    gradient through $s_{k-1}, s_{k-2}, \dots$ since the video began.
+
     With a batch of streams, ``has_prev`` and ``predictions`` (the count that
     ``is_open`` reads) are per stream, and a stream that resets does not touch
     the memory of the others.
@@ -114,6 +119,7 @@ class Dynamics(Node):
         open_loop: float = 0.0,
         open_cycle: int = 20,
         residual: bool = False,
+        trace: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period)
@@ -128,6 +134,7 @@ class Dynamics(Node):
         self.optimizer = optimizer.bind(self._params)
         batch = act_spec.field("mask", TensorSpec).shape
         self._samples = math.prod(batch)  # B
+        self._trace = MinGRUTrace(module, tuple(batch)) if trace else None
         z = act_spec.field("h", TensorSpec)
         d_s = module.gate.out_features
         s = TensorSpec((*batch, d_s))
@@ -178,12 +185,15 @@ class Dynamics(Node):
         if bool(self.has_prev.any()):
             delta = torch.where(rows(mask, self.r), self.r + self.lam, 0.0)
             s_prev = self.s_prev
+            direct = learn and self._trace is None
             mu, _, g_theta = pc.functional.vjp(
                 lambda z: self.module(z, s_prev),
                 self.z_prev,
                 lambda _: delta,
-                self._params if learn else (),
+                self._params if direct else (),
             )
+            if learn and self._trace is not None:
+                g_theta = self._trace.grads(delta)
             mu = torch.where(rows(self.has_prev, mu), mu, 0.0)
         else:
             mu, g_theta = torch.zeros_like(self.r), []
@@ -212,6 +222,9 @@ class Dynamics(Node):
         self.z_prev = torch.where(rows(reset, z_prev), self.z_prev, z_prev)
         self.mu = torch.where(rows(reset, self.mu), 0.0, self.mu)
         self.s_prev = self.mu
+        if self._trace is not None:  # to s_k; a video that starts has none
+            self._trace.step_(self.z_prev, self.s_prev)
+            self._trace.reset_(reset)
         self.has_prev = ~reset
         self.predictions = predictions.masked_fill(reset, 0)
         self.z_hat_ok = torch.zeros_like(self.z_hat_ok)
@@ -231,7 +244,10 @@ class DynamicsLayer(Node):
     relaxes ``r`` and ``lam`` by the ``g`` from ``next`` and learns as
     ``pc.Layer`` does, from ``delta = r + lam``. On the first frame, it passes
     $x_k$ (0) on and keeps its state at 0. With a batch of streams, ``first``
-    is per stream.
+    is per stream. With ``trace``, it learns through time as ``Dynamics`` does,
+    by the traces of its cell on $\mathrm{GELU}(x_k)$ (as $\partial y_k /
+    \partial \theta = \partial h_k / \partial \theta$), moved when it first sees
+    the frame.
     """
 
     def __init__(
@@ -242,6 +258,7 @@ class DynamicsLayer(Node):
         tau: pc.TimeConstants,
         optimizer: Optimizer,
         learn_interval: float | None,
+        trace: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period)
@@ -255,6 +272,7 @@ class DynamicsLayer(Node):
         s = act_spec.field("h", TensorSpec)
         batch = act_spec.field("mask", TensorSpec).shape
         self._samples = math.prod(batch)  # B
+        self._trace = MinGRUTrace(module.cell, tuple(batch)) if trace else None
         dev = self.device
         self.r, self.lam = s.zeros(device=dev), s.zeros(device=dev)
         self.h_prev, self.h_last = s.zeros(device=dev), s.zeros(device=dev)
@@ -276,18 +294,24 @@ class DynamicsLayer(Node):
             self.first = act["reset"]
             self.h_last = torch.where(rows(self.first, self.h_last), 0.0, self.h_last)
             self.h_prev = self.h_last
+            if self._trace is not None:
+                self._trace.step_(nn.functional.gelu(act["h"]), self.h_prev)
+                self._trace.reset_(self.first)
         x = act["h"]
         mask = act["mask"] & ~self.first
         learn = tick.learn and bool(mask.any())
         if bool((~self.first).any()):
             delta = torch.where(rows(mask, self.r), self.r + self.lam, 0.0)
             h_prev = self.h_prev
+            direct = learn and self._trace is None
             mu, g_in, g_theta = pc.functional.vjp(
                 lambda x: self.module(x, h_prev),
                 x,
                 lambda _: delta,
-                self._params if learn else (),
+                self._params if direct else (),
             )
+            if learn and self._trace is not None:
+                g_theta = self._trace.grads(delta)
             first = rows(self.first, x)
             mu = torch.where(first, x, mu)  # the first frame passes x on
             self.h_last = torch.where(first, self.h_last, mu - x)

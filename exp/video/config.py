@@ -109,6 +109,11 @@ class ModelConfig:
     # squared error per pixel (nodes.Reconstruct), so that z keeps what the
     # frame shows (0: none).
     recon: float = 0.0
+    # Whether the dynamics learn through time (M13): each node of the dynamics
+    # keeps the eligibility traces of its minGRU (exp.lib.mingru.MinGRUTrace),
+    # ds_k/dtheta through its own state with the inputs it remembered held, and
+    # learns by its credit times them; without, the gradient stops at s_{k-1}.
+    trace: bool = False
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
     buffer_every: int = 1  # SIGReg keeps the z of one frame in buffer_every
