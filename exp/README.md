@@ -24,4 +24,4 @@
 
 ## 成果物
 
-checkpoint、ログ、プロットは commit しない（`runs/`、`outputs/`、`logs/` は無視される）。残したい数字は実験の `README.md` に書く。
+checkpoint、ログ、プロットは commit しない（`runs/`、`outputs/`、`logs/` は無視される）。残したい数字は実験の `README.md` に書く。長くなったら、マイルストーンごとに `exp/<name>/results/` へ分け、README から表でリンクする（手本: `exp/video/`）。
