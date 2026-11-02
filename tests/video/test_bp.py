@@ -16,8 +16,8 @@ from exp.lib.linear_stream import LinearStream
 from exp.lib.mingru import MinGRU
 from exp.lib.sigreg import sigreg
 from exp.video.bp import WorldBP, bp_chain
-from exp.video.model import DynamicsStack, Top
-from exp.video.nodes import compare_energy
+from exp.video.model import DynamicsStack, Top, decoder
+from exp.video.nodes import compare_energy, recon_energy
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
@@ -221,3 +221,65 @@ class TestWorldBPBatch:
         for got, w in zip(grads, want, strict=True):
             torch.testing.assert_close(got, w, rtol=1e-4, atol=1e-7)
         assert any(w.abs().max() > 1e-4 for w in want)
+
+    def test_the_reconstruction_adds_its_mean_per_sample_energy(self):
+        """With a decoder of weight ``recon``, the loss also has the mean over
+        the samples with a target of ``recon_energy``, whose gradient reaches
+        the encoder and the decoder."""
+        b, d_z, d_s, kappa, recon = 2, 4, 6, 0.05, 0.7
+        torch.manual_seed(0)
+        encoder = nn.Sequential(nn.Flatten(-3), nn.Linear(64, d_z))
+        step = DynamicsStack(MinGRU(d_z, d_s), [])
+        readout = nn.Linear(d_s, d_z)
+        dec = decoder(d_z, (1, 8, 8))
+        inp = pc.Input(
+            x=TensorSpec((b, 1, 8, 8)),
+            y=TensorSpec((b, 1)),
+            period=TAU.period,
+            batch=b,
+        )
+        spy = _Frozen(tau=1.0)
+        world = WorldBP(
+            (encoder, step, readout),
+            act_spec=inp.act_spec,
+            kappa=kappa,
+            directions=8,
+            capacity=10,
+            tau=TAU,
+            optimizer=spy,
+            learn_interval=25e-3,
+            min_samples=100,  # no SIGReg
+            seed=1,
+            decoder=dec,
+            recon=recon,
+        )
+        net: Any = mujou.Network()
+        net.inp, net.world = inp, world
+        inp.next.connect(world.prev)
+        g = torch.Generator().manual_seed(2)
+        xs = torch.rand(4, b, 1, 8, 8, generator=g)
+        with mujou.testing.run(net) as run:
+            host = Host(run, frame=FRAME, period=TAU.period)
+            for k in range(4):
+                reset = torch.tensor([k == 0, k in (0, 3)])
+                sample = pc.msg.Sample(
+                    x=xs[k], y=torch.zeros(b, 1), mask=~reset, reset=reset
+                )
+                spy.steps.clear()
+                host.show({inp.prev: sample}, world.next)
+        grads, _ = spy.steps[-1]
+        params = [
+            *encoder.parameters(),
+            *step.parameters(),
+            *readout.parameters(),
+            *dec.parameters(),
+        ]
+        z = encoder(xs[3])
+        s = step(world.z_prev, world.s_prev)
+        err = compare_energy(nn.Sequential(Top(step.d_s), readout), s, z, kappa)
+        rec = recon_energy(dec, z, xs[3], recon)
+        loss = (err[0] + rec[0]) / b  # stream 1 reset: no target
+        want = torch.autograd.grad(loss, params)
+        for got, w in zip(grads, want, strict=True):
+            torch.testing.assert_close(got, w, rtol=1e-4, atol=1e-7)
+        assert any(w.abs().max() > 1e-4 for w in want[-len(list(dec.parameters())) :])

@@ -25,13 +25,14 @@ from exp.video.model import (
     DynamicsStack,
     Top,
     calibration_images,
+    decoder,
     dynamics_modules,
     encoder_stages,
     image_shape,
     standardize_,
     target_weight,
 )
-from exp.video.nodes import compare_energy, open_mask
+from exp.video.nodes import compare_energy, open_mask, recon_energy
 from mujou import DictSpec, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = ["WorldBP", "WorldBPNetwork", "bp_chain"]
@@ -51,7 +52,8 @@ def bp_chain(
 class WorldBP(Node):
     r"""The world model learned by BP in one node: the same loss
     $L_k = (1 - \kappa) \frac1D \lVert \hat z_k - z_k \rVert^2 + \kappa\,
-    \mathrm{SIGReg}(z_k; \mathcal B_k)$, the same memory of $z_{k-1}, s_{k-1}$
+    \mathrm{SIGReg}(z_k; \mathcal B_k)$ (plus ``recon_energy`` with a
+    ``decoder``, as ``Reconstruct`` has), the same memory of $z_{k-1}, s_{k-1}$
     (detached: the gradient stops at one frame, as in PC-ALM), the same buffer
     and directions as the nodes of ``model.Network``, and the same
     ``LearnClock``. The gradient through $z_k$ of the first term is scaled by
@@ -90,10 +92,13 @@ class WorldBP(Node):
         open_loop: float = 0.0,
         open_cycle: int = 20,
         residual: bool = False,
+        decoder: nn.Module | None = None,
+        recon: float = 0.0,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         encoder, step, readout = modules
+        self.decoder, self._recon = decoder, recon
         self._target_weight = target_weight
         self._open_loop, self._open_cycle = open_loop, open_cycle
         self.residual = residual
@@ -108,6 +113,7 @@ class WorldBP(Node):
             *self.encoder.parameters(),
             *step.parameters(),
             *readout.parameters(),
+            *([] if decoder is None else decoder.parameters()),
         ]
         self.optimizer = optimizer.bind(self._params)
         d_z, d_s = readout.out_features, step.d_state
@@ -204,14 +210,17 @@ class WorldBP(Node):
 
     def _loss(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """$L_k$ at the current weights (the memory is constant): the mean over
-        the samples of the prediction errors of those in ``mask``, plus SIGReg
-        of the current $z$ of those."""
+        the samples of the prediction errors of those in ``mask`` (and, with a
+        decoder, of their ``recon_energy``), plus SIGReg of the current $z$ of
+        those."""
         z = self.encoder(x)
         s = self.step(self.z_prev, self.s_prev)
         w = self._target_weight  # the value is z; its gradient is w times
         target = w * z + (1 - w) * z.detach()
         base = self.z_prev if self.residual else None
         energy = compare_energy(self.readout, s, target, self._kappa, base)
+        if self.decoder is not None:
+            energy = energy + recon_energy(self.decoder, z, x, self._recon)
         loss = torch.where(mask, energy, 0.0).sum() / self._samples
         if self.count + self._samples >= self._min:
             # A sample without a prediction sends SIGReg no credit.
@@ -240,6 +249,7 @@ class WorldBPNetwork(mujou.Network):
             nn.init.zeros_(readout.weight)
             nn.init.zeros_(readout.bias)
         step = DynamicsStack(first, layers)
+        dec = decoder(m.d_z, image_shape(d)) if m.recon > 0 else None
         dev = config.device
         encoder, step, readout = encoder.to(dev), step.to(dev), readout.to(dev)
         self.input = pc.Input(
@@ -264,6 +274,8 @@ class WorldBPNetwork(mujou.Network):
             open_loop=m.open_loop,
             open_cycle=m.open_cycle,
             residual=m.residual,
+            decoder=None if dec is None else dec.to(dev),
+            recon=m.recon,
             device=dev,
         )
         self.input.next.connect(self.world.prev)

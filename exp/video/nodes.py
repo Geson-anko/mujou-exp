@@ -3,7 +3,8 @@ r"""The nodes of PLAN.md, sections 3-4, written with the public API of
 
 ``Dynamics`` predicts the minGRU state $s_k$ of the frame from the remembered
 $z_{k-1}, s_{k-1}$; ``Compare`` reads $\hat z_k = W_o s_k$ out and compares it
-with $z_k$ (``SIGReg``, in ``exp.lib.sigreg``, keeps $z$ isotropic and Gaussian).
+with $z_k$ (``SIGReg``, in ``exp.lib.sigreg``, keeps $z$ isotropic and Gaussian);
+``Reconstruct`` decodes the frame from $z_k$ and compares it with the frame.
 The nodes take one stream (the batch is ``()``) or ``B`` independent streams
 side by side (the batch is ``(B,)``, that of the ``act_spec`` they are given):
 each memory below is then one per sample, and each sample resets, counts its
@@ -34,9 +35,11 @@ __all__ = [
     "Dynamics",
     "DynamicsLayer",
     "compare_energy",
+    "Reconstruct",
     "is_open",
     "open_mask",
     "prediction_spec",
+    "recon_energy",
 ]
 
 
@@ -423,3 +426,84 @@ class Compare(Node):
                 energy, [s, z, *params]
             )
         return g_s, g_z, g_theta
+
+
+# --- Reconstruct ---------------------------------------------------------------
+
+
+def recon_energy(
+    decoder: nn.Module, z: torch.Tensor, x: torch.Tensor, weight: float
+) -> torch.Tensor:
+    r"""$\beta \frac{1}{P} \lVert \mathrm{dec}(z) - x \rVert^2$ of each sample:
+    ``weight`` $\beta$ times the mean squared error over the $P$ pixels of the
+    frames ``x`` ``(*batch, C, H, W)`` decoded from ``z`` ``(*batch, D)``."""
+    batch = z.shape[:-1]
+    x_hat = decoder(z.reshape(-1, z.shape[-1])).reshape(*batch, *x.shape[-3:])
+    return weight * ((x_hat - x) ** 2).flatten(-3).mean(-1)
+
+
+class Reconstruct(Node):
+    r"""The frame decoded from $z_k$, against the frame (M13).
+
+    Its energy is ``recon_energy``, of the frame ``Input`` sends on ``x`` and
+    the $z$ that ``Z`` sends on ``z``, when both are of the same frame and
+    both ``mask`` hold. It sends its gradient with respect to $z$ to ``Z``, so
+    that $z$ keeps what the frame shows, and learns the decoder by the one
+    with respect to its weights. It sends no credit to ``Input`` (the frame is
+    clamped). It sends the mean squared error per pixel on ``error``.
+
+    With a batch of streams, the energy is the sum over the samples, the
+    decoder learns from the mean over the batch, and ``error`` is the mean
+    over the samples that have one.
+    """
+
+    def __init__(
+        self,
+        decoder: nn.Module,
+        *,
+        x_spec: DictSpec[Activity],
+        z_spec: DictSpec[Activity],
+        weight: float,
+        tau: pc.TimeConstants,
+        optimizer: Optimizer,
+        learn_interval: float | None,
+        device: Device = "cpu",
+    ) -> None:
+        super().__init__(device=device, period=tau.period)
+        self.module = decoder
+        self._weight = weight
+        self.clock = pc.clock.LearnClock.of(
+            tau, period=self.period, learn_interval=learn_interval
+        )
+        self._params = list(decoder.parameters())
+        self.optimizer = optimizer.bind(self._params)
+        self._samples = math.prod(z_spec.field("mask", TensorSpec).shape)  # B
+        self.x = Port(send=x_spec.field("h", TensorSpec), recv=x_spec)
+        z = z_spec.field("h", TensorSpec)
+        self.z = Port(send=z, recv=z_spec)
+        self.error = Port(send=TensorSpec(()), initial=torch.tensor(math.nan))
+
+    @override
+    def on_update(self, dt: float) -> None:
+        super().on_update(dt)
+        x, z = self.x.recv(), self.z.recv()
+        tick = self.clock.tick(dt, z["time"], self.timer.now())
+        mask = x["mask"] & z["mask"]
+        if x["time"] != z["time"]:
+            mask = torch.zeros_like(mask)
+        if not bool(mask.any()):
+            self.z.send(torch.zeros_like(z["h"]))
+            return
+        learn = tick.learn
+        params = self._params if learn else []
+        with torch.enable_grad():
+            z_leaf = z["h"].detach().requires_grad_()
+            energy = recon_energy(self.module, z_leaf, x["h"], self._weight)
+            energy = torch.where(mask, energy, 0.0)
+            g_z, *g_theta = torch.autograd.grad(  # mujou: local-autograd
+                energy.sum(), [z_leaf, *params]
+            )
+        self.z.send(g_z)
+        self.error.send(energy.detach()[mask].mean() / self._weight)
+        if learn:
+            self.optimizer.step_([g / self._samples for g in g_theta], tick.elapsed)

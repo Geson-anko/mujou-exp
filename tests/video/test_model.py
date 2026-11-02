@@ -21,7 +21,7 @@ from exp.video.config import (
 )
 from exp.video.evaluate import Snapshot, evaluate
 from exp.video.model import Network
-from exp.video.nodes import compare_energy, is_open
+from exp.video.nodes import compare_energy, is_open, recon_energy
 
 DEVICES = [
     "cpu",
@@ -74,17 +74,18 @@ class TestEncoderWidth:
 class TestNetwork:
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize(
-        ("stop", "weight", "z_norm", "residual"),
+        ("stop", "weight", "z_norm", "residual", "recon"),
         [
-            (False, 0.0, False, False),
-            (True, 0.0, False, False),
-            (True, 0.3, True, False),
-            (True, 0.0, True, True),
+            (False, 0.0, False, False, 0.0),
+            (True, 0.0, False, False, 0.0),
+            (True, 0.3, True, False, 0.0),
+            (True, 0.0, True, True, 0.0),
+            (False, 0.0, True, False, 2.0),
         ],
-        ids=["", "stop_target", "target_weight-z_norm", "residual"],
+        ids=["", "stop_target", "target_weight-z_norm", "residual", "recon"],
     )
     def test_lam_is_the_credit_of_bp_at_the_fixed_point(
-        self, device, stop, weight, z_norm, residual
+        self, device, stop, weight, z_norm, residual, recon
     ):
         """Hold a frame with learning off: each node's lam relaxes to the
         credit -dL/dh of L_k (the prediction error and SIGReg), computed by
@@ -100,6 +101,7 @@ class TestNetwork:
                 target_weight=weight,
                 z_norm=z_norm,
                 residual=residual,
+                recon=recon,
             ),
             device=device,
         )
@@ -131,6 +133,8 @@ class TestNetwork:
         loss = compare_energy(
             net.compare.module, s, target, 0.05, base
         ) + 0.05 * sigreg(z_leaf, sr.buffer[: sr.count], sr.directions)
+        if recon:  # the frame reconstructed from z
+            loss = loss + recon_energy(net.reconstruct.module, z_leaf, x, recon)
         g_z, g_s = torch.autograd.grad(loss, [z_leaf, s])
         (g_h1,) = torch.autograd.grad(z, h1, g_z)
         torch.testing.assert_close(net.z.lam, -g_z, rtol=1e-3, atol=1e-6)
@@ -157,8 +161,10 @@ class TestNetwork:
         assert len(errors["cpu"]) == 10
         torch.testing.assert_close(errors["cuda"], errors["cpu"], rtol=1e-3, atol=1e-6)
 
-    def test_bp_starts_from_the_same_weights(self):
-        pcn, bpn = Network(SMALL), WorldBPNetwork(SMALL)
+    @pytest.mark.parametrize("recon", [0.0, 1.0], ids=["", "recon"])
+    def test_bp_starts_from_the_same_weights(self, recon):
+        config = replace(SMALL, model=replace(SMALL.model, recon=recon))
+        pcn, bpn = Network(config), WorldBPNetwork(config)
         mine = [
             *pcn.g1.module.parameters(),
             *pcn.z.module.parameters(),
@@ -171,6 +177,12 @@ class TestNetwork:
             *w.step.parameters(),
             *w.readout.parameters(),
         ]
+        if recon:
+            mine += pcn.reconstruct.module.parameters()
+            assert w.decoder is not None
+            theirs += w.decoder.parameters()
+        else:
+            assert not hasattr(pcn, "reconstruct") and w.decoder is None
         for a, b in zip(mine, theirs, strict=True):
             assert torch.equal(a, b)
 

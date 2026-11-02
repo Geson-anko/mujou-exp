@@ -104,6 +104,11 @@ class ModelConfig:
     # and of the dynamics (Dynamics and dyn_nodes - 1 DynamicsLayer on top).
     enc_nodes: int = 2
     dyn_nodes: int = 1
+    # The weight beta of the reconstruction of the frame from z (M13): a node
+    # with a decoder of z (model.decoder) whose energy is beta times the mean
+    # squared error per pixel (nodes.Reconstruct), so that z keeps what the
+    # frame shows (0: none).
+    recon: float = 0.0
     directions: int = 256  # the directions of SIGReg, drawn anew each frame
     buffer: int = 255  # the past z SIGReg keeps
     buffer_every: int = 1  # SIGReg keeps the z of one frame in buffer_every

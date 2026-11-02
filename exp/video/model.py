@@ -1,5 +1,6 @@
 """The network of PLAN.md, sections 3-4 and 7: ``Input -> G1 -> Z``, and from
-``Z`` the ``Dynamics -> Compare`` of the prediction and ``SIGReg``.
+``Z`` the ``Dynamics -> Compare`` of the prediction and ``SIGReg``; with
+``ModelConfig.recon``, also ``Reconstruct`` of the frame from ``Z`` (M13).
 
 The encoder and the dynamics can be cut into more nodes (``ModelConfig.enc_nodes``
 and ``dyn_nodes``): the encoder of EgoDex (``egodex_stages``) into up to three
@@ -23,7 +24,7 @@ from exp.lib.optim import Correlation
 from exp.lib.sigreg import SIGReg
 from exp.video.balls import Video
 from exp.video.config import Config, DataConfig, ModelConfig, make_optimizer
-from exp.video.nodes import Compare, Dynamics, DynamicsLayer
+from exp.video.nodes import Compare, Dynamics, DynamicsLayer, Reconstruct
 from mujou import TensorSpec
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "Network",
     "Top",
     "calibration_images",
+    "decoder",
     "dynamics_modules",
     "egodex_stages",
     "encoder_modules",
@@ -193,6 +195,24 @@ def standardize_(encoder: nn.Module, images: torch.Tensor) -> None:
     last.bias.sub_(seen[0].mean(0))
 
 
+def decoder(d_z: int, shape: tuple[int, ...]) -> nn.Module:
+    """$z$ ``(n, d_z)`` to frames ``(n, *shape)``, ``shape = (C, H, W)`` with
+    ``H = W`` a power of 2 from 8: a linear map to 4 x 4, then transposed
+    convolutions that double the size."""
+    c, h, _ = shape
+    ups = int(math.log2(h // 4))
+    width = 32 * 2**ups
+    layers: list[nn.Module] = [
+        nn.Linear(d_z, width * 16),
+        nn.Unflatten(1, (width, 4, 4)),
+    ]
+    for _ in range(ups):
+        layers += [nn.ReLU(), nn.ConvTranspose2d(width, width // 2, 4, 2, 1)]
+        width //= 2
+    layers += [nn.ReLU(), nn.Conv2d(width, c, 3, padding=1)]
+    return nn.Sequential(*layers)
+
+
 def target_weight(m: ModelConfig) -> float:
     """The weight of the credit the prediction error sends to its target $z_k$."""
     return m.target_weight if m.stop_target else 1.0
@@ -254,7 +274,8 @@ class Network(mujou.Network):
     prequential
     prediction of $z_k$ from ``next`` (``Compare.next``). The nodes of the
     encoder are ``encoder_names`` (the last is ``z``), those of the dynamics
-    ``dynamics_names`` (the first is ``dynamics``).
+    ``dynamics_names`` (the first is ``dynamics``); with ``model.recon`` > 0,
+    ``reconstruct`` decodes the frame from $z$.
     """
 
     # Set by name: those of the layout of the config only.
@@ -263,6 +284,7 @@ class Network(mujou.Network):
     z: pc.Layer
     dynamics2: DynamicsLayer
     dynamics3: DynamicsLayer
+    reconstruct: Reconstruct
 
     def __init__(self, config: Config, *, correlation: bool = False) -> None:
         super().__init__()
@@ -287,6 +309,7 @@ class Network(mujou.Network):
         if m.residual:  # the prediction starts as z_{k-1}, the change as 0
             nn.init.zeros_(readout.weight)
             nn.init.zeros_(readout.bias)
+        dec = decoder(m.d_z, image_shape(d)) if m.recon > 0 else None
         # Made on the CPU, so that the initial weights do not depend on the device.
         dev = config.device
         stages = [s.to(dev) for s in stages]
@@ -363,6 +386,19 @@ class Network(mujou.Network):
             residual=m.residual,
             device=dev,
         )
+        if dec is not None:
+            self.reconstruct = Reconstruct(
+                dec.to(dev),
+                x_spec=self.input.act_spec,
+                z_spec=self.z.act_spec,
+                weight=m.recon,
+                tau=tau,
+                optimizer=optimizer_of("reconstruct"),
+                learn_interval=li,
+                device=dev,
+            )
+            self.input.next.connect(self.reconstruct.x)
+            self.z.next.connect(self.reconstruct.z)
         self.z.next.connect(self.dynamics.z)
         self.z.next.connect(self.sigreg.prev)
         self.z.next.connect(self.compare.z)

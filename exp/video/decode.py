@@ -21,7 +21,6 @@ metrics of ``evaluate`` of the checkpoint.
 
 import argparse
 import json
-import math
 import struct
 import zlib
 from pathlib import Path
@@ -40,30 +39,13 @@ from exp.video.evaluate import (
     run_states,
     shrink_predictions,
 )
+from exp.video.model import decoder
 from exp.video.run import load_checkpoint, source
 
 OBSERVED = 16  # the frames observed before the rollout, as in evaluate
 LR, BATCH, SEED = 1e-3, 256, 0  # of the decoder
 COLUMNS = (1, 2, 5, 10, 20)  # frames after the last observed one
 SHOWN = 4  # clips in the PNG
-
-
-def decoder(d_z: int, shape: tuple[int, ...]) -> nn.Module:
-    """$z$ ``(n, d_z)`` to frames ``(n, *shape)``, ``shape = (C, H, W)`` with
-    ``H = W`` a power of 2 from 8: a linear map to 4 x 4, then transposed
-    convolutions that double the size."""
-    c, h, _ = shape
-    ups = int(math.log2(h // 4))
-    width = 32 * 2**ups
-    layers: list[nn.Module] = [
-        nn.Linear(d_z, width * 16),
-        nn.Unflatten(1, (width, 4, 4)),
-    ]
-    for _ in range(ups):
-        layers += [nn.ReLU(), nn.ConvTranspose2d(width, width // 2, 4, 2, 1)]
-        width //= 2
-    layers += [nn.ReLU(), nn.Conv2d(width, c, 3, padding=1)]
-    return nn.Sequential(*layers)
 
 
 @torch.no_grad()
