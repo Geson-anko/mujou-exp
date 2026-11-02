@@ -15,6 +15,7 @@
 - [M13 の知見](project_m13_findings.md) — w=1 のエンコーダは当てにくい玉を捨てる、再構成の項で保てる、オフラインの上限は 10 フレーム先 0.59 倍（未達）
 - [動力学と視覚を分ける](project_dynamics_only.md) — 2026-11-02、M13 を中断。M14 動力学だけ → M15 JEPA → M16 同時の学習（動力学はエンコーダに credit を送らない）
 - [デコーダはデバッグ用](project_decoder_for_debug.md) — 再構成の評価のデコーダは各チェックポイントに後から学ぶ。システムにも mujou の実行にも入れない
+- [実動画のデータ](project_video_data.md) — Walking Tours（CC BY 4.0）に決めた。研究は非商用なので CC BY-NC も可
 
 ## feedback
 
