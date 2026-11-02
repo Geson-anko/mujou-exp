@@ -130,6 +130,9 @@ class DataConfig:
     # The synthetic video of stages 1-2.
     size: int = 32
     balls: int = 3
+    # The radii of the balls instead of the first ``balls`` of balls.RADII
+    # (None), for streams of fewer or larger balls (M13).
+    radii: tuple[float, ...] | None = None
     # The physics (balls.Physics): gamma(t) = gamma0 (1 + gamma_amp sin(2 pi t / T)),
     # e(t) = e0 (1 + e_amp cos(2 pi t / T)) and the drag.
     gamma0: float = 1.0
@@ -170,6 +173,8 @@ class DataConfig:
     spread: bool = False
 
     def __post_init__(self) -> None:
+        if self.radii is not None:  # JSON gives a list
+            object.__setattr__(self, "radii", tuple(self.radii))
         if self.streams < 1:
             raise ValueError(f"streams must be at least 1, not {self.streams}")
         if self.streams > 1 and (self.kind != "video" or self.order != "stream"):

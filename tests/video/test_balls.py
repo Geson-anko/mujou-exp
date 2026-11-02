@@ -171,6 +171,20 @@ class TestNoRedraw:
         assert sum(bool(video.next().reset) for _ in range(900)) >= 5
 
 
+class TestRadii:
+    def test_the_radii_set_the_balls(self):
+        video = Video(radii=(0.1, 0.1), seed=0)
+        f = video.next()
+        assert video.radii == (0.1, 0.1) and f.state.shape == (8,)
+        clips = eval_clips(radii=(0.1,), length=4)
+        assert clips.state.shape == (8, 4, 4, 4)
+
+    def test_without_radii_the_first_balls_of_radii(self):
+        a, b = Video(balls=2, seed=3), Video(radii=(0.06, 0.08), seed=3)
+        for _ in range(30):
+            assert torch.equal(a.next().image, b.next().image)
+
+
 class TestRender:
     @pytest.mark.parametrize("xy", [(0.4, 0.6), (0.25, 0.3), (0.7, 0.75)])
     def test_the_centroid_is_the_ball(self, xy):

@@ -129,7 +129,8 @@ class Video:
 
     Args:
         size: The side of the images in pixels.
-        balls: How many balls (up to ``len(RADII)``).
+        balls: How many balls (up to ``len(RADII)``), the first of ``RADII``.
+        radii: The radii of the balls, instead of ``balls``.
         frame: The time between two frames, in seconds.
         physics: The physics.
         episode: The shortest and longest episode, in seconds; ``None``: one
@@ -144,6 +145,7 @@ class Video:
         *,
         size: int = 32,
         balls: int = 3,
+        radii: tuple[float, ...] | None = None,
         frame: float = 1 / 30,
         physics: Physics = Physics(),
         episode: tuple[float, float] | None = (3.0, 6.0),
@@ -154,7 +156,7 @@ class Video:
         self._g = torch.Generator().manual_seed(seed)
         self._start = start
         self._size, self._frame, self._substeps = size, frame, substeps
-        self.radii = RADII[:balls]
+        self.radii = RADII[:balls] if radii is None else radii
         self.physics = physics
         self._episode = episode
         self.k = 0  # the frame to come
@@ -282,6 +284,7 @@ def eval_clips(
     *,
     size: int = 32,
     balls: int = 3,
+    radii: tuple[float, ...] | None = None,
     frame: float = 1 / 30,
     physics: Physics = Physics(),
     phases: int = 8,
@@ -292,10 +295,12 @@ def eval_clips(
 ) -> Frame:
     """The clips to evaluate on, fixed by ``seed``: for each of ``phases``
     phases of the physics (starting at ``p T / phases``), ``clips`` clips of
-    ``length`` frames from new balls. The fields are stacked as
+    ``length`` frames from new balls (``balls`` and ``radii`` as in ``Video``).
+    The fields are stacked as
     ``(phases, clips, length, ...)``; ``reset`` is ``False``."""
     g = torch.Generator().manual_seed(seed)
-    radii = RADII[:balls]
+    radii = RADII[:balls] if radii is None else radii
+    balls = len(radii)
     states = torch.empty(phases, clips, length, 4 * balls)
     params = torch.empty(phases, clips, length, 2)
     for p in range(phases):

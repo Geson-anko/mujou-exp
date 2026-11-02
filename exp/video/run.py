@@ -122,6 +122,7 @@ def source(config: Config) -> tuple[Any, Frame]:
     kwargs: dict[str, Any] = dict(
         size=d.size,
         balls=d.balls,
+        radii=d.radii,
         frame=t.frame,
         physics=physics,
         episode=(d.episode_min, d.episode_max) if d.redraw else None,
@@ -131,7 +132,9 @@ def source(config: Config) -> tuple[Any, Frame]:
         if d.streams == 1
         else Streams(d.streams, seed=config.seed, spread=d.spread, **kwargs)
     )
-    clips = eval_clips(size=d.size, balls=d.balls, frame=t.frame, physics=physics)
+    clips = eval_clips(
+        size=d.size, balls=d.balls, radii=d.radii, frame=t.frame, physics=physics
+    )
     return video, clips
 
 

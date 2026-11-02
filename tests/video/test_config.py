@@ -67,7 +67,7 @@ class TestPhysics:
         )
 
     def test_json_round_trip(self):
-        config = Config(data=DataConfig(e0=1.0, drag=0.0, redraw=False))
+        config = Config(data=DataConfig(e0=1.0, drag=0.0, redraw=False, radii=(0.1,)))
         assert Config.from_json(config.to_json()) == config
 
 

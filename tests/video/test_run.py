@@ -53,9 +53,16 @@ class TestSource:
 
     def test_the_settings_reach_the_stream_and_the_clips(self):
         data = DataConfig(
-            gamma_amp=0.0, e0=1.0, e_amp=0.0, drag=0.0, redraw=False, streams=2
+            gamma_amp=0.0,
+            e0=1.0,
+            e_amp=0.0,
+            drag=0.0,
+            redraw=False,
+            streams=2,
+            radii=(0.1, 0.1),
         )
         video, clips = run.source(Config(data=data))
+        assert clips.state.shape[-1] == 8  # two balls
         resets = torch.stack([torch.as_tensor(video.next().reset) for _ in range(300)])
         assert resets[0].all() and not resets[1:].any()
         torch.testing.assert_close(
