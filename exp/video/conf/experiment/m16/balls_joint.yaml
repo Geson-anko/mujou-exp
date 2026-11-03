@@ -1,0 +1,31 @@
+# @package _global_
+# M16 on the balls: the vision of M15 (balls_n1: the three balls rendered at
+# 32x32, the tiny ViT, AdamW) and the dynamics of M14 stage 2 (small, with the
+# eligibility traces) learned together; the dynamics predicts the encoder's
+# next z and sends it no credit. The learner (pc or bp) is for the command
+# line: `learner=pc`.
+# The values marked "E2" / "E3" are those of the M15 / M14 experiments that
+# are to be set from their results before the runs of E4.
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: small
+  - override /vision: vit_t
+program: joint
+name: m16/balls_joint
+tags: [m16, balls, joint]
+data:
+  balls:
+    radii: [0.06, 0.08, 0.10]
+    obs: frames
+    size: 32
+vision:
+  patch: 4
+  # the mean and std of the pixels of the calib chunks (radii as above)
+  pixel_mean: 0.03
+  pixel_std: 0.12
+  frames: 1  # E2: the chunk length N
+  # E2: sg, sigreg, mask_ratio, mask_blocks, optim_vision.lr of the best M15 run
+dynamics:
+  trace: true  # E3: with / without
+  # E3: open_loop, open_cycle, nodes
+# E3: optim.kind / lr / warmup of the best M14 stage-2 run (sgd 0.03, 300 s here)

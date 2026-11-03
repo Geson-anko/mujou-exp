@@ -44,6 +44,9 @@ class VisionConf:
     pixel_std: float = 1.0
     z_pool: str = "mean"
     registers: int = 4  # with z_pool "registers"
+    # The joint program (M16) only: the encoder is the last checkpoint of the
+    # M15 run the job names as its "parent" and never learns (the control).
+    frozen: bool = False
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)

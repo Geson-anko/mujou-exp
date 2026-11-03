@@ -356,6 +356,8 @@ class _Online:
         v = conf.vision
         if v is None:
             raise ValueError(f"the run {conf.name!r} has no vision")
+        if v.frozen:
+            raise ValueError("vision.frozen is for the joint program (M16)")
         if conf.data.balls is not None and conf.data.balls.obs != "frames":
             raise ValueError(
                 f"the vision sees images: data.balls.obs must be 'frames', not "
