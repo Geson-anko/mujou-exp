@@ -1,0 +1,3 @@
+# SGD at the learning rate of M11-M13, warmed up over 300 s.
+kind: sgd
+lr: 0.03

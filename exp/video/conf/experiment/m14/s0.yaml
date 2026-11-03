@@ -1,0 +1,10 @@
+# @package _global_
+# M14 stage 0: the position and velocity of one ball, the small dynamics.
+defaults:
+  - override /dynamics: small
+name: m14/s0
+tags: [m14, s0]
+data:
+  balls:
+    radii: [0.10]
+    obs: pos_vel

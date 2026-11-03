@@ -1,0 +1,4 @@
+# A tiny ViT (ViT-Ti: width 192, 3 heads, 12 blocks).
+dim: 192
+heads: 3
+depth: 12

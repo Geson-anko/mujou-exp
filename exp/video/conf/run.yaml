@@ -1,0 +1,10 @@
+# The root of every run: the schema (exp.video.schema.RunConf), then the groups.
+# A run picks an experiment on top: `+experiment=m14/s0`.
+defaults:
+  - run_schema
+  - _self_
+  - dynamics: small
+  - vision: none
+  - learner: bp
+  - optim: sgd
+  - phase: explore
