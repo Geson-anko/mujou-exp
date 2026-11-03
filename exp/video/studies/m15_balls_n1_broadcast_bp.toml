@@ -1,0 +1,35 @@
+# M15 on the balls, N = 1, with the reconstruction of the last frame through a
+# spatial broadcast decoder (m15-broadcast-pilot-v1: mu = 100 gave
+# probe_pos_min 0.90/0.94). BP on the seeds 100/101 (val); the objective is
+# 1 - probe_pos_min. Searches mu, the decoder's width and the JEPA side.
+[study]
+name = "m15-balls-n1-broadcast-bp-v1"
+overrides = ["+experiment=m15/balls_n1", "learner=bp", "phase=explore", "vision.recon_decoder=broadcast"]
+seeds = [100, 101]
+parallel = 8        # trials in flight (x 2 seeds runs); 4 x 4090 + 4 x 4060
+max_trials = 40
+res = "any_gpu"
+gpu_mem = 4.0
+ram = 6.0
+prio = 20
+
+[space]
+"vision.recon" = {float = [20.0, 1000.0], log = true}
+"vision.recon_hidden" = {categorical = [32, 64, 128]}
+"optim_vision.lr" = {float = [3e-5, 1e-3], log = true}
+"optim_vision.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"vision.sg" = {categorical = [false, true]}
+"vision.sigreg_on" = {categorical = ["z", "tokens", "both"]}
+"vision.sigreg" = {float = [0.01, 0.9], log = true}
+"vision.mask_ratio" = {categorical = [0.25, 0.5, 0.75]}
+
+# The broadcast arm of the pilot with mu = 100.
+[[enqueue]]
+"vision.recon" = 100.0
+"vision.recon_hidden" = 64
+"optim_vision.lr" = 1e-4
+"optim_vision.warmup" = 300.0
+"vision.sg" = false
+"vision.sigreg_on" = "z"
+"vision.sigreg" = 0.05
+"vision.mask_ratio" = 0.5
