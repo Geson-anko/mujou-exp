@@ -68,3 +68,12 @@ container *args:
 [positional-arguments]
 fleet *args:
     @uv run --no-project --python 3.14 python -m exp.lib.fleet "$@"
+
+# The optuna coordinator on std-00 (tools/sweep/README.md): just sweep run <study.toml> | status <study> | confirm ... | bracket ...
+[positional-arguments]
+sweep *args:
+    @PYTHONPATH=tools/sweep uv run --no-project --python 3.14 python -m sweep "$@"
+
+# The tests of tools/sweep (its own uv project; not in `just test`)
+test-sweep:
+    uv run --project tools/sweep pytest tools/sweep/tests
