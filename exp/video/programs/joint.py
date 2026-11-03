@@ -2,7 +2,9 @@ r"""The program of M16: the vision of M15 and the dynamics of M14 learned
 together, for the tasks
 
 - ``"online"`` (and ``"bench"``, without the evaluations): the encoder learns
-  by the JEPA loss alone (``exp.video.jepa``) and the dynamics (``exp.video.dyn``)
+  by the vision's loss alone (``exp.video.jepa``: JEPA, and with
+  ``vision.recon`` > 0 the reconstruction of the frame) and the dynamics
+  (``exp.video.dyn``)
   learns to predict the encoder's next $z$ from the past $z$, both frame by
   frame from ``B`` streams of balls (PC-ALM or BP, ``conf.learner``). Every
   ``measure.every`` seconds both are evaluated on fixed windows of the balls
@@ -195,9 +197,7 @@ def build_joint(conf: RunConf, *, frozen_from: Path | None = None) -> JointPC | 
     mods = build_vision(conf, seed=conf.seed)
     if v.frozen:
         assert frozen_from is not None
-        head = ckpt.load_eval(
-            frozen_from, {"encoder": mods.encoder, "predictor": mods.predictor}
-        )
+        head = ckpt.load_eval(frozen_from, mods.named())
         if head["program"] != "vision":
             raise ValueError(
                 f"{frozen_from} is a checkpoint of {head['program']!r}, not 'vision'"
@@ -305,10 +305,11 @@ class _Online:
         self._y = torch.zeros(b, 1, device=dev)
         self._mask = torch.ones(b, dtype=torch.bool, device=dev)
         # The sums since the last log, in host memory, where Host.show reads
-        # the messages: the vision's loss, pred, sigreg and frames; then the
-        # dynamics' error and count from the observation and from its own
+        # the messages: the vision's loss, pred, sigreg, recon and frames; then
+        # the dynamics' error and count from the observation and from its own
         # prediction.
-        self._acc = torch.zeros(8, dtype=torch.float64)
+        self._recon = v.recon > 0
+        self._acc = torch.zeros(9, dtype=torch.float64)
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -349,24 +350,25 @@ class _Online:
         if k == 0:
             return
         terms = torch.stack(
-            [p["loss"], p["pred"], p["sigreg"], torch.ones_like(p["n"])]
+            [p["loss"], p["pred"], p["sigreg"], p["recon"], torch.ones_like(p["n"])]
         )
-        self._acc[:4] += torch.where(p["n"] > 0, terms.double(), 0.0)
+        self._acc[:5] += torch.where(p["n"] > 0, terms.double(), 0.0)
         err = ((q["y_hat"] - q["y"]) ** 2).mean(-1)
         mask = q["mask"]
-        i = 6 if k > 1 and is_open(k, dyn.open_loop, dyn.open_cycle) else 4
+        i = 7 if k > 1 and is_open(k, dyn.open_loop, dyn.open_cycle) else 5
         sums = torch.stack(
             [torch.where(mask, err, 0.0).sum().double(), mask.sum().double()]
         )
         self._acc[i : i + 2] += sums
 
     def log(self) -> dict[str, float | None]:
-        loss, pred, sig, n, e, ne, e_open, n_open = self._acc.tolist()
+        loss, pred, sig, rec, n, e, ne, e_open, n_open = self._acc.tolist()
         self._acc.zero_()
         return {
             "loss": loss / n if n else None,
             "pred": pred / n if n else None,
             "sigreg": sig / n if n else None,
+            **({"recon": rec / n if n else None} if self._recon else {}),
             "preq": e / ne if ne else None,
             "preq_open": e_open / n_open if n_open else None,
         }
@@ -395,7 +397,13 @@ class _Online:
         standardized and its spread is tiny early on, so ``roll{h}`` far above
         ``mean{h}`` is not yet a run to stop; the rows and the objective tell it."""
         h = _horizon(self.conf)
-        keys = ["loss", "pred", "sigreg", f"roll{h}"]
+        keys = [
+            "loss",
+            "pred",
+            "sigreg",
+            *(["recon"] if self._recon else []),
+            f"roll{h}",
+        ]
         bad = [k for k in keys if not math.isfinite(row[k])]
         if bad:
             return f"{', '.join(bad)} not finite"
@@ -411,12 +419,7 @@ class _Online:
         return None if row is None else joint_objective(row, _horizon(self.conf))
 
     def modules(self) -> dict[str, nn.Module]:
-        return {
-            "encoder": self.mods.encoder,
-            "predictor": self.mods.predictor,
-            "step": self.dyn.step,
-            "readout": self.dyn.readout,
-        }
+        return self.mods.named() | {"step": self.dyn.step, "readout": self.dyn.readout}
 
     def visualize(self, out: Path) -> None:
         if self.measures is not None:
@@ -458,12 +461,7 @@ def rebuild(conf: RunConf) -> dict[str, nn.Module]:
     """Fresh modules of ``conf`` by the names of the evaluation checkpoint, to
     load one into (``exp.lib.ckpt.load_eval``)."""
     mods, dyn = build_vision(conf, seed=conf.seed), joint_dynamics(conf)
-    return {
-        "encoder": mods.encoder,
-        "predictor": mods.predictor,
-        "step": dyn.step,
-        "readout": dyn.readout,
-    }
+    return mods.named() | {"step": dyn.step, "readout": dyn.readout}
 
 
 PROGRAM = JointProgram()

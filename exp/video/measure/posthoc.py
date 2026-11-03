@@ -422,10 +422,9 @@ class Decoding:
         lines (a line per split)."""
         path = self.parent.ckpts[self.done]
         mods, dev = self._mods, self._dev
-        named: dict[str, nn.Module] = {
-            "encoder": mods.encoder,
-            "predictor": mods.predictor,
-        }
+        # The training decoder (``vision.recon`` > 0) is loaded and ignored: the
+        # decoder fit here is its own.
+        named: dict[str, nn.Module] = dict(mods.named())
         if self._dyn is not None:
             named |= {"step": self._dyn.step, "readout": self._dyn.readout}
         head = ckpt.load_eval(path, named, group=self.parent.job["group"])

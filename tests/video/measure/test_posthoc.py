@@ -253,3 +253,22 @@ class TestDecodeRun:
         (tmp_path / "job.json").write_bytes((run_dir / "job.json").read_bytes())
         with pytest.raises(ValueError, match="no evaluation checkpoint"):
             Parent.read(tmp_path, device="cpu")
+
+
+@pytest.mark.parametrize("learner", ["bp", "pc"])
+def test_a_run_with_the_reconstruction_term_is_decoded(tmp_path, learner):
+    """The checkpoint holds the training decoder; the posthoc fit loads it
+    (the names must match) and fits its own."""
+    run = tmp_path / "run"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(loop, "assert_free_threaded", lambda where: None)
+        job = local_job(
+            [*TINY, f"learner={learner}", "vision.recon=1.0", "vision.recon_hidden=8"],
+            run,
+        )
+        assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+    parent = Parent.read(run, device="cpu")
+    lines = decode_run(
+        parent, tmp_path / "decode", evals=_evals(parent), frames=40, steps=2
+    )
+    assert lines and all(x["recon"] >= 0 for x in lines)

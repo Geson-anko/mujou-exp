@@ -11,7 +11,7 @@ from mujou.pc.msg import Activity
 from mujou.pc.optim import Optimizer
 from mujou.types import Device
 
-from exp.video.jepa.loss import JEPATerms, jepa_loss
+from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, split_y
 from exp.video.jepa.nodes import STATS, draw_directions, stats_message, z_spec
 from exp.video.jepa.vit import VisionModules
 from mujou import DictSpec, Node, Port, TensorSpec
@@ -31,7 +31,10 @@ class JEPABP(Node):
     that only sends). When its clock says (``pc.clock.LearnClock``, as the
     nodes of PC-ALM), it learns all the parameters by $\partial L / \partial
     \theta$ with one optimizer (the encoder's, then the predictor's) and sends
-    $z$ again at the weights it learned. The graph of the frame's first $L$ is
+    $z$ again at the weights it learned. With ``mods.decoder`` and ``recon``
+    $\mu > 0$ the loss has the reconstruction term of ``JEPAHead`` (read from
+    the ``y`` the ``Chunker`` carries), and the decoder is learned by the same
+    optimizer (after the predictor). The graph of the frame's first $L$ is
     kept for the first learning of the frame (the weights, the views and the
     directions are the same until then: the clock never learns in the update
     that first sees a frame), so a frame costs one forward of the views, its
@@ -47,6 +50,9 @@ class JEPABP(Node):
         sg: Stop the prediction's gradient at the target view.
         directions: The directions of SIGReg drawn per frame.
         sigreg_on: What SIGReg sees (``loss.jepa_loss``).
+        recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
+        pixel_mean: The data's mean pixel (the standardization of the target).
+        pixel_std: The data's pixel std.
         tau: The time constants of PC-ALM (the period and ``max_dt``).
         optimizer: The optimizer of all the parameters.
         learn_interval: As in ``pc.clock.LearnClock``.
@@ -68,11 +74,16 @@ class JEPABP(Node):
         learn_interval: float | None,
         seed: int,
         sigreg_on: str = "z",
+        recon: float = 0.0,
+        pixel_mean: float = 0.0,
+        pixel_std: float = 1.0,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.mods = mods
+        self._recon = recon, pixel_mean, pixel_std
         self.encoder, self.predictor = mods.encoder, mods.predictor
+        self.decoder = mods.decoder  # an attribute, so that it is in the state
         self._v, self._lam, self._sg, self._sigreg_on = views, lam, sg, sigreg_on
         self._learns = learn_interval is None or not math.isinf(learn_interval)
         # L of the frame at the current weights, in its graph, until a step
@@ -83,6 +94,8 @@ class JEPABP(Node):
             tau, period=self.period, learn_interval=learn_interval
         )
         self._params = [*self.encoder.parameters(), *self.predictor.parameters()]
+        if mods.decoder is not None:
+            self._params += mods.decoder.parameters()
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
@@ -132,9 +145,18 @@ class JEPABP(Node):
             if outputs is not None:
                 outputs.append(x)
         b, v = self._b, self._v
+        decoder = self.decoder
+        masks, frames = split_y(
+            act["y"], b, v, None if decoder is None else decoder.shape
+        )
+        recon = None
+        if decoder is not None:
+            assert frames is not None, "the Chunker must carry the frame"
+            mu, mean, std = self._recon
+            recon = Reconstruction(mu, decoder, mean, std, frames)
         return jepa_loss(
             x.view(b, v, *x.shape[1:]),
-            act["y"].view(b, v, -1)[:, 1:],
+            masks,
             act["mask"].view(b, v)[:, 0],
             self.directions,
             self.predictor,
@@ -143,6 +165,7 @@ class JEPABP(Node):
             lam=self._lam,
             sg=self._sg,
             sigreg_on=self._sigreg_on,
+            recon=recon,
         )
 
     def _send_z(self, act: Activity, z: torch.Tensor) -> None:

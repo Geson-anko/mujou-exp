@@ -7,7 +7,9 @@ import torch
 from exp.video.jepa.masks import make_views
 from exp.video.jepa.vit import (
     Block,
+    BroadcastDecoder,
     Embed,
+    PixelDecoder,
     Stage,
     build_vision,
     extra_tokens,
@@ -187,3 +189,67 @@ class TestSamplesAreIndependent:
         x = torch.randn(3, 5, 8, generator=torch.Generator().manual_seed(0))
         g = _cross_jacobian(block, x, 0)
         assert (g[1:] == 0).all()
+
+
+class TestBroadcastDecoder:
+    def test_it_makes_the_frames_and_the_default_width_follows_the_decoder(self):
+        mlp = VisionConf(recon=1.0)
+        bc = VisionConf(recon=1.0, recon_decoder="broadcast")
+        assert (mlp.decoder_hidden, bc.decoder_hidden) == (256, 64)
+        assert VisionConf(recon_decoder="broadcast", recon_hidden=8).decoder_hidden == 8
+        with pytest.raises(ValueError, match="recon_decoder"):
+            VisionConf(recon_decoder="conv")
+        dec = BroadcastDecoder(6, 8, (2, 4, 4))
+        assert dec(torch.randn(3, 6)).shape == (3, 2, 4, 4)
+        assert dec.coords.min() > -1 and dec.coords.max() < 1
+        assert "coords" not in dec.state_dict()
+
+    def test_a_pixel_depends_on_z_and_its_coordinates_only(self):
+        torch.manual_seed(0)
+        dec = BroadcastDecoder(6, 8, (1, 4, 5))
+        z = torch.randn(3, 6)
+        perm = torch.randperm(20)
+        full = dec.at(z, dec.coords)
+        assert torch.equal(dec.at(z, dec.coords[perm]), full[:, perm])
+        one = dec.at(z, dec.coords[7:8])  # alone, as with the others
+        torch.testing.assert_close(one, full[:, 7:8])
+        # and the decoder is the per-pixel MLP of [z, x, y]
+        x = torch.cat([z[1], dec.coords[7]])
+        torch.testing.assert_close(dec.net(x), full[1, 7])
+
+    def test_the_output_is_laid_out_row_major_as_the_loss_expects(self):
+        # out[n, c, i, j] is the net at [z, x_j, y_i] (H != W): the layout of
+        # ``split_y``'s ``unflatten(1, (C, H, W))``
+        torch.manual_seed(0)
+        c, h, w = 2, 3, 5
+        dec = BroadcastDecoder(6, 8, (c, h, w))
+        z = torch.randn(4, 6)
+        out = dec(z)
+        for i in range(h):
+            for j in range(w):
+                xy = torch.tensor([(j + 0.5) / w * 2 - 1, (i + 0.5) / h * 2 - 1])
+                for n in range(len(z)):
+                    expected = dec.net(torch.cat([z[n], xy]))
+                    torch.testing.assert_close(out[n, :, i, j], expected)
+
+    def test_the_default_decoder_and_the_other_weights_are_unchanged(self):
+        base = _conf(recon=1.0)
+        bc = _conf(recon=1.0, recon_decoder="broadcast")
+        off = _conf()
+        a, b, c = (build_vision(x, seed=2) for x in (base, bc, off))
+        assert isinstance(a.decoder, PixelDecoder)
+        assert isinstance(b.decoder, BroadcastDecoder)
+        # "mlp" is what it was: width 256, drawn after the encoder and predictor
+        assert [tuple(p.shape) for p in a.decoder.parameters()] == [
+            (256, 16),
+            (256,),
+            (64, 256),
+            (64,),
+        ]
+        for m in (a, b):
+            for x, y in zip(
+                [*m.encoder.parameters(), *m.predictor.parameters()],
+                [*c.encoder.parameters(), *c.predictor.parameters()],
+                strict=True,
+            ):
+                assert torch.equal(x, y)

@@ -1,6 +1,7 @@
 from typing import override
 
 import mujou.testing
+import pytest
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
@@ -134,3 +135,97 @@ def test_no_parameter_gets_a_grad_and_only_the_nodes_move_the_weights():
     moved = [not torch.equal(a, b) for a, b in zip(before, after, strict=True)]
     assert sum(moved) > len(moved) // 2
     assert all(bool(p.isfinite().all()) for p in after)
+
+
+@pytest.mark.parametrize("decoder_kind", ["mlp", "broadcast"])
+def test_some_hundred_adam_steps_reconstruct_the_balls_better_than_the_mean_image(
+    decoder_kind,
+):
+    """Sanity of the reconstruction term: BP on L (lam small, mu 1) on random
+    positions of two balls, 16 x 16 pixels. The decoder of z, on fresh
+    positions, ends with a squared error per pixel (standardized) below that
+    of the mean image of the training set, which is the best a decoder that
+    sees nothing of the position can do."""
+    import math as _math
+
+    from exp.video.data.physics import render
+    from exp.video.jepa.loss import Reconstruction
+    from exp.video.jepa.masks import block_masks, make_views
+    from exp.video.jepa.nodes import draw_directions
+    from exp.video.schema import (
+        BallsConf,
+        DataConf,
+        LearnerConf,
+        OptimConf,
+        TimeConf,
+        VisionConf,
+    )
+    from exp.video.schema.run import RunConf
+
+    side, radii, mean, std = 16, (0.15, 0.2), 0.1, 0.2
+    conf = RunConf(
+        name="t",
+        program="vision",
+        learner=LearnerConf(kind="bp"),
+        data=DataConf(streams=16, balls=BallsConf(obs="frames", size=side)),
+        vision=VisionConf(
+            patch=4,
+            dim=32,
+            depth=2,
+            heads=2,
+            nodes=1,
+            pred_depth=1,
+            sigreg=0.05,
+            recon=1.0,
+            recon_hidden=64,
+            recon_decoder=decoder_kind,
+            pixel_mean=mean,
+            pixel_std=std,
+        ),
+        optim_vision=OptimConf(kind="sgd", lr=0.1, warmup=0.0),  # unused: Adam below
+        time=TimeConf(),
+    )
+    v = conf.vision
+    assert v is not None
+    mods = build_vision(conf, seed=0)
+    decoder = mods.decoder
+    assert decoder is not None
+    params = [*mods.encoder.parameters(), *mods.predictor.parameters()]
+    params += decoder.parameters()
+    opt = torch.optim.Adam(params, lr=3e-3)
+    g = torch.Generator().manual_seed(0)
+    dirs = draw_directions(32, v.dim, g)
+
+    def batch(n: int):
+        states = torch.zeros(n, 8)
+        states[:, [0, 1, 4, 5]] = torch.rand(n, 4, generator=g) * 0.8 + 0.1
+        return render(states, side, radii)[:, None]  # (n, 1, 1, H, W)
+
+    def terms(chunks: torch.Tensor):
+        n = len(chunks)
+        masks = block_masks(n, (4, 4), ratio=0.5, blocks=2, generator=g)
+        h, y = make_views(chunks, masks.unflatten(0, (n, 1)), 4)
+        rec = Reconstruction(v.recon, decoder, mean, std, chunks[:, -1])
+        return jepa_loss(
+            mods.encoder(h).unflatten(0, (n, 2)),
+            y.unflatten(0, (n, 2))[:, 1:],
+            torch.ones(n, dtype=torch.bool),
+            dirs,
+            mods.predictor,
+            extra=mods.encoder.extra,
+            z_pool="mean",
+            lam=v.sigreg,
+            sg=False,
+            recon=rec,
+        )
+
+    train_mean = ((batch(256)[:, 0] - mean) / std).mean(0)
+    for _ in range(800):
+        opt.zero_grad()
+        terms(batch(16)).loss.backward()
+        opt.step()
+    with torch.no_grad():
+        test = batch(128)
+        got = terms(test).recon
+        base = (((test[:, 0] - mean) / std - train_mean) ** 2).mean()
+    assert _math.isfinite(float(got)) and got < 0.8 * base

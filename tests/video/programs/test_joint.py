@@ -105,19 +105,27 @@ class TestShowAll:
         assert p["time"] == q["time"] == written
 
 
+RECON = ["vision.recon=10.0", "vision.recon_decoder=broadcast"]
+
+
 class TestNoCreditToTheEncoder:
-    @pytest.mark.parametrize("frames", [1, 2])
+    @pytest.mark.parametrize(
+        ("frames", "recon"), [(1, []), (2, []), (1, RECON)], ids=["n1", "n2", "recon"]
+    )
     @pytest.mark.parametrize("learner", ["pc", "bp"])
-    def test_the_encoder_is_the_vision_programs_bit_for_bit(self, learner, frames):
+    def test_the_encoder_is_the_vision_programs_bit_for_bit(
+        self, learner, frames, recon
+    ):
         """The dynamics' error is not a term of the encoder's loss: the same
         seed and data give the vision of M15 and the joint network the same
-        encoder and predictor after K frames, however much the dynamics
-        learned."""
+        encoder, predictor (and decoder of the reconstruction) after K frames,
+        however much the dynamics learned."""
         conf = _conf(
             [
                 f"learner={learner}",
                 f"vision.frames={frames}",
                 "optim_vision.warmup=0",  # so that the encoder does move
+                *recon,
             ]
         )
         alone = build_vision_net(conf)
@@ -135,6 +143,9 @@ class TestNoCreditToTheEncoder:
             assert all(p.grad is None for p in module.parameters())
         assert _same(_weights(alone.mods.encoder), _weights(joint.mods.encoder))
         assert _same(_weights(alone.mods.predictor), _weights(joint.mods.predictor))
+        if recon:
+            assert alone.mods.decoder is not None and joint.mods.decoder is not None
+            assert _same(_weights(alone.mods.decoder), _weights(joint.mods.decoder))
 
     def test_the_initial_encoder_is_that_of_the_vision_of_the_same_seed(self):
         conf = _conf(["seed=3"])
@@ -477,12 +488,14 @@ class TestContract:
 
 
 class TestResume:
+    @pytest.mark.parametrize("recon", [[], RECON], ids=["jepa", "recon"])
     @pytest.mark.parametrize("learner", ["pc", "bp"])
-    def test_resume_equals_uninterrupted(self, tmp_path, learner):
+    def test_resume_equals_uninterrupted(self, tmp_path, learner, recon):
         """Stopped at frame 23 (past the first evaluation) and resumed, the
         run writes the bytes of one never stopped: both learners' states, the
         dynamics' memory and traces among them."""
         extra = [
+            *recon,
             f"learner={learner}",
             "vision.frames=2",
             "optim_vision.warmup=0.5",
@@ -498,6 +511,8 @@ class TestResume:
         assert _run(cut, extra, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        logged = _lines(cut / "stream.jsonl")[-1]
+        assert ("recon" in logged) == bool(recon)
 
 
 def test_the_objective():

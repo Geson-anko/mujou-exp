@@ -2,7 +2,14 @@ import pytest
 import torch
 
 from exp.lib.sigreg import sigreg
-from exp.video.jepa.loss import jepa_loss, pool, prediction_errors, weighted_sigreg
+from exp.video.jepa.loss import (
+    Reconstruction,
+    jepa_loss,
+    pool,
+    prediction_errors,
+    split_y,
+    weighted_sigreg,
+)
 
 B, V, E, T, D = 3, 3, 1, 4, 5
 
@@ -196,3 +203,87 @@ class TestSIGRegOn:
                 sg=False,
                 sigreg_on="zz",
             )
+
+
+class TestReconstruction:
+    P = 6  # pixels of a frame: (1, 2, 3)
+
+    def _setup(self):
+        tokens, masks, dirs = _inputs()
+        g = torch.Generator().manual_seed(3)
+        w = torch.randn(self.P, D, generator=g, dtype=torch.float64)
+        frames = torch.rand(B, 1, 2, 3, generator=g, dtype=torch.float64)
+
+        def decoder(z: torch.Tensor) -> torch.Tensor:
+            return (z @ w.T).view(-1, 1, 2, 3)
+
+        return tokens, masks, dirs, w, frames, decoder
+
+    def _loss(self, tokens, masks, dirs, valid, rec, mu=0.7, lam=0.2):
+        return jepa_loss(
+            tokens,
+            masks,
+            valid,
+            dirs,
+            _identity,
+            extra=E,
+            z_pool="mean",
+            lam=lam,
+            sg=True,
+            recon=None if rec is None else rec._replace(mu=mu),
+        )
+
+    def test_the_term_is_the_mean_squared_error_to_the_standardized_frame(self):
+        """L = L_without + mu * mean over the valid streams of the mean over
+        the pixels of (g(z) - (x - m) / s)^2, g linear here."""
+        tokens, masks, dirs, w, frames, dec = self._setup()
+        valid = torch.tensor([True, False, True])
+        rec = Reconstruction(0.7, dec, 0.4, 2.0, frames)
+        t = self._loss(tokens, masks, dirs, valid, rec)
+        base = self._loss(tokens, masks, dirs, valid, None)
+        z = tokens[:, 0, E:].mean(1)
+        err = ((z @ w.T - ((frames - 0.4) / 2.0).flatten(1)) ** 2).mean(1)
+        mean = err[valid].mean()
+        torch.testing.assert_close(t.recon, mean)
+        torch.testing.assert_close(t.loss, base.loss + 0.7 * mean * 2 / B)
+        assert base.recon == 0
+
+    def test_the_gradient_to_z_matches_a_central_difference(self):
+        """With sg the prediction gives the target view no credit; the
+        reconstruction does, through z, equal to the central difference of the
+        loss (float64) and to 2 / P W^T (W z - t) / |M| spread over the T
+        patch tokens of the mean pool."""
+        tokens, masks, dirs, w, frames, dec = self._setup()
+        valid = torch.ones(B, dtype=torch.bool)
+        rec = Reconstruction(1.0, dec, 0.0, 1.0, frames)
+
+        def f(x: torch.Tensor) -> torch.Tensor:
+            return self._loss(x, masks, dirs, valid, rec, mu=1.0, lam=0.0).loss
+
+        def r(x: torch.Tensor) -> torch.Tensor:
+            return self._loss(x, masks, dirs, valid, rec, mu=1.0, lam=0.0).recon
+
+        x = tokens.clone().requires_grad_()
+        (g,) = torch.autograd.grad(f(x), [x])
+        assert (g[:, 0, E:] != 0).any()
+        z = tokens[:, 0, E:].mean(1)
+        dz = 2 / self.P * (z @ w.T - frames.flatten(1)) @ w / B
+        torch.testing.assert_close(g[:, 0, E:], dz[:, None].expand(-1, T, -1) / T)
+        eps = 1e-6
+        for idx in [(0, 0, E, 1), (1, 0, E + 2, 3), (2, 0, E + 3, 0)]:
+            up, down = tokens.clone(), tokens.clone()
+            up[idx] += eps
+            down[idx] -= eps
+            # terms.recon, not the loss: sg hides the prediction from the
+            # gradient but not from a finite difference
+            fd = (r(up) - r(down)) / (2 * eps)
+            torch.testing.assert_close(g[idx], fd, rtol=1e-6, atol=1e-9)
+
+    def test_split_y_reads_the_masks_and_the_target_frame(self):
+        y = torch.arange(2 * 3 * (4 + 6.0)).view(6, 10)
+        masks, frames = split_y(y, 2, 3, (1, 2, 3))
+        assert frames is not None
+        assert torch.equal(masks, y.view(2, 3, 10)[:, 1:, :4])
+        assert torch.equal(frames.flatten(1), y.view(2, 3, 10)[:, 0, 4:])
+        masks, frames = split_y(y, 2, 3, None)
+        assert frames is None and masks.shape == (2, 2, 10)

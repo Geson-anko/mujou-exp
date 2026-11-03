@@ -16,8 +16,13 @@ frame that have a chunk (``valid``) out of $B$,
 
 $$
 L = \frac1B \sum_{b \in M} \left[ (1 - \lambda) L^{\mathrm{pred}}_b
-    + \lambda\, S \right],
+    + \lambda\, S + \mu\, L^{\mathrm{rec}}_b \right],
 $$
+
+with $L^{\mathrm{rec}}_b = \frac1P \lVert g(z_b) - (x_b - m) / \sigma
+\rVert^2$ the reconstruction of the target view's last frame $x_b$ ($P$
+pixels, standardized by the data's $m$ and $\sigma$, the Embed's) by the
+decoder $g$ of ``decoder`` (the term is absent, $\mu = 0$, without one).
 
 $S$ the SIGReg statistic (``exp.lib.sigreg.sigreg``, along ``directions``)
 of what ``sigreg_on`` names: ``"z"`` $S_z$, of the $|M|$ samples $z_M$
@@ -28,14 +33,15 @@ streams valid it is $(1 - \lambda) \bar L^{\mathrm{pred}} + \lambda S$
 (LeJEPA). Mind that $S$ grows with $|M|$: the same $\lambda$ is a stronger
 SIGReg with more streams (as ``exp.lib.sigreg.SIGReg``). With ``sg`` the
 target tokens are constants of $L^{\mathrm{pred}}$ (the SIGReg term still
-reaches the target view). There is no target encoder: the target view goes
-through the same weights.
+reaches the target view, and so does the reconstruction: through $z$). There
+is no target encoder: the target view goes through the same weights.
 
 The loss is computed for every stream, valid or not, and the invalid ones are
 weighted out (no shape depends on ``valid``, so nothing reads the device
 back).
 """
 
+import math
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -44,7 +50,15 @@ from torch import Tensor
 
 from exp.lib.sigreg import T_POINTS
 
-__all__ = ["JEPATerms", "jepa_loss", "pool", "prediction_errors", "weighted_sigreg"]
+__all__ = [
+    "JEPATerms",
+    "Reconstruction",
+    "jepa_loss",
+    "pool",
+    "prediction_errors",
+    "split_y",
+    "weighted_sigreg",
+]
 
 
 def pool(tokens: Tensor, *, z_pool: str, extra: int) -> Tensor:
@@ -58,6 +72,21 @@ def pool(tokens: Tensor, *, z_pool: str, extra: int) -> Tensor:
             return tokens[:, :extra].mean(1)
         case _:
             return tokens[:, extra:].mean(1)
+
+
+def split_y(
+    y: Tensor, streams: int, views: int, shape: tuple[int, int, int] | None
+) -> tuple[Tensor, Tensor | None]:
+    """The masks of the context views ``(B, V - 1, T)`` and the target views'
+    last frames ``(B, C, H, W)`` of the ``y`` ``(B V, T [+ C H W])`` of the
+    ``Chunker``: with ``shape`` ``(C, H, W)`` the last ``C H W`` entries of
+    each row are the frame (of view 0; zeros in the others), with None there
+    is no frame."""
+    y = y.view(streams, views, -1)
+    if shape is None:
+        return y[:, 1:], None
+    t = y.shape[-1] - math.prod(shape)
+    return y[:, 1:, :t], y[:, 0, t:].unflatten(1, shape)
 
 
 def prediction_errors(
@@ -102,6 +131,19 @@ def weighted_sigreg(x: Tensor, weights: Tensor, directions: Tensor) -> Tensor:
     return (n * torch.trapezoid(err, t, dim=-1)).mean()
 
 
+class Reconstruction(NamedTuple):
+    """What the reconstruction term of ``jepa_loss`` needs: the weight ``mu``,
+    the ``decoder`` ``(n, D) -> (n, C, H, W)`` (in standardized pixels), the
+    pixel constants ``mean`` and ``std`` of the data and the target views'
+    last frames ``frames`` ``(B, C, H, W)`` (raw pixels)."""
+
+    mu: float
+    decoder: Callable[[Tensor], Tensor]
+    mean: float
+    std: float
+    frames: Tensor
+
+
 class JEPATerms(NamedTuple):
     """The loss $L$ and its parts of one frame (0-d tensors), and $z$."""
 
@@ -110,6 +152,7 @@ class JEPATerms(NamedTuple):
     sigreg: Tensor  # S
     valid: Tensor  # |M| as a float
     z: Tensor  # (B, D), of every stream
+    recon: Tensor  # the mean of L_rec over the valid streams (0 with none or off)
 
 
 def jepa_loss(
@@ -124,6 +167,7 @@ def jepa_loss(
     lam: float,
     sg: bool,
     sigreg_on: str = "z",
+    recon: Reconstruction | None = None,
 ) -> JEPATerms:
     """$L$ of the module docstring.
 
@@ -138,6 +182,7 @@ def jepa_loss(
         lam: $\\lambda$.
         sg: Stop the gradient of the prediction at the target tokens.
         sigreg_on: What SIGReg sees: ``"z"``, ``"tokens"`` or ``"both"``.
+        recon: The reconstruction term (None: off).
     """
     b, _, _, d = tokens.shape
     z = pool(tokens[:, 0], z_pool=z_pool, extra=extra)
@@ -160,5 +205,12 @@ def jepa_loss(
             f"sigreg_on must be 'z', 'tokens' or 'both', not {sigreg_on!r}"
         )
     s = torch.stack(parts).mean()
-    loss = ((1 - lam) * pred_sum + lam * n * s) / b
-    return JEPATerms(loss, pred_sum / n.clamp(min=1), s, n, z)
+    total = (1 - lam) * pred_sum + lam * n * s
+    rec = torch.zeros_like(s)
+    if recon is not None:
+        target = (recon.frames.to(z) - recon.mean) / recon.std
+        err = ((recon.decoder(z) - target) ** 2).flatten(1).mean(1)  # (B,)
+        rec_sum = torch.where(valid, err, 0.0).sum()
+        total = total + recon.mu * rec_sum
+        rec = rec_sum / n.clamp(min=1)
+    return JEPATerms(total / b, pred_sum / n.clamp(min=1), s, n, z, rec)

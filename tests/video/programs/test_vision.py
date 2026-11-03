@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 
 from exp.lib import ckpt
 from exp.lib.rundir import Exit, verify_manifest
@@ -171,6 +172,67 @@ class TestContract:
         assert not (out / "baselines.json").exists()
 
 
+class TestRecon:
+    def test_off_by_default_it_builds_no_decoder_and_records_no_recon(self, tmp_path):
+        conf = compose(["+experiment=m15/balls_n1"])
+        assert conf.vision is not None and conf.vision.recon == 0
+        assert build_vision(conf, seed=0).decoder is None
+        assert set(rebuild(conf)) == {"encoder", "predictor"}
+        assert _run(tmp_path, ["learner=pc"]) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert "recon" not in (tmp_path / name).read_text()
+
+    def test_the_other_weights_do_not_depend_on_the_decoder(self):
+        """The decoder is built after the encoder and the predictor, so a run
+        with recon starts from the weights of the run without."""
+        off = compose(["+experiment=m15/balls_n1"])
+        on = compose(["+experiment=m15/balls_n1", "vision.recon=1.0"])
+        a, b = build_vision(off, seed=3), build_vision(on, seed=3)
+        for x, y in zip(
+            [*a.encoder.parameters(), *a.predictor.parameters()],
+            [*b.encoder.parameters(), *b.predictor.parameters()],
+            strict=True,
+        ):
+            assert torch.equal(x, y)
+        assert b.decoder is not None
+
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_a_run_records_recon_and_checkpoints_the_decoder(self, tmp_path, learner):
+        out = tmp_path / "run"
+        extra = [f"learner={learner}", "vision.recon=1.0", "ctl.ckpt_every=0.5"]
+        assert _run(out, extra) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            rows = [r for r in _lines(out / name) if r.get("split", "val") == "val"]
+            assert rows and all(r["recon"] > 0 for r in rows[-1:])
+        conf = from_dict(json.loads((out / "job.json").read_text())["config"])
+        mods = rebuild(conf)
+        assert set(mods) == {"encoder", "predictor", "decoder"}
+        ckpt.load_eval(out / "ckpt" / "00001.0.pt", mods)
+
+    @pytest.mark.parametrize("decoder", ["mlp", "broadcast"])
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_resume_equals_uninterrupted_with_recon(self, tmp_path, learner, decoder):
+        extra = [
+            f"learner={learner}",
+            "vision.recon=1.0",
+            f"vision.recon_decoder={decoder}",
+            "vision.recon_hidden=16",
+            "vision.frames=2",
+            "optim_vision.warmup=0.5",
+            "optim_vision.lr=1e-3",
+            "ctl.resume_every=0.3",
+            "ctl.log_every=0.2",
+        ]
+        assert _run(tmp_path / "whole", extra) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(23)) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        assert '"recon"' in (cut / "stream.jsonl").read_text()
+
+
 class TestResume:
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_resume_equals_uninterrupted(self, tmp_path, learner):
@@ -295,6 +357,16 @@ def test_a_run_on_cuda_completes(tmp_path, learner):
     """The stats the host reads back (into host memory) add to the sums of
     stream.jsonl."""
     assert _run(tmp_path / "run", ["device=cuda", f"learner={learner}"]) == Exit.OK
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("learner", ["pc", "bp"])
+def test_a_run_with_recon_on_cuda_completes(tmp_path, learner):
+    out = tmp_path / "run"
+    assert (
+        _run(out, ["device=cuda", f"learner={learner}", "vision.recon=1.0"]) == Exit.OK
+    )
+    assert '"recon"' in (out / "stream.jsonl").read_text()
 
 
 def test_the_objective():
