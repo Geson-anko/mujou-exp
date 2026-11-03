@@ -45,3 +45,17 @@ class TestObjective:
     def test_a_row_without_the_horizons_is_an_error(self):
         with pytest.raises(KeyError):
             objective({"roll5": 0.1, "cv5": 0.2})
+
+
+class TestReference:
+    def test_the_denominator_is_the_reference_asked_for(self):
+        row = {
+            "roll5": 0.1,
+            "cv5": 0.4,
+            "ca5": 0.2,
+            "roll10": 0.1,
+            "cv10": 0.4,
+            "ca10": 0.2,
+        }
+        assert objective(row) == pytest.approx(math.log(0.25), rel=1e-12)
+        assert objective(row, reference="ca") == pytest.approx(math.log(0.5), rel=1e-12)

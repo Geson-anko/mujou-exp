@@ -2,7 +2,10 @@
 ones (``frames_png``) and the predicted paths over the true ones
 (``trajectory_png``), of a few fixed windows of the validation clips: the
 first half with a wall contact up to 10 frames ahead, the others without
-(``pick_windows``, ``visualize``).
+(``pick_windows``, ``visualize``). For the observation ``"pixels"`` (stage 3)
+the prediction is itself an image, drawn as it is (``pixel_frames_png``,
+clipped to [0, 1] by ``tile``), and there is no ``traj.png``: the model
+predicts no positions.
 
 Torch and ``exp.lib.png`` only. Positions are in the box $[0, 1]^2$ with y up;
 on a canvas of ``c`` pixels, $(x, y)$ is the pixel of column $x (c - 1)$ and
@@ -17,7 +20,13 @@ from torch import Tensor
 
 from exp.lib.png import draw_points_, draw_polyline_, tile, write_png
 from exp.video.data.clips import ClipSet, windows
-from exp.video.data.observe import Standardizer, position_columns, to_states
+from exp.video.data.observe import (
+    PIXELS,
+    Standardizer,
+    position_columns,
+    render_flat,
+    to_states,
+)
 from exp.video.data.physics import render
 from exp.video.dyn.modules import DynamicsModules
 from exp.video.measure.baselines import const_velocity
@@ -29,6 +38,7 @@ __all__ = [
     "COLORS",
     "frames_png",
     "pick_windows",
+    "pixel_frames_png",
     "to_pixels",
     "trajectory_png",
     "visualize",
@@ -71,9 +81,46 @@ def frames_png(
         for states in (true_states, pred_states, cv_states):
             s = states[i, cols].double()  # (len(cols), 4K)
             rows.append(render(s, size, radii))  # (len(cols), 1, size, size)
-    image = tile(torch.stack(rows).float(), scale)
+    _write_tiles(path, rows, scale)
+
+
+def _write_tiles(path: Path, rows: Sequence[Tensor], scale: int) -> None:
+    """Write ``rows`` (each ``(columns, 1, size, size)``) as one tiled PNG."""
+    image = tile(torch.stack(list(rows)).float(), scale)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_png(path, image)
+
+
+def pixel_frames_png(
+    path: Path,
+    true_states: Tensor,
+    pred_images: Tensor,
+    cv_states: Tensor,
+    radii: Sequence[float],
+    *,
+    size: int = 32,
+    columns: Sequence[int] = (0, 1, 2, 5, 10, 20),
+    clips: int = 4,
+    scale: int = 3,
+) -> None:
+    """``frames_png`` for a model that predicts images: the same rows (truth,
+    prediction, constant velocity) and columns, but the prediction is
+    ``pred_images`` as they are.
+
+    Args:
+        true_states: ``(n, 1 + H, 4K)``, as ``frames_png``.
+        pred_images: ``(n, 1 + H, size * size)`` raw (not standardized)
+            images, index 0 the last observed frame.
+        cv_states: ``(n, 1 + H, 4K)``.
+    """
+    cols = list(columns)
+    rows = []
+    for i in range(min(clips, len(true_states))):
+        truth = render(true_states[i, cols].double(), size, radii)
+        pred = pred_images[i, cols].reshape(len(cols), 1, size, size)
+        cv = render(cv_states[i, cols].double(), size, radii)
+        rows += [truth, pred, cv]
+    _write_tiles(path, rows, scale)
 
 
 def to_pixels(xy: Tensor, canvas: int) -> Tensor:
@@ -157,14 +204,18 @@ def visualize(
 ) -> None:
     """``out/frames.png`` and ``out/traj.png`` of the rollout of ``mods`` on
     the windows ``picked`` of ``clips`` (``pick_windows``), up to the largest
-    of ``m.horizons``."""
+    of ``m.horizons``; for ``"pixels"`` ``frames.png`` only (module
+    docstring)."""
     o, horizon = m.observed, max(m.horizons)
-    x, states = windows(clips, obs, std)
+    x, states = windows(clips, obs, std, size=size)
     idx = torch.tensor(list(picked))
     x, states = x[idx], states[idx]
     device = mods.readout.weight.device
     pred = rollout(mods, x.to(device), residual=residual, observed=o, horizon=horizon)
     pred_raw = std.invert(pred.cpu().double())
+    if obs == PIXELS:
+        _pixel_pictures(out, pred_raw, states, clips, m, size=size)
+        return
     raw = std.invert(x.double())
     cv_raw = const_velocity(raw, obs, balls, o, horizon, clips.frame)
     last = states[:, o - 1 : o]
@@ -191,4 +242,32 @@ def visualize(
         cv_raw[..., xy],
         observed=o,
         clips=len(idx),
+    )
+
+
+def _pixel_pictures(
+    out: Path,
+    pred_raw: Tensor,
+    states: Tensor,
+    clips: ClipSet,
+    m: MeasureConf,
+    *,
+    size: int,
+) -> None:
+    """``out/frames.png`` of the predicted images ``pred_raw`` ``(n, H, size^2)``
+    of the windows with the true ``states``."""
+    o, horizon = m.observed, max(m.horizons)
+    k = len(clips.radii)
+    last = states[:, o - 1 : o]
+    cv = const_velocity(states, "pos_vel", k, o, horizon, clips.frame)
+    pred = torch.cat([render_flat(last, clips.radii, size), pred_raw.float()], 1)
+    pixel_frames_png(
+        out / "frames.png",
+        states[:, o - 1 : o + horizon],
+        pred,
+        torch.cat([last, cv], 1),
+        clips.radii,
+        size=size,
+        columns=[c for c in (0, 1, 2, 5, 10, 20) if c <= horizon],
+        clips=len(states),
     )

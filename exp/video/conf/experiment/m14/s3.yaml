@@ -1,0 +1,22 @@
+# @package _global_
+# M14 stage 3: the image of the three balls of stage 2 (32x32, grey, rendered
+# from the state each frame and flattened to 1024 values; standardized with
+# one mean and one standard deviation over all pixels), the small dynamics.
+# The objective is against constant acceleration (ca), not cv: on pixels the
+# error of a displaced ball is capped and ca is the stronger bar (ca10 0.46
+# against cv10 0.94), so roll/cv would count a blur as progress. Judge a run by
+# roll{h}/ca{h}, roll{h}@ball{i} (the discs of the balls) and the pictures.
+# The readout predicts the next image and the error is on the pixels. Combine
+# it with the task presets as the other stages (stage first, then the task):
+#   +experiment=[m14/s3,m14/baselines] name=m14/s3-baselines 'tags=[m14,s3,baselines]'
+#   +experiment=[m14/s3,m14/bench] name=m14/s3-bench 'tags=[m14,s3,bench]'
+#   +experiment=[m14/s3,m14/offline] name=m14/s3-offline 'tags=[m14,s3,offline]'
+defaults:
+  - override /dynamics: small
+name: m14/s3
+tags: [m14, s3]
+data:
+  balls:
+    radii: [0.06, 0.08, 0.10]
+    obs: pixels
+    size: 32

@@ -3,6 +3,7 @@ contract, determinism, resume, the prequential record, the exit codes and the
 records' schedule (``ctl``) leaving the metrics as they are."""
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,19 @@ class TestResume:
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
 
+    def test_a_stage_3_run_resumes_as_one_never_stopped(self, tmp_path):
+        """The pixel stage keeps the states of the history (``fork_eval`` and
+        the pictures read them): they resume too."""
+        stage = "m14/s3"
+        extra = ["learner=bp", "dynamics.d_s=8", "ctl.resume_every=0.5"]
+        assert _run(tmp_path / "whole", extra, experiment=stage) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(47), experiment=stage) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2, experiment=stage) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+
     def test_the_offline_fit_resumes_too(self, tmp_path):
         offline = "[m14/s0,m14/offline]"
         extra = [
@@ -333,3 +347,33 @@ class TestEnds:
         assert set(result["final"]) == {"timing"}
         assert result["final"]["timing"]["fps"] > 0
         assert len(_lines(out / "stream.jsonl")) == 1
+
+
+class TestStage3:
+    """Stage 3: the observation is the image (1024 values), the error on pixels."""
+
+    def test_the_baselines_task_has_the_bars_of_the_images(self, tmp_path):
+        out = tmp_path / "run"
+        assert _run(out, [], experiment="[m14/s3,m14/baselines]") == Exit.OK
+        base = json.loads((out / "baselines.json").read_text())
+        assert base["obs"] == "pixels"
+        assert len(base["standardizer"]["mean"]) == 1024
+        assert set(base["standardizer"]["std"]) == {base["standardizer"]["std"][0]}
+        for key in ("mean10", "copy10", "cv10", "ca10", "ca10@ball2", "cv5@free"):
+            assert key in base["val"]
+        assert base["val"]["true10"] == 0.0
+        assert base["val"]["cv5"] < base["val"]["copy5"]
+
+    @pytest.mark.parametrize("learner", ["bp", "pc"])
+    def test_an_online_run_reads_and_predicts_images(self, tmp_path, learner):
+        out = tmp_path / "run"
+        args = [f"learner={learner}", "seconds=2", "ctl.viz_every=2"]
+        assert _run(out, args, experiment="m14/s3") == Exit.OK
+        result = json.loads((out / "result.json").read_text())
+        assert result["status"] == "completed"
+        val = result["final"]["val"]
+        for key in ("roll5/cv5", "roll10/cv10", "roll10@ball0", "fork10/forkcv10"):
+            assert math.isfinite(val[key]), key
+        assert math.isfinite(result["objective"])
+        assert (out / "viz/00002.0/frames.png").is_file()
+        assert not (out / "viz/00002.0/traj.png").exists()
