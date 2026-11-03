@@ -3,6 +3,7 @@ dynamics sends the encoder no credit (its weights are the vision program's,
 bit for bit), the dynamics is M14's, the files of the run contract, resume,
 the frozen control, and the posthoc decoding of the rollouts."""
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -253,9 +254,16 @@ def _finished_parent(out: Path) -> Path:
     """A finished M15 run of these settings (seed 0) with the checkpoint
     ``ckpt/00001.0.pt``."""
     out.mkdir(parents=True)
-    v = _conf().vision
-    assert v is not None
-    same = [f"vision.recon={v.recon}", f"vision.recon_decoder={v.recon_decoder}"]
+    child = _conf()
+    parent = compose(["+experiment=m15/balls_n1", *VISION_TINY])
+    same = [
+        f"{group}.{f.name}={json.dumps(getattr(c, f.name))}"
+        for group in ("vision", "optim_vision")
+        if (c := getattr(child, group)) is not None
+        and (p := getattr(parent, group)) is not None
+        for f in dataclasses.fields(c)
+        if getattr(c, f.name) != getattr(p, f.name)
+    ]
     job = local_job(
         ["+experiment=m15/balls_n1", *VISION_TINY, *same, "ctl.ckpt_every=1"], out
     )
@@ -328,14 +336,15 @@ class TestFrozen:
             ("seed=1", "seed"),
             ("vision.pixel_std=2.0", "vision"),
             ("learner=pc", "learner"),
+            ("optim_vision.lr=1e-3", "optim_vision"),
             ("data.balls.size=20", "data.balls"),
         ],
     )
     def test_the_parent_must_be_of_the_run_it_controls(
         self, override, differs, tmp_path
     ):
-        """A parent of another seed, normalization or learner has the same
-        shapes and loads without a word, so ``parent_ckpt`` compares."""
+        """A parent of another seed, normalization, learner or optimizer has
+        the same shapes and loads without a word, so ``parent_ckpt`` compares."""
         _finished_parent(tmp_path / "runs" / "b" / "parent")
         run_dir = _child(tmp_path / "runs" / "b" / "child", "b/parent")
         conf = _conf(["vision.frozen=true", override])

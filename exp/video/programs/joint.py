@@ -26,8 +26,9 @@ checkpoint of an M15 run, the job's top-level ``"parent"`` (as the posthoc's:
 ``"<batch>/<run_id>"`` relative to the runs' root, or an absolute path; on
 this host), and never learns. ``fleet submit ... --set parent=<batch>/<run_id>
 --after <run_id> --host <host>``, one job per parent: ``parent_ckpt`` requires
-the parent to be a finished vision run of the same ``vision`` settings, seed,
-learner and balls (a mismatch raises), so ``--seeds`` needs a parent per seed.
+the parent to be a finished vision run of the same ``vision`` and
+``optim_vision`` settings, seed, learner and balls (a mismatch raises), so
+``--seeds`` needs a parent per seed.
 The checkpoint read is written to ``frozen_from.json``. In the nodes the freeze
 is ``learn_interval = inf``.
 
@@ -231,6 +232,7 @@ def parent_ckpt(run_dir: Path, conf: RunConf) -> Path:
         == conf.vision,
         "seed": pconf.seed == conf.seed,
         "learner": pconf.learner.kind == conf.learner.kind,
+        "optim_vision": pconf.optim_vision == conf.optim_vision,
         "data.balls": pconf.data.balls == conf.data.balls,
     }
     if bad := [k for k, ok in same.items() if not ok]:
