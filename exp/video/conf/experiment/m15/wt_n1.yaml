@@ -1,8 +1,8 @@
 # @package _global_
 # M15 on Walking Tours, N = 1: the prepared 64x64 frames at 10 fps, shown one
 # per frame of the run (1/30 s of virtual time), the tiny ViT in patches of 8
-# (64 tokens). Zurich is kept for the evaluation only. Give the data:
-#   data.tours.data_version=<12 hex of walking_tours.finalize>
+# (64 tokens). Zurich is kept for the evaluation only. The data is
+# ad6e56b5995e (walking_tours.finalize, 2026-11-03).
 defaults:
   - /optim@optim_vision: adamw
   - override /dynamics: none
@@ -13,7 +13,7 @@ tags: [m15, wt, n1]
 data:
   balls: null
   tours:
-    data_version: unprepared
+    data_version: ad6e56b5995e
     held_out: Zurich
     size: 64
     fps: 10.0
@@ -21,7 +21,7 @@ measure:
   clips: 64  # x 4 windows: 256 chunks of the held-out video per split (x 3)
 vision:
   patch: 8
-  # about those of natural images; measure them on the prepared data
-  pixel_mean: 0.45
-  pixel_std: 0.25
+  # of the nine training videos of ad6e56b5995e (every 50th frame)
+  pixel_mean: 0.46
+  pixel_std: 0.28
   frames: 1
