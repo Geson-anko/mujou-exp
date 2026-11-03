@@ -106,11 +106,14 @@ class TestShowAll:
 
 
 RECON = ["vision.recon=10.0", "vision.recon_decoder=broadcast"]
+JEPA = ["vision.recon=0.0"]  # the JEPA loss alone (the preset reconstructs)
 
 
 class TestNoCreditToTheEncoder:
     @pytest.mark.parametrize(
-        ("frames", "recon"), [(1, []), (2, []), (1, RECON)], ids=["n1", "n2", "recon"]
+        ("frames", "recon"),
+        [(1, JEPA), (2, JEPA), (1, RECON)],
+        ids=["n1", "n2", "recon"],
     )
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_the_encoder_is_the_vision_programs_bit_for_bit(
@@ -143,7 +146,7 @@ class TestNoCreditToTheEncoder:
             assert all(p.grad is None for p in module.parameters())
         assert _same(_weights(alone.mods.encoder), _weights(joint.mods.encoder))
         assert _same(_weights(alone.mods.predictor), _weights(joint.mods.predictor))
-        if recon:
+        if recon is RECON:
             assert alone.mods.decoder is not None and joint.mods.decoder is not None
             assert _same(_weights(alone.mods.decoder), _weights(joint.mods.decoder))
 
@@ -207,6 +210,7 @@ class TestDynamicsIsM14s:
         )
         m14.data.streams = b
         m14.learner.kind = learner
+        m14.dynamics = conf.dynamics  # the preset's residual and open loop
         kind = StateWorldPC if learner == "pc" else StateWorldBP
         world = kind(
             joint_dynamics(conf),
@@ -241,7 +245,7 @@ def _frozen_ckpt(root: Path, seed: int = 7) -> Path:
         group="g",
         t=1.0,
         frame=30,
-        modules={"encoder": mods.encoder, "predictor": mods.predictor},
+        modules=mods.named(),
     )
 
 
@@ -249,7 +253,12 @@ def _finished_parent(out: Path) -> Path:
     """A finished M15 run of these settings (seed 0) with the checkpoint
     ``ckpt/00001.0.pt``."""
     out.mkdir(parents=True)
-    job = local_job(["+experiment=m15/balls_n1", *VISION_TINY, "ctl.ckpt_every=1"], out)
+    v = _conf().vision
+    assert v is not None
+    same = [f"vision.recon={v.recon}", f"vision.recon_decoder={v.recon_decoder}"]
+    job = local_job(
+        ["+experiment=m15/balls_n1", *VISION_TINY, *same, "ctl.ckpt_every=1"], out
+    )
     assert loop.run(VISION, job, attempt=1) == Exit.OK
     return out
 
@@ -349,7 +358,7 @@ class TestFrozen:
             group="g",
             t=1.0,
             frame=30,
-            modules={"encoder": mods.encoder, "predictor": mods.predictor},
+            modules=mods.named(),
         )
         with pytest.raises(ValueError, match="not 'vision'"):
             build_joint(_conf(["vision.frozen=true"]), frozen_from=path)
@@ -376,7 +385,8 @@ class TestFrozen:
         b = torch.load(out / "ckpt" / "00001.0.pt", weights_only=True)["modules"]
         assert _same(a["encoder"], b["encoder"])
         assert _same(a["predictor"], b["predictor"])
-        assert set(b) == {"encoder", "predictor", "step", "readout"}
+        assert set(b) == {"encoder", "predictor", "decoder", "step", "readout"}
+        assert _same(a["decoder"], b["decoder"])
         assert json.loads((out / "frozen_from.json").read_text()) == {
             "parent": "parent",
             "ckpt": "00001.0.pt",
@@ -445,6 +455,7 @@ class TestContract:
             "loss",
             "pred",
             "sigreg",
+            "recon",
             "preq",
             "preq_open",
         }
@@ -488,7 +499,7 @@ class TestContract:
 
 
 class TestResume:
-    @pytest.mark.parametrize("recon", [[], RECON], ids=["jepa", "recon"])
+    @pytest.mark.parametrize("recon", [JEPA, RECON], ids=["jepa", "recon"])
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_resume_equals_uninterrupted(self, tmp_path, learner, recon):
         """Stopped at frame 23 (past the first evaluation) and resumed, the
@@ -512,7 +523,7 @@ class TestResume:
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
         logged = _lines(cut / "stream.jsonl")[-1]
-        assert ("recon" in logged) == bool(recon)
+        assert ("recon" in logged) == (recon is RECON)
 
 
 def test_the_objective():

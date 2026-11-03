@@ -4,10 +4,12 @@
 # eligibility traces) learned together; the dynamics predicts the encoder's
 # next z and sends it no credit. The learner (pc or bp) is for the command
 # line: `learner=pc`.
-# The values marked "E2" / "E3" are those of the M15 / M14 experiments that
-# are to be set from their results before the runs of E4.
+# The vision is the setting M15 hands over (results/m15.md), the dynamics
+# stage 2's #45 of M14 (results/m14.md); the dynamics' optimizer is searched
+# again on z (studies/m16_balls_joint_bp.toml).
 defaults:
   - /optim@optim_vision: adamw
+  - override /optim: adamw
   - override /dynamics: small
   - override /vision: vit_t
 program: joint
@@ -23,9 +25,18 @@ vision:
   # the mean and std of the pixels of the calib chunks (radii as above)
   pixel_mean: 0.03
   pixel_std: 0.12
-  frames: 1  # E2: the chunk length N
-  # E2: sg, sigreg, mask_ratio, mask_blocks, optim_vision.lr of the best M15 run
+  frames: 1
+  # M15: the reconstruction of the last frame through a spatial broadcast
+  # decoder (m15-broadcast-pilot-v1)
+  recon: 100.0
+  recon_decoder: broadcast
 dynamics:
-  trace: true  # E3: with / without
-  # E3: open_loop, open_cycle, nodes
-# E3: optim.kind / lr / warmup of the best M14 stage-2 run (sgd 0.03, 300 s here)
+  trace: true
+  residual: true
+  open_loop: 0.0
+# M14 stage 2, #45 of m14-s2-small-trace-adamw-bp-v1
+optim:
+  lr: 0.00022069490833187005
+  tau_m: 0.11564592524837332
+  tau_v: 134.92133555335573
+  warmup: 60.0
