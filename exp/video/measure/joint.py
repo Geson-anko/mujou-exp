@@ -31,6 +31,10 @@ $z$ is very strong: the judgement that counts is in images (``image_rows``):
   windows (a constant that has seen the targets);
 - ``img_recon``: that of the decoded observed $z_{O-1}$ against its frame (what
   the decoder alone loses).
+
+``image_rows`` has those keys under ``prefix`` ``"img_"`` (the decoder learned
+afterwards); the decoder of the run's own reconstruction term is scored under
+``"rec_"`` (``rec_roll{h}``, ``rec_recon``), so the two never share a key.
 """
 
 from collections.abc import Sequence
@@ -56,7 +60,6 @@ __all__ = [
     "image_rows",
     "joint_dynamics",
     "latent_errors",
-    "latent_row",
 ]
 
 BATCH = 256  # chunks encoded or decoded at once
@@ -181,23 +184,6 @@ def latent_errors(
 
 
 @torch.no_grad()
-def latent_row(
-    mods: VisionModules,
-    dyn: DynamicsModules,
-    w: Windows,
-    horizons: Sequence[int],
-    *,
-    residual: bool,
-) -> dict[str, float]:
-    """``latent_errors`` of the windows ``w`` at the weights of ``mods`` and
-    ``dyn`` as they are."""
-    row, _ = latent_errors(
-        dyn, w.z(mods), observed=w.observed, horizons=horizons, residual=residual
-    )
-    return row
-
-
-@torch.no_grad()
 def decode(dec: nn.Module, z: Tensor) -> Tensor:
     return torch.cat([dec(x) for x in z.split(BATCH)])
 
@@ -209,8 +195,11 @@ def image_rows(
     z: Tensor,
     pred: Tensor,
     horizons: Sequence[int],
+    *,
+    prefix: str = "img_",
 ) -> tuple[dict[str, float], Tensor]:
-    """The image keys of the module docstring of the windows ``w``, from the
+    """The image keys of the module docstring (``{prefix}roll{h}`` and
+    ``{prefix}recon``; ``pix_*`` have no prefix) of the windows ``w``, from the
     decoder ``dec`` (on the device of ``z``), their $z$ ``(n, O + H, D)`` and
     the rollout ``pred`` ``(n, H, D)``; also a picture's frames ``(2 SHOWN,
     1 + len(horizons), C, H, W)``: for each of the first windows a row of the
@@ -224,10 +213,10 @@ def image_rows(
     }
     out: dict[str, float] = {}
     last = w.frame(0)
-    out["img_recon"] = float(((decoded[0] - last) ** 2).double().mean())
+    out[f"{prefix}recon"] = float(((decoded[0] - last) ** 2).double().mean())
     for h in horizons:
         truth = w.frame(h)
-        out[f"img_roll{h}"] = float(((decoded[h] - truth) ** 2).double().mean())
+        out[f"{prefix}roll{h}"] = float(((decoded[h] - truth) ** 2).double().mean())
         out[f"pix_copy{h}"] = float(((last - truth) ** 2).double().mean())
         mean = truth.mean(0, keepdim=True)
         out[f"pix_mean{h}"] = float(((mean - truth) ** 2).double().mean())

@@ -5,8 +5,9 @@ the frozen control, and the posthoc decoding of the rollouts."""
 
 import dataclasses
 import json
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import mujou.pc as pc
 import mujou.testing
@@ -25,19 +26,25 @@ from exp.video.dyn.nodes import Source
 from exp.video.jepa.nets import build_vision_net
 from exp.video.jepa.vit import build_vision
 from exp.video.main import local_job
-from exp.video.measure.joint import joint_dynamics
+from exp.video.measure.joint import (
+    ball_windows,
+    image_rows,
+    joint_dynamics,
+    latent_errors,
+)
 from exp.video.measure.posthoc import Parent
 from exp.video.programs.joint import (
     PROGRAM,
     JointBP,
     JointPC,
     build_joint,
+    image_objective,
     joint_objective,
     parent_ckpt,
     rebuild,
 )
 from exp.video.programs.posthoc import decoding
-from exp.video.programs.vision import PROGRAM as VISION
+from exp.video.programs.vision import PROGRAM as VISION, STRIDE
 from exp.video.schema.run import RunConf
 from mujou import TensorSpec
 from tests.video.programs.test_vision import TINY as VISION_TINY
@@ -546,6 +553,143 @@ def test_the_objective():
     assert joint_objective(ok | {"roll10/mean10": float("nan")}, 10) == PENALTY
     assert joint_objective(ok | {"z_spread": 0.0}, 10) == PENALTY
     assert joint_objective(ok, 20) == PENALTY
+
+
+def test_the_image_objective():
+    """The max of the logs of ``rec_roll/pix`` at 5 and 10 (the conjunction of
+    the image criterion): ratios 0.5 and 2 give log 2 (a gain at 5 does not
+    make up for a loss at 10), ratios 0.65 and 0.9 are below 0; PENALTY on a collapse, a missing or a ratio that is not finite
+    or not positive."""
+    from exp.video.measure.objective import PENALTY
+
+    ok = {"z_spread": 0.1, "rec_roll5/pix5": 0.5, "rec_roll10/pix10": 2.0}
+    assert image_objective(ok, [5, 10]) == pytest.approx(math.log(2.0))
+    both = ok | {"rec_roll5/pix5": 0.65, "rec_roll10/pix10": 0.9}
+    assert image_objective(both, [5, 10]) == pytest.approx(math.log(0.9))
+    assert image_objective(both | {"rec_roll10/pix10": 1.1}, [5, 10]) > 0
+    assert image_objective(ok, [5]) == pytest.approx(math.log(0.5))
+    assert image_objective(ok | {"rec_roll10/pix10": 1e9}, [5, 10]) == PENALTY
+    for bad in (float("nan"), float("inf"), 0.0, -1.0):
+        assert image_objective(ok | {"rec_roll5/pix5": bad}, [5, 10]) == PENALTY
+    assert image_objective(ok | {"z_spread": 0.0}, [5, 10]) == PENALTY
+    assert image_objective(ok, [5, 20]) == PENALTY
+
+
+HORIZONS = ["measure.horizons=[1,5,10]"]
+
+
+def _built(tmp_path: Path, overrides: list[str]):
+    conf = _conf([*HORIZONS, *overrides])
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    built = PROGRAM.build(conf, tmp_path, None)
+    return conf, built
+
+
+class _Frames(nn.Module):
+    """A decoder whose standardized output is the standardized last observed
+    frame of the windows, whatever z."""
+
+    def __init__(self, frame: torch.Tensor, mean: float, std: float) -> None:
+        super().__init__()
+        self.target = (frame - mean) / std
+
+    @override
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.target[: len(z)]
+
+
+class TestDecodedRows:
+    def test_the_row_has_the_decoded_keys_only_with_a_decoder(self, tmp_path):
+        conf, built = _built(tmp_path / "rec", RECON)
+        try:
+            row = built.evaluate("val")  # type: ignore[attr-defined]
+            assert "rec_recon" in row
+            for h in (1, 5, 10):
+                for k in (f"rec_roll{h}", f"pix_copy{h}", f"pix_mean{h}"):
+                    assert k in row, k
+                assert row[f"rec_roll{h}/pix{h}"] == pytest.approx(
+                    row[f"rec_roll{h}"] / min(row[f"pix_copy{h}"], row[f"pix_mean{h}"])
+                )
+            assert row["objective"] == pytest.approx(
+                max(math.log(row["rec_roll5/pix5"]), math.log(row["rec_roll10/pix10"]))
+            )
+            assert not any(k.startswith("img_") for k in row)
+        finally:
+            built.close()  # type: ignore[attr-defined]
+        _, built = _built(tmp_path / "jepa", JEPA)
+        try:
+            row = built.evaluate("val")  # type: ignore[attr-defined]
+            assert not any(k.startswith(("rec_", "pix_")) for k in row)
+            assert row["objective"] == joint_objective(row, 10)
+        finally:
+            built.close()  # type: ignore[attr-defined]
+
+    def test_the_rows_are_image_rows_of_the_unstandardized_decoder(self, tmp_path):
+        conf, built = _built(
+            tmp_path, [*RECON, "vision.pixel_mean=0.3", "vision.pixel_std=2.0"]
+        )
+        try:
+            row = built.evaluate("val")  # type: ignore[attr-defined]
+            mods, dyn = built.mods, built.dyn  # type: ignore[attr-defined]
+            w = ball_windows(conf, "val", stride=STRIDE)
+            z = w.z(mods)
+            _, pred = latent_errors(
+                dyn,
+                z,
+                observed=w.observed,
+                horizons=conf.measure.horizons,
+                residual=conf.dynamics.residual,  # type: ignore[union-attr]
+            )
+
+            def raw(x: torch.Tensor) -> torch.Tensor:
+                return mods.decoder(x) * 2.0 + 0.3
+
+            with torch.no_grad():
+                by_hand, _ = image_rows(
+                    raw,  # type: ignore[arg-type]
+                    w,
+                    z,
+                    pred,
+                    conf.measure.horizons,
+                    prefix="rec_",
+                )
+            for k, v in by_hand.items():
+                assert row[k] == pytest.approx(v, rel=1e-5), k
+        finally:
+            built.close()  # type: ignore[attr-defined]
+
+    def test_a_decoder_that_gives_the_standardized_frame_has_no_error(self, tmp_path):
+        """Decoding the loss's own target (``(x - mean) / std``) gives back the
+        raw frame: ``rec_recon`` is 0 and the decoded rollout is the copy."""
+        conf, built = _built(
+            tmp_path, [*RECON, "vision.pixel_mean=0.3", "vision.pixel_std=2.0"]
+        )
+        try:
+            w = ball_windows(conf, "val", stride=STRIDE)
+            assert len(w.images) < 256  # one decoder batch
+            built.mods.decoder = _Frames(w.frame(0), 0.3, 2.0)  # type: ignore[attr-defined]
+            row = built.evaluate("val")  # type: ignore[attr-defined]
+            assert row["rec_recon"] == pytest.approx(0, abs=1e-10)
+            for h in (1, 5, 10):
+                assert row[f"rec_roll{h}"] == pytest.approx(
+                    row[f"pix_copy{h}"], rel=1e-5
+                )
+        finally:
+            built.close()  # type: ignore[attr-defined]
+
+    def test_evaluating_changes_nothing_it_trains(self, tmp_path):
+        _, built = _built(tmp_path, RECON)
+        try:
+            names = {**built.mods.named(), "step": built.dyn.step}  # type: ignore[attr-defined]
+            before = {k: _weights(m) for k, m in names.items()}
+            rng = torch.get_rng_state()
+            a = built.evaluate("val")  # type: ignore[attr-defined]
+            b = built.evaluate("val")  # type: ignore[attr-defined]
+            assert a == b
+            assert torch.equal(rng, torch.get_rng_state())
+            assert all(_same(before[k], _weights(m)) for k, m in names.items())
+        finally:
+            built.close()  # type: ignore[attr-defined]
 
 
 class TestPosthoc:

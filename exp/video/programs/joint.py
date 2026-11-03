@@ -51,17 +51,32 @@ encoder's change within one frame, small at the learning rate of the presets.
 The row of an evaluation has the vision's (``programs.vision.Measures``: the
 JEPA loss, the rank of $z$, the probes of the balls ``probe_pos_min`` ...) and
 the latent errors of ``measure.joint.latent_errors`` (``roll{h}``, ``copy{h}``,
-``mean{h}``). The objective of a val row is ``roll{h} / mean{h}`` at ``h`` 10
-(or the largest horizon), at most ``PENALTY`` (as ``vision_objective`` when $z$
-collapsed). The judgement in images is the posthoc's.
+``mean{h}``). With a training decoder (``vision.recon`` > 0) it also has the
+images of ``measure.joint.image_rows`` decoded by that decoder (its output is
+in standardized pixels, taken back with ``* pixel_std + pixel_mean``) under
+``rec_``: ``rec_recon``, ``rec_roll{h}``, ``pix_copy{h}``, ``pix_mean{h}`` and
+``rec_roll{h}/pix{h}`` = ``rec_roll{h} / min(pix_copy{h}, pix_mean{h})`` (the
+posthoc's keys are ``img_*``). The evaluation only reads: nothing learns, no
+random number is drawn.
+
+The objective of a val row (lower is better; the study minimizes it) is, with
+a training decoder, the max over ``h`` in {5, 10} of the horizons measured of
+``log(rec_roll{h}/pix{h})``: the image criterion of M16 is a conjunction (every
+horizon's rollout beats the better of the copy and the mean), and the max is
+below 0 exactly when it holds (a mean would let a gain at one horizon make up
+for a loss at another), at most ``PENALTY``. Without a
+decoder, or with neither 5 nor 10 measured, it is ``roll{h} / mean{h}`` at ``h``
+10 (or the largest horizon), at most ``PENALTY``. Either way it is ``PENALTY``
+when $z$ collapsed or a term is not finite (as ``vision_objective``). The final
+judgement is the posthoc's images.
 """
 
 import dataclasses
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import mujou.pc as pc
 import mujou.testing
@@ -83,7 +98,14 @@ from exp.video.jepa.nets import VisionBP, VisionPC
 from exp.video.jepa.nodes import z_spec
 from exp.video.jepa.vit import VisionModules, build_vision
 from exp.video.loop import Built, Schedule, every
-from exp.video.measure.joint import Windows, ball_windows, joint_dynamics, latent_row
+from exp.video.measure.dynamics import ratio
+from exp.video.measure.joint import (
+    Windows,
+    ball_windows,
+    image_rows,
+    joint_dynamics,
+    latent_errors,
+)
 from exp.video.measure.objective import PENALTY
 from exp.video.programs.posthoc import parent_dir
 from exp.video.programs.vision import COLLAPSE, STRIDE, Measures
@@ -96,6 +118,7 @@ __all__ = [
     "JointPC",
     "JointProgram",
     "build_joint",
+    "image_objective",
     "joint_objective",
     "parent_ckpt",
     "rebuild",
@@ -269,6 +292,69 @@ def joint_objective(row: Mapping[str, Any], horizon: int) -> float:
     return min(ratio, PENALTY)
 
 
+IMAGE_HORIZONS = (5, 10)  # the horizons of the image criterion of M16
+
+
+def _image_horizons(conf: RunConf) -> list[int]:
+    return [h for h in IMAGE_HORIZONS if h in conf.measure.horizons]
+
+
+def image_objective(row: Mapping[str, Any], horizons: Sequence[int]) -> float:
+    """The max over ``horizons`` of ``log(rec_roll{h}/pix{h})`` of a val row,
+    at most ``PENALTY``; ``PENALTY`` when a ratio is missing, not positive or
+    not finite, or $z$ collapsed (``z_spread`` below ``COLLAPSE``).
+
+    Below 0 exactly when every ratio is below 1, i.e. the decoded rollout beats
+    the better of the copy and the mean at every horizon (the conjunction of
+    criterion 2 of ``results/m16.md``)."""
+    spread = row.get("z_spread")
+    if spread is None or not spread >= COLLAPSE:
+        return PENALTY
+    logs = []
+    for h in horizons:
+        r = row.get(f"rec_roll{h}/pix{h}")
+        if r is None or not (math.isfinite(r) and r > 0):
+            return PENALTY
+        logs.append(math.log(r))
+    return min(max(logs), PENALTY)
+
+
+def _decoded_rows(
+    mods: VisionModules,
+    conf: RunConf,
+    w: Windows,
+    z: torch.Tensor,
+    pred: torch.Tensor,
+) -> dict[str, float]:
+    """``image_rows`` of the windows by the training decoder, in raw pixels (the
+    inverse of the standardization of the loss's target), under ``rec_``, and
+    ``rec_roll{h}/pix{h}``."""
+    assert conf.vision is not None and mods.decoder is not None
+    dec, mean, std = mods.decoder, conf.vision.pixel_mean, conf.vision.pixel_std
+    horizons = conf.measure.horizons
+    with torch.no_grad():
+        rows, _ = image_rows(
+            _Unstandardized(dec, mean, std), w, z, pred, horizons, prefix="rec_"
+        )
+    for h in horizons:
+        rows[f"rec_roll{h}/pix{h}"] = ratio(
+            rows[f"rec_roll{h}"], min(rows[f"pix_copy{h}"], rows[f"pix_mean{h}"])
+        )
+    return rows
+
+
+class _Unstandardized(nn.Module):
+    """``dec`` with its standardized pixels taken back to raw: ``x * std + mean``."""
+
+    def __init__(self, dec: nn.Module, mean: float, std: float) -> None:
+        super().__init__()
+        self.dec, self.mean, self.std = dec, mean, std
+
+    @override
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.dec(z) * self.std + self.mean
+
+
 class _Online:
     """The tasks ``"online"`` and ``"bench"`` (no evaluations)."""
 
@@ -382,16 +468,29 @@ class _Online:
         row = self.measures.evaluate(self.mods, split, version=self.host.frames)
         if split not in self._windows:
             self._windows[split] = ball_windows(conf, split, stride=STRIDE)
-        row |= latent_row(
-            self.mods,
+        w = self._windows[split]
+        z = w.z(self.mods)
+        latent, pred = latent_errors(
             self.dyn,
-            self._windows[split],
-            conf.measure.horizons,
+            z,
+            observed=w.observed,
+            horizons=conf.measure.horizons,
             residual=conf.dynamics.residual,
         )
+        row |= latent
+        if self.mods.decoder is not None:
+            row |= _decoded_rows(self.mods, conf, w, z, pred)
         if split == "val":
-            row["objective"] = joint_objective(row, _horizon(conf))
+            row["objective"] = self._objective(row)
         return row
+
+    def _objective(self, row: Mapping[str, Any]) -> float:
+        """``image_objective`` with a training decoder (and a horizon of the
+        image criterion measured), else ``joint_objective``."""
+        h = _image_horizons(self.conf)
+        if self.mods.decoder is not None and h:
+            return image_objective(row, h)
+        return joint_objective(row, _horizon(self.conf))
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
         """A term of the loss or ``roll{h}`` is not finite, or a rollout is not
@@ -418,7 +517,7 @@ class _Online:
     ) -> float | None:
         if diverged:
             return PENALTY
-        return None if row is None else joint_objective(row, _horizon(self.conf))
+        return None if row is None else self._objective(row)
 
     def modules(self) -> dict[str, nn.Module]:
         return self.mods.named() | {"step": self.dyn.step, "readout": self.dyn.readout}

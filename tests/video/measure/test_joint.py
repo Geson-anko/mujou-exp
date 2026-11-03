@@ -88,6 +88,22 @@ class TestImageRows:
         assert torch.equal(picture[0], picture[1])
 
 
+class TestImageRowsPrefix:
+    def test_the_prefix_names_the_decoded_keys_and_not_the_bars(self):
+        w = _windows()
+        z = w.z(_Stub())  # type: ignore[arg-type]
+        rows, _ = image_rows(_Fill(), w, z, z[:, O:], [1, 4], prefix="rec_")  # type: ignore[arg-type]
+        assert set(rows) == {
+            "rec_recon",
+            "rec_roll1",
+            "pix_copy1",
+            "pix_mean1",
+            "rec_roll4",
+            "pix_copy4",
+            "pix_mean4",
+        }
+
+
 class _Fill(torch.nn.Module):
     """z ``(n, 1)`` to a ``(n, 1, 2, 2)`` image of that value."""
 
