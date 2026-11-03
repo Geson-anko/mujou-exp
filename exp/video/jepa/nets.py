@@ -47,6 +47,7 @@ def _chunker(conf: RunConf, v: VisionConf, tau: pc.TimeConstants, b: int) -> Chu
         blocks=v.mask_blocks,
         period=tau.period,
         seed=conf.seed + CHUNKER_SEED,
+        carry_frame=v.recon > 0,
         device=conf.device,
     )
 
@@ -96,6 +97,10 @@ class VisionPC(mujou.Network):
             lam=v.sigreg,
             sg=v.sg,
             sigreg_on=v.sigreg_on,
+            decoder=mods.decoder,
+            recon=v.recon,
+            pixel_mean=v.pixel_mean,
+            pixel_std=v.pixel_std,
             directions=v.sigreg_directions,
             tau=tau,
             optimizer=optimizer,
@@ -127,6 +132,9 @@ class VisionBP(mujou.Network):
             lam=v.sigreg,
             sg=v.sg,
             sigreg_on=v.sigreg_on,
+            recon=v.recon,
+            pixel_mean=v.pixel_mean,
+            pixel_std=v.pixel_std,
             directions=v.sigreg_directions,
             tau=tau,
             optimizer=make_optimizer(conf.optim_vision, conf.time.frame),

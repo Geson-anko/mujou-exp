@@ -393,8 +393,9 @@ class Decoding:
         lines (a line per split)."""
         path = self.parent.ckpts[self.done]
         mods, dev = self._mods, self._dev
-        named = {"encoder": mods.encoder, "predictor": mods.predictor}
-        head = ckpt.load_eval(path, named, group=self.parent.job["group"])
+        # The training decoder (``vision.recon`` > 0) is loaded and ignored: the
+        # decoder fit here is its own.
+        head = ckpt.load_eval(path, mods.named(), group=self.parent.job["group"])
         z = _encode(mods, self._source, dev)
         gen = torch.Generator().manual_seed(self._conf.seed + DECODER_SEED)
         dec = fit_decoder(z, self._targets, steps=self._steps, gen=gen)

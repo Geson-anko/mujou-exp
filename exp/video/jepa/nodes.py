@@ -34,9 +34,9 @@ from mujou.pc.optim import Optimizer
 from mujou.time import Timestamp
 from mujou.types import Device
 
-from exp.video.jepa.loss import JEPATerms, jepa_loss, pool
+from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, pool, split_y
 from exp.video.jepa.masks import block_masks, make_views
-from exp.video.jepa.vit import Predictor
+from exp.video.jepa.vit import PixelDecoder, Predictor
 from mujou import DictSpec, Node, Port, Stateful, TensorSpec, TimestampSpec
 
 __all__ = [
@@ -59,6 +59,7 @@ class JEPAStats(TypedDict):
     loss: torch.Tensor
     pred: torch.Tensor
     sigreg: torch.Tensor
+    recon: torch.Tensor
     n: torch.Tensor
     time: Timestamp
 
@@ -69,6 +70,7 @@ STATS = DictSpec(
     loss=_SCALAR,
     pred=_SCALAR,
     sigreg=_SCALAR,
+    recon=_SCALAR,
     n=_SCALAR,
     time=TimestampSpec(),
 )
@@ -80,6 +82,7 @@ def stats_message(terms: JEPATerms, time: Timestamp) -> JEPAStats:
         "loss": terms.loss.detach(),
         "pred": terms.pred.detach(),
         "sigreg": terms.sigreg.detach(),
+        "recon": terms.recon.detach(),
         "n": terms.valid.detach(),
         "time": time,
     }
@@ -166,6 +169,12 @@ class Chunker(Node):
     of the frame before in any stream of ``pc.Layer``. ``next`` receives the
     credit of the first encoder node and drops it: the frames are constants.
 
+    With ``carry_frame`` (the reconstruction term of the head) each row of
+    ``y`` has, after the ``T`` masks, the ``C H W`` pixels of the stream's
+    last (raw) frame in the target view's row and zeros in the others
+    (``loss.split_y``): the head reads it from the message it receives, as it
+    reads the masks, and the encoder nodes pass it on with the tokens.
+
     Args:
         image: The spec of the frames, ``(B, C, H, W)``.
         frames: $N$.
@@ -175,6 +184,7 @@ class Chunker(Node):
         blocks: The ``blocks`` of ``block_masks``.
         period: The period of the node in seconds.
         seed: The seed of ``generator``.
+        carry_frame: Send the last frame in ``y`` (module docstring).
         device: Where the node computes.
     """
 
@@ -189,11 +199,13 @@ class Chunker(Node):
         blocks: int,
         period: float,
         seed: int,
+        carry_frame: bool = False,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=period, seed=seed)
         b, c, h, w = image.shape
         self._b, self._v, self._patch = b, views, patch
+        self._carry = carry_frame
         self._grid = (h // patch, w // patch)
         self._ratio, self._blocks = ratio, blocks
         y = TensorSpec((b, 1))
@@ -203,7 +215,8 @@ class Chunker(Node):
         )
         n = b * views
         h_spec = TensorSpec((n, frames, c + 1, h, w))
-        tokens = TensorSpec((n, self._grid[0] * self._grid[1]))
+        width = self._grid[0] * self._grid[1] + (c * h * w if carry_frame else 0)
+        tokens = TensorSpec((n, width))
         self.act_spec = pc.msg.activity_spec(h_spec, tokens, n)
         self.next = Port(send=self.act_spec, recv=h_spec)  # the credit is dropped
         self.ring = FrameRing(image, frames, self.device)
@@ -227,6 +240,11 @@ class Chunker(Node):
             generator=self.generator,
         ).unflatten(0, (b, v - 1))
         h, y = make_views(self.ring.chunk, masks, self._patch)
+        if self._carry:
+            last = self.ring.chunk[:, -1].flatten(1).to(y)  # (B, C H W)
+            frames = last.new_zeros(b, v, last.shape[1])
+            frames[:, 0] = last
+            y = torch.cat([y, frames.flatten(0, 1)], 1)
         mask = sample["mask"] & self.ring.ready
         self.next.send(
             {
@@ -264,6 +282,15 @@ class JEPAHead(Node):
     predictor by $\frac{1}{BV} \partial E / \partial \theta = \partial L /
     \partial \theta$.
 
+    With a ``decoder`` and ``recon`` $\mu > 0$ the loss has the term $\mu
+    L_{rec}$ (``loss.jepa_loss``): the head decodes $z$ of the target views and
+    compares it with the target view's last frame, which it reads from the
+    ``y`` it receives (``Chunker`` with ``carry_frame``). The decoder is the
+    head's own parameters, learned with the predictor's by the same
+    optimizer, from the same energy. Its credit reaches the encoder through
+    $z$ of the target view as that of SIGReg does, also with ``sg`` (which only
+    stops the prediction's).
+
     Args:
         predictor: The predictor, on ``device``.
         act_spec: The spec of what the last encoder node sends.
@@ -274,8 +301,13 @@ class JEPAHead(Node):
         sg: Stop the prediction's gradient at the target view.
         directions: The directions of SIGReg drawn per frame.
         sigreg_on: What SIGReg sees (``loss.jepa_loss``).
+        decoder: The decoder of the reconstruction, on ``device`` (None: no
+            reconstruction).
+        recon: $\mu$, its weight.
+        pixel_mean: The data's mean pixel (the standardization of the target).
+        pixel_std: The data's pixel std.
         tau: The time constants of PC-ALM.
-        optimizer: The optimizer of the predictor.
+        optimizer: The optimizer of the predictor and the decoder.
         learn_interval: As in ``pc.clock.LearnClock``.
         seed: The seed of ``generator``.
         device: Where the node computes.
@@ -297,16 +329,24 @@ class JEPAHead(Node):
         learn_interval: float | None,
         seed: int,
         sigreg_on: str = "z",
+        decoder: PixelDecoder | None = None,
+        recon: float = 0.0,
+        pixel_mean: float = 0.0,
+        pixel_std: float = 1.0,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
+        self.decoder = decoder
+        self._recon = recon, pixel_mean, pixel_std
         self._v, self._extra, self._pool = views, extra, z_pool
         self._lam, self._sg, self._sigreg_on = lam, sg, sigreg_on
         self.clock = pc.clock.LearnClock.of(
             tau, period=self.period, learn_interval=learn_interval
         )
         self._params = list(predictor.parameters())
+        if decoder is not None:
+            self._params += decoder.parameters()
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
@@ -319,7 +359,7 @@ class JEPAHead(Node):
         self.g, self.g_of = h.zeros(device=dev), h.zeros(device=dev)
         self.cached = False
         self.register_state("cached")
-        self.values = torch.zeros(4, device=dev)  # loss, pred, sigreg, n of g
+        self.values = torch.zeros(5, device=dev)  # loss, pred, sigreg, recon, n of g
         self.z = torch.zeros(self._b, d, device=dev)
         self.prev = Port(send=h, recv=act_spec)
         self.z_out = Port(send=z_spec(self._b, d))
@@ -353,9 +393,16 @@ class JEPAHead(Node):
                 "time": act["time"],
             }
         )
-        loss, pred, sig, n = self.values
+        loss, pred, sig, rec, n = self.values
         self.stats.send(
-            {"loss": loss, "pred": pred, "sigreg": sig, "n": n, "time": act["time"]}
+            {
+                "loss": loss,
+                "pred": pred,
+                "sigreg": sig,
+                "recon": rec,
+                "n": n,
+                "time": act["time"],
+            }
         )
         if learn:
             # theta moves by dL/dtheta = (1 / B V) dE/dtheta.
@@ -370,11 +417,18 @@ class JEPAHead(Node):
         b, v = self._b, self._v
         h = act["h"]
         params = self._params if learn else []
+        shape = None if self.decoder is None else self.decoder.shape
+        masks, frames = split_y(act["y"], b, v, shape)
+        recon = None
+        if self.decoder is not None:
+            assert frames is not None, "the Chunker must carry the frame"
+            mu, mean, std = self._recon
+            recon = Reconstruction(mu, self.decoder, mean, std, frames)
         with torch.enable_grad():
             leaf = h.detach().requires_grad_()
             terms = jepa_loss(
                 leaf.view(b, v, *h.shape[1:]),
-                act["y"].view(b, v, -1)[:, 1:],
+                masks,
                 valid,
                 self.directions,
                 self.module,
@@ -383,6 +437,7 @@ class JEPAHead(Node):
                 lam=self._lam,
                 sg=self._sg,
                 sigreg_on=self._sigreg_on,
+                recon=recon,
             )
             energy = self._samples * terms.loss  # 0, of no gradient, with no chunk
             # The gradient of this node's own energy, from a detached leaf.
@@ -398,6 +453,7 @@ class JEPAHead(Node):
                 terms.loss.detach(),
                 terms.pred.detach(),
                 terms.sigreg.detach(),
+                terms.recon.detach(),
                 terms.valid,
             ]
         )

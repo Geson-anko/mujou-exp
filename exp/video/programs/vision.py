@@ -12,9 +12,9 @@ A frame: the next frame of each stream written as a ``pc.msg.Sample`` (``x``
 the images, ``reset`` where a stream starts anew), and the terms of the JEPA
 loss the head sends first for it read back (``Host.show``; they are of the
 weights before anything learned from the frame), added to the
-sums of ``stream.jsonl`` (``loss``, ``pred``, ``sigreg``: the means over the
-frames that have a full chunk). Frame 0 is not counted: the head of PC-ALM
-first sees the zeros sent before it, at the same time 0.
+sums of ``stream.jsonl`` (``loss``, ``pred``, ``sigreg``, and ``recon`` with
+``vision.recon`` > 0: the means over the frames that have a full chunk). Frame 0 is not counted:
+the head of PC-ALM first sees the zeros sent before it, at the same time 0.
 
 The evaluation reads the live modules (no copy) between the frames. Each split
 (``"calib"``, ``"val"``, ``"test"``) has ``measure.clips`` x
@@ -23,7 +23,8 @@ balls, the chunks end every ``STRIDE`` frames of clips of new balls drawn from
 the split's seed (``data.clips``); for Walking Tours, chunks of the held-out
 video (``walking_tours.eval_clips``) in time order, the first third calib, the
 second val, the last test. A row of val or test has the JEPA loss of the
-chunks (``loss``, ``pred``, ``sigreg``: ``loss.jepa_loss`` of batches of
+chunks (``loss``, ``pred``, ``sigreg``, and ``recon`` with ``vision.recon`` > 0:
+``loss.jepa_loss`` of batches of
 ``data.streams`` chunks, as in a frame of the stream, along fixed directions,
 averaged over the batches, so that they compare with ``stream.jsonl``), the
 effective rank of $z$ (``rank``), the least standard deviation of a dimension
@@ -72,7 +73,7 @@ from exp.video.data.clips import SPLIT_SEEDS, make_clips
 from exp.video.data.frames import BallFrames, FrameStreams, TourFrames
 from exp.video.data.physics import render
 from exp.video.data.walking_tours import eval_clips
-from exp.video.jepa.loss import jepa_loss
+from exp.video.jepa.loss import Reconstruction, jepa_loss
 from exp.video.jepa.masks import block_masks, make_views
 from exp.video.jepa.nets import build_vision_net, vision_modules
 from exp.video.jepa.nodes import draw_directions
@@ -237,11 +238,17 @@ class Measures:
         $z$ is encoded once for both splits."""
         s, v, enc = self.sets[split], self.v, mods.encoder
         terms, zs = [], []
+        dec = mods.decoder
         every = torch.ones(self._batch, dtype=torch.bool, device=s.chunks.device)
         for i in range(0, len(s.chunks), self._batch):
             chunks = s.chunks[i : i + self._batch]
             b = len(chunks)
             h, y = make_views(chunks, s.masks[i : i + b], mods.patch)
+            recon = None
+            if dec is not None:
+                recon = Reconstruction(
+                    v.recon, dec, v.pixel_mean, v.pixel_std, chunks[:, -1]
+                )
             t = jepa_loss(
                 enc(h).unflatten(0, (b, v.views)),
                 y.unflatten(0, (b, v.views))[:, 1:],
@@ -253,16 +260,18 @@ class Measures:
                 lam=v.sigreg,
                 sg=False,
                 sigreg_on=v.sigreg_on,
+                recon=recon,
             )
-            terms.append(torch.stack([t.loss, t.pred, t.sigreg]))
+            terms.append(torch.stack([t.loss, t.pred, t.sigreg, t.recon]))
             zs.append(t.z)
-        loss, pred, sig = torch.stack(terms).mean(0).tolist()
+        loss, pred, sig, rec = torch.stack(terms).mean(0).tolist()
         z = torch.cat(zs)
         rms = float(z.pow(2).mean().sqrt())
         row = {
             "loss": loss,
             "pred": pred,
             "sigreg": sig,
+            **({"recon": rec} if dec is not None else {}),
             "rank": effective_rank(z),
             "z_std_min": float(z.std(0).min()),
             "z_spread": float(z.std(0).mean()) / rms if rms > 0 else 0.0,
@@ -362,6 +371,7 @@ class _Online:
                 f"{conf.data.balls.obs!r}"
             )
         self.conf = conf
+        self._recon = v.recon > 0
         bench = conf.task == "bench"
         self.net = build_vision_net(conf)
         self.mods = vision_modules(self.net)
@@ -376,9 +386,9 @@ class _Online:
         dev = torch.device(conf.device)
         self._y = torch.zeros(b, 1, device=dev)
         self._mask = torch.ones(b, dtype=torch.bool, device=dev)
-        # The sums since the last log: loss, pred, sigreg, and the frames, in
+        # The sums since the last log: loss, pred, sigreg, recon, and the frames, in
         # host memory, where Host.show reads the stats (as in programs.dynamics).
-        self._acc = torch.zeros(4, dtype=torch.float64)
+        self._acc = torch.zeros(5, dtype=torch.float64)
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -416,16 +426,18 @@ class _Online:
             return
         counted = p["n"] > 0
         terms = torch.stack(
-            [p["loss"], p["pred"], p["sigreg"], torch.ones_like(p["n"])]
+            [p["loss"], p["pred"], p["sigreg"], p["recon"], torch.ones_like(p["n"])]
         )
         self._acc += torch.where(counted, terms.double(), 0.0)
 
     def log(self) -> dict[str, float | None]:
-        loss, pred, sig, n = self._acc.tolist()
+        loss, pred, sig, rec, n = self._acc.tolist()
         self._acc.zero_()
+        names = ("loss", "pred", "sigreg", *(("recon",) if self._recon else ()))
         if not n:
-            return {"loss": None, "pred": None, "sigreg": None}
-        return {"loss": loss / n, "pred": pred / n, "sigreg": sig / n}
+            return dict.fromkeys(names)
+        sums = {"loss": loss, "pred": pred, "sigreg": sig, "recon": rec}
+        return {k: sums[k] / n for k in names}
 
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # no evaluations in a bench
@@ -435,7 +447,8 @@ class _Online:
         return row
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
-        bad = [k for k in ("loss", "pred", "sigreg") if not math.isfinite(row[k])]
+        keys = ("loss", "pred", "sigreg", *(("recon",) if self._recon else ()))
+        bad = [k for k in keys if not math.isfinite(row[k])]
         return f"{', '.join(bad)} not finite" if bad else None
 
     def objective(
@@ -446,7 +459,7 @@ class _Online:
         return None if row is None else vision_objective(row)
 
     def modules(self) -> dict[str, nn.Module]:
-        return {"encoder": self.mods.encoder, "predictor": self.mods.predictor}
+        return self.mods.named()
 
     def visualize(self, out: Path) -> None:
         if self.measures is not None:
@@ -487,8 +500,7 @@ class VisionProgram:
 def rebuild(conf: RunConf) -> dict[str, nn.Module]:
     """Fresh modules of ``conf`` by the names of the evaluation checkpoint, to
     load one into (``exp.lib.ckpt.load_eval``)."""
-    mods = build_vision(conf, seed=conf.seed)
-    return {"encoder": mods.encoder, "predictor": mods.predictor}
+    return build_vision(conf, seed=conf.seed).named()
 
 
 PROGRAM = VisionProgram()

@@ -236,8 +236,25 @@ class TestEquilibrium:
                     "pixel_std": 0.3,
                 },
             ),
+            (1, {"recon": 2.0, "recon_hidden": 8, "pixel_mean": 0.5, "pixel_std": 0.3}),
+            (
+                2,
+                {
+                    "recon": 1.5,
+                    "recon_hidden": 8,
+                    "sg": True,
+                    "views": 3,
+                    "sigreg": 0.0,
+                },
+            ),
         ],
-        ids=["n1", "n2-v3-cls-sg-tokens", "n2-1node-registers-both"],
+        ids=[
+            "n1",
+            "n2-v3-cls-sg-tokens",
+            "n2-1node-registers-both",
+            "n1-recon",
+            "n2-v3-sg-recon-only",
+        ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(
         self, streams, frames, vision
@@ -288,9 +305,51 @@ def test_pc_and_bp_draw_the_same_masks():
     assert CHUNKER_SEED != 0  # not the modules' seed
 
 
+def test_the_chunker_carries_the_last_frame_of_the_target_view_in_y():
+    """Only with carry_frame: y is the T masks and then the raw last frame of
+    the stream in the target view's row (zeros in the others')."""
+    b, n, v = 2, 2, 3
+    xs = _frames(n, b)
+    ys = []
+    for carry in (False, True):
+        node = Chunker(
+            image=TensorSpec((b, 1, SIDE, SIDE)),
+            frames=n,
+            views=v,
+            patch=4,
+            ratio=0.5,
+            blocks=2,
+            period=TAU.period,
+            seed=5,
+            carry_frame=carry,
+        )
+        with mujou.testing.run(node) as run:
+            for k, x in enumerate(xs):
+                _show(run, node.prev, _sample(x, k == 0))
+            ys.append(run.read(node.next)["y"])
+    plain, carried = ys
+    assert plain.shape == (b * v, 4)
+    assert carried.shape == (b * v, 4 + SIDE * SIDE)
+    assert torch.equal(carried[:, :4], plain)
+    frames = carried[:, 4:].view(b, v, -1)
+    assert torch.equal(frames[:, 0], xs[-1].flatten(1))
+    assert (frames[:, 1:] == 0).all()
+
+
 def test_the_modules_are_those_of_build_vision():
     net = build_vision_net(_conf())
     mods = build_vision(_conf(), seed=0)
     assert isinstance(net, VisionPC)
     for a, b in zip(net.mods.encoder.parameters(), mods.encoder.parameters()):
         assert torch.equal(a, b)
+
+
+class TestEquilibriumWithRecon:
+    def test_the_reconstruction_changes_the_credit_both_nets_agree_on(self):
+        """The wiring of ``recon`` is live: the credit of BP (which the other
+        test equates with PC-ALM's lam) differs from that of ``recon`` 0."""
+        kw = {"pixel_mean": 0.5, "pixel_std": 0.3}
+        _, plain = _equilibrium(1, 1, **kw)
+        _, with_rec = _equilibrium(1, 1, recon=2.0, recon_hidden=8, **kw)
+        diff = max(float((a - b).abs().max()) for a, b in zip(plain, with_rec))
+        assert diff > 1e-3

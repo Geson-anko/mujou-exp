@@ -16,8 +16,16 @@ SIGREG_ON = ("z", "tokens", "both")
 @dataclass(kw_only=True)
 class VisionConf:
     r"""A ViT on chunks of the last ``frames`` frames, learned by a JEPA loss
-    $L = (1 - \lambda) L_{pred} + \lambda\,\mathrm{SIGReg}$ with
-    $\lambda$ = ``sigreg``. The defaults are the tiny ViT (``vit_t``).
+    $L = (1 - \lambda) L_{pred} + \lambda\,\mathrm{SIGReg} + \mu L_{rec}$
+    with $\lambda$ = ``sigreg`` and $\mu$ = ``recon``. The defaults are the
+    tiny ViT (``vit_t``).
+
+    $L_{rec}$ (off at ``recon`` 0, which builds no decoder and changes nothing)
+    is the mean squared error per pixel of a decoder of $z$ (an MLP of one
+    hidden layer of ``recon_hidden`` units) to the target view's last frame
+    of the chunk, in the standardized pixels. The prediction of masked tokens
+    alone drops what it cannot predict (the balls); the reconstruction is meant
+    to keep them in $z$ (a hypothesis to test, not a result; ``jepa.loss``).
 
     Each chunk is shown as ``views`` views: view 0 the target (no mask), the
     others the context, with about ``mask_ratio`` of the patches masked in
@@ -40,6 +48,8 @@ class VisionConf:
     sigreg: float = 0.05  # lambda; stronger with more streams (loss.jepa_loss)
     sigreg_directions: int = 256  # drawn anew each frame
     sigreg_on: str = "z"  # SIGREG_ON
+    recon: float = 0.0  # mu, the weight of the pixel reconstruction from z
+    recon_hidden: int = 256  # the decoder's hidden units, with recon > 0
     pixel_mean: float = 0.0
     pixel_std: float = 1.0
     z_pool: str = "mean"
@@ -69,6 +79,12 @@ class VisionConf:
         if not 0 < self.mask_ratio < 1:
             raise ValueError(
                 f"vision.mask_ratio must be in (0, 1), not {self.mask_ratio}"
+            )
+        if not self.recon >= 0:
+            raise ValueError(f"vision.recon must be >= 0, not {self.recon}")
+        if self.recon_hidden < 1:
+            raise ValueError(
+                f"vision.recon_hidden must be at least 1, not {self.recon_hidden}"
             )
         if not 0 <= self.sigreg <= 1:
             raise ValueError(f"vision.sigreg must be in [0, 1], not {self.sigreg}")

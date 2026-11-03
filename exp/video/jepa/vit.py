@@ -36,6 +36,7 @@ __all__ = [
     "Block",
     "Embed",
     "Encoder",
+    "PixelDecoder",
     "Predictor",
     "Stage",
     "VisionModules",
@@ -223,6 +224,24 @@ class Predictor(nn.Module):
         return self.out(self.norm(x))
 
 
+class PixelDecoder(nn.Module):
+    """The decoder of the reconstruction term (``loss.Reconstruction``): an MLP
+    of one hidden layer from $z$ ``(n, D)`` to the standardized frames
+    ``(n, C, H, W)`` of ``shape = (C, H, W)``."""
+
+    def __init__(self, dim: int, hidden: int, shape: tuple[int, int, int]) -> None:
+        super().__init__()
+        self.shape = shape
+        # PyTorch's default init (not ``_init_``): a plain MLP head, not a ViT block.
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden), nn.ReLU(), nn.Linear(hidden, math.prod(shape))
+        )
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        return self.net(z).unflatten(1, self.shape)
+
+
 @dataclass
 class VisionModules:
     """The encoder and the predictor of a vision, and the shape of its chunks.
@@ -235,6 +254,18 @@ class VisionModules:
     predictor: Predictor
     chunk: tuple[int, int, int, int]
     patch: int
+    decoder: PixelDecoder | None = None  # with ``vision.recon`` > 0
+
+    def named(self) -> dict[str, nn.Module]:
+        """The modules by the names of the checkpoints (the decoder only when
+        there is one)."""
+        out: dict[str, nn.Module] = {
+            "encoder": self.encoder,
+            "predictor": self.predictor,
+        }
+        if self.decoder is not None:
+            out["decoder"] = self.decoder
+        return out
 
     @property
     def grid(self) -> tuple[int, int]:
@@ -320,10 +351,14 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
             [Block(v.dim, v.heads) for _ in range(v.pred_depth)], v.dim
         )
         _init_(predictor)
+        decoder = None  # built last: the others' weights do not depend on it
+        if v.recon > 0:
+            decoder = PixelDecoder(v.dim, v.recon_hidden, (channels, size, size))
     encoder = Encoder(stages, extra=extra, z_pool=v.z_pool)
     return VisionModules(
         encoder=encoder.to(conf.device),
         predictor=predictor.to(conf.device),
         chunk=(v.frames, channels, size, size),
         patch=v.patch,
+        decoder=None if decoder is None else decoder.to(conf.device),
     )

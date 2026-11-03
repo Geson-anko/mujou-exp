@@ -14,6 +14,9 @@ data:
     obs: frames
     size: 32
 vision:
+  # Pixel reconstruction from z (off): switch on with vision.recon=<mu> (e.g. 1.0;
+  # vision.recon_hidden sets the decoder's width), see exp.video.jepa.loss.
+  recon: 0.0
   patch: 4
   # the mean and std of the pixels of the calib chunks (radii as above)
   pixel_mean: 0.03

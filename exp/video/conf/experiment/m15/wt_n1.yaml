@@ -20,6 +20,9 @@ data:
 measure:
   clips: 64  # x 4 windows: 256 chunks of the held-out video per split (x 3)
 vision:
+  # Pixel reconstruction from z (off): switch on with vision.recon=<mu> (e.g. 1.0;
+  # vision.recon_hidden sets the decoder's width), see exp.video.jepa.loss.
+  recon: 0.0
   patch: 8
   # of the nine training videos of ad6e56b5995e (every 50th frame)
   pixel_mean: 0.46
