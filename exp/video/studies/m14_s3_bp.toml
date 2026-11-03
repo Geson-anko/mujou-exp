@@ -1,0 +1,35 @@
+# M14 stage 3 (the 32x32 image of the three balls): the dynamics searched by BP
+# on the seeds 100/101 (val), the objective against constant acceleration
+# (m14/s3). Starts from the setting of stage 2 (#45 of
+# m14-s2-small-trace-adamw-bp-v1). AdamW only: the readout has 1024 outputs,
+# so the scale of the gradients differs from stage 2 and SGD's lr would not
+# carry over. Small and big, with and without the traces.
+[study]
+name = "m14-s3-bp-v1"
+overrides = ["+experiment=m14/s3", "learner=bp", "phase=explore", "optim=adamw"]
+seeds = [100, 101]
+parallel = 12       # trials in flight (x 2 seeds runs)
+max_trials = 72
+res = "cpu"
+ram = 4.0
+
+[space]
+"dynamics" = {categorical = ["small", "big"]}
+"dynamics.trace" = {categorical = [true, false]}
+"optim.lr" = {float = [3e-5, 3e-3], log = true}
+"optim.tau_m" = {float = [0.03, 3.0], log = true}
+"optim.tau_v" = {float = [10.0, 300.0], log = true}
+"optim.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"dynamics.residual" = {categorical = [true, false]}
+"dynamics.open_loop" = {categorical = [0.0, 0.25, 0.5]}
+
+# The setting of stage 2.
+[[enqueue]]
+"dynamics" = "small"
+"dynamics.trace" = true
+"optim.lr" = 0.00022069490833187005
+"optim.tau_m" = 0.11564592524837332
+"optim.tau_v" = 134.92133555335573
+"optim.warmup" = 60.0
+"dynamics.residual" = true
+"dynamics.open_loop" = 0.0

@@ -33,7 +33,7 @@ import mujou.pc as pc
 import mujou.testing
 import torch
 from mujou.testing import ManualRun
-from torch import nn
+from torch import Tensor, nn
 
 from exp.lib.host import Host
 from exp.lib.rundir import write_json
@@ -41,16 +41,17 @@ from exp.video.data.clips import (
     STENCIL,
     ClipSet,
     contact_mask,
+    fit_mean_image,
     fit_standardizer,
     make_clips,
     window_states,
 )
-from exp.video.data.observe import Standardizer, observe
+from exp.video.data.observe import PIXELS, Standardizer, observe
 from exp.video.data.physics import BallStreams
 from exp.video.dyn.modules import DynamicsModules, build_dynamics
 from exp.video.dyn.nets import build_world, live_states, modules
 from exp.video.dyn.nodes import is_open
-from exp.video.dyn.offline import OfflineFit, stream_windows
+from exp.video.dyn.offline import OfflineFit, pixel_encoder, stream_windows
 from exp.video.loop import Built, Schedule, every
 from exp.video.measure.dynamics import (
     dynamics_baselines,
@@ -92,6 +93,9 @@ class Measures:
         self.k = len(balls.radii)
         self.frame = conf.time.frame
         self.std: Standardizer = fit_standardizer(balls, frame=self.frame)
+        pixels = balls.obs == PIXELS
+        self.reference = "ca" if pixels else "cv"  # the bar of the objective
+        mean_image = fit_mean_image(balls, frame=self.frame) if pixels else None
         horizon = max(m.horizons)
         length = m.observed + horizon + STRIDE * (m.windows - 1)
         self.clips: dict[str, ClipSet] = {
@@ -108,7 +112,8 @@ class Measures:
             for split in _SPLITS
         }
         self.base = {
-            s: dynamics_baselines(c, balls, self.std, m) for s, c in self.clips.items()
+            s: dynamics_baselines(c, balls, self.std, m, mean_image=mean_image)
+            for s, c in self.clips.items()
         }
         h = 10 if 10 in m.horizons else horizon
         self.key = h  # the horizon of the divergence and the pictures
@@ -117,7 +122,13 @@ class Measures:
             window_states(val), m.observed, [h], radii=balls.radii, frame=self.frame
         )
         self.picked = pick_windows(contact[:, 0].any(-1))
-        self.width = observe(val.states[:1, 0], balls.obs, self.k).shape[-1]
+        self.width = self.observe(val.states[:1, 0]).shape[-1]
+
+    def observe(self, states: Tensor) -> Tensor:
+        """The raw observation of ``states`` ``(..., 4K)``."""
+        return observe(
+            states, self.balls.obs, self.k, radii=self.balls.radii, size=self.balls.size
+        )
 
     def write(self, run_dir: Path) -> None:
         """``baselines.json``: the standardization and the baselines of each
@@ -146,6 +157,7 @@ class Measures:
             obs=self.balls.obs,
             balls=self.k,
             residual=residual,
+            size=self.balls.size,
         )
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
@@ -194,7 +206,9 @@ class _Evaluated:
     ) -> float | None:
         if diverged:
             return PENALTY
-        return None if row is None else objective(row)
+        return (
+            None if row is None else objective(row, reference=self.measures.reference)
+        )
 
     def modules(self) -> dict[str, nn.Module]:
         return {"step": self.mods.step, "readout": self.mods.readout}
@@ -233,7 +247,12 @@ class _Online(_Evaluated):
         # then from the model's own prediction. On the CPU, where the host
         # reads the predictions back (Host.show).
         self._acc = torch.zeros(4, dtype=torch.float64)
-        self._history = torch.zeros(b, STENCIL, measures.width)  # raw, CPU
+        # The last frames, raw, on the CPU: the observations, but for pixels
+        # the states (the extrapolation baselines move them and render).
+        pixels = balls.obs == PIXELS
+        self._history = torch.zeros(
+            b, STENCIL, 4 * measures.k if pixels else measures.width
+        )
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -263,8 +282,10 @@ class _Online(_Evaluated):
 
     def advance(self) -> None:
         k = self.host.frames
-        raw = observe(self.streams.next(), self.measures.balls.obs, self.measures.k)
-        self._history = torch.cat([self._history[:, 1:], raw[:, None]], 1)
+        states = self.streams.next()
+        raw = self.measures.observe(states)
+        kept = states if self.measures.balls.obs == PIXELS else raw
+        self._history = torch.cat([self._history[:, 1:], kept[:, None]], 1)
         x = ((raw - self._mean) / self._scale).to(self._y.device)  # Standardizer.apply
         reset = self._first if k == 0 else self._later
         sample = pc.msg.Sample(x=x, y=self._y, mask=~reset, reset=reset)
@@ -303,8 +324,10 @@ class _Online(_Evaluated):
                 balls=ms.k,
                 residual=self._dyn.residual,
                 frame=ms.frame,
+                radii=ms.balls.radii,
+                size=ms.balls.size,
             )
-            row["objective"] = objective(row)
+            row["objective"] = objective(row, reference=self.measures.reference)
         return row
 
     def resume_state(self) -> tuple[Mapping[str, Any], dict[str, Any]]:
@@ -340,7 +363,12 @@ class _Offline(_Evaluated):
             )
         d = measures.width
         self.mods = build_dynamics(dyn, d, d, seed=conf.seed, device=conf.device)
-        windows = stream_windows(conf, off.frames, off.window, std=measures.std)
+        pixels = measures.balls.obs == PIXELS
+        encode = pixel_encoder(conf, measures.std) if pixels else None
+        # pixels are rendered per batch: all of them would be tens of GB
+        windows = stream_windows(
+            conf, off.frames, off.window, std=measures.std, states=pixels
+        )
         self._fit = OfflineFit(
             self.mods,
             windows,
@@ -350,6 +378,7 @@ class _Offline(_Evaluated):
             observed=measures.m.observed,
             residual=dyn.residual,
             gen=torch.Generator().manual_seed(conf.seed),
+            encode=encode,
         )
         self._acc = torch.zeros(2, dtype=torch.float64, device=conf.device)
         if resume is not None:
@@ -389,7 +418,7 @@ class _Offline(_Evaluated):
     def evaluate(self, split: str) -> dict[str, float]:
         row = self._row(split)
         if split == "val":
-            row["objective"] = objective(row)
+            row["objective"] = objective(row, reference=self.measures.reference)
         return row
 
     def resume_state(self) -> tuple[Mapping[str, Any], dict[str, Any]]:

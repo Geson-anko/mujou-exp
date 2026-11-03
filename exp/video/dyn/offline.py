@@ -30,11 +30,37 @@ from exp.video.data.physics import BallStreams
 from exp.video.dyn.modules import DynamicsModules, Top
 from exp.video.schema.run import RunConf
 
-__all__ = ["OfflineFit", "fit_offline", "stream_windows", "window_loss"]
+__all__ = [
+    "OfflineFit",
+    "fit_offline",
+    "pixel_encoder",
+    "stream_windows",
+    "window_loss",
+]
+
+
+def _state_windows(conf: RunConf, frames: int, window: int) -> Tensor:
+    """The states of the first ``frames`` frames of each training stream,
+    cut as ``stream_windows`` cuts them: ``(B (frames // window), window, 4K)``
+    float64."""
+    balls = conf.data.balls
+    if balls is None:
+        raise ValueError(f"the run {conf.name!r} has no balls")
+    streams = BallStreams.of(
+        balls, conf.data.streams, frame=conf.time.frame, seed=conf.seed
+    )
+    states = torch.stack([streams.next() for _ in range(frames)], 1)
+    n = frames // window
+    return states[:, : n * window].reshape(-1, window, states.shape[-1])
 
 
 def stream_windows(
-    conf: RunConf, frames: int, window: int = 32, *, std: Standardizer | None = None
+    conf: RunConf,
+    frames: int,
+    window: int = 32,
+    *,
+    std: Standardizer | None = None,
+    states: bool = False,
 ) -> Tensor:
     """The first ``frames`` frames of each training stream of ``conf`` (the
     ``BallStreams`` of its seed), standardized by ``std`` (default: fitted on
@@ -43,22 +69,42 @@ def stream_windows(
     j``, its frames ``j window .. (j + 1) window - 1``. A window never spans two
     streams; the last ``frames % window`` frames of each stream are left out.
 
+    With ``states`` the windows are those of the states ``(.., 4K)`` float64,
+    not observed or standardized (``pixel_encoder`` does both): the images of
+    all the frames of the full length of a run (128 streams x 54000 frames x
+    1024 pixels) would not fit in memory.
+
     Returns:
         ``(B (frames // window), window, d)`` float32.
 
     Raises:
         ValueError: ``conf`` has no balls.
     """
+    windows = _state_windows(conf, frames, window)
+    if states:
+        return windows
+    balls = conf.data.balls
+    assert balls is not None
+    raw = observe(
+        windows, balls.obs, len(balls.radii), radii=balls.radii, size=balls.size
+    )
+    std = std if std is not None else fit_standardizer(balls, frame=conf.time.frame)
+    return std.apply(raw)
+
+
+def pixel_encoder(conf: RunConf, std: Standardizer) -> Callable[[Tensor], Tensor]:
+    """The map from windows of states ``(n, W, 4K)`` to the standardized
+    images ``(n, W, size^2)`` float32 the nodes see (``observe`` and ``std``)."""
     balls = conf.data.balls
     if balls is None:
         raise ValueError(f"the run {conf.name!r} has no balls")
-    frame, k = conf.time.frame, len(balls.radii)
-    streams = BallStreams.of(balls, conf.data.streams, frame=frame, seed=conf.seed)
-    raw = torch.stack([observe(streams.next(), balls.obs, k) for _ in range(frames)], 1)
-    std = std if std is not None else fit_standardizer(balls, frame=frame)
-    n = frames // window
-    x = std.apply(raw[:, : n * window])  # (B, n window, d)
-    return x.reshape(x.shape[0] * n, window, x.shape[-1])
+    k = len(balls.radii)
+
+    def encode(x: Tensor) -> Tensor:
+        raw = observe(x, balls.obs, k, radii=balls.radii, size=balls.size)
+        return std.apply(raw)
+
+    return encode
 
 
 def window_loss(
@@ -87,7 +133,9 @@ def window_loss(
 
 
 class OfflineFit:
-    """The fit of ``mods`` on ``windows`` ``(n, W, d)`` (on the CPU) by Adam,
+    """The fit of ``mods`` on ``windows`` ``(n, W, d)`` (on the CPU; with
+    ``encode`` the windows of something it turns to ``(batch, W, d)``, each
+    batch as drawn) by Adam,
     one step at a time (``step``): ``batch`` windows drawn with replacement
     by ``gen`` (a CPU generator), the gradient of ``window_loss`` on them, and
     a step of ``adam(lr)`` (``elapsed = 1``).
@@ -107,8 +155,10 @@ class OfflineFit:
         observed: int,
         residual: bool,
         gen: torch.Generator,
+        encode: Callable[[Tensor], Tensor] | None = None,
     ) -> None:
         self.mods = mods
+        self._encode = encode
         self._windows = windows
         self._batch, self._local = batch, local
         self._observed, self._residual = observed, residual
@@ -122,7 +172,10 @@ class OfflineFit:
         """One step; returns its loss before the step, a 0-d tensor on the
         modules' device (no synchronization)."""
         idx = torch.randint(len(self._windows), (self._batch,), generator=self._gen)
-        x = self._windows[idx].to(self._device)
+        x = self._windows[idx]
+        if self._encode is not None:
+            x = self._encode(x)
+        x = x.to(self._device)
         with torch.enable_grad():
             loss = window_loss(
                 self.mods,

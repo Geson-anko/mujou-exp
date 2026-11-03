@@ -1,11 +1,13 @@
 import torch
 
 from exp.lib.png import read_png
+from exp.video.data.observe import render_flat
 from exp.video.measure.viz import (
     BOX,
     COLORS,
     frames_png,
     pick_windows,
+    pixel_frames_png,
     to_pixels,
     trajectory_png,
 )
@@ -55,6 +57,31 @@ class TestFramesPng:
                 x, y = _centroid(grey)
                 want = states[0, k, :2].tolist()
                 assert abs(x - want[0]) < 0.01 and abs(y - want[1]) < 0.01
+
+
+class TestPixelFramesPng:
+    def test_the_predicted_image_is_drawn_as_it_is(self, tmp_path):
+        """Row clip x {true, pred, cv}: the prediction row shows the given image
+        (here a ball at a place no state gives), the others the rendered
+        states."""
+        true = _states([(0.3, 0.4), (0.35, 0.45)]).view(1, 2, 4)
+        cv = _states([(0.3, 0.4), (0.4, 0.5)]).view(1, 2, 4)
+        pred = render_flat(_states([(0.3, 0.4), (0.7, 0.2)]).view(1, 2, 4), [0.1], SIZE)
+        path = tmp_path / "frames.png"
+        pixel_frames_png(
+            path, true, pred, cv, [0.1], size=SIZE, columns=(0, 1), scale=1
+        )
+        image = read_png(path)
+        cell = SIZE + 2
+        assert image.shape == (3 * cell, 2 * cell, 3)
+        want = {(0, 1): (0.35, 0.45), (1, 0): (0.3, 0.4), (1, 1): (0.7, 0.2)}
+        want |= {(2, 1): (0.4, 0.5)}
+        for (r, c), (x0, y0) in want.items():
+            grey = image[
+                r * cell + 1 : (r + 1) * cell - 1, c * cell + 1 : (c + 1) * cell - 1, 0
+            ]
+            x, y = _centroid(grey)
+            assert abs(x - x0) < 0.01 and abs(y - y0) < 0.01
 
 
 class TestTrajectoryPng:
