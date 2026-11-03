@@ -11,7 +11,7 @@ r"""The program of M15: the vision alone (``exp.video.jepa``), for the tasks
 A frame: the next frame of each stream written as a ``pc.msg.Sample`` (``x``
 the images, ``reset`` where a stream starts anew), and the terms of the JEPA
 loss the head sends first for it read back (``Host.show``; they are of the
-weights before anything learned from the frame), added on the device to the
+weights before anything learned from the frame), added to the
 sums of ``stream.jsonl`` (``loss``, ``pred``, ``sigreg``: the means over the
 frames that have a full chunk). Frame 0 is not counted: the head of PC-ALM
 first sees the zeros sent before it, at the same time 0.
@@ -378,10 +378,9 @@ class _Online:
         dev = torch.device(conf.device)
         self._y = torch.zeros(b, 1, device=dev)
         self._mask = torch.ones(b, dtype=torch.bool, device=dev)
-        # The sums since the last log: loss, pred, sigreg, and the frames, on
-        # the device of the stats (Host.show reads them as the nodes sent them),
-        # read back once per line.
-        self._acc = torch.zeros(4, dtype=torch.float64, device=dev)
+        # The sums since the last log: loss, pred, sigreg, and the frames, in
+        # host memory, where Host.show reads the stats (as in programs.dynamics).
+        self._acc = torch.zeros(4, dtype=torch.float64)
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -389,7 +388,7 @@ class _Online:
             h = resume["host"]
             self.host.load_state_dict(h["host"])
             self.streams.load_state_dict(h["streams"])
-            self._acc.copy_(h["acc"])  # to the device
+            self._acc.copy_(h["acc"])
         ctl, m = conf.ctl, conf.measure
         self._schedule = Schedule(
             units=round(conf.seconds / frame),

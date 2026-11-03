@@ -290,10 +290,11 @@ def test_the_initial_z_of_the_balls_is_spread():
 
 
 @pytest.mark.cuda
-def test_a_run_on_cuda_completes(tmp_path):
-    """The stats the host reads back stay on the device, where the sums of
-    stream.jsonl are."""
-    assert _run(tmp_path / "run", ["device=cuda", "learner=pc"]) == Exit.OK
+@pytest.mark.parametrize("learner", ["pc", "bp"])
+def test_a_run_on_cuda_completes(tmp_path, learner):
+    """The stats the host reads back (into host memory) add to the sums of
+    stream.jsonl."""
+    assert _run(tmp_path / "run", ["device=cuda", f"learner={learner}"]) == Exit.OK
 
 
 def test_the_objective():
