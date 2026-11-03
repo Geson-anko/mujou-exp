@@ -42,3 +42,7 @@ datasets/
 # OS
 .DS_Store
 Thumbs.db
+
+# The fleet (exp/lib/fleet): host-local state, and the stand-in for the shared directory
+.fleet/
+.fleet-nas/
