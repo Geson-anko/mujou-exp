@@ -1,0 +1,10 @@
+# @package _global_
+# The timing of a run (task=bench): stage 0 online for 120 s of the stream
+# without evaluations; frames/s in result.json (final.timing.fps). Swept over
+# dynamics=small,big learner=pc,bp dynamics.trace=false,true. For another
+# stage put the stage first and name the run after both:
+#   +experiment=[m14/s2,m14/bench] name=m14/s2-bench 'tags=[m14,s2,bench]'
+name: m14/bench
+tags: [m14, bench]
+task: bench
+seconds: 120.0

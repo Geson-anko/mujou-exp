@@ -1,0 +1,11 @@
+# @package _global_
+# The baselines of the clips only (task=baselines): nothing learns. On its own
+# it is stage 0; for another stage put the stage first and name the run after
+# both (a task preset sets the name and tags, so without them every stage
+# would be named m14/baselines):
+#   +experiment=[m14/s1,m14/baselines] name=m14/s1-baselines 'tags=[m14,s1,baselines]'
+defaults:
+  - override /learner: none
+name: m14/baselines
+tags: [m14, baselines]
+task: baselines
