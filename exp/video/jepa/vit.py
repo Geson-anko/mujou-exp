@@ -34,6 +34,7 @@ from exp.video.schema.vision import VisionConf
 
 __all__ = [
     "Block",
+    "BroadcastDecoder",
     "Embed",
     "Encoder",
     "PixelDecoder",
@@ -242,6 +243,50 @@ class PixelDecoder(nn.Module):
         return self.net(z).unflatten(1, self.shape)
 
 
+class BroadcastDecoder(nn.Module):
+    """The spatial broadcast decoder (Watters et al. 2019, arXiv:1901.07017) of
+    the reconstruction term: $z$ ``(n, D)`` is tiled over the ``H x W`` grid,
+    the pixel's coordinates $(x, y) \\in [-1, 1]^2$ (pixel centers) are
+    appended, and the same MLP ``Linear(D + 2, hidden) - ReLU - Linear(hidden,
+    hidden) - ReLU - Linear(hidden, C)`` maps each pixel's input to its
+    channels. The output ``(n, C, H, W)`` is of the standardized frames, as
+    that of ``PixelDecoder``; a pixel depends on $z$ and on its own
+    coordinates only. The intent (a hypothesis to test, not a result) is that a
+    position of an object becomes a function of $z$ shared by all pixels,
+    rather than one of the $C H W$ separate output units of an MLP."""
+
+    def __init__(self, dim: int, hidden: int, shape: tuple[int, int, int]) -> None:
+        super().__init__()
+        self.shape = shape
+        _, h, w = shape
+        ys = (torch.arange(h) + 0.5) / h * 2 - 1
+        xs = (torch.arange(w) + 0.5) / w * 2 - 1
+        grid = torch.stack(
+            [xs.expand(h, w).reshape(-1), ys[:, None].expand(h, w).reshape(-1)], 1
+        )
+        self.register_buffer("coords", grid, persistent=False)  # (H W, 2): x, y
+        self.coords: Tensor
+        # PyTorch's default init, as ``PixelDecoder``.
+        self.net = nn.Sequential(
+            nn.Linear(dim + 2, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, shape[0]),
+        )
+
+    def at(self, z: Tensor, coords: Tensor) -> Tensor:
+        """The channels ``(n, P, C)`` at ``coords`` ``(P, 2)`` for $z$ ``(n, D)``."""
+        n, p = len(z), len(coords)
+        x = torch.cat([z[:, None].expand(n, p, -1), coords.expand(n, p, 2)], 2)
+        return self.net(x)
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        c, h, w = self.shape
+        return self.at(z, self.coords).transpose(1, 2).reshape(len(z), c, h, w)
+
+
 @dataclass
 class VisionModules:
     """The encoder and the predictor of a vision, and the shape of its chunks.
@@ -254,7 +299,7 @@ class VisionModules:
     predictor: Predictor
     chunk: tuple[int, int, int, int]
     patch: int
-    decoder: PixelDecoder | None = None  # with ``vision.recon`` > 0
+    decoder: PixelDecoder | BroadcastDecoder | None = None  # with ``vision.recon`` > 0
 
     def named(self) -> dict[str, nn.Module]:
         """The modules by the names of the checkpoints (the decoder only when
@@ -353,7 +398,11 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
         _init_(predictor)
         decoder = None  # built last: the others' weights do not depend on it
         if v.recon > 0:
-            decoder = PixelDecoder(v.dim, v.recon_hidden, (channels, size, size))
+            shape = (channels, size, size)
+            if v.recon_decoder == "broadcast":
+                decoder = BroadcastDecoder(v.dim, v.decoder_hidden, shape)
+            else:
+                decoder = PixelDecoder(v.dim, v.decoder_hidden, shape)
     encoder = Encoder(stages, extra=extra, z_pool=v.z_pool)
     return VisionModules(
         encoder=encoder.to(conf.device),

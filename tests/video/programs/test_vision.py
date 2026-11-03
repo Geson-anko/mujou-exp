@@ -209,11 +209,13 @@ class TestRecon:
         assert set(mods) == {"encoder", "predictor", "decoder"}
         ckpt.load_eval(out / "ckpt" / "00001.0.pt", mods)
 
+    @pytest.mark.parametrize("decoder", ["mlp", "broadcast"])
     @pytest.mark.parametrize("learner", ["pc", "bp"])
-    def test_resume_equals_uninterrupted_with_recon(self, tmp_path, learner):
+    def test_resume_equals_uninterrupted_with_recon(self, tmp_path, learner, decoder):
         extra = [
             f"learner={learner}",
             "vision.recon=1.0",
+            f"vision.recon_decoder={decoder}",
             "vision.recon_hidden=16",
             "vision.frames=2",
             "optim_vision.warmup=0.5",

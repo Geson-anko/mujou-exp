@@ -238,6 +238,26 @@ class TestEquilibrium:
             ),
             (1, {"recon": 2.0, "recon_hidden": 8, "pixel_mean": 0.5, "pixel_std": 0.3}),
             (
+                1,
+                {
+                    "recon": 2.0,
+                    "recon_hidden": 8,
+                    "recon_decoder": "broadcast",
+                    "pixel_mean": 0.5,
+                    "pixel_std": 0.3,
+                },
+            ),
+            (
+                2,
+                {
+                    "recon": 1.5,
+                    "recon_hidden": 8,
+                    "recon_decoder": "broadcast",
+                    "sg": True,
+                    "views": 3,
+                },
+            ),
+            (
                 2,
                 {
                     "recon": 1.5,
@@ -253,6 +273,8 @@ class TestEquilibrium:
             "n2-v3-cls-sg-tokens",
             "n2-1node-registers-both",
             "n1-recon",
+            "n1-recon-broadcast",
+            "n2-v3-sg-recon-broadcast",
             "n2-v3-sg-recon-only",
         ],
     )

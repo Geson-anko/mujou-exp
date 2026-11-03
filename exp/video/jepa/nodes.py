@@ -36,7 +36,7 @@ from mujou.types import Device
 
 from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, pool, split_y
 from exp.video.jepa.masks import block_masks, make_views
-from exp.video.jepa.vit import PixelDecoder, Predictor
+from exp.video.jepa.vit import BroadcastDecoder, PixelDecoder, Predictor
 from mujou import DictSpec, Node, Port, Stateful, TensorSpec, TimestampSpec
 
 __all__ = [
@@ -329,7 +329,7 @@ class JEPAHead(Node):
         learn_interval: float | None,
         seed: int,
         sigreg_on: str = "z",
-        decoder: PixelDecoder | None = None,
+        decoder: PixelDecoder | BroadcastDecoder | None = None,
         recon: float = 0.0,
         pixel_mean: float = 0.0,
         pixel_std: float = 1.0,

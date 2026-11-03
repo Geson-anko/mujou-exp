@@ -4,13 +4,16 @@ from dataclasses import dataclass
 
 from exp.video.schema._check import check_choice
 
-__all__ = ["POOLS", "SIGREG_ON", "VisionConf"]
+__all__ = ["POOLS", "RECON_DECODERS", "SIGREG_ON", "VisionConf"]
 
 # How z_k is read from the target view's tokens: the class token, the mean of
 # the patch tokens, or the mean of ``registers`` register tokens.
 POOLS = ("cls", "mean", "registers")
 # What SIGReg sees of the target view: z, its patch tokens, or both.
 SIGREG_ON = ("z", "tokens", "both")
+# The decoder of the reconstruction: an MLP from z to all the pixels, or a
+# spatial broadcast decoder (one small MLP of z and the pixel's coordinates).
+RECON_DECODERS = ("mlp", "broadcast")
 
 
 @dataclass(kw_only=True)
@@ -22,8 +25,11 @@ class VisionConf:
 
     $L_{rec}$ (off at ``recon`` 0, which builds no decoder and changes nothing)
     is the mean squared error per pixel of a decoder of $z$ (an MLP of one
-    hidden layer of ``recon_hidden`` units) to the target view's last frame
-    of the chunk, in the standardized pixels. The prediction of masked tokens
+    hidden layer of ``recon_hidden`` units, ``recon_decoder`` "mlp"; or the
+    spatial broadcast decoder of Watters et al. 2019, "broadcast": z tiled
+    over the pixels with their coordinates, through one MLP of two hidden
+    layers of ``recon_hidden`` units applied per pixel) to the target view's
+    last frame of the chunk, in the standardized pixels. The prediction of masked tokens
     alone drops what it cannot predict (the balls); the reconstruction is meant
     to keep them in $z$ (a hypothesis to test, not a result; ``jepa.loss``).
 
@@ -49,7 +55,10 @@ class VisionConf:
     sigreg_directions: int = 256  # drawn anew each frame
     sigreg_on: str = "z"  # SIGREG_ON
     recon: float = 0.0  # mu, the weight of the pixel reconstruction from z
-    recon_hidden: int = 256  # the decoder's hidden units, with recon > 0
+    recon_decoder: str = "mlp"  # RECON_DECODERS
+    # the decoder's hidden units, with recon > 0; None: 256 for "mlp", 64 for
+    # "broadcast" (it is applied to every pixel)
+    recon_hidden: int | None = None
     pixel_mean: float = 0.0
     pixel_std: float = 1.0
     z_pool: str = "mean"
@@ -58,6 +67,7 @@ class VisionConf:
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
         check_choice("vision.sigreg_on", self.sigreg_on, SIGREG_ON)
+        check_choice("vision.recon_decoder", self.recon_decoder, RECON_DECODERS)
         if not self.pixel_std > 0:
             raise ValueError(f"vision.pixel_std must be > 0, not {self.pixel_std}")
         if self.nodes < 1:
@@ -82,9 +92,16 @@ class VisionConf:
             )
         if not self.recon >= 0:
             raise ValueError(f"vision.recon must be >= 0, not {self.recon}")
-        if self.recon_hidden < 1:
+        if self.recon_hidden is not None and self.recon_hidden < 1:
             raise ValueError(
                 f"vision.recon_hidden must be at least 1, not {self.recon_hidden}"
             )
         if not 0 <= self.sigreg <= 1:
             raise ValueError(f"vision.sigreg must be in [0, 1], not {self.sigreg}")
+
+    @property
+    def decoder_hidden(self) -> int:
+        """``recon_hidden``, or the default of ``recon_decoder``."""
+        if self.recon_hidden is not None:
+            return self.recon_hidden
+        return 64 if self.recon_decoder == "broadcast" else 256

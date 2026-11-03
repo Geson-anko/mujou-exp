@@ -1,6 +1,7 @@
 from typing import override
 
 import mujou.testing
+import pytest
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
@@ -136,7 +137,10 @@ def test_no_parameter_gets_a_grad_and_only_the_nodes_move_the_weights():
     assert all(bool(p.isfinite().all()) for p in after)
 
 
-def test_some_hundred_adam_steps_reconstruct_the_balls_better_than_the_mean_image():
+@pytest.mark.parametrize("decoder_kind", ["mlp", "broadcast"])
+def test_some_hundred_adam_steps_reconstruct_the_balls_better_than_the_mean_image(
+    decoder_kind,
+):
     """Sanity of the reconstruction term: BP on L (lam small, mu 1) on random
     positions of two balls, 16 x 16 pixels. The decoder of z, on fresh
     positions, ends with a squared error per pixel (standardized) below that
@@ -174,6 +178,7 @@ def test_some_hundred_adam_steps_reconstruct_the_balls_better_than_the_mean_imag
             sigreg=0.05,
             recon=1.0,
             recon_hidden=64,
+            recon_decoder=decoder_kind,
             pixel_mean=mean,
             pixel_std=std,
         ),
