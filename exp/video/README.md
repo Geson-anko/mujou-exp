@@ -32,7 +32,21 @@ PLAN.md 8 節の H0〜H4。各段の冒頭で閾値を確定させ、結果の�
 
 ## 実行方法
 
-M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に消した（コードは git の 433a72e に残る）。設定は hydra の preset（`conf/`、型は `schema/`）で書き、`exp.video.compose.compose` で解決する。run を起動する入口（`main.py`）はまだ無い。
+M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に消した（コードは git の 433a72e に残る）。設定は hydra の preset（`conf/experiment/`、型は `schema/`）で書き、`exp.video.compose.compose` で解決する。run の入口は `main.py`、プログラム（`programs/`）は設定の `program` で選ぶ。
+
+```bash
+# 手元で 1 本（<out> が run のディレクトリ。止めた run は同じコマンドで再開する）
+uv run python -m exp.video.main +experiment=m14/s2 learner=pc seconds=60 --out /tmp/m14
+# 4 台で（exp/lib/fleet/README.md）: snapshot を配り、投げ、結果を ./runs/ へ
+just fleet push
+just fleet submit --batch m14-s2-v1 +experiment=m14/s2 learner=pc --seeds 0,1,2 --res cpu
+just fleet pull --batch m14-s2-v1
+# optuna の探索と、上位の設定の確認（tools/sweep/README.md、study は studies/）
+just sweep run exp/video/studies/m14_s3_bp.toml
+just sweep confirm m14-s3-bp-v1 --top 2 --learners bp,pc --seeds 0,1,2 --res cpu --batch m14-s3-confirm-v1
+```
+
+run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jsonl`・`result.json`・`ckpt/`・`viz/` など）は `exp/lib/rundir.py` と fleet の README の契約のとおり。checkpoint とログは git に入れない。
 
 ## 結果
 
