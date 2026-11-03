@@ -6,7 +6,7 @@ timer by ``period`` and updates every node once, in the order of the tree.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, override
 
 from mujou.testing import ManualRun
@@ -51,18 +51,34 @@ class Host(Stateful):
         Raises:
             RuntimeError: ``watch`` sent nothing of this write within the frame.
         """
+        first, written = self.show_all(writes, [watch])
+        return first[0], written
+
+    def show_all(
+        self,
+        writes: Mapping[Port[Any, Any], Any],
+        watches: Sequence[Port[Any, Any] | MultiPort[Any, Any]],
+    ) -> tuple[list[Any], Timestamp]:
+        """``show`` for several ports: the first message made from the write of
+        each of ``watches``, in order.
+
+        Raises:
+            RuntimeError: One of ``watches`` sent nothing of this write within
+                the frame.
+        """
         k = self.frames
         steps = self._boundary(k + 1) - self._boundary(k)
         written = self.run.write(writes)
-        first = None
+        first: list[Any] = [None] * len(watches)
         for _ in range(steps):
             self.run.step(self._period)
-            if first is None:
-                msg = self.run.read(watch)
-                if msg["time"] == written:
-                    first = msg
+            for i, watch in enumerate(watches):
+                if first[i] is None:
+                    msg = self.run.read(watch)
+                    if msg["time"] == written:
+                        first[i] = msg
         self.frames += 1
-        if first is None:
+        if any(m is None for m in first):
             raise RuntimeError("the frame did not reach the watched port")
         return first, written
 
