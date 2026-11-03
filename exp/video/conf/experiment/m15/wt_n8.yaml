@@ -1,0 +1,26 @@
+# @package _global_
+# M15 on Walking Tours, N = 8: chunks of the last 8 frames (0.8 s of video),
+# masked in tubes through them. As wt_n1 otherwise; vision=vit_s for the larger
+# ViT.
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: none
+  - override /vision: vit_t
+program: vision
+name: m15/wt_n8
+tags: [m15, wt, n8]
+data:
+  balls: null
+  tours:
+    data_version: unprepared
+    held_out: Zurich
+    size: 64
+    fps: 10.0
+measure:
+  clips: 64  # x 4 windows: 256 chunks of the held-out video per split (x 3)
+vision:
+  patch: 8
+  # about those of natural images; measure them on the prepared data
+  pixel_mean: 0.45
+  pixel_std: 0.25
+  frames: 8

@@ -1,4 +1,7 @@
-# A small ViT (ViT-S: width 384, 6 heads, 12 blocks).
-dim: 384
-heads: 6
-depth: 12
+# The larger ViT of M15 (for Walking Tours): width 256, 4 heads, 8 blocks in 4
+# PC-ALM nodes, a predictor of 2 blocks.
+dim: 256
+heads: 4
+depth: 8
+nodes: 4
+pred_depth: 2

@@ -1,0 +1,21 @@
+# @package _global_
+# M15 on the balls, N = 4: chunks of the last 4 frames, masked in tubes
+# through them; the probe also reads each ball's velocity.
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: none
+  - override /vision: vit_t
+program: vision
+name: m15/balls_n4
+tags: [m15, balls, n4]
+data:
+  balls:
+    radii: [0.06, 0.08, 0.10]
+    obs: frames
+    size: 32
+vision:
+  patch: 4
+  # the mean and std of the pixels of the calib chunks (radii as above)
+  pixel_mean: 0.03
+  pixel_std: 0.12
+  frames: 4
