@@ -1,0 +1,7 @@
+# @package _global_
+# A run of a sweep: the validation clips only, no checkpoints or pictures.
+phase: explore
+ctl:
+  ckpt_every: 0.0
+  viz_every: 0.0
+  eval_test: false

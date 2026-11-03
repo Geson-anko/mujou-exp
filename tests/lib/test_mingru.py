@@ -81,3 +81,44 @@ class TestMinGRUTrace:
         want = torch.autograd.grad(total, list(layer.parameters()))
         for g, w in zip(got, want, strict=True):
             torch.testing.assert_close(g, w, rtol=1e-5, atol=1e-6)
+
+    def test_a_trace_restored_from_its_state_goes_on_as_the_original(self):
+        """Traced 3 steps, its ``state_dict`` copied (as a run copies a node's
+        state) into a new trace of the same cell, then both traced 3 more
+        steps: the gradients are the same bits; a trace started anew is not."""
+        torch.manual_seed(3)
+        cell = MinGRU(3, 4)
+        xs = torch.randn(6, 2, 3)
+        delta = torch.randn(2, 4)
+        trace = MinGRUTrace(cell, (2,))
+        s = torch.zeros(2, 4)
+        with torch.no_grad():
+            for x in xs[:3]:
+                trace.step_(x, s)
+                s = cell(x, s)
+        saved = {k: v.clone() for k, v in trace.state_dict().items()}
+        restored = MinGRUTrace(cell, (2,))
+        restored.load_state_dict(saved)
+        anew = MinGRUTrace(cell, (2,))
+        with torch.no_grad():
+            for x in xs[3:]:
+                for t in (trace, restored, anew):
+                    t.step_(x, s)
+                s = cell(x, s)
+        for a, b in zip(trace.grads(delta), restored.grads(delta), strict=True):
+            assert torch.equal(a, b)
+        assert not all(
+            torch.equal(a, b)
+            for a, b in zip(trace.grads(delta), anew.grads(delta), strict=True)
+        )
+
+    def test_loading_keeps_none_of_the_tensors_given(self):
+        """``load_state_dict`` copies: changing the given tensors afterwards
+        does not change the trace."""
+        cell = MinGRU(2, 3)
+        trace = MinGRUTrace(cell, ())
+        given = {k: torch.ones_like(v) for k, v in trace.state_dict().items()}
+        trace.load_state_dict(given)
+        for v in given.values():
+            v.zero_()
+        assert all(bool((v == 1).all()) for v in trace.state_dict().values())

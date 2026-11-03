@@ -1,0 +1,4 @@
+# A small ViT (ViT-S: width 384, 6 heads, 12 blocks).
+dim: 384
+heads: 6
+depth: 12

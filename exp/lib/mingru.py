@@ -1,10 +1,13 @@
 """The minGRU cell, its residual form for stacking, and the eligibility traces
 that learn it through time online."""
 
+from collections.abc import Mapping
 from typing import override
 
 import torch
 from torch import nn
+
+from mujou import Stateful
 
 __all__ = ["MinGRU", "MinGRUTrace", "ResidualMinGRU"]
 
@@ -39,7 +42,7 @@ class ResidualMinGRU(nn.Module):
         return x + self.cell(nn.functional.gelu(x), h_prev)
 
 
-class MinGRUTrace:
+class MinGRUTrace(Stateful):
     r"""The eligibility traces $e_k = \partial s_k / \partial \theta$ of a
     ``MinGRU`` through its own state, with its inputs held: real-time recurrent
     learning, exact as the recurrence is diagonal in $s$.
@@ -58,6 +61,9 @@ class MinGRUTrace:
     traces, of the size of the weights. ``grads(delta)`` is
     $\sum_i \delta_i e_{k,i\cdot}$ summed over the batch: the gradient of
     $\delta \cdot s_k$ through all the steps since the last reset.
+
+    It is a ``mujou.Stateful``: a node that holds it keeps the traces in its
+    state, so a run resumed from ``run.state_dict()`` goes on with them.
     """
 
     def __init__(self, cell: MinGRU, batch: tuple[int, ...]) -> None:
@@ -106,3 +112,21 @@ class MinGRUTrace:
             torch.einsum("bi,bij->ij", d, e_ws),
             (d * self._e_bs.reshape(n, -1)).sum(0),
         ]
+
+    @override
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        """The traces (sharing memory with the trace's)."""
+        return {
+            "e_wu": self._e_wu,
+            "e_bu": self._e_bu,
+            "e_ws": self._e_ws,
+            "e_bs": self._e_bs,
+        }
+
+    @override
+    def load_state_dict(self, state: Mapping[str, torch.Tensor], /) -> None:
+        """Copy the traces of ``state`` into this trace's (of the same shapes;
+        any device)."""
+        with torch.no_grad():
+            for name, mine in self.state_dict().items():
+                mine.copy_(state[name])

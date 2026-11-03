@@ -5,6 +5,7 @@ description = "Experiments with mujou, the asynchronous distributed deep learnin
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "hydra-core==1.3.8",
     "imageio-ffmpeg>=0.7.0",
     "mujou",
 ]
@@ -52,6 +53,9 @@ exclude = [
     "**/.venv-devcontainer",
     "mujou",
     ".claude/worktrees/",
+    ".fleet",
+    ".fleet-nas",
+    "tools/sweep/.venv",
 ]
 reportImplicitOverride = true
 
@@ -63,6 +67,8 @@ extend-exclude = [
     "mujou",
     ".venv-devcontainer",
     ".claude/worktrees",
+    ".fleet",
+    ".fleet-nas",
 ]
 
 [tool.ruff.lint]

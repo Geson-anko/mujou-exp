@@ -1,1 +1,1 @@
-"""Code shared by the experiments: recording, sweeps, hosts, and parts under study."""
+"""Code shared by the experiments: hosts, metrics, and parts under study."""

@@ -6,9 +6,14 @@ services:
     build:
       context: .devcontainer
     command: sleep infinity
+    # The fleet's workers live in the container: bring it back after a reboot.
+    restart: unless-stopped
     volumes:
       # Without EGODEX_DIR, datasets/egodex of this checkout is mounted.
       - ${EGODEX_DIR:-./datasets/egodex}:/datasets/egodex:ro
       # Writable: the videos are downloaded (and blurred) from inside the container.
       # Without WALKING_TOURS_DIR, datasets/walking_tours of this checkout is mounted.
       - ${WALKING_TOURS_DIR:-./datasets/walking_tours}:/datasets/walking_tours
+      # The fleet's queue and finished runs (exp/lib/fleet), at the same path as on
+      # the host. Without FLEET_NAS, .fleet-nas of this checkout is mounted.
+      - ${FLEET_NAS:-./.fleet-nas}:${FLEET_NAS:-/fleet-nas}

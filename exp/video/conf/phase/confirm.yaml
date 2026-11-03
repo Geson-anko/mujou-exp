@@ -1,0 +1,8 @@
+# @package _global_
+# A run whose numbers go to the README: the test clips too, a checkpoint and
+# the pictures every 300 s.
+phase: confirm
+ctl:
+  ckpt_every: 300.0
+  viz_every: 300.0
+  eval_test: true

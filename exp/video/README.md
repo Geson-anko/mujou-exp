@@ -32,11 +32,7 @@ PLAN.md 8 節の H0〜H4。各段の冒頭で閾値を確定させ、結果の�
 
 ## 実行方法
 
-```bash
-uv run python -m exp.video.run --config <path>  # 設定は JSON（config.py の Config）
-```
-
-出力は `runs/<日付>-<名前>/` の `config.json`（設定、mujou とこのリポジトリの SHA、未コミットの変更の有無）と `metrics.jsonl`。commit しない。
+M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に消した（コードは git の 433a72e に残る）。設定は hydra の preset（`conf/`、型は `schema/`）で書き、`exp.video.compose.compose` で解決する。run を起動する入口（`main.py`）はまだ無い。
 
 ## 結果
 

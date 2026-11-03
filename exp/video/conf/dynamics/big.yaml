@@ -1,0 +1,3 @@
+# The big dynamics of M13: three nodes (Dynamics + 2 DynamicsLayer), d_s 512.
+d_s: 512
+nodes: 3
