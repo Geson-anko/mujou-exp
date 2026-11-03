@@ -1,15 +1,13 @@
-r"""The optimizers of ``exp/video/PLAN.md``, section 5: directions that do not expect i.i.d.
-gradients, as ``pc.optim.Optimizer``.
+r"""Optimizers in time for the nodes, as ``pc.optim.Optimizer``: the direction
+of Adam with the step size of SGD (``Grafted(AdamDirection)``), a warm-up of
+any optimizer (``Warmup``), and ``adam``, Adam of a learning rate per step as a
+``pc.optim.AdamW`` (for fits by steps, such as the offline bound).
 
-Each optimizer here is first a direction $D$ computed from the gradients
+A direction optimizer computes a direction $D$ from the gradients
 (``DirectionOptimizer``), which a node steps along as SGD does,
 $\Delta W = -\frac{\text{elapsed}}{\tau} D$, or with the step size of SGD
 (``Grafted``), $\Delta W = -\frac{\text{elapsed}}{\tau} \lVert G \rVert_F
-\frac{D}{\lVert D \rVert_F}$.
-
-A weight of two or more dimensions is a matrix $(d_\text{out}, d_\text{in})$
-(a convolution's $(c_\text{out}, c_\text{in} k^2)$); the other parameters (the
-biases) take $D = G$.
+\frac{D}{\lVert D \rVert_F}$, tensor by tensor.
 """
 
 import math
@@ -19,21 +17,17 @@ from dataclasses import dataclass
 from typing import Any, override
 
 import torch
-from mujou.pc.optim import BoundOptimizer, Optimizer
+from mujou.pc.optim import AdamW, BoundOptimizer, Optimizer
 
 from mujou import Stateful
 
 __all__ = [
-    "LAGS",
     "AdamDirection",
-    "Correlation",
     "BoundDirection",
     "DirectionOptimizer",
     "Grafted",
-    "Orthogonalized",
-    "Projected",
     "Warmup",
-    "Whitened",
+    "adam",
 ]
 
 
@@ -123,290 +117,6 @@ class _Stepped(BoundOptimizer):
         self._direction.load_state_dict(state)
 
 
-def _matrix(t: torch.Tensor) -> torch.Tensor:
-    """``t`` as the matrix ``(d_out, d_in)`` (a view)."""
-    return t.reshape(t.shape[0], -1)
-
-
-def _ema_(avg: torch.Tensor, target: torch.Tensor, elapsed: float, tau: float) -> None:
-    """``tau d(avg)/dt = target - avg`` over ``elapsed`` with ``target`` held."""
-    avg.lerp_(target, -math.expm1(-elapsed / tau))
-
-
-def _empty() -> torch.Tensor:
-    return torch.zeros(0)
-
-
-class _Factors(Stateful):
-    """The moving averages ``L = EMA(G G^T)`` and ``R = EMA(G^T G)`` of each
-    matrix, and a matrix computed from each, refreshed every ``refresh``
-    seconds (an empty tensor where a side is not used)."""
-
-    def __init__(
-        self,
-        params: Sequence[torch.Tensor],
-        tau_l: float | None,
-        tau_r: float | None,
-        refresh: float,
-    ) -> None:
-        self._tau_l, self._tau_r, self._refresh = tau_l, tau_r, refresh
-        self.matrix = [p.ndim >= 2 for p in params]
-
-        def square(p: torch.Tensor, tau: float | None, side: int) -> torch.Tensor:
-            if p.ndim < 2 or tau is None:
-                return _empty()
-            n = _matrix(p).shape[side]
-            return torch.zeros(n, n, dtype=p.dtype, device=p.device)
-
-        self.l = [square(p, tau_l, 0) for p in params]
-        self.r = [square(p, tau_r, 1) for p in params]
-        self.of_l = [x.clone() for x in self.l]
-        self.of_r = [x.clone() for x in self.r]
-        self.since = math.inf  # seconds since of_l, of_r were computed
-
-    def update_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
-        for i, g in enumerate(grads):
-            if not self.matrix[i]:
-                continue
-            m = _matrix(g)
-            if self._tau_l is not None:
-                _ema_(self.l[i], m @ m.T, elapsed, self._tau_l)
-            if self._tau_r is not None:
-                _ema_(self.r[i], m.T @ m, elapsed, self._tau_r)
-
-    def due(self, elapsed: float) -> bool:
-        """Count ``elapsed`` and say whether to compute the matrices anew."""
-        self.since += elapsed
-        if self.since >= self._refresh:
-            self.since = 0.0
-            return True
-        return False
-
-    @override
-    def state_dict(self) -> dict[str, Any]:
-        return {
-            "l": list(self.l),
-            "r": list(self.r),
-            "of_l": list(self.of_l),
-            "of_r": list(self.of_r),
-            "since": self.since,
-        }
-
-    @override
-    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
-        with torch.no_grad():
-            for key in ("l", "r", "of_l", "of_r"):
-                for mine, saved in zip(getattr(self, key), state[key], strict=True):
-                    mine.copy_(saved)
-        self.since = float(state["since"])
-
-
-def _eigh(a: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """The eigenvalues (ascending) and eigenvectors of the symmetric ``a``, in
-    float64.
-
-    LAPACK's divide and conquer may fail to converge on a finite matrix with
-    nearly repeated eigenvalues (as L and R of a low-rank G are); then ``a`` is
-    perturbed by a symmetric noise of 1e-12 of its norm, far below the
-    ``eps`` of the optimizers, and decomposed again. A matrix that is not
-    finite raises."""
-    a = a.double()
-    try:
-        return torch.linalg.eigh(a)
-    except RuntimeError:  # torch.linalg.LinAlgError
-        if not bool(torch.isfinite(a).all()):
-            raise
-        g = torch.Generator(a.device).manual_seed(0)
-        noise = torch.randn(a.shape, generator=g, dtype=a.dtype, device=a.device)
-        noise = (noise + noise.T) / 2
-        scale = 1e-12 * torch.linalg.matrix_norm(a) / torch.linalg.matrix_norm(noise)
-        return torch.linalg.eigh(a + scale * noise)
-
-
-@dataclass(frozen=True, kw_only=True)
-class Whitened(DirectionOptimizer):
-    r"""Whitened in time: $D = (L + \epsilon I)^{-a}\, G\, (R + \epsilon I)^{-b}$.
-
-    $L$ and $R$ follow $G G^\top$ and $G^\top G$ with the time constants
-    ``tau_l`` and ``tau_r`` (``None``: that side is not whitened), exactly in
-    time (``L += (1 - exp(-elapsed / tau_l)) (G G^T - L)``), the current $G$
-    included. The roots are computed by an eigendecomposition every
-    ``refresh`` seconds (and in the first step); between, the last ones are
-    used. $\epsilon$ is ``eps`` times the largest eigenvalue.
-
-    $a = b = 0$ is SGD; with $a = b = 1/4$ and $\tau \to 0$, $D = U V^\top$ for
-    $G = U \Sigma V^\top$ (an orthogonalized step, as Muon).
-    """
-
-    tau_l: float | None = None
-    tau_r: float | None = None
-    a: float = 0.25
-    b: float = 0.25
-    eps: float = 1e-4
-    refresh: float = 1.0
-
-    @override
-    def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
-        return _BoundWhitened(params, self)
-
-
-def _inverse_root(a: torch.Tensor, power: float, eps: float) -> torch.Tensor:
-    """``(a + eps * max_eig I)^-power`` of the symmetric ``a``."""
-    values, vectors = _eigh(a)
-    top = values[-1].clamp(min=0)
-    if top == 0:  # no gradient yet
-        return torch.eye(len(a), dtype=a.dtype, device=a.device)
-    scaled = (values.clamp(min=0) + eps * top).pow(-power)
-    return ((vectors * scaled) @ vectors.T).to(a.dtype)
-
-
-class _BoundWhitened(BoundDirection):
-    def __init__(self, params: Sequence[torch.Tensor], config: Whitened) -> None:
-        self._config = config
-        self._factors = _Factors(params, config.tau_l, config.tau_r, config.refresh)
-
-    @override
-    def direction(
-        self, grads: Sequence[torch.Tensor], elapsed: float
-    ) -> list[torch.Tensor]:
-        c, f = self._config, self._factors
-        f.update_(grads, elapsed)
-        if f.due(elapsed):
-            for i in range(len(grads)):
-                if f.l[i].numel():
-                    f.of_l[i].copy_(_inverse_root(f.l[i], c.a, c.eps))
-                if f.r[i].numel():
-                    f.of_r[i].copy_(_inverse_root(f.r[i], c.b, c.eps))
-        ds = []
-        for i, g in enumerate(grads):
-            d = _matrix(g)
-            if f.of_l[i].numel():
-                d = f.of_l[i] @ d
-            if f.of_r[i].numel():
-                d = d @ f.of_r[i]
-            ds.append(d.reshape(g.shape))
-        return ds
-
-    @override
-    def state_dict(self) -> Any:
-        return self._factors.state_dict()
-
-    @override
-    def load_state_dict(self, state: Any, /) -> None:
-        self._factors.load_state_dict(state)
-
-
-@dataclass(frozen=True, kw_only=True)
-class Orthogonalized(DirectionOptimizer):
-    r"""The orthogonalized step of each matrix, $D = U V^\top$ for
-    $G = U \Sigma V^\top$ (as Muon, by an SVD): the limit of ``Whitened`` with
-    $a = b = 1/4$ and $\tau \to 0$, without a state. Singular values below
-    ``eps`` times the largest are dropped (the gradient of one sample of a
-    ``Linear`` has rank 1)."""
-
-    eps: float = 1e-4
-
-    @override
-    def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
-        return _BoundOrthogonalized(self.eps)
-
-
-class _BoundOrthogonalized(BoundDirection):
-    def __init__(self, eps: float) -> None:
-        self._eps = eps
-
-    @override
-    def direction(
-        self, grads: Sequence[torch.Tensor], elapsed: float
-    ) -> list[torch.Tensor]:
-        ds = []
-        for g in grads:
-            if g.ndim < 2:
-                ds.append(g)
-                continue
-            u, sigma, vh = torch.linalg.svd(_matrix(g), full_matrices=False)
-            keep = sigma > self._eps * sigma[0]
-            ds.append((u[:, keep] @ vh[keep]).reshape(g.shape))
-        return ds
-
-    @override
-    def state_dict(self) -> dict[str, Any]:
-        return {}
-
-    @override
-    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
-        pass
-
-
-@dataclass(frozen=True, kw_only=True)
-class Projected(DirectionOptimizer):
-    r"""A hard projection: $D = (I - U_L U_L^\top)\, G\, (I - U_R U_R^\top)$.
-
-    $U_L$ and $U_R$ are the eigenvectors of the ``rank`` largest eigenvalues
-    of $L$ and $R$ (as in ``Whitened``) before the current $G$ is added, those
-    of eigenvalues above ``eps`` times the largest only. They are computed
-    every ``refresh`` seconds (and in the first step).
-    """
-
-    tau_l: float | None = None
-    tau_r: float | None = None
-    rank: int = 4
-    eps: float = 1e-4
-    refresh: float = 1.0
-
-    @override
-    def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
-        return _BoundProjected(params, self)
-
-
-def _projector(a: torch.Tensor, rank: int, eps: float) -> torch.Tensor:
-    """``I - U U^T`` with ``U`` the top ``rank`` eigenvectors of ``a`` (those
-    of eigenvalues above ``eps`` times the largest)."""
-    values, vectors = _eigh(a)
-    top = values[-1]
-    keep = values > eps * top if top > 0 else torch.zeros_like(values, dtype=torch.bool)
-    keep[: len(values) - rank] = False
-    u = vectors[:, keep]
-    eye = torch.eye(len(a), dtype=u.dtype, device=u.device)
-    return (eye - u @ u.T).to(a.dtype)
-
-
-class _BoundProjected(BoundDirection):
-    def __init__(self, params: Sequence[torch.Tensor], config: Projected) -> None:
-        self._config = config
-        self._factors = _Factors(params, config.tau_l, config.tau_r, config.refresh)
-
-    @override
-    def direction(
-        self, grads: Sequence[torch.Tensor], elapsed: float
-    ) -> list[torch.Tensor]:
-        c, f = self._config, self._factors
-        if f.due(elapsed):  # from L and R before the current G
-            for i in range(len(grads)):
-                if f.l[i].numel():
-                    f.of_l[i].copy_(_projector(f.l[i], c.rank, c.eps))
-                if f.r[i].numel():
-                    f.of_r[i].copy_(_projector(f.r[i], c.rank, c.eps))
-        ds = []
-        for i, g in enumerate(grads):
-            d = _matrix(g)
-            if f.of_l[i].numel():
-                d = f.of_l[i] @ d
-            if f.of_r[i].numel():
-                d = d @ f.of_r[i]
-            ds.append(d.reshape(g.shape))
-        f.update_(grads, elapsed)
-        return ds
-
-    @override
-    def state_dict(self) -> Any:
-        return self._factors.state_dict()
-
-    @override
-    def load_state_dict(self, state: Any, /) -> None:
-        self._factors.load_state_dict(state)
-
-
 @dataclass(frozen=True, kw_only=True)
 class AdamDirection(DirectionOptimizer):
     r"""The direction of ``pc.optim.AdamW``, $\hat m / (\sqrt{\hat v} + \varepsilon)$,
@@ -467,77 +177,6 @@ class _BoundAdamDirection(BoundDirection):
         self._c_v = float(state["c_v"])
 
 
-LAGS = (1, 10, 100, 1000)
-
-
-class Correlation(Optimizer):
-    r"""Wraps an optimizer and records the cosine $\rho(\Delta) = \cos(G_k,
-    G_{k+\Delta})$ of the gradients of one node (all its parameters as one
-    vector), $k$ counting its steps, for $\Delta$ in ``LAGS``.
-
-    The gradients of the last ``LAGS[-2]`` steps are kept, and every
-    ``LAGS[-2]``-th one for ``LAGS[-1]`` steps. ``take()`` returns the mean
-    cosine of each lag since the last ``take()``. A node binds it once: make
-    one per node.
-    """
-
-    def __init__(self, inner: Optimizer) -> None:
-        self._inner = inner
-        self._bound: _BoundCorrelation | None = None
-
-    @override
-    def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
-        self._bound = _BoundCorrelation(self._inner.bind(params))
-        return self._bound
-
-    def take(self) -> dict[int, float]:
-        return {} if self._bound is None else self._bound.take()
-
-
-class _BoundCorrelation(BoundOptimizer):
-    def __init__(self, inner: BoundOptimizer) -> None:
-        self._inner = inner
-        self._k = 0
-        self._past: dict[int, torch.Tensor] = {}
-        self._sums: dict[int, torch.Tensor | float] = dict.fromkeys(LAGS, 0.0)
-        self._counts = dict.fromkeys(LAGS, 0)
-
-    @override
-    def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
-        g = torch.cat([x.flatten() for x in grads])
-        g = g / torch.linalg.vector_norm(g).clamp(min=1e-30)
-        for lag in LAGS:
-            past = self._past.get(self._k - lag)
-            if past is not None:
-                self._sums[lag] += past @ g  # a tensor: no wait for the device
-                self._counts[lag] += 1
-        self._past[self._k] = g
-        recent, every = LAGS[-2], LAGS[-2]
-        for k in [k for k in self._past if k <= self._k - recent]:
-            if k % every or k < self._k - LAGS[-1]:
-                del self._past[k]
-        self._k += 1
-        self._inner.step_(grads, elapsed)
-
-    def take(self) -> dict[int, float]:
-        out = {
-            lag: float(self._sums[lag]) / self._counts[lag]
-            for lag in LAGS
-            if self._counts[lag]
-        }
-        self._sums = dict.fromkeys(LAGS, 0.0)
-        self._counts = dict.fromkeys(LAGS, 0)
-        return out
-
-    @override
-    def state_dict(self) -> Any:
-        return self._inner.state_dict()
-
-    @override
-    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
-        self._inner.load_state_dict(state)
-
-
 @dataclass(frozen=True, kw_only=True)
 class Warmup(Optimizer):
     r"""``inner`` with its time weighed by the ramp $r(t) = \min(1, t / T)$ over
@@ -548,7 +187,7 @@ class Warmup(Optimizer):
     ramp is the same however the time is cut into steps.
 
     All the time of ``inner`` is reparametrized, not only its step size: an
-    inner with a state (AdamW's moments, the EMAs and ``refresh`` here) also
+    inner with a state (the moments of AdamW and of ``AdamDirection``) also
     sees its time constants stretched by $1 / r(t)$ within the ramp.
     """
 
@@ -589,3 +228,35 @@ class _BoundWarmup(BoundOptimizer):
     def load_state_dict(self, state: Mapping[str, Any], /) -> None:
         self._t.copy_(state["t"])
         self._inner.load_state_dict(state["inner"])
+
+
+def adam(
+    lr: float, beta1: float = 0.9, beta2: float = 0.999, *, eps: float = 1e-8
+) -> AdamW:
+    r"""Adam (Kingma & Ba 2015, no weight decay) of the learning rate ``lr``
+    and the decays ``beta1``, ``beta2`` per step, as a ``pc.optim.AdamW``
+    stepped with ``elapsed=1.0`` per step: ``tau = 1 / lr``,
+    ``tau_m = -1 / ln(beta1)``, ``tau_v = -1 / ln(beta2)``.
+
+    Stepped so, $a_m = 1 - e^{-1/\tau_m} = 1 - \beta_1$ and the mass after
+    $t$ steps is $1 - \beta_1^t$, so each step is that of Adam:
+    $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$ (and $v_t$ with $g_t^2$),
+    $\theta_t = \theta_{t-1} - \mathrm{lr}\,\hat m_t / (\sqrt{\hat v_t} + \epsilon)$
+    with $\hat m_t = m_t / (1 - \beta_1^t)$, $\hat v_t = v_t / (1 - \beta_2^t)$.
+    It does not use ``torch.optim``, which brings the GIL back.
+
+    Raises:
+        ValueError: ``lr`` is not finite and > 0, or a beta is not in (0, 1).
+    """
+    if not 0 < lr < math.inf:
+        raise ValueError(f"lr must be finite and > 0, got {lr!r}")
+    for name, beta in (("beta1", beta1), ("beta2", beta2)):
+        if not 0 < beta < 1:
+            raise ValueError(f"{name} must be in (0, 1), got {beta!r}")
+    return AdamW(
+        tau=1 / lr,
+        tau_m=-1 / math.log(beta1),
+        tau_v=-1 / math.log(beta2),
+        eps=eps,
+        weight_decay=0.0,
+    )

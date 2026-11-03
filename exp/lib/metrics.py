@@ -2,7 +2,7 @@
 
 import torch
 
-__all__ = ["effective_rank", "probe_r2"]
+__all__ = ["bootstrap_se", "effective_rank", "probe_r2"]
 
 
 def effective_rank(z: torch.Tensor) -> float:
@@ -36,3 +36,20 @@ def probe_r2(
     resid = ((b @ w - test_y.double()) ** 2).sum(0)
     total = ((test_y.double() - test_y.double().mean(0)) ** 2).sum(0)
     return (1 - resid / total).float()
+
+
+def bootstrap_se(
+    x: torch.Tensor, *, gen: torch.Generator, resamples: int = 1000
+) -> float:
+    r"""The bootstrap standard error of the mean of ``x`` ``(n,)`` (one value
+    per independent window): the standard deviation of the means of
+    ``resamples`` resamples of ``n`` values drawn with replacement by ``gen``
+    (on the device of ``x``), in float64.
+
+    For ``n`` values of standard deviation $\sigma$ it estimates
+    $\sigma / \sqrt{n}$.
+    """
+    n = x.shape[0]
+    idx = torch.randint(n, (resamples, n), generator=gen, device=x.device)
+    means = x.double()[idx].mean(1)
+    return float(means.std())
