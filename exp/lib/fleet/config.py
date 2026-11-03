@@ -1,0 +1,97 @@
+"""``fleet.toml``: the hosts, the paths and the slots of the fleet."""
+
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+__all__ = ["FleetConf", "Gpu", "SlotsConf", "default_path"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class Gpu:
+    """One GPU of a host: CUDA ``index``, ``model`` (a resource class such as
+    ``"4090"``), the memory runs may take, and how many runs it takes at most."""
+
+    index: int
+    model: str
+    mem_gb: float
+    jobs: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class SlotsConf:
+    """What one host gives to runs: ``cpu`` physical cores (the others are left
+    to the worker), both SMT threads of a core as two slots when ``smt``, a RAM
+    budget, and the GPUs."""
+
+    cpu: int
+    smt: bool
+    ram_gb: float
+    gpus: tuple[Gpu, ...]
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """The resource classes of the GPUs, in index order."""
+        return tuple(g.model for g in self.gpus)
+
+
+@dataclass(frozen=True, kw_only=True)
+class FleetConf:
+    """The fleet. ``root`` is host-local (bind-mounted at the same path in the
+    container), ``nas`` is shared by all hosts; ``head`` answers the state
+    queries and composes the configs at submission."""
+
+    nas: Path
+    root: Path
+    checkout: Path
+    container: str
+    user: str
+    head: str
+    hosts: tuple[str, ...]
+    slots: SlotsConf
+
+    @classmethod
+    def load(cls, path: Path) -> FleetConf:
+        """Read ``path`` (TOML)."""
+        with path.open("rb") as f:
+            return cls.from_dict(tomllib.load(f))
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> FleetConf:
+        """The ``FleetConf`` of the parsed TOML ``d``; ``KeyError`` names a
+        missing key."""
+        s = d["slots"]
+        slots = SlotsConf(
+            cpu=int(s["cpu"]),
+            smt=bool(s.get("smt", False)),
+            ram_gb=float(s["ram_gb"]),
+            gpus=tuple(
+                Gpu(
+                    index=int(g["index"]),
+                    model=str(g["model"]),
+                    mem_gb=float(g["mem_gb"]),
+                    jobs=int(g["jobs"]),
+                )
+                for g in s.get("gpus", [])
+            ),
+        )
+        hosts = tuple(str(h) for h in d["hosts"])
+        if d["head"] not in hosts:
+            raise ValueError(f"head {d['head']!r} is not one of the hosts {hosts}")
+        return cls(
+            nas=Path(d["nas"]),
+            root=Path(d["root"]),
+            checkout=Path(d["checkout"]),
+            container=str(d["container"]),
+            user=str(d["user"]),
+            head=str(d["head"]),
+            hosts=hosts,
+            slots=slots,
+        )
+
+
+def default_path() -> Path:
+    """``fleet.toml`` at the root of the checkout or snapshot this module is in."""
+    return Path(__file__).resolve().parents[3] / "fleet.toml"
