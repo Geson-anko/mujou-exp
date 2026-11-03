@@ -537,3 +537,11 @@ class TestPosthoc:
         ):
             assert key in lines[0], key
         assert (tmp_path / "post" / "00001.0.png").is_file()
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("learner", ["pc", "bp"])
+def test_a_run_on_cuda_completes(tmp_path, learner):
+    """The messages the host reads back (into host memory) add to the sums of
+    stream.jsonl."""
+    assert _run(tmp_path / "run", ["device=cuda", f"learner={learner}"]) == Exit.OK

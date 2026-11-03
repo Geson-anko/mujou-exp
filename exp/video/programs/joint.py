@@ -304,11 +304,11 @@ class _Online:
         dev = torch.device(conf.device)
         self._y = torch.zeros(b, 1, device=dev)
         self._mask = torch.ones(b, dtype=torch.bool, device=dev)
-        # The sums since the last log, on the device of the messages (read
-        # back once per line): the vision's loss, pred, sigreg and frames;
-        # then the dynamics' error and count from the observation and from
-        # its own prediction.
-        self._acc = torch.zeros(8, dtype=torch.float64, device=dev)
+        # The sums since the last log, in host memory, where Host.show reads
+        # the messages: the vision's loss, pred, sigreg and frames; then the
+        # dynamics' error and count from the observation and from its own
+        # prediction.
+        self._acc = torch.zeros(8, dtype=torch.float64)
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -358,7 +358,7 @@ class _Online:
         sums = torch.stack(
             [torch.where(mask, err, 0.0).sum().double(), mask.sum().double()]
         )
-        self._acc[i : i + 2] += sums.to(self._acc.device)
+        self._acc[i : i + 2] += sums
 
     def log(self) -> dict[str, float | None]:
         loss, pred, sig, n, e, ne, e_open, n_open = self._acc.tolist()
