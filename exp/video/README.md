@@ -62,3 +62,4 @@ run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jso
 | M12 | [段 3: EgoDex](results/m12.md) | 残差の予測で `rollout10` 0.37〜0.50。写すだけ（0.10〜0.14）には届かない |
 | M13 | [合成動画を簡単にした土台](results/m13.md) | 未達のまま中断。玉 1 つのオンラインは適格度トレースで 5・10 フレーム先 0.49・0.92 倍（平均の画像との比） |
 | M14 | [動力学だけを学ぶ（玉の状態を観測に）](results/m14.md) | 段 1・2 は達成（段 2 の #45 で test の `roll5/cv5` 0.38〜0.44、`roll10/cv10` 0.25〜0.30、PC-ALM と BP、3 seed）。画素を観測にした段 3 は等加速度の外挿の 1.9〜2.2 倍で届かない |
+| M15 | [画像のエンコーダを JEPA で学ぶ](results/m15.md) | 達成。JEPA に spatial broadcast decoder による最後のフレームの再構成を足し、test の `probe_pos_min` 0.957〜0.979（PC-ALM と BP、3 seed）。JEPA だけでは 0.05〜0.2 で、玉の位置が線形に読めなかった |
