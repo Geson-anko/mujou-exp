@@ -36,7 +36,7 @@ from exp.video.data.clips import (
     simulate,
     window_states,
 )
-from exp.video.data.observe import Standardizer, observe, position_columns
+from exp.video.data.observe import PIXELS, Standardizer, observe, position_columns
 from exp.video.data.physics import BallState
 from exp.video.schema.data import BallsConf
 from exp.video.schema.measure import MeasureConf
@@ -188,6 +188,8 @@ def baselines(
 
     A contact counts from frame ``m.observed - STENCIL`` (see
     ``contact_mask``), so ``m.observed >= STENCIL``."""
+    if balls.obs == PIXELS:
+        raise ValueError('"pixels" has its baselines in measure.pixel_baselines')
     if m.observed < STENCIL:
         raise ValueError(f"observed={m.observed} is fewer than STENCIL={STENCIL}")
     if m.observed != clips.observed or max(m.horizons) > clips.horizon:

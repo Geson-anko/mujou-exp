@@ -29,10 +29,13 @@ M = MeasureConf(observed=16, horizons=[1, 2, 5, 10, 20], clips=8)
 STAGES = {
     "s0": BallsConf(radii=[0.10], obs="pos_vel"),
     "s2": BallsConf(radii=[0.06, 0.08, 0.10], obs="pos"),
+    "s3": BallsConf(radii=[0.06, 0.08, 0.10], obs="pixels"),
 }
 
 
 def _width(balls: BallsConf) -> int:
+    if balls.obs == "pixels":
+        return balls.size**2
     return len(balls.radii) * (4 if balls.obs == "pos_vel" else 2)
 
 
@@ -262,9 +265,9 @@ class TestFork:
         )
         k, d = len(balls.radii), _width(balls)
         streams = _flying_streams(balls, 4)
-        history = torch.stack(
-            [observe(streams.next(), balls.obs, k) for _ in range(3)], 1
-        )
+        # the observations; for pixels, the states they are rendered from
+        shown = "pos_vel" if balls.obs == "pixels" else balls.obs
+        history = torch.stack([observe(streams.next(), shown, k) for _ in range(3)], 1)
         after = streams.fork()
         std = fit_standardizer(STAGES[stage], frame=FRAME, clips=16)
         mods = _copying(d)
@@ -280,6 +283,8 @@ class TestFork:
             balls=k,
             residual=True,
             frame=FRAME,
+            radii=balls.radii,
+            size=balls.size,
         )
         for h in M.horizons:
             assert row[f"forkcv{h}"] < 1e-10

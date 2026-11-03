@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from exp.video.data.observe import Standardizer, observe
+from exp.video.data.observe import PIXELS, Standardizer, observe
 from exp.video.data.physics import BallState, Physics, advance_, draw
 from exp.video.schema.data import BallsConf, PhysicsConf
 
@@ -24,6 +24,7 @@ __all__ = [
     "STENCIL",
     "ClipSet",
     "contact_mask",
+    "fit_mean_image",
     "fit_standardizer",
     "make_clips",
     "simulate",
@@ -126,8 +127,10 @@ def make_clips(
     )
 
 
-def windows(c: ClipSet, obs: str, std: Standardizer) -> tuple[Tensor, Tensor]:
-    """The windows of ``c``.
+def windows(
+    c: ClipSet, obs: str, std: Standardizer, *, size: int = 32
+) -> tuple[Tensor, Tensor]:
+    """The windows of ``c`` (``size``: the side of the images of ``"pixels"``).
 
     Returns:
         The standardized observations ``(n_windows, observed + horizon, d)``
@@ -136,7 +139,8 @@ def windows(c: ClipSet, obs: str, std: Standardizer) -> tuple[Tensor, Tensor]:
     """
     states = window_states(c)
     balls = states.shape[-1] // 4
-    return std.apply(observe(states, obs, balls)).float(), states
+    raw = observe(states, obs, balls, radii=c.radii, size=size)
+    return std.apply(raw).float(), states
 
 
 def window_states(c: ClipSet) -> Tensor:
@@ -150,9 +154,29 @@ def fit_standardizer(
     balls: BallsConf, *, frame: float, clips: int = 256, length: int = 128
 ) -> Standardizer:
     """The standardization of the observation ``balls.obs``, fitted on every
-    frame of the clips of ``"calib"`` (never on ``"val"`` or ``"test"``)."""
+    frame of the clips of ``"calib"`` (never on ``"val"`` or ``"test"``): per
+    dimension, but for ``"pixels"`` one mean and one standard deviation over
+    all pixels."""
     c = make_clips(balls, split="calib", clips=clips, length=length, frame=frame)
-    return Standardizer.fit(observe(c.states, balls.obs, len(balls.radii)))
+    k = len(balls.radii)
+    raw = observe(c.states, balls.obs, k, radii=balls.radii, size=balls.size)
+    return Standardizer.fit(raw, pooled=balls.obs == PIXELS)
+
+
+def fit_mean_image(
+    balls: BallsConf, *, frame: float, clips: int = 256, length: int = 128
+) -> Tensor:
+    """The mean image ``(size * size,)`` float64 of ``balls`` (``obs =
+    "pixels"``) over every frame of the clips of ``"calib"``, per pixel."""
+    c = make_clips(balls, split="calib", clips=clips, length=length, frame=frame)
+    raw = observe(
+        c.states, balls.obs, len(balls.radii), radii=balls.radii, size=balls.size
+    )
+    flat = raw.reshape(-1, raw.shape[-1])
+    total = torch.zeros(flat.shape[-1], dtype=torch.float64)
+    for rows in flat.split(2048):
+        total += rows.sum(0, dtype=torch.float64)
+    return total / len(flat)
 
 
 def contact_mask(

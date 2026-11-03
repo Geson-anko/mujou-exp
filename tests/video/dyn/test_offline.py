@@ -5,7 +5,13 @@ from exp.video.data.clips import fit_standardizer
 from exp.video.data.observe import observe
 from exp.video.data.physics import BallStreams
 from exp.video.dyn.modules import DynamicsModules, Top, build_dynamics
-from exp.video.dyn.offline import OfflineFit, fit_offline, stream_windows, window_loss
+from exp.video.dyn.offline import (
+    OfflineFit,
+    fit_offline,
+    pixel_encoder,
+    stream_windows,
+    window_loss,
+)
 from exp.video.programs.dynamics import PROGRAM
 from exp.video.schema.data import BallsConf, DataConf
 from exp.video.schema.dyn import DynamicsConf
@@ -111,6 +117,50 @@ class TestStreamWindows:
                 torch.testing.assert_close(
                     w[b * 2 + j], frames[b, 8 * j : 8 * (j + 1)], rtol=0, atol=0
                 )
+
+
+class TestPixelWindows:
+    def test_images_rendered_per_batch_are_the_images_of_the_windows(self):
+        """``states=True`` windows with ``pixel_encoder`` are the standardized
+        image windows, frame for frame; the images are never all in memory."""
+        conf = _conf()
+        balls = conf.data.balls
+        assert balls is not None
+        balls.obs, balls.size = "pixels", 8
+        std = fit_standardizer(balls, frame=FRAME, clips=8)
+        whole = stream_windows(conf, 20, 8, std=std)
+        states = stream_windows(conf, 20, 8, std=std, states=True)
+        assert states.shape == (6, 8, 8)  # 4 values of each of 2 balls
+        assert whole.shape == (6, 8, 64)
+        torch.testing.assert_close(
+            pixel_encoder(conf, std)(states), whole, rtol=0, atol=0
+        )
+
+    def test_a_fit_on_encoded_states_is_the_fit_on_their_images(self):
+        conf = _conf()
+        balls = conf.data.balls
+        assert balls is not None
+        balls.obs, balls.size = "pixels", 8
+        std = fit_standardizer(balls, frame=FRAME, clips=8)
+        whole = stream_windows(conf, 20, 8, std=std)
+        states = stream_windows(conf, 20, 8, std=std, states=True)
+
+        def losses(windows, encode):
+            mods = build_dynamics(DynamicsConf(d_s=6), 64, 64, seed=1)
+            fit = OfflineFit(
+                mods,
+                windows,
+                batch=3,
+                lr=1e-2,
+                local=False,
+                observed=3,
+                residual=False,
+                gen=torch.Generator().manual_seed(0),
+                encode=encode,
+            )
+            return [float(fit.step()) for _ in range(3)]
+
+        assert losses(states, pixel_encoder(conf, std)) == losses(whole, None)
 
 
 class TestWindowLoss:
