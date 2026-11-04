@@ -122,17 +122,35 @@ class TestShowAll:
 
 RECON = ["vision.recon=10.0", "vision.recon_decoder=broadcast"]
 JEPA = ["vision.recon=0.0"]  # the JEPA loss alone (the preset reconstructs)
+# The learning on windows (BP), small enough for FRAMES: windows at the pushes
+# 4, 7 and 10.
+WINDOW = [
+    "+window@dynamics.window=m16",
+    "dynamics.window.window=4",
+    "dynamics.window.observed=2",
+    "dynamics.window.stride=3",
+    "dynamics.window.relax=0.01",
+]
 
 
 class TestNoCreditToTheEncoder:
     @pytest.mark.parametrize(
-        ("frames", "recon"),
-        [(1, JEPA), (2, JEPA), (1, RECON)],
-        ids=["n1", "n2", "recon"],
+        ("frames", "recon", "learner", "window"),
+        [
+            *[
+                (frames, recon, learner, [])
+                for frames, recon in [(1, JEPA), (2, JEPA), (1, RECON)]
+                for learner in ("pc", "bp")
+            ],
+            (1, JEPA, "bp", WINDOW),
+        ],
+        ids=[
+            *[f"{n}-{lr}" for n in ("n1", "n2", "recon") for lr in ("pc", "bp")],
+            "n1-bp-window",
+        ],
     )
-    @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_the_encoder_is_the_vision_programs_bit_for_bit(
-        self, learner, frames, recon
+        self, learner, frames, recon, window
     ):
         """The dynamics' error is not a term of the encoder's loss: the same
         seed and data give the vision of M15 and the joint network the same
@@ -144,6 +162,7 @@ class TestNoCreditToTheEncoder:
                 f"vision.frames={frames}",
                 "optim_vision.warmup=0",  # so that the encoder does move
                 *recon,
+                *window,
             ]
         )
         alone = build_vision_net(conf)
@@ -155,6 +174,8 @@ class TestNoCreditToTheEncoder:
         before = _weights(joint.dyn.step)
         _drive(joint, conf)
         assert not _same(before, _weights(joint.dyn.step))  # the dynamics learned
+        if window:
+            assert isinstance(joint, JointBP) and joint.world.win_steps == 3
         # nothing flows back from the dynamics: no .grad, and the z it reads
         # has no graph
         for module in (joint.mods.encoder, joint.mods.predictor, joint.dyn.step):
@@ -435,6 +456,7 @@ class _Stopping:
 
     def build(self, conf, run_dir: Path, resume):
         built = PROGRAM.build(conf, run_dir, resume)
+        self.built: Any = built  # to look at its network after the stop
         advance, count = built.advance, [0]
 
         def stopping() -> None:
@@ -547,6 +569,46 @@ class TestResume:
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
         logged = _lines(cut / "stream.jsonl")[-1]
         assert ("recon" in logged) == (recon is RECON)
+
+    def test_a_run_learning_on_windows_resumes_as_one_never_stopped(self, tmp_path):
+        """BP on windows, stopped at frame 23 with a window pending (due at
+        push 22, learned 0.08 s later) and resumed: the bytes of one never
+        stopped, the window records among them."""
+        extra = [
+            "learner=bp",
+            "+window@dynamics.window=m16",
+            "dynamics.window.window=6",
+            "dynamics.window.observed=3",
+            "dynamics.window.stride=4",
+            "dynamics.window.relax=0.08",
+            "optim=adamw",
+            "optim.lr=1e-3",
+            "optim_vision.lr=1e-3",
+            "ctl.resume_every=0.3",
+            "ctl.log_every=0.2",
+        ]
+        assert _run(tmp_path / "whole", extra) == Exit.OK
+        cut = tmp_path / "cut"
+        stopping = _Stopping(23)
+        assert _run(cut, extra, stopping) == Exit.STOPPED
+        assert stopping.built.net.world.pending is not None
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        lines = _lines(cut / "stream.jsonl")
+        assert lines[0]["win_steps"] == 0 and lines[0]["win_loss"] is None
+        # 30 frames: windows at the pushes 6, 10, ..., 30, the last one not
+        # learned before the end
+        last = lines[-1]
+        assert last["win_steps"] == 6 and last["win_skipped"] == 0
+        assert last["win_masked"] == 0
+        assert last["win_loss"] > 0 and last["win_gnorm"] > 0
+
+    def test_the_pc_learner_has_no_windows_yet(self):
+        conf = _conf(["learner=pc", *WINDOW])
+        with pytest.raises(ValueError, match="the PC-ALM window learning is not built"):
+            build_joint(conf)
 
 
 def test_the_objective():
@@ -850,7 +912,7 @@ class TestOfflineStream:
             "stream",
             18,
             36,
-            "detach",
+            "grad",
         )
         assert conf.dynamics.nodes == 3  # big
         full = compose(["+experiment=m16/offline_stream"])
@@ -879,7 +941,7 @@ class TestOfflineStream:
             + ["optim.lr=5.5555555555555556e-05"]
         )
         assert (kw["order"], kw["window"], kw["stride"]) == ("stream", 36, 18)
-        assert (kw["feedback"], kw["credit"]) == ("detach", "bptt")
+        assert (kw["feedback"], kw["credit"]) == ("grad", "bptt")
         data = kw["windows"]
         assert data.shape[1] == 72 and data.shape[0] == conf.data.streams
         cut = stream_windows(conf, 72, 36, states=True)  # stream after stream
@@ -948,3 +1010,28 @@ def test_a_run_on_cuda_completes(tmp_path, learner):
     """The messages the host reads back (into host memory) add to the sums of
     stream.jsonl."""
     assert _run(tmp_path / "run", ["device=cuda", f"learner={learner}"]) == Exit.OK
+
+
+class TestWindowPresets:
+    @pytest.mark.parametrize(
+        ("preset", "frozen"),
+        [("m16/balls_joint_win", False), ("m16/balls_frozen_win", True)],
+    )
+    def test_the_online_rule_is_that_of_the_offline_bound(self, preset, frozen):
+        """The windows and the optimizer of the online presets are those of
+        ``m16/offline_stream``, on the big dynamics by BP, with its feedback
+        (grad, the one C1 chose)."""
+        conf = compose([f"+experiment={preset}"])
+        bound = compose(["+experiment=m16/offline_stream"])
+        dyn, off = conf.dynamics, bound.offline
+        assert dyn is not None and dyn.window is not None and off is not None
+        assert conf.vision is not None and conf.vision.frozen is frozen
+        w = dyn.window
+        assert (w.window, w.stride, w.credit) == (off.window, off.stride, off.credit)
+        assert w.feedback == off.feedback == "grad"
+        assert (w.observed, w.relax) == (16, 0.3)
+        assert conf.measure.observed == w.observed
+        assert (dyn.nodes, dyn.d_s, dyn.trace, dyn.residual) == (3, 512, False, True)
+        assert dyn.open_loop == 0.0
+        assert conf.optim == bound.optim
+        assert conf.learner.kind == "bp"

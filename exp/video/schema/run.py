@@ -91,3 +91,11 @@ class RunConf:
                 raise ValueError(
                     f"program {self.program!r} with task {self.task!r} needs {name}"
                 )
+        window = self.dynamics.window if self.dynamics is not None else None
+        if window is not None and not window.relax < window.stride * self.time.frame:
+            # Else every window waits past the next: learned late, at the push
+            # of the next one, not relax after its own.
+            raise ValueError(
+                f"dynamics.window.relax ({window.relax} s) must be shorter than "
+                f"stride * time.frame ({window.stride * self.time.frame} s)"
+            )

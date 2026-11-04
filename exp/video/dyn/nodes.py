@@ -536,6 +536,10 @@ class DynamicsBlock(mujou.Network):
         optimizer: The optimizer of every node.
         learn_interval: As in ``pc.clock.LearnClock``.
         device: Where the nodes compute.
+
+    Raises:
+        ValueError: ``conf.window`` is set: the learning on windows of PC-ALM
+            is not built yet (``DynamicsBP`` has it).
     """
 
     dynamics2: DynamicsLayer  # set by name: those of conf.nodes only
@@ -552,6 +556,11 @@ class DynamicsBlock(mujou.Network):
         learn_interval: float | None,
         device: Device = "cpu",
     ) -> None:
+        if conf.window is not None:
+            raise ValueError(
+                "the PC-ALM window learning is not built yet: dynamics.window "
+                "needs learner=bp"
+            )
         super().__init__()
         self.mods = mods
         self.dynamics = Dynamics(

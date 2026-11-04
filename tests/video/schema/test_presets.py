@@ -14,6 +14,8 @@ EXPERIMENTS = sorted(
 )
 GROUPS = ["dynamics", "vision", "learner", "optim", "phase"]
 OPTIONS = [(g, p.stem) for g in GROUPS for p in sorted((CONF / g).glob("*.yaml"))]
+# The options of the windows, applied under dynamics.window (not a default).
+WINDOWS = [p.stem for p in sorted((CONF / "window").glob("*.yaml"))]
 # The settings a group option needs to make a valid run: without dynamics,
 # the program is the vision one, which needs an encoder and its optimizer.
 NEEDS = {
@@ -27,6 +29,7 @@ NEEDS = {
 
 def test_every_yaml_is_an_experiment_or_a_group_option() -> None:
     listed = {f"experiment/{e}" for e in EXPERIMENTS} | {f"{g}/{o}" for g, o in OPTIONS}
+    listed |= {f"window/{w}" for w in WINDOWS}
     found = {
         p.relative_to(CONF).with_suffix("").as_posix() for p in CONF.glob("**/*.yaml")
     }
@@ -72,6 +75,19 @@ def test_group_option_composes(group: str, option: str) -> None:
     extra = NEEDS.get((group, option), [])
     conf = compose(["+experiment=m14/s0", f"{group}={option}", *extra])
     assert _applied(conf, group) == WIDTHS.get(option, option)
+    assert from_dict(to_dict(conf)) == conf
+
+
+@pytest.mark.parametrize("option", WINDOWS)
+def test_window_option_composes_under_the_dynamics(option: str) -> None:
+    conf = compose(
+        [
+            "+experiment=m14/s0",
+            f"+window@dynamics.window={option}",
+            "dynamics.trace=false",
+        ]
+    )
+    assert conf.dynamics is not None and conf.dynamics.window is not None
     assert from_dict(to_dict(conf)) == conf
 
 

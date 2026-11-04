@@ -55,6 +55,16 @@ before the encoder's step of this frame; BP: the first one of the previous
 frame, the target the one after the encoder's step). The shift is the
 encoder's change within one frame, small at the learning rate of the presets.
 
+With ``dynamics.window`` (BP only; PC-ALM raises ``ValueError`` for now) the
+dynamics learns every ``window.stride`` frames from the last ``window.window``
+$z$ of each stream instead of every frame (``dyn.bp.DynamicsBP``); the $z$ it
+holds of a frame is the one it takes as the observed past $z$ of the next
+frame (BP's of the paragraph above). Each line of ``stream.jsonl`` then also
+has ``win_loss`` and ``win_gnorm`` (of the last window learned), ``win_steps``,
+``win_skipped`` and ``win_masked`` (``dyn.nets.window_stats``). The training
+windows are not those of the evaluation: their length need not reach the
+horizons measured.
+
 The row of an evaluation has the vision's (``programs.vision.Measures``: the
 JEPA loss, the rank of $z$, the probes of the balls ``probe_pos_min`` ...) and
 the latent errors of ``measure.joint.latent_errors`` (``roll{h}``, ``copy{h}``,
@@ -100,7 +110,7 @@ from exp.video.data.frames import BallFrames
 from exp.video.data.physics import render
 from exp.video.dyn.bp import DynamicsBP
 from exp.video.dyn.modules import DynamicsModules
-from exp.video.dyn.nets import make_optimizer
+from exp.video.dyn.nets import make_optimizer, window_stats
 from exp.video.dyn.nodes import DynamicsBlock, is_open
 from exp.video.dyn.offline import OfflineFit, stream_windows
 from exp.video.jepa.nets import VisionBP, VisionPC
@@ -538,7 +548,16 @@ class _Online:
             **({"recon": rec / n if n else None} if self._recon else {}),
             "preq": e / ne if ne else None,
             "preq_open": e_open / n_open if n_open else None,
+            **self._window_stats(),
         }
+
+    def _window_stats(self) -> dict[str, float | None]:
+        """``nets.window_stats`` of the dynamics when it learns on windows (BP
+        only: PC-ALM does not build them yet), else nothing."""
+        net = self.net
+        if not isinstance(net, JointBP) or net.world.window is None:
+            return {}
+        return window_stats(net.world)
 
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # no evaluations in a bench

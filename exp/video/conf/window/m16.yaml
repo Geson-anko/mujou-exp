@@ -1,0 +1,11 @@
+# The learning on windows of M16 (exp.video.schema.dyn.WindowConf): every 18
+# frames, from the last 36 frames of each stream (16 observed, 20 from the
+# model's own prediction, the gradient through the feedback: grad, chosen by
+# C1), 0.3 s after the window.
+#   +window@dynamics.window=m16 dynamics.trace=false
+window: 36
+observed: 16
+stride: 18
+feedback: grad
+credit: bptt
+relax: 0.3

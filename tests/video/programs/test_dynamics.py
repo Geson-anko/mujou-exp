@@ -57,6 +57,7 @@ class _Stopping:
 
     def build(self, conf, run_dir: Path, resume):
         built = PROGRAM.build(conf, run_dir, resume)
+        self.built: Any = built  # to look at its network after the stop
         advance, count = built.advance, [0]
 
         def stopping() -> None:
@@ -176,6 +177,34 @@ class TestResume:
         assert _run(cut, extra, _Stopping(47)) == Exit.STOPPED
         assert json.loads((cut / "status.json").read_text())["state"] == "stopped"
         assert (cut / "resume" / "00000047.pt").is_file()
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+
+    def test_a_bp_run_on_windows_resumes_as_one_never_stopped(self, tmp_path):
+        """BP learning on windows (``dynamics.window``), stopped at frame 47
+        with a window pending (due at push 46, learned 0.08 s later): the ring,
+        the pending window and the counters resume too."""
+        extra = [
+            "learner=bp",
+            "dynamics.trace=false",
+            "dynamics.nodes=2",
+            "dynamics.d_s=16",
+            "+window@dynamics.window=m16",
+            "dynamics.window.window=6",
+            "dynamics.window.observed=3",
+            "dynamics.window.stride=4",
+            "dynamics.window.relax=0.08",
+            "optim=adamw",
+            "optim.warmup=0",
+            "ctl.resume_every=0.5",
+        ]
+        assert _run(tmp_path / "whole", extra) == Exit.OK
+        cut = tmp_path / "cut"
+        stopping = _Stopping(47)
+        assert _run(cut, extra, stopping) == Exit.STOPPED
+        assert stopping.built.net.world.pending is not None
         (cut / "stop.request").unlink()
         assert _run(cut, extra, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):

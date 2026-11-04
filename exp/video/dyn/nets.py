@@ -2,6 +2,7 @@ r"""The world models of M14 on the state of the balls: ``Source -> DynamicsBlock
 (PC-ALM) or ``Source -> DynamicsBP`` (BP), made from a ``RunConf`` from the
 same initial weights, and the optimizer of a ``OptimConf``."""
 
+import math
 from typing import cast
 
 import mujou.pc as pc
@@ -25,6 +26,7 @@ __all__ = [
     "live_states",
     "make_optimizer",
     "modules",
+    "window_stats",
 ]
 
 
@@ -174,3 +176,24 @@ def live_states(net: StateWorldPC | StateWorldBP) -> torch.Tensor:
     block = net.block
     layers = [cast(DynamicsLayer, getattr(block, n)) for n in block.names[1:]]
     return torch.cat([block.dynamics.mu, *(layer.h_last for layer in layers)], -1)
+
+
+def window_stats(world: DynamicsBP) -> dict[str, float | None]:
+    """The learning on windows of ``world`` (one with ``dynamics.window``),
+    read between the steps of its run, for the records only: ``win_loss`` and
+    ``win_gnorm`` of the last window learned (None before the first),
+    ``win_steps``, ``win_skipped`` and ``win_masked`` so far (``DynamicsBP``).
+
+    Raises:
+        ValueError: ``world`` does not learn on windows.
+    """
+    if world.window is None:
+        raise ValueError("the dynamics does not learn on windows")
+    loss, gnorm = world.win_loss.item(), world.win_gnorm.item()
+    return {
+        "win_loss": loss if math.isfinite(loss) else None,
+        "win_gnorm": gnorm if math.isfinite(gnorm) else None,
+        "win_steps": world.win_steps,
+        "win_skipped": world.win_skipped,
+        "win_masked": world.win_masked,
+    }

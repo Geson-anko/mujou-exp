@@ -3,8 +3,8 @@
 # offline, order=stream): step t takes the windows [t S, t S + W) of every
 # stream, as a run that learns every S = 18 frames on the last W = 36 would, and
 # steps the optimizer of the online run (optim, as make_optimizer reads it) by
-# elapsed = S frame = 0.6 s. The feedback is detached, as the online run's
-# (offline.feedback=detach); the learner is that of the parent (it learns
+# elapsed = S frame = 0.6 s. The feedback is grad (the credit through the
+# fed-back predictions), the one C1 chose (results/m16.md); the learner is that of the parent (it learns
 # nothing here), see m16/offline for how to submit it.
 #
 # The optimizer is one Adam(1e-3, 0.9, 0.999) step per window, in the
@@ -32,7 +32,7 @@ offline:
   window: 36
   stride: 18
   steps: 2999
-  feedback: detach
+  feedback: grad
 optim:
   kind: adamw
   lr: 5.5555555555555556e-05
