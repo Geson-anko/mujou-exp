@@ -1,0 +1,11 @@
+# @package _global_
+# M14 stage 1: the position of one ball only (the velocity is not seen, so the
+# state has to infer it from the past), the small dynamics.
+defaults:
+  - override /dynamics: small
+name: m14/s1
+tags: [m14, s1]
+data:
+  balls:
+    radii: [0.10]
+    obs: pos

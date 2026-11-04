@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 import mujou
-from exp.lib.host import Host, RealtimeHost
+from exp.lib.host import Host
 from mujou import TensorSpec
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
@@ -49,19 +49,28 @@ class TestHost:
         with torch.no_grad():
             torch.testing.assert_close(p["y_hat"], net.output.module(x))
 
-
-class TestRealtimeHost:
-    def test_frames_are_paced_by_the_timer_and_predicted(self):
+    def test_a_host_resumed_from_its_state_steps_the_same_grid(self):
+        """Frames of 1/30 s are 16 or 17 steps of 2 ms (the boundaries of
+        ``floor(k frame / period)``): a host given ``frames = 4`` steps frame 4
+        as a host that showed frames 0..3 does, not as frame 0."""
         net = _chain()
-        with mujou.run(net) as run:
-            host = RealtimeHost(run, frame=1 / 30)
-            start = run.timer.now()
-            got = [
+        with mujou.testing.run(net) as run:
+            host = Host(run, frame=1 / 30, period=TAU.period)
+            steps = []
+            for _ in range(6):
+                before = run.timer.now()
                 host.show({net.prev: _sample(torch.ones(2))}, net.next)
-                for _ in range(15)
-            ]
-            elapsed = run.timer.now() - start
-        assert 0.5 - 1e-3 <= elapsed < 0.7
-        predicted = [p for p, _ in got if p is not None]
-        assert len(predicted) >= 10  # a loaded machine may miss a few
-        assert all(p["time"] == t for p, t in got if p is not None)
+                steps.append(round((run.timer.now() - before) / TAU.period))
+            state = host.state_dict()
+        assert len(set(steps)) == 2  # the grid is uneven, so frame k matters
+        assert state == {"frames": 6}
+        for k in (3, 4, 5):  # 16, 17, 17 steps
+            other = _chain()
+            with mujou.testing.run(other) as run:
+                resumed = Host(run, frame=1 / 30, period=TAU.period)
+                resumed.load_state_dict({"frames": k})
+                before = run.timer.now()
+                resumed.show({other.prev: _sample(torch.ones(2))}, other.next)
+                got = round((run.timer.now() - before) / TAU.period)
+            assert got == steps[k]
+            assert resumed.frames == k + 1

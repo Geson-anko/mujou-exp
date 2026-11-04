@@ -20,7 +20,7 @@
 
 ## exp/lib/
 
-`record`（run の出力）、`sweep`（設定ごとのサブプロセス掃引）、`host`（フレーム単位のループ）、`config`（JSON から dataclass）、`metrics`（実効ランク・probe）、`optim`・`sigreg`・`mingru`・`linear_stream`（研究中の部品と試験台）。使われなかった部品は、次の実験の時点で戻すか消す。
+`host`（フレーム単位のループ）、`metrics`（実効ランク・probe）、`optim`・`sigreg`・`mingru`（研究中の部品）。使われなかった部品は、次の実験の時点で戻すか消す。
 
 ## 成果物
 

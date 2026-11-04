@@ -63,3 +63,17 @@ container *args:
     main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
     devcontainer up --workspace-folder "$main" > /dev/null
     devcontainer exec --workspace-folder "$main" bash -lc 'cd "$1" && shift && exec "$@"' _ "{{justfile_directory()}}" "$@"
+
+# The fleet of std-00..03 (exp/lib/fleet/README.md): just fleet doctor | push | up | submit ... | status | pull
+[positional-arguments]
+fleet *args:
+    @uv run --no-project --python 3.14 python -m exp.lib.fleet "$@"
+
+# The optuna coordinator on std-00 (tools/sweep/README.md): just sweep run <study.toml> | status <study> | confirm ... | bracket ...
+[positional-arguments]
+sweep *args:
+    @PYTHONPATH=tools/sweep uv run --no-project --python 3.14 python -m sweep "$@"
+
+# The tests of tools/sweep (its own uv project; not in `just test`)
+test-sweep:
+    uv run --project tools/sweep pytest tools/sweep/tests

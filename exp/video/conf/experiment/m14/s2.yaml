@@ -1,0 +1,11 @@
+# @package _global_
+# M14 stage 2: the positions of three balls (they do not collide), the small
+# dynamics.
+defaults:
+  - override /dynamics: small
+name: m14/s2
+tags: [m14, s2]
+data:
+  balls:
+    radii: [0.06, 0.08, 0.10]
+    obs: pos

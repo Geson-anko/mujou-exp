@@ -7,22 +7,25 @@ timer by ``period`` and updates every node once, in the order of the tree.
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 from mujou.testing import ManualRun
 from mujou.time import Timestamp
 
-from mujou import MultiPort, Port, Run
+from mujou import MultiPort, Port, Stateful
 
-__all__ = ["Host", "RealtimeHost"]
+__all__ = ["Host"]
 
 
-class Host:
+class Host(Stateful):
     """Shows a run one frame each ``frame`` seconds, by steps of ``period``.
 
     Frame ``k`` spans ``[k frame, (k + 1) frame)`` rounded down to the steps,
     so that the frames stay on the grid of ``frame`` however it divides
     ``period`` (a frame of 1/30 s is 16 or 17 steps of 2 ms).
+
+    Its state is the count of the frames shown (``frames``): a host resumed
+    with it on a run restored to the same time steps the same grid on.
     """
 
     def __init__(self, run: ManualRun, *, frame: float, period: float) -> None:
@@ -63,46 +66,10 @@ class Host:
             raise RuntimeError("the frame did not reach the watched port")
         return first, written
 
+    @override
+    def state_dict(self) -> dict[str, int]:
+        return {"frames": self.frames}
 
-class RealtimeHost:
-    """Shows a ``mujou.run`` one frame each ``frame`` seconds of its timer, in
-    real time: the nodes run on their own, and a frame the network has not
-    reached in time is just overtaken by the next.
-
-    ``show`` has the meaning of ``Host.show``; it returns once the frame's time
-    is over, with the first message of ``watch`` made from this write whose
-    ``"mask"`` is set (for any sample of a batch; the nodes run on their own, so the first one of the write
-    may come before the prediction caught up), or ``None`` if there was none in
-    the frame.
-    """
-
-    def __init__(self, run: Run, *, frame: float) -> None:
-        self.run = run
-        self._frame = frame
-        self.frames = 0
-        self._start: Timestamp | None = None
-
-    def show(
-        self,
-        writes: Mapping[Port[Any, Any], Any],
-        watch: Port[Any, Any] | MultiPort[Any, Any],
-    ) -> tuple[Any, Timestamp]:
-        written = self.run.write(writes)
-        if self._start is None:
-            self._start = written
-        end = (self.frames + 1) * self._frame  # seconds since the first write
-        first = None
-        try:
-            left = end - (self.run.timer.now() - self._start)
-            first, _ = self.run.wait_for(
-                watch,
-                lambda m: m["time"] == written and bool(m["mask"].any()),
-                timeout=max(left, 0.0),
-            )
-        except TimeoutError:
-            pass
-        left = end - (self.run.timer.now() - self._start)
-        if left > 0:
-            self.run.timer.sleep(left)
-        self.frames += 1
-        return first, written
+    @override
+    def load_state_dict(self, state: Mapping[str, int], /) -> None:
+        self.frames = int(state["frames"])

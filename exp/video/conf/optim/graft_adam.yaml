@@ -1,0 +1,3 @@
+# The direction of Adam with the step size of SGD.
+kind: graft_adam
+lr: 0.03

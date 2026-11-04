@@ -1,6 +1,9 @@
+import math
+
+import pytest
 import torch
 
-from exp.lib.metrics import effective_rank, probe_r2
+from exp.lib.metrics import bootstrap_se, effective_rank, probe_r2
 
 
 class TestEffectiveRank:
@@ -33,3 +36,25 @@ class TestProbe:
         g = torch.Generator().manual_seed(3)
         x, y = torch.randn(4000, 32, generator=g), torch.randn(4000, 6, generator=g)
         assert probe_r2(*self._split(x, y)).abs().max() < 0.05
+
+
+class TestBootstrapSE:
+    @pytest.mark.parametrize(("n", "sigma"), [(200, 1.0), (1024, 3.0)])
+    def test_it_is_the_se_of_the_mean_of_normal_values(self, n, sigma):
+        """For n values of N(0, sigma^2) the standard error of their mean is
+        sigma / sqrt(n); 4000 resamples estimate it within 10% (the sampling
+        error is about 1/sqrt(2n) + 1/sqrt(2 * 4000), below 6%)."""
+        g = torch.Generator().manual_seed(4)
+        x = sigma * torch.randn(n, generator=g, dtype=torch.float64)
+        got = bootstrap_se(x, gen=g, resamples=4000)
+        assert abs(got / (sigma / math.sqrt(n)) - 1) < 0.1
+
+    def test_the_same_generator_gives_the_same_value(self):
+        x = torch.randn(100, generator=torch.Generator().manual_seed(5))
+        a = bootstrap_se(x, gen=torch.Generator().manual_seed(6))
+        b = bootstrap_se(x, gen=torch.Generator().manual_seed(6))
+        assert a == b
+
+    def test_constant_values_have_no_error(self):
+        g = torch.Generator().manual_seed(7)
+        assert bootstrap_se(torch.full((50,), 2.5), gen=g) == 0.0

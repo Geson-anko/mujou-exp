@@ -1,0 +1,3 @@
+# @package _global_
+# No dynamics (the vision program of M15).
+dynamics: null
