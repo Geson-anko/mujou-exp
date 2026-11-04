@@ -62,16 +62,7 @@ from exp.video.schema.run import RunConf
 from mujou import TensorSpec
 from tests.video.programs.test_vision import TINY as VISION_TINY
 
-# The time constants of PC-ALM of the vision and M14 programs these tests
-# compare with (the M16 presets run at 5 updates a frame instead).
-TIME = ["time.h=0.004", "time.r=0.004", "time.lam=0.002"]
-TINY = [
-    *VISION_TINY,
-    *TIME,
-    "dynamics.d_s=16",
-    "optim.warmup=0",
-    "optim.lr=0.1",
-]
+TINY = [*VISION_TINY, "dynamics.d_s=16", "optim.warmup=0", "optim.lr=0.1"]
 EXPERIMENT = "m16/balls_joint"
 FRAMES = 12
 
@@ -1118,12 +1109,7 @@ class TestWindowPresets:
         w = dyn.window
         assert (w.window, w.stride, w.credit) == (off.window, off.stride, off.credit)
         assert w.feedback == off.feedback == "grad"
-        assert (w.observed, w.relax) == (16, 0.55)
-        t = conf.time  # 5 updates a frame, one-step relaxation
-        assert t.frame / (t.h * t.r / (t.h + t.r)) == pytest.approx(5)
-        assert t.lam == pytest.approx(t.r**2 / (t.h + t.r))
-        # the messages settle 80 periods after the window, within the relax
-        assert 80 * t.h * t.r / (t.h + t.r) < w.relax < w.stride * t.frame
+        assert (w.observed, w.relax) == (16, 0.3)
         assert conf.measure.observed == w.observed
         assert (dyn.nodes, dyn.d_s, dyn.trace, dyn.residual) == (3, 512, False, True)
         assert dyn.open_loop == 0.0

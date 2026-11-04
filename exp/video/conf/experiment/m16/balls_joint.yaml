@@ -14,14 +14,6 @@ defaults:
   - override /dynamics: small
   - override /vision: vit_t
 program: joint
-# PC-ALM at 5 updates a frame (period 6.7 ms, one-step relaxation: r = h,
-# lam = r**2 / (h + r) = h / 2), to learn from one camera near real time
-# (results/m16.md, the speed); the optimizers advance by time, so the rates
-# per second are those of 2 ms.
-time:
-  h: 0.013333333333333334
-  r: 0.013333333333333334
-  lam: 0.006666666666666667
 name: m16/balls_joint
 tags: [m16, balls, joint]
 data:
