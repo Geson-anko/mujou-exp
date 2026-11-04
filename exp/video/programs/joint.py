@@ -55,15 +55,18 @@ before the encoder's step of this frame; BP: the first one of the previous
 frame, the target the one after the encoder's step). The shift is the
 encoder's change within one frame, small at the learning rate of the presets.
 
-With ``dynamics.window`` (BP only; PC-ALM raises ``ValueError`` for now) the
-dynamics learns every ``window.stride`` frames from the last ``window.window``
-$z$ of each stream instead of every frame (``dyn.bp.DynamicsBP``); the $z$ it
-holds of a frame is the one it takes as the observed past $z$ of the next
-frame (BP's of the paragraph above). Each line of ``stream.jsonl`` then also
-has ``win_loss`` and ``win_gnorm`` (of the last window learned), ``win_steps``,
-``win_skipped`` and ``win_masked`` (``dyn.nets.window_stats``). The training
-windows are not those of the evaluation: their length need not reach the
-horizons measured.
+With ``dynamics.window`` the dynamics learns every ``window.stride`` frames
+from the last ``window.window`` $z$ of each stream instead of every frame:
+``dyn.bp.DynamicsBP`` in BP, the episodes of the windows of
+``dyn.nodes.DynamicsBlock`` in PC-ALM (the same rule, distributed over the
+nodes; the window ports stay inside the block, so the encoder still gets no
+credit). The $z$ held of a frame is the one of the update that first sees the
+frame (BP's of the paragraph above; PC's is then of the same point of the
+frame). Each line of ``stream.jsonl`` then also has ``win_loss`` and
+``win_gnorm`` (of the last window learned), ``win_steps``, ``win_skipped``
+and ``win_masked``, and in PC-ALM ``win_unsettled`` and ``win_vjps``
+(``dyn.nets.window_stats``). The training windows are not those of the
+evaluation: their length need not reach the horizons measured.
 
 The row of an evaluation has the vision's (``programs.vision.Measures``: the
 JEPA loss, the rank of $z$, the probes of the balls ``probe_pos_min`` ...) and
@@ -552,12 +555,11 @@ class _Online:
         }
 
     def _window_stats(self) -> dict[str, float | None]:
-        """``nets.window_stats`` of the dynamics when it learns on windows (BP
-        only: PC-ALM does not build them yet), else nothing."""
+        """``nets.window_stats`` of the dynamics when it learns on windows,
+        else nothing."""
         net = self.net
-        if not isinstance(net, JointBP) or net.world.window is None:
-            return {}
-        return window_stats(net.world)
+        dyn = net.world if isinstance(net, JointBP) else net.block
+        return {} if dyn.window is None else window_stats(dyn)
 
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # no evaluations in a bench

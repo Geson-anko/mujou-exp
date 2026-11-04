@@ -7,7 +7,7 @@ import dataclasses
 import json
 import math
 from pathlib import Path
-from typing import Any, override
+from typing import Any, cast, override
 
 import mujou.pc as pc
 import mujou.testing
@@ -25,7 +25,13 @@ from exp.video.compose import compose, from_dict
 from exp.video.data.frames import BallFrames
 from exp.video.data.physics import render
 from exp.video.dyn.modules import build_dynamics
-from exp.video.dyn.nets import StateWorldBP, StateWorldPC, make_optimizer, modules
+from exp.video.dyn.nets import (
+    StateWorldBP,
+    StateWorldPC,
+    make_optimizer,
+    modules,
+    window_stats,
+)
 from exp.video.dyn.nodes import Source
 from exp.video.dyn.offline import OfflineFit, stream_windows
 from exp.video.jepa.nets import build_vision_net
@@ -131,6 +137,14 @@ WINDOW = [
     "dynamics.window.stride=3",
     "dynamics.window.relax=0.01",
 ]
+# PC-ALM: the window opens one period after the frame's write (the encoder's
+# z reaches the block in the step of the write, as M14's source does), and its
+# messages settle (L + 1) K + L updates later (K = 1): 4 periods after the
+# write with one node, 8 with three. A node counts a window as unsettled when
+# it learns less than L + 1 periods after its inputs last changed, so relax
+# must leave 6 and 12 periods: 0.012 s and 0.024 s.
+WINDOW_PC = [*WINDOW, "dynamics.window.relax=0.012"]
+WINDOW3 = [*WINDOW, "dynamics.nodes=3", "dynamics.window.relax=0.024"]
 
 
 class TestNoCreditToTheEncoder:
@@ -143,10 +157,14 @@ class TestNoCreditToTheEncoder:
                 for learner in ("pc", "bp")
             ],
             (1, JEPA, "bp", WINDOW),
+            (1, JEPA, "pc", WINDOW_PC),
+            (1, JEPA, "pc", WINDOW3),
         ],
         ids=[
             *[f"{n}-{lr}" for n in ("n1", "n2", "recon") for lr in ("pc", "bp")],
             "n1-bp-window",
+            "n1-pc-window",
+            "n1-pc-window-nodes3",
         ],
     )
     def test_the_encoder_is_the_vision_programs_bit_for_bit(
@@ -175,7 +193,10 @@ class TestNoCreditToTheEncoder:
         _drive(joint, conf)
         assert not _same(before, _weights(joint.dyn.step))  # the dynamics learned
         if window:
-            assert isinstance(joint, JointBP) and joint.world.win_steps == 3
+            dyn = joint.world if isinstance(joint, JointBP) else joint.block
+            stats = window_stats(dyn)
+            assert stats["win_steps"] == 3 and stats["win_skipped"] == 0
+            assert stats.get("win_unsettled", 0) == 0
         # nothing flows back from the dynamics: no .grad, and the z it reads
         # has no graph
         for module in (joint.mods.encoder, joint.mods.predictor, joint.dyn.step):
@@ -212,18 +233,27 @@ class TestDynamicsIsM14s:
         assert net.z_out.send_spec == source.out.send_spec
         assert net.z_out.send_spec == net.block.dynamics.z.recv_spec
 
-    @pytest.mark.parametrize("trace", [False, True])
+    @pytest.mark.parametrize(
+        ("trace", "window"),
+        [(False, []), (True, []), (False, WINDOW)],
+        ids=["", "trace", "window"],
+    )
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_a_fixed_z_sequence_gives_m14s_predictions_and_weights(
-        self, learner, trace, tmp_path
+        self, learner, trace, window, tmp_path
     ):
         """With the encoder frozen, the z it sends in each frame is a
         constant; fed to M14's ``Source -> dynamics`` as observations (the same
         weights), the dynamics predicts the same and learns the same, to the
-        bit."""
+        bit (also on windows)."""
         flag = str(trace).lower()
         conf = _conf(
-            [f"learner={learner}", "vision.frozen=true", f"dynamics.trace={flag}"]
+            [
+                f"learner={learner}",
+                "vision.frozen=true",
+                f"dynamics.trace={flag}",
+                *window,
+            ]
         )
         net = build_joint(conf, frozen_from=_frozen_ckpt(tmp_path))
         init = _weights(net.dyn.step)
@@ -570,12 +600,16 @@ class TestResume:
         logged = _lines(cut / "stream.jsonl")[-1]
         assert ("recon" in logged) == (recon is RECON)
 
-    def test_a_run_learning_on_windows_resumes_as_one_never_stopped(self, tmp_path):
-        """BP on windows, stopped at frame 23 with a window pending (due at
-        push 22, learned 0.08 s later) and resumed: the bytes of one never
-        stopped, the window records among them."""
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_a_run_learning_on_windows_resumes_as_one_never_stopped(
+        self, tmp_path, learner
+    ):
+        """BP or PC-ALM on windows, stopped at frame 23 with a window pending
+        (due at push 22, learned 0.08 s later; PC-ALM's episode open) and
+        resumed: the bytes of one never stopped, the window records among
+        them."""
         extra = [
-            "learner=bp",
+            f"learner={learner}",
             "+window@dynamics.window=m16",
             "dynamics.window.window=6",
             "dynamics.window.observed=3",
@@ -591,7 +625,12 @@ class TestResume:
         cut = tmp_path / "cut"
         stopping = _Stopping(23)
         assert _run(cut, extra, stopping) == Exit.STOPPED
-        assert stopping.built.net.world.pending is not None
+        net = stopping.built.net
+        if learner == "bp":
+            assert net.world.pending is not None
+        else:
+            ep = net.block.dynamics.episode
+            assert ep is not None and not ep["done"]
         (cut / "stop.request").unlink()
         assert _run(cut, extra, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):
@@ -604,11 +643,32 @@ class TestResume:
         assert last["win_steps"] == 6 and last["win_skipped"] == 0
         assert last["win_masked"] == 0
         assert last["win_loss"] > 0 and last["win_gnorm"] > 0
+        assert ("win_unsettled" in last) == (learner == "pc")
+        if learner == "pc":
+            assert last["win_unsettled"] == 0
 
-    def test_the_pc_learner_has_no_windows_yet(self):
-        conf = _conf(["learner=pc", *WINDOW])
-        with pytest.raises(ValueError, match="the PC-ALM window learning is not built"):
+    def test_the_pc_learner_refuses_the_own_credit(self):
+        overrides = ["dynamics.window.feedback=detach", "dynamics.window.credit=own"]
+        conf = _conf(["learner=pc", *WINDOW, *overrides])
+        with pytest.raises(ValueError, match="ablation of BP only"):
             build_joint(conf)
+
+    def test_window_ports_cannot_connect_to_z_out(self):
+        """The window ports of the block carry windows, not the encoder's
+        ``Activity``: none connects to ``z_out``, so no credit of a window
+        can reach the encoder."""
+        net = build_joint(_conf(["learner=pc", *WINDOW]))
+        assert isinstance(net, JointPC)
+        block = net.block
+        for port in (
+            block.dynamics.win_hat,
+            block.dynamics.win_next,
+            block.dynamics.win_base,
+            block.compare.win_base,
+            block.compare.win_s,
+        ):
+            with pytest.raises(TypeError, match="do not match"):
+                net.z_out.connect(cast(Any, port))  # the mismatch under test
 
 
 def test_the_objective():

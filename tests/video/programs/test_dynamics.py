@@ -14,7 +14,7 @@ from exp.lib import ckpt
 from exp.lib.rundir import Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose
-from exp.video.dyn.nets import live_states
+from exp.video.dyn.nets import live_states, window_stats
 from exp.video.main import local_job
 from exp.video.measure.dynamics import open_loop
 from exp.video.programs.dynamics import PROGRAM
@@ -182,12 +182,14 @@ class TestResume:
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
 
-    def test_a_bp_run_on_windows_resumes_as_one_never_stopped(self, tmp_path):
-        """BP learning on windows (``dynamics.window``), stopped at frame 47
-        with a window pending (due at push 46, learned 0.08 s later): the ring,
-        the pending window and the counters resume too."""
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_a_run_on_windows_resumes_as_one_never_stopped(self, tmp_path, learner):
+        """BP or PC-ALM learning on windows (``dynamics.window``), stopped at
+        frame 47 with a window pending (due at push 46, learned 0.08 s later;
+        PC-ALM's episode open): the ring, the pending window or the episode
+        and the counters resume too, and PC-ALM learns every window, settled."""
         extra = [
-            "learner=bp",
+            f"learner={learner}",
             "dynamics.trace=false",
             "dynamics.nodes=2",
             "dynamics.d_s=16",
@@ -204,11 +206,19 @@ class TestResume:
         cut = tmp_path / "cut"
         stopping = _Stopping(47)
         assert _run(cut, extra, stopping) == Exit.STOPPED
-        assert stopping.built.net.world.pending is not None
+        if learner == "bp":
+            assert stopping.built.net.world.pending is not None
+        else:
+            ep = stopping.built.net.block.dynamics.episode
+            assert ep is not None and not ep["done"]
         (cut / "stop.request").unlink()
         assert _run(cut, extra, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        if learner == "pc":
+            stats = window_stats(stopping.built.net.block)
+            assert stats["win_steps"] not in (None, 0)
+            assert stats["win_skipped"] == stats["win_unsettled"] == 0
 
     def test_a_stage_3_run_resumes_as_one_never_stopped(self, tmp_path):
         """The pixel stage keeps the states of the history (``fork_eval`` and

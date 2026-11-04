@@ -547,8 +547,10 @@ class TestWindowConf:
         with pytest.raises(ValueError, match="trace"):
             DynamicsConf(trace=True, window=WindowConf())
 
-    def test_the_pc_learner_has_no_windows_yet(self):
-        dyn = _window_dyn()
+    def test_the_pc_learner_refuses_the_own_credit(self):
+        """``credit="own"`` is an ablation of BP; PC-ALM learns windows with
+        ``credit="bptt"`` only."""
+        dyn = _window_dyn(credit="own")
         conf = RunConf(
             name="test",
             learner=LearnerConf(kind="pc"),
@@ -556,7 +558,15 @@ class TestWindowConf:
             dynamics=dyn,
         )
         mods = build_dynamics(dyn, D, D, seed=0)
-        with pytest.raises(
-            ValueError, match="the PC-ALM window learning is not built yet"
-        ):
+        with pytest.raises(ValueError, match="ablation of BP only"):
             StateWorldPC(mods, conf=conf, optimizer=pc.optim.SGD(tau=0.5))
+        StateWorldPC(
+            mods,
+            conf=RunConf(
+                name="test",
+                learner=LearnerConf(kind="pc"),
+                data=DataConf(streams=2),
+                dynamics=_window_dyn(),
+            ),
+            optimizer=pc.optim.SGD(tau=0.5),
+        )

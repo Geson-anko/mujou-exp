@@ -16,12 +16,18 @@ class WindowConf:
     (from s = 0, ``observed`` frames teacher forced, the rest from its own
     prediction; ``feedback`` and ``credit`` as there) at the first update
     ``relax`` seconds after the window's last frame. The prediction of every
-    frame goes on as without it; only the learning changes (BP only for now).
-    The window sets when the dynamics learns: ``time.learn_interval`` is not
-    read (``math.inf`` does not freeze it), and ``relax`` must be shorter than
-    ``stride`` frames (``RunConf``), so a smaller ``stride`` may need a smaller
-    ``relax`` (0.3 s is exactly 9 frames at 30 fps). The ring does not read the
-    received ``mask``: a window is left out only for a reset or a gap in time
+    frame goes on as without it; only the learning changes. BP learns it in
+    one node (``DynamicsBP``), PC-ALM by an episode of each window over the
+    nodes (``DynamicsBlock``, with ``credit="bptt"`` only), whose messages
+    settle (L + 1) K + L updates after the one that opens the window (K =
+    window - 1 - observed, L = nodes; K + L with "detach", L with
+    "teacher"): ``relax`` must leave room for them (80 periods = 0.16 s of
+    the 0.3 s for the default window and 3 nodes). The window sets when the
+    dynamics learns: ``time.learn_interval`` is not read (``math.inf`` does
+    not freeze it), and ``relax`` must be shorter than ``stride`` frames
+    (``RunConf``), so a smaller ``stride`` may need a smaller ``relax`` (0.3
+    s is exactly 9 frames at 30 fps). The ring does not read the received
+    ``mask``: a window is left out only for a reset or a gap in time
     inside it (``exp.lib.ring.WindowRing``).
     """
 
