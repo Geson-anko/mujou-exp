@@ -11,7 +11,14 @@ together, for the tasks
   (``measure.joint``);
 - ``"posthoc"``: the decoder learned afterwards of each evaluation checkpoint,
   which also decodes the dynamics' rollouts into images
-  (``exp.video.programs.posthoc``, ``measure.joint.image_rows``).
+  (``exp.video.programs.posthoc``, ``measure.joint.image_rows``);
+- ``"offline"``: the bound of the dynamics on a frozen encoder (as the
+  control, ``vision.frozen``), its modules fit by Adam on windows of the
+  training streams (``dyn.offline.OfflineFit``, through time or with
+  ``offline.local`` one frame at a time), the frames rendered and encoded per
+  batch; evaluated as the online run every ``offline.every`` steps. It tells
+  whether a rollout that fails the images fails for the online learning or
+  for what $z$ holds.
 
 The dynamics' prediction error sends no credit to the encoder: $z$ is a
 constant for the dynamics, as input and as target. In PC-ALM the dynamics is
@@ -74,7 +81,7 @@ judgement is the posthoc's images.
 import dataclasses
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, override
 
@@ -83,23 +90,26 @@ import mujou.testing
 import torch
 from mujou.pc.msg import Activity
 from mujou.testing import ManualRun
-from torch import nn
+from torch import Tensor, nn
 
 from exp.lib import ckpt
 from exp.lib.host import Host
 from exp.lib.rundir import EnvError, write_json
 from exp.video.compose import from_dict
 from exp.video.data.frames import BallFrames
+from exp.video.data.physics import render
 from exp.video.dyn.bp import DynamicsBP
 from exp.video.dyn.modules import DynamicsModules
 from exp.video.dyn.nets import make_optimizer
 from exp.video.dyn.nodes import DynamicsBlock, is_open
+from exp.video.dyn.offline import OfflineFit, stream_windows
 from exp.video.jepa.nets import VisionBP, VisionPC
 from exp.video.jepa.nodes import z_spec
 from exp.video.jepa.vit import VisionModules, build_vision
 from exp.video.loop import Built, Schedule, every
 from exp.video.measure.dynamics import ratio
 from exp.video.measure.joint import (
+    BATCH,
     Windows,
     ball_windows,
     image_rows,
@@ -221,12 +231,29 @@ def build_joint(conf: RunConf, *, frozen_from: Path | None = None) -> JointPC | 
     mods = build_vision(conf, seed=conf.seed)
     if v.frozen:
         assert frozen_from is not None
-        head = ckpt.load_eval(frozen_from, mods.named())
-        if head["program"] != "vision":
-            raise ValueError(
-                f"{frozen_from} is a checkpoint of {head['program']!r}, not 'vision'"
-            )
+        _load_vision(mods, frozen_from)
     return kinds[conf.learner.kind](mods, joint_dynamics(conf), conf=conf)
+
+
+def _load_vision(mods: VisionModules, path: Path) -> None:
+    """Load the evaluation checkpoint ``path`` of a vision run into ``mods``.
+
+    Raises:
+        ValueError: ``path`` is not the checkpoint of a vision run.
+    """
+    head = ckpt.load_eval(path, mods.named())
+    if head["program"] != "vision":
+        raise ValueError(f"{path} is a checkpoint of {head['program']!r}, not 'vision'")
+
+
+def _frozen_from(run_dir: Path, conf: RunConf) -> Path:
+    """``parent_ckpt``, written to ``frozen_from.json``."""
+    frozen = parent_ckpt(run_dir, conf)
+    write_json(
+        run_dir / "frozen_from.json",
+        {"parent": frozen.parent.parent.name, "ckpt": frozen.name},
+    )
+    return frozen
 
 
 def parent_ckpt(run_dir: Path, conf: RunConf) -> Path:
@@ -355,6 +382,63 @@ class _Unstandardized(nn.Module):
         return self.dec(z) * self.std + self.mean
 
 
+def _evaluate(
+    conf: RunConf,
+    measures: Measures,
+    windows: dict[str, Windows],
+    mods: VisionModules,
+    dyn: DynamicsModules,
+    split: str,
+    *,
+    version: int,
+) -> dict[str, float]:
+    """The row of an evaluation of ``split`` (module docstring); ``windows``
+    caches the ``ball_windows`` of each split, ``version`` names the weights
+    (``Measures.evaluate``)."""
+    assert conf.dynamics is not None
+    row = measures.evaluate(mods, split, version=version)
+    if split not in windows:
+        windows[split] = ball_windows(conf, split, stride=STRIDE)
+    w = windows[split]
+    z = w.z(mods)
+    latent, pred = latent_errors(
+        dyn,
+        z,
+        observed=w.observed,
+        horizons=conf.measure.horizons,
+        residual=conf.dynamics.residual,
+    )
+    row |= latent
+    if mods.decoder is not None:
+        row |= _decoded_rows(mods, conf, w, z, pred)
+    if split == "val":
+        row["objective"] = _objective(conf, mods, row)
+    return row
+
+
+def _objective(conf: RunConf, mods: VisionModules, row: Mapping[str, Any]) -> float:
+    """``image_objective`` with a training decoder (and a horizon of the image
+    criterion measured), else ``joint_objective``."""
+    h = _image_horizons(conf)
+    if mods.decoder is not None and h:
+        return image_objective(row, h)
+    return joint_objective(row, _horizon(conf))
+
+
+def _diverged(
+    conf: RunConf, row: Mapping[str, float], keys: Sequence[str]
+) -> str | None:
+    """``keys`` or ``roll{h}`` of ``row`` not finite, or a rollout not finite
+    (``h`` as in ``_horizon``)."""
+    h = _horizon(conf)
+    bad = [k for k in [*keys, f"roll{h}"] if not math.isfinite(row[k])]
+    if bad:
+        return f"{', '.join(bad)} not finite"
+    if row["nonfinite"]:
+        return f"{row['nonfinite']:g} windows predicted values that are not finite"
+    return None
+
+
 class _Online:
     """The tasks ``"online"`` and ``"bench"`` (no evaluations)."""
 
@@ -368,12 +452,7 @@ class _Online:
             raise ValueError("the joint program streams balls with obs 'frames'")
         self.conf = conf
         bench = conf.task == "bench"
-        frozen = parent_ckpt(run_dir, conf) if v.frozen else None
-        if frozen is not None:
-            write_json(
-                run_dir / "frozen_from.json",
-                {"parent": frozen.parent.parent.name, "ckpt": frozen.name},
-            )
+        frozen = _frozen_from(run_dir, conf) if v.frozen else None
         self.net = build_joint(conf, frozen_from=frozen)
         self.mods, self.dyn = self.net.mods, self.net.dyn
         self.measures = None if bench else Measures(conf)
@@ -463,61 +542,30 @@ class _Online:
 
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # no evaluations in a bench
-        conf = self.conf
-        assert conf.dynamics is not None
-        row = self.measures.evaluate(self.mods, split, version=self.host.frames)
-        if split not in self._windows:
-            self._windows[split] = ball_windows(conf, split, stride=STRIDE)
-        w = self._windows[split]
-        z = w.z(self.mods)
-        latent, pred = latent_errors(
+        return _evaluate(
+            self.conf,
+            self.measures,
+            self._windows,
+            self.mods,
             self.dyn,
-            z,
-            observed=w.observed,
-            horizons=conf.measure.horizons,
-            residual=conf.dynamics.residual,
+            split,
+            version=self.host.frames,
         )
-        row |= latent
-        if self.mods.decoder is not None:
-            row |= _decoded_rows(self.mods, conf, w, z, pred)
-        if split == "val":
-            row["objective"] = self._objective(row)
-        return row
-
-    def _objective(self, row: Mapping[str, Any]) -> float:
-        """``image_objective`` with a training decoder (and a horizon of the
-        image criterion measured), else ``joint_objective``."""
-        h = _image_horizons(self.conf)
-        if self.mods.decoder is not None and h:
-            return image_objective(row, h)
-        return joint_objective(row, _horizon(self.conf))
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
         """A term of the loss or ``roll{h}`` is not finite, or a rollout is not
         finite (``h`` as in ``_horizon``). Not ``measure.diverge``: $z$ is not
         standardized and its spread is tiny early on, so ``roll{h}`` far above
         ``mean{h}`` is not yet a run to stop; the rows and the objective tell it."""
-        h = _horizon(self.conf)
-        keys = [
-            "loss",
-            "pred",
-            "sigreg",
-            *(["recon"] if self._recon else []),
-            f"roll{h}",
-        ]
-        bad = [k for k in keys if not math.isfinite(row[k])]
-        if bad:
-            return f"{', '.join(bad)} not finite"
-        if row["nonfinite"]:
-            return f"{row['nonfinite']:g} windows predicted values that are not finite"
-        return None
+        keys = ["loss", "pred", "sigreg", *(["recon"] if self._recon else [])]
+        return _diverged(self.conf, row, keys)
 
     def objective(
         self, row: Mapping[str, Any] | None, *, diverged: bool
     ) -> float | None:
         if diverged:
             return PENALTY
-        return None if row is None else self._objective(row)
+        return None if row is None else _objective(self.conf, self.mods, row)
 
     def modules(self) -> dict[str, nn.Module]:
         return self.mods.named() | {"step": self.dyn.step, "readout": self.dyn.readout}
@@ -541,6 +589,152 @@ class _Online:
         self._run.shutdown()
 
 
+def _z_encoder(conf: RunConf, mods: VisionModules) -> Callable[[Tensor], Tensor]:
+    """The map from windows of states ``(n, W, 4K)`` to the $z$ ``(n, W, D)`` of
+    their frames (rendered as ``BallFrames`` renders them) by the encoder of
+    ``mods`` as it is, on the device of the run (``vision.frames`` = 1)."""
+    balls = conf.data.balls
+    assert balls is not None
+    dev = torch.device(conf.device)
+
+    @torch.no_grad()
+    def encode(x: Tensor) -> Tensor:
+        n, w = x.shape[:2]
+        images = render(x.flatten(0, 1), balls.size, balls.radii).float().to(dev)
+        z = [mods.encode(images[i : i + BATCH, None]) for i in range(0, n * w, BATCH)]
+        return torch.cat(z).view(n, w, -1)
+
+    return encode
+
+
+class _Offline:
+    """The task ``"offline"`` (module docstring): the encoder (and the training
+    decoder) of the parent's last evaluation checkpoint, frozen, and the
+    dynamics of ``joint_dynamics`` fit by ``OfflineFit`` on the windows of
+    ``offline.frames`` frames of each training stream, evaluated every
+    ``offline.every`` steps as the online run."""
+
+    def __init__(
+        self, conf: RunConf, run_dir: Path, resume: Mapping[str, Any] | None
+    ) -> None:
+        v, dyn, off, balls = conf.vision, conf.dynamics, conf.offline, conf.data.balls
+        if v is None or dyn is None or off is None:
+            raise ValueError(f"the run {conf.name!r} needs vision, dynamics, offline")
+        if not v.frozen:
+            raise ValueError(
+                "the offline bound needs vision.frozen: its parent's encoder"
+            )
+        if v.frames != 1:
+            raise ValueError(
+                f"the offline bound encodes frames: vision.frames={v.frames}"
+            )
+        if balls is None or balls.obs != "frames":
+            raise ValueError("the joint program streams balls with obs 'frames'")
+        m = conf.measure
+        reach = m.observed + max(m.horizons)
+        if off.window < reach:  # a horizon the fit would never predict
+            raise ValueError(
+                f"offline.window={off.window} is shorter than observed + the "
+                f"largest horizon = {reach}"
+            )
+        self.conf = conf
+        self.mods = build_vision(conf, seed=conf.seed)
+        _load_vision(self.mods, _frozen_from(run_dir, conf))
+        self.dyn = joint_dynamics(conf)
+        self.measures = Measures(conf)
+        self._windows: dict[str, Windows] = {}
+        self._fit = OfflineFit(
+            self.dyn,
+            stream_windows(conf, off.frames, off.window, states=True),
+            batch=off.batch,
+            lr=off.lr,
+            local=off.local,
+            observed=m.observed,
+            residual=dyn.residual,
+            gen=torch.Generator().manual_seed(conf.seed),
+            encode=_z_encoder(conf, self.mods),
+        )
+        self._acc = torch.zeros(2, dtype=torch.float64, device=conf.device)
+        if resume is not None:
+            h = resume["host"]
+            for name, module in self.modules().items():
+                module.load_state_dict(h["modules"][name])
+            self._fit.load_state_dict(h["fit"])
+            self._acc.copy_(h["acc"])
+        ctl = conf.ctl
+        self._schedule = Schedule(
+            units=off.steps,
+            unit="step",
+            seconds=None,
+            log=max(1, off.every // 10),
+            evaluate=off.every,
+            ckpt=off.every if ctl.ckpt_every > 0 else 0,
+            viz=0,
+            resume=off.every,
+            test=ctl.eval_test,
+        )
+
+    @property
+    def schedule(self) -> Schedule:
+        return self._schedule
+
+    def advance(self) -> None:
+        loss = self._fit.step()
+        self._acc += torch.stack(
+            [loss.double(), loss.new_ones((), dtype=torch.float64)]
+        )
+
+    def log(self) -> dict[str, float | None]:
+        total, n = self._acc.tolist()
+        self._acc.zero_()
+        return {"loss": total / n if n else None}
+
+    def evaluate(self, split: str) -> dict[str, float]:
+        # the encoder never changes: one version, the calibration encoded once
+        return _evaluate(
+            self.conf,
+            self.measures,
+            self._windows,
+            self.mods,
+            self.dyn,
+            split,
+            version=0,
+        )
+
+    def diverged(self, row: Mapping[str, float]) -> str | None:
+        return _diverged(self.conf, row, [])
+
+    def objective(
+        self, row: Mapping[str, Any] | None, *, diverged: bool
+    ) -> float | None:
+        if diverged:
+            return PENALTY
+        return None if row is None else _objective(self.conf, self.mods, row)
+
+    def modules(self) -> dict[str, nn.Module]:
+        return self.mods.named() | {"step": self.dyn.step, "readout": self.dyn.readout}
+
+    def visualize(self, out: Path) -> None:
+        pass
+
+    def resume_state(self) -> tuple[Mapping[str, Any], dict[str, Any]]:
+        host = {
+            "modules": {
+                name: {k: v.detach().cpu().clone() for k, v in m.state_dict().items()}
+                for name, m in self.modules().items()
+            },
+            "fit": self._fit.state_dict(),
+            "acc": self._acc.cpu().clone(),
+        }
+        return {}, host
+
+    def final(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+    def close(self) -> None:
+        pass
+
+
 class JointProgram:
     """The program ``"joint"`` (module docstring), a ``loop.Program``."""
 
@@ -550,6 +744,8 @@ class JointProgram:
         match conf.task:
             case "online" | "bench":
                 return _Online(conf, run_dir, resume)
+            case "offline":
+                return _Offline(conf, run_dir, resume)
             case "posthoc":  # imported here: it imports the vision program
                 from exp.video.programs.posthoc import Posthoc
 

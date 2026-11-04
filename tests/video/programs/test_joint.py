@@ -20,13 +20,16 @@ from exp.lib.host import Host
 from exp.lib.rundir import EnvError, Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose, from_dict
+from exp.video.data.physics import render
 from exp.video.dyn.modules import build_dynamics
 from exp.video.dyn.nets import StateWorldBP, StateWorldPC, make_optimizer, modules
 from exp.video.dyn.nodes import Source
+from exp.video.dyn.offline import stream_windows
 from exp.video.jepa.nets import build_vision_net
 from exp.video.jepa.vit import build_vision
 from exp.video.main import local_job
 from exp.video.measure.joint import (
+    Windows,
     ball_windows,
     image_rows,
     joint_dynamics,
@@ -37,6 +40,7 @@ from exp.video.programs.joint import (
     PROGRAM,
     JointBP,
     JointPC,
+    _z_encoder,  # pyright: ignore[reportPrivateUsage]
     build_joint,
     image_objective,
     joint_objective,
@@ -716,6 +720,92 @@ class TestPosthoc:
         ):
             assert key in lines[0], key
         assert (tmp_path / "post" / "00001.0.png").is_file()
+
+
+OFFLINE = [
+    "offline.frames=72",
+    "offline.window=36",
+    "offline.steps=6",
+    "offline.batch=4",
+    "offline.every=2",
+]
+
+
+def _offline(out: Path, parent: str, extra: list[str] = ()) -> Path:  # type: ignore[assignment]
+    """The job of an offline bound in ``out`` whose job names ``parent``."""
+    out.mkdir(parents=True)
+    job = local_job(["+experiment=m16/offline", *TINY, *OFFLINE, *extra], out)
+    data = json.loads(job.read_text())
+    data["parent"] = parent
+    job.write_text(json.dumps(data))
+    return job
+
+
+class TestOffline:
+    def test_the_fit_sees_the_z_the_evaluation_sees(self):
+        """The windows of states of the fit, rendered and encoded per batch,
+        are the $z$ ``Windows.z`` has of the same frames."""
+        conf = _conf()
+        balls = conf.data.balls
+        assert balls is not None
+        mods = build_vision(conf, seed=0)
+        states = stream_windows(conf, 72, 36, states=True)
+        images = render(states.flatten(0, 1), balls.size, balls.radii).float()
+        w = Windows(images.unflatten(0, states.shape[:2]), 1, 16, 20)
+        assert torch.equal(_z_encoder(conf, mods)(states), w.z(mods))
+
+    def test_only_the_dynamics_learns(self, tmp_path):
+        """The bound ends with its parent's encoder, predictor and decoder and
+        with dynamics fit away from their initial weights; its val rows are
+        scored by the image objective."""
+        parent = _finished_parent(tmp_path / "runs" / "b" / "parent")
+        job = _offline(
+            tmp_path / "runs" / "b" / "child", "b/parent", ["ctl.ckpt_every=1"]
+        )
+        out = job.parent
+        assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+        rows = _lines(out / "evals.jsonl")
+        assert [x["step"] for x in rows if x["split"] == "val"] == [2, 4, 6]
+        val = [x for x in rows if x["split"] == "val"]
+        assert all(x["objective"] == image_objective(x, [5, 10]) for x in val)
+        a = torch.load(parent / "ckpt" / "00001.0.pt", weights_only=True)["modules"]
+        last = sorted((out / "ckpt").glob("*.pt"))[-1]
+        b = torch.load(last, weights_only=True)["modules"]
+        for name in ("encoder", "predictor", "decoder"):
+            assert _same(a[name], b[name]), name
+        init = joint_dynamics(_conf())
+        assert not _same(_weights(init.step), b["step"])
+        assert json.loads((out / "frozen_from.json").read_text()) == {
+            "parent": "parent",
+            "ckpt": "00001.0.pt",
+        }
+
+    def test_it_needs_a_frozen_encoder(self, tmp_path):
+        conf = compose(
+            ["+experiment=m16/offline", *TINY, *OFFLINE, "vision.frozen=false"]
+        )
+        with pytest.raises(ValueError, match="vision.frozen"):
+            PROGRAM.build(conf, tmp_path, None)
+
+    def test_a_window_shorter_than_the_horizons_is_an_error(self, tmp_path):
+        conf = compose(
+            ["+experiment=m16/offline", *TINY, *OFFLINE, "offline.window=35"]
+        )
+        with pytest.raises(ValueError, match="offline.window=35"):
+            PROGRAM.build(conf, tmp_path, None)
+
+    def test_resume_equals_uninterrupted(self, tmp_path):
+        _finished_parent(tmp_path / "runs" / "b" / "parent")
+        whole = _offline(tmp_path / "runs" / "b" / "whole", "b/parent")
+        assert loop.run(PROGRAM, whole, attempt=1) == Exit.OK
+        cut = _offline(tmp_path / "runs" / "b" / "cut", "b/parent")
+        assert loop.run(_Stopping(3), cut, attempt=1) == Exit.STOPPED
+        (cut.parent / "stop.request").unlink()
+        assert loop.run(PROGRAM, cut, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut.parent / name).read_bytes() == (
+                whole.parent / name
+            ).read_bytes()
 
 
 @pytest.mark.cuda
