@@ -190,6 +190,7 @@ class JointPC(VisionPC):
             optimizer=make_optimizer(conf.optim, conf.time.frame),
             learn_interval=conf.time.learn_interval,
             device=conf.device,
+            cuda_graph=conf.ctl.cuda_graph,
         )
         self.block.connect(self.z_out)  # the port only sends: no credit back
         self.next, self.error = self.block.next, self.block.error

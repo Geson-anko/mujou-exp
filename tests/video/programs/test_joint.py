@@ -62,7 +62,16 @@ from exp.video.schema.run import RunConf
 from mujou import TensorSpec
 from tests.video.programs.test_vision import TINY as VISION_TINY
 
-TINY = [*VISION_TINY, "dynamics.d_s=16", "optim.warmup=0", "optim.lr=0.1"]
+# The time constants of PC-ALM of the vision and M14 programs these tests
+# compare with (the M16 presets run at 5 updates a frame instead).
+TIME = ["time.h=0.004", "time.r=0.004", "time.lam=0.002"]
+TINY = [
+    *VISION_TINY,
+    *TIME,
+    "dynamics.d_s=16",
+    "optim.warmup=0",
+    "optim.lr=0.1",
+]
 EXPERIMENT = "m16/balls_joint"
 FRAMES = 12
 
@@ -1072,6 +1081,26 @@ def test_a_run_on_cuda_completes(tmp_path, learner):
     assert _run(tmp_path / "run", ["device=cuda", f"learner={learner}"]) == Exit.OK
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    ("learner", "extra"),
+    [("pc", []), ("pc", WINDOW3), ("bp", WINDOW)],
+    ids=["pc", "pc-window", "bp-window"],
+)
+def test_the_cuda_graphs_change_nothing_of_a_run(tmp_path, learner, extra):
+    """With the updates replayed from CUDA graphs (``ctl.cuda_graph``: the
+    vision's pc.Layer nodes, the head, the window functions), a run on CUDA
+    writes the bytes of one without them."""
+    runs = {}
+    for graph in (False, True):
+        out = tmp_path / str(graph)
+        overrides = ["device=cuda", f"learner={learner}", *extra]
+        assert _run(out, [*overrides, f"ctl.cuda_graph={graph}"]) == Exit.OK
+        runs[graph] = out
+    for name in ("evals.jsonl", "stream.jsonl"):
+        assert (runs[True] / name).read_bytes() == (runs[False] / name).read_bytes()
+
+
 class TestWindowPresets:
     @pytest.mark.parametrize(
         ("preset", "frozen"),
@@ -1089,7 +1118,12 @@ class TestWindowPresets:
         w = dyn.window
         assert (w.window, w.stride, w.credit) == (off.window, off.stride, off.credit)
         assert w.feedback == off.feedback == "grad"
-        assert (w.observed, w.relax) == (16, 0.3)
+        assert (w.observed, w.relax) == (16, 0.55)
+        t = conf.time  # 5 updates a frame, one-step relaxation
+        assert t.frame / (t.h * t.r / (t.h + t.r)) == pytest.approx(5)
+        assert t.lam == pytest.approx(t.r**2 / (t.h + t.r))
+        # the messages settle 80 periods after the window, within the relax
+        assert 80 * t.h * t.r / (t.h + t.r) < w.relax < w.stride * t.frame
         assert conf.measure.observed == w.observed
         assert (dyn.nodes, dyn.d_s, dyn.trace, dyn.residual) == (3, 512, False, True)
         assert dyn.open_loop == 0.0

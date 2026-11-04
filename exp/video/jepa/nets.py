@@ -84,6 +84,7 @@ class VisionPC(mujou.Network):
                 optimizer=optimizer,
                 learn_interval=conf.time.learn_interval,
                 device=conf.device,
+                cuda_graph=conf.ctl.cuda_graph and conf.device.startswith("cuda"),
             )
             setattr(self, name, node)
             port.connect(node.prev)
@@ -107,6 +108,7 @@ class VisionPC(mujou.Network):
             learn_interval=conf.time.learn_interval,
             seed=conf.seed + HEAD_SEED,
             device=conf.device,
+            cuda_graph=conf.ctl.cuda_graph,
         )
         port.connect(self.head.prev)
         self.prev, self.stats, self.z_out = (

@@ -42,6 +42,9 @@ class CtlConf:
     resume_every: float = 300.0  # a checkpoint to resume from
     viz_every: float = 0.0  # the pictures to look at
     eval_test: bool = False  # also evaluate the test clips at each checkpoint
+    # replay the vjp of the vision's pc.Layer nodes from CUDA graphs when on CUDA
+    # (pc.Layer(cuda_graph=True): the same updates bit for bit, fewer launches)
+    cuda_graph: bool = True
 
 
 @dataclass(kw_only=True)

@@ -48,6 +48,7 @@ from mujou.types import Device, Size
 from torch import Tensor, nn
 
 import mujou
+from exp.lib.cuda_graph import graphed_vjp
 from exp.lib.mingru import MinGRU, MinGRUTrace, ResidualMinGRU
 from exp.lib.ring import WindowRing
 from exp.video.dyn.modules import DynamicsModules
@@ -257,12 +258,15 @@ class _WindowNode(Node):
         hops: int,
         out: TensorSpec | None,
         dtype: torch.dtype,
+        cuda_graph: bool = False,
     ) -> None:
         """The state of the class docstring, ``r_w`` and ``lam_w`` of ``out``
         ``(B, P, d)`` (none for ``Compare``), and the settings; ``hops`` is
         the number of hops of a loop of the window messages (``nodes + 1``):
         a node that learns less than ``hops`` periods after its inputs last
-        changed counts the window as unsettled."""
+        changed counts the window as unsettled. With ``cuda_graph`` (on CUDA)
+        the window function and its gradients are replayed from CUDA graphs
+        (``exp.lib.cuda_graph``), the same bit for bit."""
         self._window = window
         self._win_tau = tau
         self._max_dt = tau.max_dt
@@ -291,6 +295,10 @@ class _WindowNode(Node):
         # from (key, leaf, output): reused while only the credit changes. Not
         # state: a resumed node builds it again, to the same values.
         self._fwd: tuple[Any, Tensor, Tensor] | None = None
+        # The replayed window functions (none off CUDA); not state either.
+        self._graphed = cuda_graph and self.device.type == "cuda"
+        self._gvjp: Callable[..., tuple[Tensor, Tensor | None, list[Tensor]]] | None
+        self._gvjp = None
 
     def _begin(self, t_ns: int, elapsed: float, now_ns: int) -> dict[str, Any]:
         """Open the episode of $t_w$ = ``t_ns``: the one before counts as
@@ -367,7 +375,13 @@ class _WindowNode(Node):
         (with ``credit``, else None) and $g_\theta = -J_\theta^\top \delta$
         for ``params``, as ``pc.functional.vjp`` gives them, from the detached
         ``x``. The forward graph is kept for the same ``key`` (the same input
-        at the same weights) and reused while only ``delta`` changes."""
+        at the same weights) and reused while only ``delta`` changes; with
+        CUDA graphs, the whole product is replayed instead (the same ``fn``
+        at every call of the node, its first one recorded)."""
+        if self._graphed:
+            if self._gvjp is None:
+                self._gvjp = graphed_vjp(fn, self._params)
+            return self._gvjp(x, delta, credit=credit, learn=bool(params))
         if self._fwd is None or self._fwd[0] != key:
             with torch.enable_grad():
                 leaf = x.detach().requires_grad_()
@@ -414,6 +428,7 @@ class _WindowNode(Node):
         self.win_steps += 1
 
     optimizer: pc.optim.BoundOptimizer  # bound in each node's __init__
+    _params: list[Tensor]  # set in each node's __init__
 
 
 # --- Source --------------------------------------------------------------------
@@ -537,6 +552,7 @@ class Dynamics(_WindowNode):
         window: WindowConf | None = None,
         hops: int = 2,
         device: Device = "cpu",
+        cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period)
         self._tau = tau
@@ -575,10 +591,15 @@ class Dynamics(_WindowNode):
             self.base = Port(send=act_spec)
         self._window = window
         if window is not None:
-            self._init_dynamics_window(window, x, s, hops)
+            self._init_dynamics_window(window, x, s, hops, cuda_graph)
 
     def _init_dynamics_window(
-        self, window: WindowConf, x: TensorSpec, s: TensorSpec, hops: int
+        self,
+        window: WindowConf,
+        x: TensorSpec,
+        s: TensorSpec,
+        hops: int,
+        cuda_graph: bool,
     ) -> None:
         """The ring, the state and the window ports of ``window``."""
         n, w, dev = self._samples, window.window, self.device
@@ -589,7 +610,13 @@ class Dynamics(_WindowNode):
         h = TensorSpec((n, p, s.shape[-1]), x.dtype)
         frames = TensorSpec((n, p, x.shape[-1]), x.dtype)
         self._init_window(
-            window, tau=self._tau, batch=n, hops=hops, out=h, dtype=x.dtype
+            window,
+            tau=self._tau,
+            batch=n,
+            hops=hops,
+            out=h,
+            dtype=x.dtype,
+            cuda_graph=cuda_graph,
         )
         self.ring = WindowRing(
             n, w, x.shape[-1], stride=window.stride, device=dev, dtype=x.dtype
@@ -823,6 +850,7 @@ class DynamicsLayer(_WindowNode):
         win_spec: DictSpec[WindowActivity] | None = None,
         hops: int = 2,
         device: Device = "cpu",
+        cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period)
         self._tau = tau
@@ -851,7 +879,13 @@ class DynamicsLayer(_WindowNode):
                 raise ValueError("a DynamicsLayer with a window needs its win_spec")
             h = win_spec.field("h", TensorSpec)
             self._init_window(
-                window, tau=tau, batch=h.shape[0], hops=hops, out=h, dtype=h.dtype
+                window,
+                tau=tau,
+                batch=h.shape[0],
+                hops=hops,
+                out=h,
+                dtype=h.dtype,
+                cuda_graph=cuda_graph,
             )
             self.win_spec = win_spec
             msg = window_message_spec(h)
@@ -1039,6 +1073,7 @@ class Compare(_WindowNode):
         win_spec: DictSpec[WindowActivity] | None = None,
         hops: int = 2,
         device: Device = "cpu",
+        cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period)
         self.module = readout
@@ -1064,7 +1099,7 @@ class Compare(_WindowNode):
         if window is not None:
             if win_spec is None:
                 raise ValueError("a Compare with a window needs its win_spec")
-            self._init_compare_window(window, win_spec, tau, hops)
+            self._init_compare_window(window, win_spec, tau, hops, cuda_graph)
 
     def _init_compare_window(
         self,
@@ -1072,11 +1107,18 @@ class Compare(_WindowNode):
         win_spec: DictSpec[WindowActivity],
         tau: pc.TimeConstants,
         hops: int,
+        cuda_graph: bool,
     ) -> None:
         """The state and the window ports of ``window``."""
         h, y = win_spec.field("h", TensorSpec), win_spec.field("y", TensorSpec)
         self._init_window(
-            window, tau=tau, batch=h.shape[0], hops=hops, out=None, dtype=h.dtype
+            window,
+            tau=tau,
+            batch=h.shape[0],
+            hops=hops,
+            out=None,
+            dtype=h.dtype,
+            cuda_graph=cuda_graph,
         )
         self._feedback = window.feedback
         grad = window.feedback == "grad"
@@ -1347,6 +1389,7 @@ class DynamicsBlock(mujou.Network):
         optimizer: Optimizer,
         learn_interval: float | None,
         device: Device = "cpu",
+        cuda_graph: bool = False,
     ) -> None:
         if conf.window is not None:
             _check_window(conf.window, tau)
@@ -1367,6 +1410,7 @@ class DynamicsBlock(mujou.Network):
             window=conf.window,
             hops=hops,
             device=device,
+            cuda_graph=cuda_graph,
         )
         self.names = ("dynamics",) + tuple(
             f"dynamics{i + 2}" for i in range(len(mods.step.rest))
@@ -1384,6 +1428,7 @@ class DynamicsBlock(mujou.Network):
                 win_spec=top.win_spec if conf.window is not None else None,
                 hops=hops,
                 device=device,
+                cuda_graph=cuda_graph,
             )
             setattr(self, name, node)
             top.next.connect(node.prev)
@@ -1402,6 +1447,7 @@ class DynamicsBlock(mujou.Network):
             win_spec=top.win_spec if conf.window is not None else None,
             hops=hops,
             device=device,
+            cuda_graph=cuda_graph,
         )
         top.next.connect(self.compare.s)
         if conf.open_loop > 0:
