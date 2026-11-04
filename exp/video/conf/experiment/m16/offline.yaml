@@ -3,7 +3,8 @@
 # in the control (as balls_frozen, the job's "parent"), and the dynamics fit by
 # Adam on windows of the training streams, through time; offline.local=true
 # stops the gradient at one frame as in the nodes. The learner is that of the
-# parent (it learns nothing here):
+# parent (it learns nothing here). The dynamics' size defaults to that of
+# balls_joint (small); set it to that of the online run it bounds:
 #   fleet submit ... +experiment=m16/offline learner=bp dynamics=big \
 #       --set parent=<batch>/<run_id> --after <run_id> --host <host>
 # The data is that of the online run it bounds: the 54000 frames (1800 s) of

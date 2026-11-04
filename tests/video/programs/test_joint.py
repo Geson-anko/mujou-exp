@@ -20,6 +20,7 @@ from exp.lib.host import Host
 from exp.lib.rundir import EnvError, Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose, from_dict
+from exp.video.data.frames import BallFrames
 from exp.video.data.physics import render
 from exp.video.dyn.modules import build_dynamics
 from exp.video.dyn.nets import StateWorldBP, StateWorldPC, make_optimizer, modules
@@ -743,16 +744,24 @@ def _offline(out: Path, parent: str, extra: list[str] = ()) -> Path:  # type: ig
 
 class TestOffline:
     def test_the_fit_sees_the_z_the_evaluation_sees(self):
-        """The windows of states of the fit, rendered and encoded per batch,
-        are the $z$ ``Windows.z`` has of the same frames."""
+        """The windows of states of the fit, rendered and encoded per batch
+        (720 frames: three batches), are the $z$ ``Windows.z`` has of the same
+        frames, and those frames are the ones the online run streams."""
         conf = _conf()
         balls = conf.data.balls
         assert balls is not None
         mods = build_vision(conf, seed=0)
-        states = stream_windows(conf, 72, 36, states=True)
+        states = stream_windows(conf, 360, 36, states=True)
+        assert states.shape[:2] == (20, 36)
         images = render(states.flatten(0, 1), balls.size, balls.radii).float()
-        w = Windows(images.unflatten(0, states.shape[:2]), 1, 16, 20)
+        images = images.unflatten(0, states.shape[:2])
+        w = Windows(images, 1, 16, 20)
         assert torch.equal(_z_encoder(conf, mods)(states), w.z(mods))
+        frames = BallFrames.of(
+            balls, conf.data.streams, frame=conf.time.frame, seed=conf.seed
+        )
+        online = torch.stack([frames.next()[0] for _ in range(36)], 1)
+        assert torch.equal(images[::10], online)  # window 0 of each stream
 
     def test_only_the_dynamics_learns(self, tmp_path):
         """The bound ends with its parent's encoder, predictor and decoder and
