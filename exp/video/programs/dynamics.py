@@ -49,7 +49,7 @@ from exp.video.data.clips import (
 from exp.video.data.observe import PIXELS, Standardizer, observe
 from exp.video.data.physics import BallStreams
 from exp.video.dyn.modules import DynamicsModules, build_dynamics
-from exp.video.dyn.nets import build_world, live_states, modules
+from exp.video.dyn.nets import build_world, live_states, make_optimizer, modules
 from exp.video.dyn.nodes import is_open
 from exp.video.dyn.offline import OfflineFit, pixel_encoder, stream_windows
 from exp.video.loop import Built, Schedule, every
@@ -366,8 +366,15 @@ class _Offline(_Evaluated):
         pixels = measures.balls.obs == PIXELS
         encode = pixel_encoder(conf, measures.std) if pixels else None
         # pixels are rendered per batch: all of them would be tens of GB
+        stream = off.order == "stream"
+        stride = off.stride or off.window
+        # "stream": the data of each stream whole (B, frames, d), cut per step
         windows = stream_windows(
-            conf, off.frames, off.window, std=measures.std, states=pixels
+            conf,
+            off.frames,
+            off.frames if stream else off.window,
+            std=measures.std,
+            states=pixels,
         )
         self._fit = OfflineFit(
             self.mods,
@@ -379,14 +386,22 @@ class _Offline(_Evaluated):
             residual=dyn.residual,
             gen=torch.Generator().manual_seed(conf.seed),
             encode=encode,
+            order=off.order,
+            window=off.window,
+            stride=stride,
+            optimizer=make_optimizer(conf.optim, conf.time.frame) if stream else None,
+            elapsed=stride * conf.time.frame if stream else 1.0,
+            feedback=off.feedback,
+            credit=off.credit,
         )
-        self._acc = torch.zeros(2, dtype=torch.float64, device=conf.device)
+        self._acc = torch.zeros(3, dtype=torch.float64, device=conf.device)
         if resume is not None:
             h = resume["host"]
             for name, module in self.modules().items():
                 module.load_state_dict(h["modules"][name])
             self._fit.load_state_dict(h["fit"])
-            self._acc.copy_(h["acc"])
+            acc = h["acc"]  # (loss, count[, grad norm])
+            self._acc[: len(acc)].copy_(acc)
         ctl = conf.ctl
         self._schedule = Schedule(
             units=off.steps,
@@ -407,13 +422,20 @@ class _Offline(_Evaluated):
     def advance(self) -> None:
         loss = self._fit.step()
         self._acc += torch.stack(
-            [loss.double(), loss.new_ones((), dtype=torch.float64)]
+            [
+                loss.double(),
+                loss.new_ones((), dtype=torch.float64),
+                self._fit.grad_norm.double(),
+            ]
         )
 
     def log(self) -> dict[str, float | None]:
-        total, n = self._acc.tolist()
+        total, n, gnorm = self._acc.tolist()
         self._acc.zero_()
-        return {"loss": total / n if n else None}
+        return {
+            "loss": total / n if n else None,
+            "grad_norm": gnorm / n if n else None,
+        }
 
     def evaluate(self, split: str) -> dict[str, float]:
         row = self._row(split)

@@ -1,0 +1,42 @@
+# @package _global_
+# The offline bound of M16 on the windows an online run learns from (task=
+# offline, order=stream): step t takes the windows [t S, t S + W) of every
+# stream, as a run that learns every S = 18 frames on the last W = 36 would, and
+# steps the optimizer of the online run (optim, as make_optimizer reads it) by
+# elapsed = S frame = 0.6 s. The feedback is detached, as the online run's
+# (offline.feedback=detach); the learner is that of the parent (it learns
+# nothing here), see m16/offline for how to submit it.
+#
+# The optimizer is one Adam(1e-3, 0.9, 0.999) step per window, in the
+# optimizer's time: tau = frame / lr = 600 s, so a step of elapsed = 0.6 s moves
+# by 1e-3 (the Adam lr); a_m = 1 - exp(-elapsed / tau_m) = 0.1 for tau_m = 0.6 /
+# -ln(0.9) = 5.6947329486 s, and a_v = 1 - exp(-elapsed / tau_v) = 1e-3 for
+# tau_v = 0.6 / -ln(0.999) = 599.69995 s; no warmup, no weight decay, no decay
+# of the rate.
+# 54000 frames, window 36, stride 18: (54000 - 36) // 18 + 1 = 2999 steps.
+# (The defaults of m16/balls_joint are repeated, not included through
+# m16/offline: an experiment that includes one that includes one breaks.)
+defaults:
+  - m16/balls_joint
+  - override /dynamics: big
+  - _self_
+name: m16/offline_stream
+tags: [m16, offline, stream]
+task: offline
+vision:
+  frozen: true
+offline:
+  order: stream
+  local: false
+  frames: 54000
+  window: 36
+  stride: 18
+  steps: 2999
+  feedback: detach
+optim:
+  kind: adamw
+  lr: 5.5555555555555556e-05
+  tau_m: 5.6947329486179425
+  tau_v: 599.6999499749836
+  warmup: 0
+  weight_decay: 0

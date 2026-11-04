@@ -312,6 +312,43 @@ class TestLiveState:
             built.close()
 
 
+class TestOfflineStream:
+    @pytest.mark.parametrize("stage", ["m14/s0", "m14/s3"], ids=["states", "pixels"])
+    def test_the_stream_order_steps_on_the_windows_of_every_stream(
+        self, tmp_path, stage
+    ):
+        """Both observations: the states and the images rendered per step."""
+        extra = [
+            "offline.order=stream",
+            "offline.feedback=detach",
+            "offline.frames=72",
+            "offline.window=36",
+            "offline.stride=18",
+            "offline.steps=3",
+            "offline.every=1",
+            "dynamics.d_s=8",
+        ]
+        out = tmp_path / "run"
+        assert _run(out, extra, experiment=f"[{stage},m14/offline]") == Exit.OK
+        rows = _lines(out / "evals.jsonl")
+        assert [x["step"] for x in rows] == [1, 2, 3]
+        logs = _lines(out / "stream.jsonl")
+        assert any(x.get("grad_norm", 0) > 0 for x in logs)
+
+    def test_more_steps_than_the_streams_hold_is_refused_at_compose(self):
+        with pytest.raises(ValueError, match="offline.steps=4"):
+            compose(
+                [
+                    "+experiment=[m14/s0,m14/offline]",
+                    "offline.order=stream",
+                    "offline.frames=72",
+                    "offline.window=36",
+                    "offline.stride=18",
+                    "offline.steps=4",
+                ]
+            )
+
+
 class TestEnds:
     def test_an_offline_window_shorter_than_the_horizons_is_an_error(self, tmp_path):
         """observed 16 + horizon 20 = 36 frames: a window of 35 never trains

@@ -15,8 +15,10 @@ import pytest
 import torch
 from torch import nn
 
+import exp.video.programs.joint as joint_program
 from exp.lib import ckpt
 from exp.lib.host import Host
+from exp.lib.optim import adam
 from exp.lib.rundir import EnvError, Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose, from_dict
@@ -25,7 +27,7 @@ from exp.video.data.physics import render
 from exp.video.dyn.modules import build_dynamics
 from exp.video.dyn.nets import StateWorldBP, StateWorldPC, make_optimizer, modules
 from exp.video.dyn.nodes import Source
-from exp.video.dyn.offline import stream_windows
+from exp.video.dyn.offline import OfflineFit, stream_windows
 from exp.video.jepa.nets import build_vision_net
 from exp.video.jepa.vit import build_vision
 from exp.video.main import local_job
@@ -732,10 +734,15 @@ OFFLINE = [
 ]
 
 
-def _offline(out: Path, parent: str, extra: list[str] = ()) -> Path:  # type: ignore[assignment]
+def _offline(
+    out: Path,
+    parent: str,
+    extra: list[str] = (),  # type: ignore[assignment]
+    experiment: str = "m16/offline",
+) -> Path:
     """The job of an offline bound in ``out`` whose job names ``parent``."""
     out.mkdir(parents=True)
-    job = local_job(["+experiment=m16/offline", *TINY, *OFFLINE, *extra], out)
+    job = local_job([f"+experiment={experiment}", *TINY, *OFFLINE, *extra], out)
     data = json.loads(job.read_text())
     data["parent"] = parent
     job.write_text(json.dumps(data))
@@ -809,6 +816,124 @@ class TestOffline:
         assert loop.run(PROGRAM, whole, attempt=1) == Exit.OK
         cut = _offline(tmp_path / "runs" / "b" / "cut", "b/parent")
         assert loop.run(_Stopping(3), cut, attempt=1) == Exit.STOPPED
+        (cut.parent / "stop.request").unlink()
+        assert loop.run(PROGRAM, cut, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut.parent / name).read_bytes() == (
+                whole.parent / name
+            ).read_bytes()
+
+
+STREAM = [
+    "offline.steps=3",
+    "offline.every=1",
+    "optim.lr=5.5e-05",
+]  # (72 - 36) // 18 + 1 steps
+
+
+class _SpyFit(OfflineFit):
+    """An ``OfflineFit`` that keeps what the program built it from."""
+
+    seen: dict[str, Any] = {}
+
+    def __init__(self, mods, windows, **kw):
+        type(self).seen = {"windows": windows, **kw}
+        super().__init__(mods, windows, **kw)
+
+
+class TestOfflineStream:
+    def test_the_preset_steps_the_optimizer_of_the_online_run_by_s_frames(self):
+        conf = compose(["+experiment=m16/offline_stream", *TINY, *OFFLINE, *STREAM])
+        off = conf.offline
+        assert off is not None and conf.dynamics is not None
+        assert (off.order, off.stride, off.window, off.feedback) == (
+            "stream",
+            18,
+            36,
+            "detach",
+        )
+        assert conf.dynamics.nodes == 3  # big
+        full = compose(["+experiment=m16/offline_stream"])
+        assert full.offline is not None and full.optim is not None
+        assert full.offline.steps == (full.offline.frames - 36) // 18 + 1
+
+    def test_the_program_wires_the_stream_order_and_the_time_of_the_optimizer(
+        self, tmp_path, monkeypatch
+    ):
+        """What the program hands ``OfflineFit``: each stream whole (the
+        windows of ``stream_windows`` end to end), the optimizer of ``optim``
+        and ``elapsed = stride frame``; those step as ``adam(1e-3, 0.9, 0.999)``
+        once per window, on the gradients of the program's own fit."""
+        monkeypatch.setattr(joint_program, "OfflineFit", _SpyFit)
+        _finished_parent(tmp_path / "runs" / "b" / "parent")
+        job = _offline(
+            tmp_path / "runs" / "b" / "child",
+            "b/parent",
+            [*STREAM, "optim.lr=5.5555555555555556e-05"],
+            "m16/offline_stream",
+        )
+        assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+        kw = _SpyFit.seen
+        conf = compose(
+            ["+experiment=m16/offline_stream", *TINY, *OFFLINE, *STREAM]
+            + ["optim.lr=5.5555555555555556e-05"]
+        )
+        assert (kw["order"], kw["window"], kw["stride"]) == ("stream", 36, 18)
+        assert (kw["feedback"], kw["credit"]) == ("detach", "bptt")
+        data = kw["windows"]
+        assert data.shape[1] == 72 and data.shape[0] == conf.data.streams
+        cut = stream_windows(conf, 72, 36, states=True)  # stream after stream
+        for b in range(data.shape[0]):
+            assert torch.equal(data[b, :36], cut[2 * b])
+            assert torch.equal(data[b, 36:], cut[2 * b + 1])
+        frame = conf.time.frame
+        assert kw["elapsed"] == pytest.approx(18 * frame)
+        online, ref = torch.zeros(7), torch.zeros(7)
+        a = kw["optimizer"].bind([online])
+        b = adam(1e-3, 0.9, 0.999).bind([ref])
+        g = torch.Generator().manual_seed(0)
+        for _ in range(6):
+            grad = torch.randn(7, generator=g)
+            a.step_([grad], kw["elapsed"])
+            b.step_([grad], 1.0)
+            torch.testing.assert_close(online, ref, rtol=1e-6, atol=0)
+
+    def test_the_fit_runs_the_steps_of_the_streams(self, tmp_path):
+        _finished_parent(tmp_path / "runs" / "b" / "parent")
+        job = _offline(
+            tmp_path / "runs" / "b" / "child",
+            "b/parent",
+            STREAM,
+            "m16/offline_stream",
+        )
+        assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+        rows = _lines(job.parent / "evals.jsonl")
+        assert [x["step"] for x in rows if x["split"] == "val"] == [1, 2, 3]
+        logs = _lines(job.parent / "stream.jsonl")
+        assert all(x["grad_norm"] > 0 for x in logs if "grad_norm" in x)
+        assert any("grad_norm" in x for x in logs)
+
+    def test_more_steps_than_windows_is_an_error_before_any_step(self, tmp_path):
+        """``(72 - 36) // 18 + 1 = 3`` steps: the configuration is refused when
+        composed, not after the steps."""
+        with pytest.raises(ValueError, match="offline.steps=4"):
+            _offline(
+                tmp_path / "runs" / "b" / "child",
+                "b/parent",
+                ["offline.steps=4"],
+                "m16/offline_stream",
+            )
+
+    def test_resume_equals_uninterrupted(self, tmp_path):
+        _finished_parent(tmp_path / "runs" / "b" / "parent")
+        whole = _offline(
+            tmp_path / "runs" / "b" / "whole", "b/parent", STREAM, "m16/offline_stream"
+        )
+        assert loop.run(PROGRAM, whole, attempt=1) == Exit.OK
+        cut = _offline(
+            tmp_path / "runs" / "b" / "cut", "b/parent", STREAM, "m16/offline_stream"
+        )
+        assert loop.run(_Stopping(2), cut, attempt=1) == Exit.STOPPED
         (cut.parent / "stop.request").unlink()
         assert loop.run(PROGRAM, cut, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):

@@ -643,9 +643,14 @@ class _Offline:
         self.dyn = joint_dynamics(conf)
         self.measures = Measures(conf)
         self._windows: dict[str, Windows] = {}
+        stream = off.order == "stream"
+        stride = off.stride or off.window
+        # "stream": the states of each stream whole (B, frames, 4K), cut per step
         self._fit = OfflineFit(
             self.dyn,
-            stream_windows(conf, off.frames, off.window, states=True),
+            stream_windows(
+                conf, off.frames, off.frames if stream else off.window, states=True
+            ),
             batch=off.batch,
             lr=off.lr,
             local=off.local,
@@ -653,14 +658,22 @@ class _Offline:
             residual=dyn.residual,
             gen=torch.Generator().manual_seed(conf.seed),
             encode=_z_encoder(conf, self.mods),
+            order=off.order,
+            window=off.window,
+            stride=stride,
+            optimizer=make_optimizer(conf.optim, conf.time.frame) if stream else None,
+            elapsed=stride * conf.time.frame if stream else 1.0,
+            feedback=off.feedback,
+            credit=off.credit,
         )
-        self._acc = torch.zeros(2, dtype=torch.float64, device=conf.device)
+        self._acc = torch.zeros(3, dtype=torch.float64, device=conf.device)
         if resume is not None:
             h = resume["host"]
             for name, module in self.modules().items():
                 module.load_state_dict(h["modules"][name])
             self._fit.load_state_dict(h["fit"])
-            self._acc.copy_(h["acc"])
+            acc = h["acc"]  # (loss, count[, grad norm])
+            self._acc[: len(acc)].copy_(acc)
         ctl = conf.ctl
         self._schedule = Schedule(
             units=off.steps,
@@ -681,13 +694,20 @@ class _Offline:
     def advance(self) -> None:
         loss = self._fit.step()
         self._acc += torch.stack(
-            [loss.double(), loss.new_ones((), dtype=torch.float64)]
+            [
+                loss.double(),
+                loss.new_ones((), dtype=torch.float64),
+                self._fit.grad_norm.double(),
+            ]
         )
 
     def log(self) -> dict[str, float | None]:
-        total, n = self._acc.tolist()
+        total, n, gnorm = self._acc.tolist()
         self._acc.zero_()
-        return {"loss": total / n if n else None}
+        return {
+            "loss": total / n if n else None,
+            "grad_norm": gnorm / n if n else None,
+        }
 
     def evaluate(self, split: str) -> dict[str, float]:
         # the encoder never changes: one version, the calibration encoded once
