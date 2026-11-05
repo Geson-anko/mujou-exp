@@ -4,8 +4,8 @@
  "license": "CC-BY-4.0",
  "checked": "2026-11-03",
  "notes": {
-  "license": "dataset_license is the license of the dataset card (metadata 'cc-by-4.0', body 'Creative Commons License (CC-BY)'). The local files look like the YouTube uploads themselves (see blur), whose licenses are their uploaders'; upload_license stays 'unverified' until someone reads each video's page.",
-  "blur": "The card says 'we also try to blur out all faces and license plates appearing in the video using Deface'. The local files are YouTube DASH streams (brand 'dash', handler 'ISO Media file produced by Google Inc.', AV1/VP9 at 480p, no audio), so they may be the original uploads without the blur; nobody has looked. 'unverified' until someone does.",
+  "license": "dataset_license is the license of the dataset card (metadata 'cc-by-4.0', body 'Creative Commons License (CC-BY)'). The local files look like the YouTube uploads themselves (see blur), whose licenses are their uploaders'. On 2026-11-04 the user checked the licenses of the videos and found them all usable; which license each upload carries is not recorded, so upload_license stays 'unverified'.",
+  "blur": "The card says 'we also try to blur out all faces and license plates appearing in the video using Deface'. The local files are YouTube DASH streams (brand 'dash', handler 'ISO Media file produced by Google Inc.', AV1/VP9 at 480p, no audio), so they may be the original uploads without the blur; nobody has looked through them, so 'unverified'. Frames shown outside the runs are blurred first, as the card advises: those of report-m14-m16.html by `deface --thresh 0.15 --replacewith blur` (deface from PyPI under Python 3.12, CPU, std-00, 2026-11-04).",
   "files": "bytes, duration (s), width, height, fps and codec were read with ffmpeg 7.0.2 inside the container on std-00 from /datasets/walking_tours; url is from the dataset's WTour.txt. Venice and Zurich were decoded to the end (65999 frames at 10 fps for Venice).",
   "status": "'ok' may be prepared; 'excluded' (with a reason) may not. prepare() refuses a video that is not here, is excluded, or whose file has another size."
  },
