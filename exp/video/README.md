@@ -2,7 +2,7 @@
 
 2026-11-01 に `experiments/continuous_stream/` から `exp/video/` に移し、`video.py` を `balls.py` に改名し、汎用部を `exp/lib/` に移した。振る舞いは変えていない（移動前後で `metrics.jsonl` が一致）。[results/](results/) の M12 までのファイル名は当時のもの。
 
-計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。結果の数字はマイルストーンごとに [results/](results/) に置く（下の表）。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。M11〜M12（|z| の発散、`rollout10`、予測のデコード、EgoDex）は [report-m11-m12.html](report-m11-m12.html) に同じ形でまとめた。
+計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。結果の数字はマイルストーンごとに [results/](results/) に置く（下の表）。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。M11〜M12（|z| の発散、`rollout10`、予測のデコード、EgoDex）は [report-m11-m12.html](report-m11-m12.html) に同じ形でまとめた。M14〜M16（動力学だけ、視覚だけ、同時の学習、速さ）は [report-m14-m16.html](report-m14-m16.html)。Walking Tours のフレームは Deface で顔をぼかしてから載せた。
 
 ## 今の方針（2026-11-02）
 
