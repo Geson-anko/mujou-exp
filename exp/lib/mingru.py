@@ -1,15 +1,60 @@
 """The minGRU cell, its residual form for stacking, and the eligibility traces
-that learn it through time online."""
+that learn it through time online. ``MinGRU.scan`` and ``ResidualMinGRU.scan``
+run a cell over a whole sequence of inputs at once (the matmuls over all the
+steps together, the elementwise recurrence step by step), for a learner that
+replays a window of frames."""
 
 from collections.abc import Mapping
-from typing import override
+from typing import Any, override
 
 import torch
 from torch import nn
 
 from mujou import Stateful
 
-__all__ = ["MinGRU", "MinGRUTrace", "ResidualMinGRU"]
+__all__ = ["MinGRU", "MinGRUTrace", "ResidualMinGRU", "linear_scan"]
+
+
+class _LinearScan(torch.autograd.Function):
+    r"""$s_t = a_t \odot s_{t-1} + b_t$ over the time axis 0, with the
+    backward of its adjoint recurrence $\bar s_t = G_t + a_{t+1} \odot
+    \bar s_{t+1}$: $\bar b_t = \bar s_t$, $\bar a_t = \bar s_t \odot
+    s_{t-1}$, $\bar s_0 = a_1 \odot \bar s_1$ (one fused kernel per step
+    each way, instead of the graph of every step)."""
+
+    @staticmethod
+    @override
+    def forward(ctx: Any, a: torch.Tensor, b: torch.Tensor, s0: torch.Tensor) -> Any:
+        out = torch.empty_like(b)
+        s = s0
+        for t in range(a.shape[0]):
+            s = torch.addcmul(b[t], a[t], s, out=out[t])
+        ctx.save_for_backward(a, out, s0)
+        return out
+
+    @staticmethod
+    @override
+    def backward(ctx: Any, *grads: torch.Tensor) -> Any:
+        (grad,) = grads
+        a, out, s0 = ctx.saved_tensors
+        adj = torch.empty_like(grad)  # the adjoint of each s_t
+        adj[-1] = grad[-1]
+        for t in range(a.shape[0] - 2, -1, -1):
+            # its own gradient and that through s_{t+1}
+            torch.addcmul(grad[t], a[t + 1], adj[t + 1], out=adj[t])
+        prev = torch.cat([s0.unsqueeze(0), out[:-1]])  # s_{t-1}
+        return adj * prev, adj, a[0] * adj[0]
+
+
+def linear_scan(a: torch.Tensor, b: torch.Tensor, s0: torch.Tensor) -> torch.Tensor:
+    r"""$s_t = a_t \odot s_{t-1} + b_t$ for $t = 1..T$ from $s_0$ = ``s0``
+    ``(*batch, d)``, with ``a`` and ``b`` ``(*batch, T, d)``: the states
+    $s_1..s_T$ ``(*batch, T, d)``, differentiable in ``a``, ``b`` and
+    ``s0``."""
+    out = _LinearScan.apply(
+        a.movedim(-2, 0).contiguous(), b.movedim(-2, 0).contiguous(), s0
+    )
+    return out.movedim(0, -2)
 
 
 class MinGRU(nn.Module):
@@ -27,6 +72,14 @@ class MinGRU(nn.Module):
         u = torch.sigmoid(self.gate(z))
         return (1 - u) * s_prev + u * self.candidate(z)
 
+    def scan(self, z: torch.Tensor, s0: torch.Tensor) -> torch.Tensor:
+        r"""The states $s_1..s_T$ ``(*batch, T, d_s)`` of the inputs $z_0..
+        z_{T-1}$ ``(*batch, T, d_z)`` from $s_0$ = ``s0`` ``(*batch, d_s)``:
+        ``forward`` step after step, with $u$ and $\tilde s$ of all the steps
+        in one matmul each."""
+        u = torch.sigmoid(self.gate(z))
+        return linear_scan(1 - u, u * self.candidate(z), s0)
+
 
 class ResidualMinGRU(nn.Module):
     r"""A layer of minGRU on top of another: $y = x + h$ with
@@ -40,6 +93,12 @@ class ResidualMinGRU(nn.Module):
     @override
     def forward(self, x: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
         return x + self.cell(nn.functional.gelu(x), h_prev)
+
+    def scan(self, x: torch.Tensor, h0: torch.Tensor) -> torch.Tensor:
+        r"""The outputs $y_1..y_T$ ``(*batch, T, d)`` of the inputs ``x``
+        ``(*batch, T, d)`` from the state $h_0$ = ``h0`` ``(*batch, d)``:
+        ``forward`` step after step (``MinGRU.scan``)."""
+        return x + self.cell.scan(nn.functional.gelu(x), h0)
 
 
 class MinGRUTrace(Stateful):

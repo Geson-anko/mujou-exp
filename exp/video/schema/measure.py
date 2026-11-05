@@ -16,7 +16,8 @@ class MeasureConf:
     clips: int = 256  # per split
     windows: int = 4  # per clip
     every: float = 60.0  # seconds of virtual time between two evaluations
-    # The run diverged when roll10 exceeds diverge times mean10.
+    # The dynamics program: the run diverged when roll10 exceeds diverge times
+    # mean10. (The joint program stops on non-finite values only.)
     diverge: float = 10.0
     # The thresholds of a confirmation preset (the same values as the README),
     # by metric name; empty: nothing to judge.

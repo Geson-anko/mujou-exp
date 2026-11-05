@@ -2,7 +2,7 @@
 
 2026-11-01 に `experiments/continuous_stream/` から `exp/video/` に移し、`video.py` を `balls.py` に改名し、汎用部を `exp/lib/` に移した。振る舞いは変えていない（移動前後で `metrics.jsonl` が一致）。[results/](results/) の M12 までのファイル名は当時のもの。
 
-計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。結果の数字はマイルストーンごとに [results/](results/) に置く（下の表）。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。M11〜M12（|z| の発散、`rollout10`、予測のデコード、EgoDex）は [report-m11-m12.html](report-m11-m12.html) に同じ形でまとめた。
+計画は [PLAN.md](PLAN.md)、実装と検証の単位は [MILESTONES.md](MILESTONES.md)。結果の数字はマイルストーンごとに [results/](results/) に置く（下の表）。M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く。データは埋め込み済みで、`runs/` から作った）。M11〜M12（|z| の発散、`rollout10`、予測のデコード、EgoDex）は [report-m11-m12.html](report-m11-m12.html) に同じ形でまとめた。M14〜M16（動力学だけ、視覚だけ、同時の学習、速さ）は [report-m14-m16.html](report-m14-m16.html)。Walking Tours のフレームは Deface で顔をぼかしてから載せた。
 
 ## 今の方針（2026-11-02）
 
@@ -63,3 +63,4 @@ run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jso
 | M13 | [合成動画を簡単にした土台](results/m13.md) | 未達のまま中断。玉 1 つのオンラインは適格度トレースで 5・10 フレーム先 0.49・0.92 倍（平均の画像との比） |
 | M14 | [動力学だけを学ぶ（玉の状態を観測に）](results/m14.md) | 段 1・2 は達成（段 2 の #45 で test の `roll5/cv5` 0.38〜0.44、`roll10/cv10` 0.25〜0.30、PC-ALM と BP、3 seed）。画素を観測にした段 3 は等加速度の外挿の 1.9〜2.2 倍で届かない |
 | M15 | [画像のエンコーダを JEPA で学ぶ](results/m15.md) | 達成。JEPA に spatial broadcast decoder による最後のフレームの再構成を足し、test の `probe_pos_min` 0.957〜0.979（PC-ALM と BP、3 seed）。JEPA だけでは 0.05〜0.2 で、玉の位置が線形に読めなかった |
+| M16 | [視覚と動力学を同時に学ぶ](results/m16.md) | 達成。動力学を 0.6 秒ごとの窓の BPTT（W=36、feedback=grad、PC-ALM は窓のエピソード）で学び、test の後から学ぶデコーダで 10 フレーム先が平均の画像の 0.66〜0.79 倍（PC-ALM と BP、3 seed）。毎フレームの学習（最初の確認、BP）では 1.3〜1.5 倍で届かなかった。PC-ALM を 5 更新/フレームに縮めると学習が安定せず、採らなかった |

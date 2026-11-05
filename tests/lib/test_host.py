@@ -49,6 +49,17 @@ class TestHost:
         with torch.no_grad():
             torch.testing.assert_close(p["y_hat"], net.output.module(x))
 
+    def test_show_all_returns_the_first_message_of_each_port(self):
+        net = _chain()
+        x = torch.tensor([1.0, -2.0])
+        with mujou.testing.run(net) as run:
+            host = Host(run, frame=1 / 30, period=TAU.period)
+            (a, b), written = host.show_all(
+                {net.prev: _sample(x)}, [net.next, net.next]
+            )
+        assert a["time"] == b["time"] == written
+        assert torch.equal(a["y_hat"], b["y_hat"])
+
     def test_a_host_resumed_from_its_state_steps_the_same_grid(self):
         """Frames of 1/30 s are 16 or 17 steps of 2 ms (the boundaries of
         ``floor(k frame / period)``): a host given ``frames = 4`` steps frame 4

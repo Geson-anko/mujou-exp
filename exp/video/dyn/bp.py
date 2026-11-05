@@ -2,7 +2,7 @@ r"""The baseline of backpropagation: the modules of the dynamics learned by
 autograd inside one node, with everything else as in ``DynamicsBlock``."""
 
 import math
-from typing import cast, override
+from typing import Any, cast, override
 
 import mujou.pc as pc
 import torch
@@ -12,9 +12,11 @@ from mujou.types import Device
 from torch import nn
 
 from exp.lib.mingru import MinGRUTrace, ResidualMinGRU
+from exp.lib.ring import WindowRing
 from exp.video.dyn.modules import DynamicsModules, Top
 from exp.video.dyn.nodes import compare_energy, open_mask, prediction_spec
-from exp.video.schema.dyn import DynamicsConf
+from exp.video.dyn.offline import window_loss
+from exp.video.schema.dyn import DynamicsConf, WindowConf
 from mujou import DictSpec, Node, Port, TensorSpec
 
 __all__ = ["DynamicsBP"]
@@ -47,6 +49,32 @@ class DynamicsBP(Node):
     one). Its own prediction is remembered for the open loop only from a
     frame that predicted (``mask``), as in ``Dynamics``.
 
+    With ``conf.window`` (``WindowConf``: $W$, $O$, $S$, ``relax``) it learns
+    from windows instead of every frame: no per-frame learning and no traces,
+    the prediction of every frame as above. In the update that first sees a
+    frame, it pushes the frame's input $x_k$ (``h`` of the update that first
+    sees it, the one ``z_last`` keeps and the next frame takes as its
+    observed $x_{k-1}$) into a ``WindowRing`` of $W$ frames and stride $S$.
+    When a window is due, it holds the window (the frames and their mask)
+    pending, with the time of its last frame $t_w$ and the ring's elapsed
+    (the $S$ frames since the window before was due, also after a window
+    skipped); at the first update at or after $t_w$ + ``relax`` (after that
+    update's frame, if any) it steps the optimizer once by that elapsed with the
+    gradient of ``window_loss`` (from $s = 0$, ``observed`` frames teacher
+    forced, ``feedback``, ``credit``, ``residual``, the mask; normalized by
+    $B P$), computed inside the node on its own modules from the held,
+    detached frames, and computes again the $s_k$ and $\hat x_k$ it
+    remembers, as above. A window due while another is pending learns the
+    pending one first if its time has come (in the same update), and else
+    replaces it (``win_skipped``); a window with no stream in its mask is not
+    held (the pending one stays), as a frame with no prediction learns
+    nothing. ``win_masked`` counts the streams out of the mask over the
+    windows due (``B`` for a window dropped), ``win_steps`` the steps;
+    ``win_loss`` and ``win_gnorm`` are the loss and the norm of the gradient
+    of the last one (0-d tensors, NaN before the first). All of it is state.
+    The window sets when it learns: ``learn_interval`` (``tick.learn``) is not
+    read, so ``math.inf`` does not freeze a node with a window.
+
     Args:
         mods: The modules, on ``device``.
         act_spec: The spec of what the upstream sends, ``h`` ``(*batch,
@@ -54,7 +82,8 @@ class DynamicsBP(Node):
         conf: The dynamics; ``d_s`` and ``nodes`` are those of ``mods``.
         tau: The time constants of PC-ALM (the period and ``max_dt``).
         optimizer: The optimizer of all the parameters.
-        learn_interval: As in ``pc.clock.LearnClock``.
+        learn_interval: As in ``pc.clock.LearnClock``; not read with a
+            window.
         device: Where the node computes.
     """
 
@@ -93,7 +122,7 @@ class DynamicsBP(Node):
                 setattr(self, f"trace{i + 1}", trace)
                 self._traces.append(trace)
         x = act_spec.field("h", TensorSpec)
-        s = TensorSpec((*batch, self.step.d_state))
+        s = TensorSpec((*batch, self.step.d_state), dtype=x.dtype)
         dev = self.device
         self.z_prev, self.s_prev = x.zeros(device=dev), s.zeros(device=dev)
         self.z_last, self.s_last = x.zeros(device=dev), s.zeros(device=dev)
@@ -108,7 +137,37 @@ class DynamicsBP(Node):
         self.register_state("z_hat_ok")
         self.prev = Port(recv=act_spec)  # receives only: no credit to the input
         self.next = Port(send=prediction_spec(act_spec))
-        self.error = Port(send=TensorSpec(()), initial=torch.tensor(math.nan))
+        self.error = Port(
+            send=TensorSpec((), dtype=x.dtype),
+            initial=torch.tensor(math.nan, dtype=x.dtype),
+        )
+        self._window = conf.window
+        if conf.window is not None:
+            w = conf.window
+            self.ring = WindowRing(
+                self._samples,
+                w.window,
+                x.shape[-1],
+                stride=w.stride,
+                device=dev,
+                dtype=self.z_last.dtype,
+            )
+            self._relax_ns = round(w.relax * 1e9)
+            # The window to learn: "x" (B, W, D), "mask" (B,), "at_ns" (the
+            # time to learn it at) and "elapsed"; None when there is none.
+            self.pending: dict[str, Any] | None = None
+            self.register_state("pending")
+            self.win_steps, self.win_skipped, self.win_masked = 0, 0, 0
+            self.register_state("win_steps")
+            self.register_state("win_skipped")
+            self.register_state("win_masked")
+            self.win_loss = torch.full((), math.nan, dtype=x.dtype, device=dev)
+            self.win_gnorm = torch.full((), math.nan, dtype=x.dtype, device=dev)
+
+    @property
+    def window(self) -> WindowConf | None:
+        """The learning on windows, or None (learning from every frame)."""
+        return self._window
 
     @override
     def on_update(self, dt: float) -> None:
@@ -117,6 +176,9 @@ class DynamicsBP(Node):
         tick = self.clock.tick(dt, act["time"], self.timer.now())
         if tick.new:
             self._new_frame(act)
+        if self._window is not None:
+            self._learn_window()
+            return
         mask = act["mask"] & self.has_prev
         if tick.learn and bool(mask.any()):
             with torch.enable_grad():
@@ -178,6 +240,61 @@ class DynamicsBP(Node):
         self.next.send({"y_hat": z_hat, "y": x, "mask": mask, "time": act["time"]})
         if bool(mask.any()):
             self.error.send(((z_hat - x) ** 2)[mask].mean())
+        if self._window is not None:  # after the memory of this frame is set
+            self._push(x, act)
+
+    def _push(self, x: torch.Tensor, act: Activity) -> None:
+        """Push the frame's input into the ring; hold the window if one is
+        due (learning the one pending first if its time has come)."""
+        ring = self.ring
+        n = self._samples
+        ring.push_(x.reshape(n, -1), act["time"].ns, act["reset"].reshape(n))
+        if not ring.due():
+            return
+        frames, mask = ring.window()
+        self.win_masked += int((~mask).sum())
+        if not bool(mask.any()):
+            return
+        self._learn_window()
+        if self.pending is not None:
+            self.win_skipped += 1
+        self.pending = {
+            "x": frames,
+            "mask": mask,
+            "at_ns": act["time"].ns + self._relax_ns,
+            "elapsed": ring.elapsed(),
+        }
+
+    def _learn_window(self) -> None:
+        """Learn the pending window if its time has come."""
+        p, w = self.pending, self._window
+        if p is None or self.timer.now().ns < p["at_ns"]:
+            return
+        assert w is not None
+        self.pending = None
+        with torch.enable_grad():
+            loss = window_loss(
+                self.mods,
+                p["x"],
+                observed=w.observed,
+                local=False,
+                residual=self._residual,
+                feedback=w.feedback,
+                credit=w.credit,
+                mask=p["mask"],
+            )
+            # BP inside this node, through its own modules from the frames it
+            # held (constants).
+            grads = torch.autograd.grad(  # mujou: local-autograd
+                loss, self._params, materialize_grads=True
+            )
+        self.optimizer.step_(grads, p["elapsed"])
+        with torch.no_grad():
+            self.win_loss.copy_(loss)
+            norms = torch.stack([torch.linalg.vector_norm(g) for g in grads])
+            self.win_gnorm.copy_(torch.linalg.vector_norm(norms))
+        self.win_steps += 1
+        self.s_last, self.z_hat_last = self._predict()
 
     @torch.no_grad()
     def _predict(self) -> tuple[torch.Tensor, torch.Tensor]:

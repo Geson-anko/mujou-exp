@@ -1,0 +1,54 @@
+# @package _global_
+# The control of balls_joint_win: the encoder frozen as in balls_frozen (the
+# last evaluation checkpoint of an M15 run, the job's "parent"; see
+# balls_frozen for how to submit it), only the dynamics learning, on windows as
+# balls_joint_win (repeated here, not included). Below, what balls_joint_win
+# says: balls_joint, with the big dynamics learning on
+# windows instead of every frame (dynamics.window, exp.video.dyn.bp.DynamicsBP):
+# every S = 18 frames, the gradient of the loss of the last W = 36 z of each
+# stream (from s = 0, 16 observed, 20 from the dynamics' own prediction, with
+# the gradient through the prediction fed back, through time), learned 0.3 s
+# after the window's last frame. The rule of the offline bound
+# m16/offline_stream, online: the same windows, the same optimizer and the same
+# elapsed (S frame = 0.6 s). The feedback is grad, the one C1 chose
+# (results/m16.md: only grad passes G0a), not the detach of that preset (run
+# with offline.feedback=grad there). The learner is BP, the default; with
+# learner=pc the nodes learn the same windows by episodes of PC-ALM
+# (dyn.nodes.DynamicsBlock; the messages settle in 0.16 s of the 0.3 s).
+#
+# trace false (the window learns through time itself) and open_loop 0: the
+# open loop is that of the window; the prediction of every frame (preq, the
+# live path) is from the observed past z only, so preq_open is not recorded.
+#
+# The optimizer is one Adam(1e-3, 0.9, 0.999) step per window, the mapping of
+# m16/offline_stream: tau = frame / lr = 600 s, so a step of elapsed = 0.6 s
+# moves by 1e-3; tau_m = 0.6 / -ln(0.9) s and tau_v = 0.6 / -ln(0.999) s give
+# the betas 0.9 and 0.999 per step; no warmup, no weight decay.
+# (balls_joint is included directly: an experiment that includes one that
+# includes one breaks.)
+defaults:
+  - m16/balls_joint
+  - override /dynamics: big
+  - _self_
+name: m16/balls_frozen_win
+tags: [m16, balls, frozen, window]
+vision:
+  frozen: true
+dynamics:
+  trace: false
+  residual: true
+  open_loop: 0.0
+  window:
+    window: 36
+    observed: 16
+    stride: 18
+    feedback: grad
+    credit: bptt
+    relax: 0.3
+optim:
+  kind: adamw
+  lr: 5.5555555555555556e-05
+  tau_m: 5.6947329486179425
+  tau_v: 599.6999499749836
+  warmup: 0
+  weight_decay: 0

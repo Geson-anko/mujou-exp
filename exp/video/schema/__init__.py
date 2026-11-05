@@ -11,7 +11,7 @@ entry of the defaults of ``conf/run.yaml``.
 from hydra.core.config_store import ConfigStore
 
 from exp.video.schema.data import BallsConf, DataConf, PhysicsConf, ToursConf
-from exp.video.schema.dyn import DynamicsConf
+from exp.video.schema.dyn import DynamicsConf, WindowConf
 from exp.video.schema.learn import LearnerConf, OfflineConf, OptimConf
 from exp.video.schema.measure import MeasureConf
 from exp.video.schema.run import CtlConf, RunConf, TimeConf
@@ -31,6 +31,7 @@ __all__ = [
     "TimeConf",
     "ToursConf",
     "VisionConf",
+    "WindowConf",
 ]
 
 ConfigStore.instance().store(name="run_schema", node=RunConf)

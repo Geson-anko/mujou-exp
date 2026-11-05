@@ -1,5 +1,5 @@
 r"""The decoder learned afterwards (M15, M16; design 8.5): for each evaluation
-checkpoint of a vision run, a decoder from $z$ to the frame, learned by BP
+checkpoint of a vision or joint run, a decoder from $z$ to the frame, learned by BP
 with Adam (``exp.lib.optim.adam``, not ``torch.optim``) while the encoder is
 held, decodes the $z$ of the evaluation chunks.
 
@@ -55,6 +55,13 @@ from exp.video.compose import from_dict
 from exp.video.data.physics import BallStreams, render
 from exp.video.data.walking_tours import videos
 from exp.video.jepa.vit import VisionModules, build_vision
+from exp.video.measure.joint import (
+    Windows,
+    decode,
+    image_rows,
+    joint_dynamics,
+    latent_errors,
+)
 from exp.video.schema.run import RunConf
 
 __all__ = [
@@ -279,11 +286,6 @@ def _encode(
     return torch.cat(zs)
 
 
-@torch.no_grad()
-def _decode(dec: nn.Module, z: Tensor) -> Tensor:
-    return torch.cat([dec(x) for x in z.split(BATCH)])
-
-
 def _mse(a: Tensor, b: Tensor) -> float:
     return float(((a - b) ** 2).mean())
 
@@ -304,13 +306,15 @@ class Parent:
         """The run in ``run_dir``, decoded on ``device``.
 
         Raises:
-            ValueError: The run is not of the program ``"vision"``, or has no
+            ValueError: The run is not of the program ``"vision"`` or ``"joint"``, or has no
                 evaluation checkpoint.
         """
         job = json.loads((run_dir / "job.json").read_text())
         conf = dataclasses.replace(from_dict(job["config"]), device=device)
-        if conf.program != "vision":
-            raise ValueError(f"the run {run_dir} is of {conf.program!r}, not 'vision'")
+        if conf.program not in ("vision", "joint"):
+            raise ValueError(
+                f"the run {run_dir} is of {conf.program!r}, not 'vision' or 'joint'"
+            )
         ckpts = sorted((run_dir / "ckpt").glob("*.pt"))
         if not ckpts:
             raise ValueError(f"the run {run_dir} has no evaluation checkpoint")
@@ -328,6 +332,12 @@ class Decoding:
         evals: The evaluation chunks ``(n, N, C, H, W)`` in ``[0, 1]`` of each
             split, in the order of the lines; the PNG shows the first.
         root: The local copy of the data, for a run of Walking Tours.
+        windows: For a run of the program ``"joint"``, the evaluation windows
+            of each split (``measure.joint.Windows``, the keys of ``evals``):
+            the dynamics of the checkpoint rolls out from them, the decoder
+            decodes the predicted $z$, and the lines also have the image keys
+            of ``measure.joint.image_rows`` (the PNG then shows the true frames
+            and the decoded rollouts instead).
         frames: The chunks of the stream each decoder learns on.
         steps: The steps of each decoder's fit.
     """
@@ -339,6 +349,7 @@ class Decoding:
         *,
         evals: Mapping[str, Tensor],
         root: Path | None = None,
+        windows: Mapping[str, Windows] | None = None,
         frames: int = FRAMES,
         steps: int = STEPS,
         done: int = 0,
@@ -351,6 +362,8 @@ class Decoding:
         self._evals = {s: x.to(conf.device) for s, x in evals.items()}
         self._dev = torch.device(conf.device)
         self._mods = build_vision(conf, seed=conf.seed)
+        self._windows = windows
+        self._dyn = None if windows is None else joint_dynamics(conf)
         self._source = stream_chunks(conf, frames, root=root)
         self._targets = torch.cat(
             [
@@ -365,6 +378,22 @@ class Decoding:
         kept = metrics.read_text().splitlines(True)[: done * len(evals)] if done else []
         with atomic_open(metrics) as f:
             f.write("".join(kept).encode())
+
+    def _rollouts(
+        self, mods: VisionModules, dec: nn.Module, w: Windows
+    ) -> tuple[dict[str, float], Tensor]:
+        """The image keys and picture of the joint run on the windows ``w``."""
+        assert self._dyn is not None and self._conf.dynamics is not None
+        z = w.z(mods)
+        horizons = self._conf.measure.horizons
+        _, pred = latent_errors(
+            self._dyn,
+            z,
+            observed=w.observed,
+            horizons=horizons,
+            residual=self._conf.dynamics.residual,
+        )
+        return image_rows(dec, w, z, pred, horizons)
 
     def _config(self, frames: int) -> dict[str, Any]:
         job = self.parent.job
@@ -395,16 +424,19 @@ class Decoding:
         mods, dev = self._mods, self._dev
         # The training decoder (``vision.recon`` > 0) is loaded and ignored: the
         # decoder fit here is its own.
-        head = ckpt.load_eval(path, mods.named(), group=self.parent.job["group"])
+        named: dict[str, nn.Module] = dict(mods.named())
+        if self._dyn is not None:
+            named |= {"step": self._dyn.step, "readout": self._dyn.readout}
+        head = ckpt.load_eval(path, named, group=self.parent.job["group"])
         z = _encode(mods, self._source, dev)
         gen = torch.Generator().manual_seed(self._conf.seed + DECODER_SEED)
         dec = fit_decoder(z, self._targets, steps=self._steps, gen=gen)
-        recon_fit = _mse(_decode(dec, z), self._targets)
+        recon_fit = _mse(decode(dec, z), self._targets)
         lines: list[dict[str, Any]] = []
-        shown: list[Tensor] = []
+        picture: Tensor | None = None  # of the first split
         for split, chunks in self._evals.items():
             x = chunks[:, -1]  # (n, C, H, W)
-            x_hat = _decode(dec, _encode(mods, chunks, dev))
+            x_hat = decode(dec, _encode(mods, chunks, dev))
             lines.append(
                 {
                     "t": head["t"],
@@ -415,9 +447,14 @@ class Decoding:
                     "recon_fit": recon_fit,
                 }
             )
-            if not shown:
-                shown = [x[:SHOWN], x_hat[:SHOWN]]
-        grid = torch.stack(shown).cpu()  # (2, SHOWN, C, H, W)
+            if self._windows is None:
+                frames = torch.stack([x[:SHOWN], x_hat[:SHOWN]])  # (2, SHOWN, C, H, W)
+            else:  # (2 SHOWN, 1 + horizons, C, H, W)
+                row, frames = self._rollouts(mods, dec, self._windows[split])
+                lines[-1] |= row
+            picture = frames if picture is None else picture
+        assert picture is not None
+        grid = picture.cpu()
         scale = max(1, 96 // grid.shape[-1])
         write_png(self.out / f"{path.stem}.png", tile(grid, scale=scale))
         with (self.out / "metrics.jsonl").open("a") as f:

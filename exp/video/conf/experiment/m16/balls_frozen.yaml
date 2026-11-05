@@ -1,0 +1,17 @@
+# @package _global_
+# The control of M16: the same as balls_joint, but the encoder is the last
+# evaluation checkpoint of an M15 run (the job's "parent", on this host) and
+# never learns; only the dynamics learns.
+#   fleet submit ... +experiment=m16/balls_frozen --set parent=<batch>/<run_id> \
+#       --after <run_id> --host <host>
+# One job per parent: the parent must be a finished M15 run of the same vision
+# settings, seed, learner and balls as the joint run it controls (checked; a
+# mismatch fails the job), so with several seeds submit a job per seed, each
+# with its own parent.
+defaults:
+  - m16/balls_joint
+  - _self_
+name: m16/balls_frozen
+tags: [m16, balls, frozen]
+vision:
+  frozen: true

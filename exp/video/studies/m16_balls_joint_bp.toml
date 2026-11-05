@@ -1,0 +1,35 @@
+# M16 on the balls: the vision and the dynamics of its z learned at once
+# (m16/balls_joint). BP on the seeds 100/101 (val); the objective is
+# roll10/mean10 of the dynamics on the encoder's z (programs/joint.py). The
+# vision is the provisional setting of M15 (the broadcast pilot, mu = 100):
+# the dynamics' optimizer of M14 (#45) was chosen on observations of 6 dims,
+# z has 128, so it is searched again here.
+[study]
+name = "m16-balls-joint-bp-v1"
+overrides = ["+experiment=m16/balls_joint", "learner=bp", "phase=explore"]
+seeds = [100, 101]
+parallel = 6        # trials in flight (x 2 seeds runs)
+max_trials = 30
+res = "any_gpu"
+gpu_mem = 4.0
+ram = 6.0
+prio = 30
+
+[space]
+"optim.lr" = {float = [3e-5, 3e-3], log = true}
+"optim.tau_m" = {float = [0.03, 3.0], log = true}
+"optim.tau_v" = {float = [10.0, 300.0], log = true}
+"optim.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"dynamics.trace" = {categorical = [true, false]}
+"dynamics.residual" = {categorical = [true, false]}
+"dynamics.open_loop" = {categorical = [0.0, 0.25, 0.5]}
+
+# The preset (#45 of M14 stage 2).
+[[enqueue]]
+"optim.lr" = 0.00022069490833187005
+"optim.tau_m" = 0.11564592524837332
+"optim.tau_v" = 134.92133555335573
+"optim.warmup" = 60.0
+"dynamics.trace" = true
+"dynamics.residual" = true
+"dynamics.open_loop" = 0.0

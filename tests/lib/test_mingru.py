@@ -122,3 +122,43 @@ class TestMinGRUTrace:
         for v in given.values():
             v.zero_()
         assert all(bool((v == 1).all()) for v in trace.state_dict().values())
+
+
+def _steps(module, xs: torch.Tensor, s0: torch.Tensor) -> torch.Tensor:
+    """``module``'s forward step after step over the axis -2 of ``xs``."""
+    out, s = [], s0
+    for t in range(xs.shape[-2]):
+        y = module(xs[..., t, :], s)
+        out.append(y)
+        s = y - xs[..., t, :] if isinstance(module, ResidualMinGRU) else y
+    return torch.stack(out, -2)
+
+
+class TestScan:
+    @pytest.mark.parametrize("residual", [False, True], ids=["cell", "residual"])
+    @pytest.mark.parametrize("batch", [(), (3,), (2, 3)], ids=["one", "b", "bb"])
+    @pytest.mark.parametrize("zero", [True, False], ids=["s0=0", "s0"])
+    def test_it_is_the_steps_in_value_and_in_every_gradient(
+        self, residual, batch, zero
+    ):
+        """``scan`` is ``forward`` step after step (carrying the state, ``h =
+        y - x`` for the residual layer): the same outputs, and the same
+        gradients of a random linear function of them for the inputs, the
+        initial state and every parameter, to 1e-12 in float64."""
+        torch.manual_seed(3)
+        d = 5
+        module = (ResidualMinGRU(d) if residual else MinGRU(4, d)).double()
+        d_in = d if residual else 4
+        xs = torch.randn(*batch, 7, d_in, dtype=torch.float64, requires_grad=True)
+        s0 = torch.randn(*batch, d, dtype=torch.float64)
+        if zero:
+            s0 = torch.zeros_like(s0)
+        s0.requires_grad_()
+        weight = torch.randn(*batch, 7, d, dtype=torch.float64)
+        params = list(module.parameters())
+        got, want = module.scan(xs, s0), _steps(module, xs, s0)
+        torch.testing.assert_close(got, want, rtol=0, atol=1e-12)
+        g_got = torch.autograd.grad((got * weight).sum(), [xs, s0, *params])
+        g_want = torch.autograd.grad((want * weight).sum(), [xs, s0, *params])
+        for a, b in zip(g_got, g_want, strict=True):
+            torch.testing.assert_close(a, b, rtol=0, atol=1e-12)
