@@ -56,7 +56,7 @@ class TestSubtrees:
                 "optim_vision.lr=2e-3",
             ]
         )
-        assert conf.vision is not None and conf.vision.dim == 384
+        assert conf.vision is not None and conf.vision.dim == 256
         assert conf.optim_vision is not None
         assert (conf.optim_vision.kind, conf.optim_vision.lr) == ("adamw", 2e-3)
         assert conf.optim.kind == "sgd"

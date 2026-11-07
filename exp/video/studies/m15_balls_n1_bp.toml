@@ -1,0 +1,32 @@
+# M15 on the balls, N = 1: the tiny ViT learned by JEPA with BP, searched on the
+# seeds 100/101 (val). The objective is 1 - probe_pos_min (the least R^2 of a
+# linear probe from z to a ball's position; programs/vision.py). Compares the
+# stop-gradient on the target view, where SIGReg acts (z, the patch tokens or
+# both), its weight and the masking (design 8.4).
+[study]
+name = "m15-balls-n1-bp-v1"
+overrides = ["+experiment=m15/balls_n1", "learner=bp", "phase=explore"]
+seeds = [100, 101]
+parallel = 6        # trials in flight (x 2 seeds runs); 4 x 4090 + 4 x 4060
+max_trials = 32
+res = "any_gpu"
+gpu_mem = 4.0
+ram = 6.0
+prio = 40
+
+[space]
+"optim_vision.lr" = {float = [3e-5, 3e-3], log = true}
+"optim_vision.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"vision.sg" = {categorical = [false, true]}
+"vision.sigreg_on" = {categorical = ["z", "tokens", "both"]}
+"vision.sigreg" = {float = [0.01, 0.9], log = true}
+"vision.mask_ratio" = {categorical = [0.25, 0.5, 0.75]}
+
+# The preset as it is.
+[[enqueue]]
+"optim_vision.lr" = 1e-4
+"optim_vision.warmup" = 300.0
+"vision.sg" = false
+"vision.sigreg_on" = "z"
+"vision.sigreg" = 0.05
+"vision.mask_ratio" = 0.5

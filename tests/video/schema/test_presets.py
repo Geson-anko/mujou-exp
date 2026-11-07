@@ -48,7 +48,7 @@ class TestExperiment:
 
 
 # One field per group that tells which option was applied.
-WIDTHS = {"vit_t": 192, "vit_s": 384, "small": 256, "big": 512}
+WIDTHS = {"vit_t": 128, "vit_s": 256, "small": 256, "big": 512}
 
 
 def _applied(conf: RunConf, group: str) -> object:

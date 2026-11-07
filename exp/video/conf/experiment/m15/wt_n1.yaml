@@ -1,0 +1,30 @@
+# @package _global_
+# M15 on Walking Tours, N = 1: the prepared 64x64 frames at 10 fps, shown one
+# per frame of the run (1/30 s of virtual time), the tiny ViT in patches of 8
+# (64 tokens). Zurich is kept for the evaluation only. The data is
+# ad6e56b5995e (walking_tours.finalize, 2026-11-03).
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: none
+  - override /vision: vit_t
+program: vision
+name: m15/wt_n1
+tags: [m15, wt, n1]
+data:
+  balls: null
+  tours:
+    data_version: ad6e56b5995e
+    held_out: Zurich
+    size: 64
+    fps: 10.0
+measure:
+  clips: 64  # x 4 windows: 256 chunks of the held-out video per split (x 3)
+vision:
+  # Pixel reconstruction from z (off): switch on with vision.recon=<mu> (e.g. 1.0;
+  # vision.recon_hidden sets the decoder's width), see exp.video.jepa.loss.
+  recon: 0.0
+  patch: 8
+  # of the nine training videos of ad6e56b5995e (every 50th frame)
+  pixel_mean: 0.46
+  pixel_std: 0.28
+  frames: 1
