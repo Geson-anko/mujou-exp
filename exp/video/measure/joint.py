@@ -35,6 +35,19 @@ $z$ is very strong: the judgement that counts is in images (``image_rows``):
 ``image_rows`` has those keys under ``prefix`` ``"img_"`` (the decoder learned
 afterwards); the decoder of the run's own reconstruction term is scored under
 ``"rec_"`` (``rec_roll{h}``, ``rec_recon``), so the two never share a key.
+
+The dream (``dream``, a required evaluation of every joint run since
+2026-11-11) runs the dynamics open loop ``DREAM`` frames (5 s) on windows of
+that horizon (``ball_windows(..., horizon=DREAM)``), shown either the
+``observed`` chunks as above (``dream``) or only the last of them, from the
+state 0 (``dream1``), both predicting the same frames. In images, for $h$ in
+``DREAM_HORIZONS``:
+
+- ``dream_img{h}``, ``dream1_img{h}``: as ``img_roll{h}``;
+- ``dream_copy{h}``, ``dream_mean{h}``: as ``pix_copy{h}`` and ``pix_mean{h}``;
+- ``dream_lead``, ``dream1_lead``: the frames ahead before the decoded
+  prediction is first no better than the mean image (``DREAM`` if never);
+- ``dream_nonfinite``, ``dream1_nonfinite``: as ``nonfinite``.
 """
 
 from collections.abc import Sequence
@@ -52,11 +65,16 @@ from exp.video.schema.run import RunConf
 
 __all__ = [
     "BATCH",
+    "DREAM",
+    "DREAM_EVERY",
+    "DREAM_HORIZONS",
+    "DREAM_SHOWN",
     "DYNAMICS_SEED",
     "SHOWN",
     "Windows",
     "ball_windows",
     "decode",
+    "dream",
     "image_rows",
     "joint_dynamics",
     "latent_errors",
@@ -65,6 +83,10 @@ __all__ = [
 BATCH = 256  # chunks encoded or decoded at once
 SHOWN = 4  # windows in a picture
 DYNAMICS_SEED = 1  # added to the run's seed: the vision has the seed itself
+DREAM = 150  # frames a dream runs open loop (5 s at 30 fps)
+DREAM_HORIZONS = (1, 5, 10, 20, 30, 60, 150)  # the dream's keys (module docstring)
+DREAM_EVERY = 10  # frames between two columns of a dream's picture
+DREAM_SHOWN = 3  # windows in a dream's picture
 
 
 def joint_dynamics(conf: RunConf) -> DynamicsModules:
@@ -105,11 +127,12 @@ class Windows:
         return self.images[:, self.frames - 1 + self.observed + h - 1]
 
     @torch.no_grad()
-    def z(self, mods: VisionModules) -> Tensor:
-        """$z$ ``(n, observed + horizon, D)`` of every chunk of every window at
-        the weights of ``mods`` as they are."""
+    def z(self, mods: VisionModules, chunks: int | None = None) -> Tensor:
+        """$z$ ``(n, c, D)`` of the first ``c = chunks`` (all, ``observed +
+        horizon``, if ``None``) chunks of every window at the weights of
+        ``mods`` as they are."""
         n = len(self.images)
-        c = self.chunks
+        c = self.chunks if chunks is None else chunks
         flat = torch.arange(n * c, device=self.images.device)
         window, j = flat // c, flat % c
         span = torch.arange(self.frames, device=self.images.device)
@@ -120,11 +143,14 @@ class Windows:
         return torch.cat(out).view(n, c, -1)
 
 
-def ball_windows(conf: RunConf, split: str, *, stride: int) -> Windows:
+def ball_windows(
+    conf: RunConf, split: str, *, stride: int, horizon: int | None = None
+) -> Windows:
     """The windows of ``split`` of the clips of balls of ``conf``
     (``measure.clips`` clips of ``measure.windows`` windows ``stride`` frames
     apart, as ``programs.vision.Measures`` has its chunks), rendered, on the
-    device of the run.
+    device of the run, of ``horizon`` (``max(measure.horizons)`` if ``None``)
+    frames past the observed.
 
     Raises:
         ValueError: ``conf`` has no vision or no balls.
@@ -132,7 +158,8 @@ def ball_windows(conf: RunConf, split: str, *, stride: int) -> Windows:
     balls, v, m = conf.data.balls, conf.vision, conf.measure
     if balls is None or v is None:
         raise ValueError(f"the run {conf.name!r} needs balls and a vision")
-    n, horizon = v.frames, max(m.horizons)
+    n = v.frames
+    horizon = max(m.horizons) if horizon is None else horizon
     clips = make_clips(
         balls,
         split=split,
@@ -226,3 +253,72 @@ def image_rows(
         rows.append(torch.stack([w.frame(h)[i] for h in steps]))
         rows.append(torch.stack([decoded[h][i] for h in steps]))
     return out, torch.stack(rows)
+
+
+def _mse(a: Tensor, b: Tensor) -> float:
+    return float(((a - b) ** 2).double().mean())
+
+
+@torch.no_grad()
+def dream(
+    dyn: DynamicsModules,
+    dec: nn.Module,
+    w: Windows,
+    z: Tensor,
+    *,
+    residual: bool,
+) -> tuple[dict[str, float], dict[str, list[float]], Tensor]:
+    """The dream (module docstring) of ``dyn`` on the windows ``w`` (of
+    horizon ``DREAM`` for the evaluation) from $z$ ``(n, observed, D)`` of
+    their observed chunks, decoded by ``dec``.
+
+    Returns:
+        The keys of the module docstring; the curves of the mean squared
+        error per pixel at every frame ahead 1 .. H (``"dream"``,
+        ``"dream1"``, ``"copy"``, ``"mean"``, each ``H`` values); and a
+        picture ``(3 k, 1 + H // DREAM_EVERY, C, H, W)`` of the first ``k =
+        DREAM_SHOWN`` windows: for each, a row of the true frames, one of
+        ``dream`` and one of ``dream1``, at the last observed frame and then
+        every ``DREAM_EVERY`` frames (the first column of the dreams is the
+        decoded $z$ of the last observed chunk).
+    """
+    o, horizon = w.observed, w.horizon
+    preds = {
+        "dream": rollout(dyn, z, residual=residual, observed=o, horizon=horizon),
+        "dream1": rollout(
+            dyn, z[:, o - 1 :], residual=residual, observed=1, horizon=horizon
+        ),
+    }
+    k = min(DREAM_SHOWN, len(z))
+    last = w.frame(0)
+    recon = decode(dec, z[:k, o - 1])
+    columns: dict[str, list[Tensor]] = {
+        "truth": [last[:k]],
+        **{key: [recon] for key in preds},
+    }
+    curves: dict[str, list[float]] = {key: [] for key in (*preds, "copy", "mean")}
+    for h in range(1, horizon + 1):
+        truth = w.frame(h)
+        curves["copy"].append(_mse(last, truth))
+        curves["mean"].append(_mse(truth.mean(0, keepdim=True), truth))
+        shown = h % DREAM_EVERY == 0
+        if shown:
+            columns["truth"].append(truth[:k])
+        for key, pred in preds.items():
+            x = decode(dec, pred[:, h - 1])
+            curves[key].append(_mse(x, truth))
+            if shown:
+                columns[key].append(x[:k])
+    out: dict[str, float] = {}
+    for h in (h for h in DREAM_HORIZONS if h <= horizon):
+        for key in preds:
+            out[f"{key}_img{h}"] = curves[key][h - 1]
+        out[f"dream_copy{h}"] = curves["copy"][h - 1]
+        out[f"dream_mean{h}"] = curves["mean"][h - 1]
+    for key, pred in preds.items():
+        below = [a < b for a, b in zip(curves[key], curves["mean"], strict=True)]
+        out[f"{key}_lead"] = below.index(False) if False in below else horizon
+        out[f"{key}_nonfinite"] = int((~torch.isfinite(pred).flatten(1).all(1)).sum())
+    rows = {key: torch.stack(c, 1) for key, c in columns.items()}  # (k, cols, ...)
+    picture = torch.stack([rows[key] for key in ("truth", *preds)], 1)
+    return out, curves, picture.flatten(0, 1)

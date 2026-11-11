@@ -6,6 +6,7 @@ the frozen control, and the posthoc decoding of the rollouts."""
 import dataclasses
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, cast, override
 
@@ -38,6 +39,8 @@ from exp.video.jepa.nets import build_vision_net
 from exp.video.jepa.vit import build_vision
 from exp.video.main import local_job
 from exp.video.measure.joint import (
+    DREAM,
+    DREAM_HORIZONS,
     Windows,
     ball_windows,
     image_rows,
@@ -845,6 +848,44 @@ class TestPosthoc:
         ):
             assert key in lines[0], key
         assert (tmp_path / "post" / "00001.0.png").is_file()
+
+    def test_every_checkpoint_dreams(self, tmp_path):
+        """The dream is required: each line has its keys, ``dream.jsonl`` the
+        curves of every frame ahead up to ``DREAM``, and each checkpoint a
+        PNG of it; a decoding resumed at the second checkpoint writes the
+        same bytes."""
+        out = tmp_path / "run"
+        assert _run(out, ["ctl.ckpt_every=0.5", "measure.horizons=[1,5]"]) == Exit.OK
+        parent = Parent.read(out, device="cpu")
+        whole = tmp_path / "whole"
+        d = decoding(parent, whole, frames=16, steps=2)
+        lines = [line for _ in range(len(d)) for line in d.step()]
+        for line in lines:
+            for h in DREAM_HORIZONS:
+                for key in ("dream_img", "dream1_img", "dream_copy", "dream_mean"):
+                    assert math.isfinite(line[f"{key}{h}"]), (key, h)
+            assert 0 <= line["dream_lead"] <= DREAM
+            assert line["dream_nonfinite"] == line["dream1_nonfinite"] == 0
+        curves = _lines(whole / "dream.jsonl")
+        assert [(c["t"], c["split"]) for c in curves] == [
+            (x["t"], x["split"]) for x in lines
+        ]
+        for c, line in zip(curves, lines, strict=True):
+            assert all(len(c[k]) == DREAM for k in ("dream", "dream1", "copy", "mean"))
+            assert c["dream"][149] == line["dream_img150"]
+            assert c["mean"][0] == line["dream_mean1"]
+        stems = [p.stem for p in parent.ckpts]
+        assert len(stems) == 2
+        for stem in stems:
+            assert (whole / f"{stem}-dream.png").is_file()
+        resumed = tmp_path / "resumed"
+        shutil.copytree(whole, resumed)
+        r = decoding(parent, resumed, frames=16, steps=2, done=1)
+        r.step()
+        files = sorted(p.name for p in whole.iterdir())
+        assert files == sorted(p.name for p in resumed.iterdir())
+        for name in files:
+            assert (whole / name).read_bytes() == (resumed / name).read_bytes(), name
 
 
 OFFLINE = [

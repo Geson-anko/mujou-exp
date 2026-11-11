@@ -5,7 +5,7 @@ checkpoint of a finished vision run, the parent, as a job of the fleet::
     python -m exp.video.main --job <run_dir>/job.json --attempt <n>
 
 for a job of ``program="vision"`` or ``"joint"`` (M16: the lines also have the
-image keys of the dynamics' rollouts, ``measure.joint``), ``task="posthoc"``, whose top-level
+image keys of the dynamics' rollouts and of the dream, ``measure.joint``), ``task="posthoc"``, whose top-level
 ``"parent"`` names the parent's run directory: ``"<batch>/<run_id>"``,
 relative to the runs' root of the worker (``<run_dir>/../..``), or an
 absolute path. The parent must be on this host (submit the job ``after``
@@ -41,7 +41,7 @@ from torch import Tensor, nn
 from exp.lib.provenance import assert_free_threaded, configure_determinism
 from exp.lib.rundir import EnvError, Exit
 from exp.video.loop import Schedule
-from exp.video.measure.joint import ball_windows
+from exp.video.measure.joint import DREAM, ball_windows
 from exp.video.measure.posthoc import FRAMES, STEPS, Decoding, Parent
 from exp.video.programs.vision import STRIDE, Measures, tours_root
 from exp.video.schema.run import RunConf
@@ -77,7 +77,8 @@ def decoding(
     """The ``Decoding`` of ``parent`` into ``out``, of the evaluation chunks
     of ``SPLITS`` of the parent (``Measures``) and, for Walking Tours, its
     data's local copy (``tours_root``); for a parent of the program
-    ``"joint"``, also its evaluation windows (``measure.joint``).
+    ``"joint"``, also its evaluation windows and those of the dream
+    (``measure.joint``, horizon ``DREAM``).
 
     Raises:
         EnvError: The run streams Walking Tours whose data is not here.
@@ -87,15 +88,19 @@ def decoding(
     evals: dict[str, Tensor] = {s: sets[s].chunks for s in SPLITS}
     t = conf.data.tours
     root = None if t is None else tours_root(t)
-    windows = None  # a joint run's dynamics rolls out from windows of the balls
+    windows = dreams = None  # a joint run rolls out from windows of the balls
     if conf.program == "joint":
         windows = {s: ball_windows(conf, s, stride=STRIDE) for s in SPLITS}
+        dreams = {
+            s: ball_windows(conf, s, stride=STRIDE, horizon=DREAM) for s in SPLITS
+        }
     return Decoding(
         parent,
         out,
         evals=evals,
         root=root,
         windows=windows,
+        dreams=dreams,
         frames=frames,
         steps=steps,
         done=done,
