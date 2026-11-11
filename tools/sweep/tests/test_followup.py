@@ -186,3 +186,22 @@ class TestBracket:
                 param="optim.tau_m",
                 factors=[0.5, 1.0, 2.0],
             )
+
+
+def test_a_posthoc_study_follows_each_confirm_run_by_its_posthoc(nas, fleet):
+    conf = make_conf(objective_from="posthoc", posthoc={"res": "any_gpu", "ram": 9.0})
+    s = open_study(conf, optuna.storages.InMemoryStorage(), code=code_info())
+    t = s.ask()
+    conf.space.suggest(t)
+    s.tell(t, 0.7)
+    out = follow(confirm, s, nas, top=1, learners=["pc"], seeds=[0, 1])
+    assert [state for state, _ in out] == ["new"] * 4
+    runs, posts = out[0::2], out[1::2]
+    for (_, run), (_, post) in zip(runs, posts, strict=True):
+        assert post["after"] == [run["run_id"]]
+        assert post["batch"] == "m14-s1-confirm-v1-post"
+        assert post["decode"] == {"ckpts": "all"}
+        assert post["parent"] == str(nas.runs / "m14-s1-confirm-v1" / run["run_id"])
+        assert post["res"] == {**RES, "ram_gb": 9.0}  # the confirm's class
+    again = follow(confirm, s, nas, top=1, learners=["pc"], seeds=[0, 1])
+    assert [state for state, _ in again] == ["duplicate"] * 4

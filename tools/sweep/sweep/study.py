@@ -10,7 +10,10 @@
     max_trials = 120
     res = "any_gpu"                   # optional: ram, gpu_mem, prio, batch,
                                       # min_resource, reduction_factor,
-                                      # n_startup_trials, sampler_seed
+                                      # n_startup_trials, sampler_seed,
+                                      # objective_from ("evals" | "posthoc")
+    [study.posthoc]                   # with objective_from = "posthoc" (optional)
+    res = "4090"                      # res, gpu_mem, ram, ckpts ("last" | "all")
     [space]
     ...                               # sweep.space
     [[enqueue]]
@@ -39,12 +42,24 @@ from typing import Any
 
 import optuna
 
+from exp.lib.fleet.jobs import make_job
 from exp.lib.fleet.queue import nas_retry
 from sweep.space import Space
 
-__all__ = ["StudyConf", "StudyError", "backup", "check_bound", "open_study"]
+__all__ = [
+    "OBJECTIVE_FROM",
+    "StudyConf",
+    "StudyError",
+    "backup",
+    "check_bound",
+    "open_study",
+]
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# Where a trial's value comes from: the runs' own val evaluations, or the
+# result of a task=posthoc job after each run (its final.decode.val.objective).
+OBJECTIVE_FROM = ("evals", "posthoc")
+_POSTHOC_KEYS = frozenset({"res", "gpu_mem", "ram", "ckpts"})
 # The keys of [study] that do not bind it: how many trials, how soon, and
 # what a run reserves (not in its run_id).
 _OPERATIONAL = frozenset({"parallel", "max_trials", "prio", "ram", "gpu_mem"})
@@ -64,6 +79,8 @@ _STUDY_KEYS = frozenset(
         "reduction_factor",
         "n_startup_trials",
         "sampler_seed",
+        "objective_from",
+        "posthoc",
     }
 )
 
@@ -78,7 +95,13 @@ class StudyConf:
     parameters + ``seed=s`` for each of ``seeds``, queued as the batch
     ``batch`` on slots of ``res``; ``parallel`` trials at a time, ``max_trials``
     in all. ASHA (``min_resource`` seconds of virtual time, then times
-    ``reduction_factor``) and TPE (``n_startup_trials`` random ones first)."""
+    ``reduction_factor``) and TPE (``n_startup_trials`` random ones first).
+
+    With ``objective_from`` ``"posthoc"`` a trial's value is that of the
+    ``task=posthoc`` job queued after each of its completed runs (batch
+    ``<batch>-post``, on slots of ``post_res``, its ``ckpts`` checkpoints;
+    ``sweep.coordinator``), and ASHA never prunes (there is no value before
+    the end)."""
 
     name: str
     overrides: tuple[str, ...]
@@ -96,6 +119,11 @@ class StudyConf:
     reduction_factor: int = 3
     n_startup_trials: int = 16
     sampler_seed: int = 0
+    objective_from: str = "evals"
+    post_res: str = ""  # "": res
+    post_gpu_mem_gb: float | None = None  # None: gpu_mem
+    post_ram_gb: float | None = None  # None: ram
+    post_ckpts: str = "last"
 
     @classmethod
     def load(cls, path: Path) -> StudyConf:
@@ -112,6 +140,11 @@ class StudyConf:
             raise ValueError(f"[study]: unknown keys {sorted(unknown)}")
         if not _NAME.fullmatch(str(s["name"])):
             raise ValueError(f"[study] name {s['name']!r}: letters, digits, _ -")
+        post = dict(s.get("posthoc") or {})
+        if not set(post) <= _POSTHOC_KEYS:
+            raise ValueError(
+                f"[study.posthoc]: unknown keys {sorted(set(post) - _POSTHOC_KEYS)}"
+            )
         space = Space.from_dict(d.get("space", {}))
         enqueue = tuple(dict(e) for e in d.get("enqueue", []))
         for e in enqueue:
@@ -133,7 +166,23 @@ class StudyConf:
             reduction_factor=int(s.get("reduction_factor", 3)),
             n_startup_trials=int(s.get("n_startup_trials", 16)),
             sampler_seed=int(s.get("sampler_seed", 0)),
+            objective_from=str(s.get("objective_from", "evals")),
+            post_res=str(post.get("res", "")),
+            post_gpu_mem_gb=None
+            if post.get("gpu_mem") is None
+            else float(post["gpu_mem"]),
+            post_ram_gb=None if post.get("ram") is None else float(post["ram"]),
+            post_ckpts=str(post.get("ckpts", "last")),
         )
+        if conf.objective_from not in OBJECTIVE_FROM:
+            raise ValueError(
+                f"[study] objective_from must be one of {OBJECTIVE_FROM}, not "
+                f"{conf.objective_from!r}"
+            )
+        if conf.post_ckpts not in ("last", "all"):
+            raise ValueError(
+                f"[study.posthoc] ckpts: 'last' or 'all', not {conf.post_ckpts!r}"
+            )
         if not conf.seeds or conf.parallel < 1 or conf.max_trials < 1:
             raise ValueError("[study]: seeds, parallel and max_trials must be positive")
         if any(o.startswith("seed=") for o in conf.overrides):
@@ -158,6 +207,14 @@ class StudyConf:
             "n_startup_trials": self.n_startup_trials,
             "sampler_seed": self.sampler_seed,
         }
+        if self.objective_from != "evals":
+            study["objective_from"] = self.objective_from
+            study["posthoc"] = {
+                "res": self.post_res,
+                "gpu_mem": self.post_gpu_mem_gb,
+                "ram": self.post_ram_gb,
+                "ckpts": self.post_ckpts,
+            }
         return {
             "study": study,
             "space": self.space.to_dict(),
@@ -175,6 +232,53 @@ class StudyConf:
         if gpu_mem is None:
             gpu_mem = 0.0 if self.res == "cpu" else 2.0
         return {"class": self.res, "ram_gb": self.ram_gb, "gpu_mem_gb": gpu_mem}
+
+    def post_res_dict(self, res: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """``res`` of the posthoc jobs: ``post_res`` (or the class of ``res``,
+        by default the study's), with ``post_gpu_mem_gb`` and ``post_ram_gb``
+        where they are set."""
+        base = dict(res or self.res_dict())
+        if self.post_res:
+            base["class"] = self.post_res
+        if self.post_gpu_mem_gb is not None:
+            base["gpu_mem_gb"] = self.post_gpu_mem_gb
+        if self.post_ram_gb is not None:
+            base["ram_gb"] = self.post_ram_gb
+        return base
+
+    def posthoc_job(
+        self,
+        run: Mapping[str, Any],
+        *,
+        nas_runs: Path,
+        code: Mapping[str, Any],
+        ckpts: str,
+        res: Mapping[str, Any] | None = None,
+        prio: int | None = None,
+        trial: int | None = None,
+    ) -> dict[str, Any]:
+        """The ``task=posthoc`` job of the run of the job ``run`` (its
+        ``job.json``): its config and overrides with ``task=posthoc``, after
+        it, of the parent ``nas_runs/<batch>/<run_id>``, in the batch
+        ``<batch>-post``, evaluating ``ckpts`` of its checkpoints, on ``res``
+        (by default ``post_res_dict()``)."""
+        batch = f"{run['batch']}-post"
+        return make_job(
+            batch=batch,
+            config={**run["config"], "task": "posthoc"},
+            overrides=[*run["overrides"], "task=posthoc"],
+            code=code,
+            res=dict(res) if res is not None else self.post_res_dict(),
+            prio=self.prio if prio is None else prio,
+            after=[run["run_id"]],
+            study=None if trial is None else self.name,
+            trial=trial,
+            tags=["posthoc"],
+            extra={
+                "parent": str(nas_runs / run["batch"] / run["run_id"]),
+                "decode": {"ckpts": ckpts},
+            },
+        )
 
     def sampler(self, n_trials: int = 0) -> optuna.samplers.BaseSampler:
         """TPE over the conditional space (design 5.2); ``constant_liar`` keeps

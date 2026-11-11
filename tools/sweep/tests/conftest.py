@@ -122,10 +122,12 @@ class FakeFleet:
         objective: float | None = None,
         t_end: float | None = None,
         reason: str | None = None,
+        final: dict[str, Any] | None = None,
     ) -> None:
         """End the claimed run ``run_id``: for ``completed`` and ``diverged``
-        its directory on the NAS (``evals.jsonl``, ``result.json``), then the
-        ``done/`` record, the claim dropped and ``live/`` removed."""
+        its directory on the NAS (``evals.jsonl``, ``result.json`` with
+        ``final``, and the ``job.json``), then the ``done/`` record, the claim
+        dropped and ``live/`` removed."""
         claim = next(
             p
             for _, p in self.nas.all_claims()
@@ -141,7 +143,10 @@ class FakeFleet:
                 result["objective"] = objective
             if t_end is not None:
                 result["t_end"] = t_end
+            if final is not None:
+                result["final"] = final
             write_json(d / "result.json", result)
+            write_json(d / "job.json", job)
         self.nas.finish(claim, {**job, "status": status, "reason": reason})
         live = self.nas.live / run_id
         for f in live.glob("*"):

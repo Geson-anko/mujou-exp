@@ -63,7 +63,8 @@ class TestStudy:
             for key, value in params.items():
                 node: Any = run
                 for part in key.split("@")[0].split("."):
-                    node = getattr(node, part)
+                    # an entry of a list (vision.context_masks.0.scale)
+                    node = node[int(part)] if part.isdigit() else getattr(node, part)
                 if key == "optim":
                     assert node.kind == value
                 elif isinstance(value, float):

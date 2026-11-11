@@ -9,6 +9,11 @@ clean snapshot with mujou pushed, and fix one device class for all their
 runs. They queue through the fleet's duplicate check: a run that is queued,
 running or finished for good is not queued again, so the x1 runs of a bracket
 are the confirm runs.
+
+For a study whose objective comes from the posthoc (``objective_from =
+"posthoc"``, M17), each run is followed by its ``task=posthoc`` job of every
+checkpoint (``StudyConf.posthoc_job``, ``ckpts="all"``, batch
+``<batch>-post``, on the confirmation's device class), listed after the run.
 """
 
 from collections.abc import Mapping, Sequence
@@ -203,12 +208,25 @@ def _queue(
             prio=prio,
             tags=tags,
         )
-        run_id = job["run_id"]
-        if view.is_taken(run_id):
-            out.append(("duplicate", job))
-            continue
-        out.append(("new", job))
-        if not dry:
-            nas.drop_done(run_id)
-            view.queued(run_id, nas.submit(job))
+        jobs = [job]
+        if conf.objective_from == "posthoc":
+            jobs.append(
+                conf.posthoc_job(
+                    job,
+                    nas_runs=nas.runs,
+                    code=code_of(code),
+                    ckpts="all",
+                    res={**conf.post_res_dict(res), "class": res["class"]},
+                    prio=prio,
+                )
+            )
+        for j in jobs:
+            run_id = j["run_id"]
+            if view.is_taken(run_id):
+                out.append(("duplicate", j))
+                continue
+            out.append(("new", j))
+            if not dry:
+                nas.drop_done(run_id)
+                view.queued(run_id, nas.submit(j))
     return out

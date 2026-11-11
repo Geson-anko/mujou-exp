@@ -61,6 +61,25 @@ res = "any_gpu"                      # 任意: ram, gpu_mem, prio(60), batch, mi
 - sampler は `TPESampler(multivariate=True, group=True, constant_liar=True, n_startup_trials=16)`。seed は `sampler_seed`（既定 0）に、起動したときの trial の数を足したもの。起き直すたびに同じ乱数の列を引かないようにするため
 - trial は suggest した override を user attribute `overrides` に、run_id を `runs` に残す。調整役が止まって起き直すと、RUNNING の trial の報告をそこから続ける。`overrides` はあって `runs` が無い trial は compose からやり直す。`overrides` も無い trial（suggest の前に止まった）は FAIL にする
 
+## 目的を posthoc から取る study（M17）
+
+`[study]` に `objective_from = "posthoc"` を書くと、trial の値を run の評価ではなく、run の後に入れる `task=posthoc` の job から取る。run は目的を書かない（M17 のエンコーダは、デコーダと線形の動力学を後から学んで初めて測れるため）。
+
+```toml
+[study]
+objective_from = "posthoc"
+[study.posthoc]                     # どれも任意
+res = "4090"                        # posthoc の job の資源の種類（既定は study の res）
+gpu_mem = 12.0                      # 既定は study の gpu_mem
+ram = 16.0                          # 既定は study の ram
+ckpts = "last"                      # 最後のチェックポイントだけ（"all" は全部）
+```
+
+- trial の全 seed の run が completed か diverged になってから、completed の run ごとに posthoc の job を入れる。batch は `<batch>-post`、`after` は親の run_id、`parent` は NAS の `runs/<batch>/<run_id>` の絶対パス、`decode` は `{"ckpts": ...}`。posthoc の run_id は trial の user attribute `post` に残る
+- 値は posthoc の `result.json` の `final.decode.val.objective` の seed の平均。diverged の seed は $\\log 10$。posthoc の job が failed などで終わったとき、または目的が無いときは trial を FAIL にする
+- 途中の報告をしないので、ASHA は働かない
+- `confirm` と `bracket` は、確認の各 run の後に posthoc の job（`ckpts = "all"`、batch `<batch>-post`、資源の種類は確認と同じ）も入れ、run の直後の行に出す
+
 ## フリートの側の誤り
 
 trial ではなくフリートの側の誤りでは、trial を FAIL にしない。trial はそのまま待ち、次の step で残りをやり直す。
