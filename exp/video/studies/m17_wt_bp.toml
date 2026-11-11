@@ -5,51 +5,59 @@
 # (as a diverged seed). A trial waits for the posthoc job
 # after each of its runs (objective_from = "posthoc"; no pruning). vision.recon
 # stays 0 (the preset; not in the space).
+#
+# Narrowed to the ranges of the pilot and the diagnosis (results/m17.md, the
+# no-go of 2026-11-12): the learned code got worse than the untrained ViT the
+# longer it learned, so the search aims at the failure it found: low learning
+# rates, weak SIGReg on z or on z and the tokens (0.9 hurt val), V-JEPA's
+# masks (smaller ones did not help), no sg; D = 256 and the width 256 fixed.
+# The 4090s only: N = 16 does not fit the 8 GB of a 4060 (CUBLAS alloc) and
+# runs there about 3 x slower; two runs share a 4090 (gpu_mem 10) and leave
+# room for a posthoc job (12).
 [study]
 name = "m17-wt-bp-v1"
 overrides = ["+experiment=m17/wt_n16", "learner=bp", "phase=explore"]
 seeds = [100, 101]
-parallel = 4        # trials in flight (x 2 seeds runs): the 8 GPUs of std-00..03
-max_trials = 32
-res = "any_gpu"
-gpu_mem = 7.0
-ram = 8.0
+parallel = 3        # trials in flight (x 2 seeds runs): 2 runs on each of 3 4090s
+max_trials = 24
+res = "4090"
+gpu_mem = 10.0
+ram = 12.0
 prio = 60
 objective_from = "posthoc"
+n_startup_trials = 10
 
 [study.posthoc]
 res = "4090"        # the PCA of 18432 frames of 128 x 128 x 3 and the decoders
 gpu_mem = 12.0
 ram = 16.0
-ckpts = "last"
+ckpts = "all"       # 300 s and 600 s: whether learning longer helps (the objective is the last)
 
 [space]
 "vision.frames" = {categorical = [8, 16]}
 "vision.stride" = {categorical = [2, 3, 6]}
-"vision.dim" = {categorical = [192, 256, 384]}
-"vision.z_dim" = {categorical = [128, 256, 512]}
-"vision.context_masks.0.scale" = {float = [0.05, 0.25]}
-"vision.context_masks.1.scale" = {float = [0.3, 0.8]}
 "vision.sigreg_on" = {categorical = ["z", "both"]}
-"vision.sigreg" = {float = [0.01, 0.9], log = true}
-"vision.sg" = {categorical = [false, true]}
+"vision.sigreg" = {float = [0.02, 0.3], log = true}
 "vision.pred_loss" = {categorical = ["l2", "l1"]}
-"vision.pred_depth" = {categorical = [2, 4]}
-"optim_vision.lr" = {float = [3e-5, 1e-3], log = true}
+"optim_vision.lr" = {float = [3e-5, 1e-4], log = true}
 "optim_vision.warmup" = {categorical = [0.0, 60.0, 300.0]}
 
 # The preset: N = 16, 0.1 s, width 256, D 256, V-JEPA's masks.
 [[enqueue]]
 "vision.frames" = 16
 "vision.stride" = 3
-"vision.dim" = 256
-"vision.z_dim" = 256
-"vision.context_masks.0.scale" = 0.15
-"vision.context_masks.1.scale" = 0.7
 "vision.sigreg_on" = "z"
 "vision.sigreg" = 0.05
-"vision.sg" = false
 "vision.pred_loss" = "l2"
-"vision.pred_depth" = 2
+"optim_vision.lr" = 1e-4
+"optim_vision.warmup" = 300.0
+
+# The best of the diagnosis (SIGReg on z and the tokens, J 1.42 at N = 8), at N = 16.
+[[enqueue]]
+"vision.frames" = 16
+"vision.stride" = 3
+"vision.sigreg_on" = "both"
+"vision.sigreg" = 0.05
+"vision.pred_loss" = "l2"
 "optim_vision.lr" = 1e-4
 "optim_vision.warmup" = 300.0
