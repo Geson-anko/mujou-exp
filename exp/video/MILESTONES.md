@@ -220,6 +220,8 @@ M14 と M15 は互いに独立で、並べて進められる。
 
 **選び方**: 探索の目的は、2 つの誤差を PCA の値で割った比の大きい方 $\max(\mathrm{recon}/\mathrm{recon}_{\mathrm{PCA}},\ \mathrm{dyn}_1/\mathrm{dyn}_{1,\mathrm{PCA}})$（悪い方を下げる）。2 つの誤差の散布図（Pareto の前線）も結果に載せる。
 
+実装での変更（2026-11-12、レビューを受けて）: 目的は $J = \log \max(\mathrm{recon}/\mathrm{recon}_{\mathrm{PCA}},\ r_1/r_{1,\mathrm{PCA}})$、$r_1$ = `dyn_1/copy_1` とし、上限と崩壊・非有限の罰は $\log 10$（発散した seed と同じ）。ViT は $N$ 枚の積みを符号にし、隣り合う積みは $N-1$ 枚を共有するので、`dyn_1` は学習しなくても PCA（最後の 1 枚）より小さく出る（学習前の ViT で 1/23）。写しの誤差で割るとこの重なりが打ち消される。比のまま $\log 10$ で上限を切ると、比 2.3 を超える trial がすべて同点になっていた。理由と数字は [results/m17.md](results/m17.md)
+
 **探索する軸**（BP の study、seed 100/101、val）: $N$（8・16）、$\Delta$（0.067・0.1・0.2 秒）、$D$ と ViT の幅、マスクの比率とブロック、SIGReg のかけ先と重み、sg、学習率
 
 **手順**（std-00〜03 の 4 台、fleet）

@@ -1,7 +1,8 @@
 # M17 on Walking Tours (MILESTONES.md, M17 step 5): the encoder learned by BP on
 # the seeds 100/101, chosen on val by the objective of the posthoc evaluation
-# (measure.encoder_eval, the last checkpoint): max(recon / recon_PCA,
-# dyn_1 / dyn_1_PCA), the PCA of the same D. A trial waits for the posthoc job
+# (measure.encoder_eval, the last checkpoint): log max(recon / recon_PCA,
+# r_1 / r_1_PCA), r_1 = dyn_1/copy_1, the PCA of the same D, at most log 10
+# (as a diverged seed). A trial waits for the posthoc job
 # after each of its runs (objective_from = "posthoc"; no pruning). vision.recon
 # stays 0 (the preset; not in the space).
 [study]

@@ -42,9 +42,17 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   tokens (its ceiling). The views are ``short`` and ``long`` for two
   context views, else ``c0``, ``c1``, ...;
 - ``rank``, ``z_std_min``, ``z_spread`` of the first stacks' $z$;
-- ``objective`` (val, ``vit``): $\max(\mathrm{recon} / \mathrm{recon}_{PCA},
-  \mathrm{dyn}_1 / \mathrm{dyn}_{1, PCA})$, ``PENALTY`` when $z$ collapsed
-  (``z_spread`` below ``COLLAPSE``) or a value is not finite.
+- ``objective`` (val, ``vit``, minimized): $J = \log \max(\mathrm{recon} /
+  \mathrm{recon}_{PCA},\ r_1 / r_{1, PCA})$ with $r_1$ = ``dyn_1/copy_1``, at
+  most ``PENALTY`` ($\log 10$, sweep's ``DIVERGED`` too: a code ten times
+  worse than the PCA ranks with one that collapsed or diverged, never
+  below), a ratio below ``FLOOR`` counted as ``FLOOR``; ``PENALTY`` when $z$
+  collapsed (``z_spread`` below ``COLLAPSE``) or a value is missing or not
+  finite. The dynamics term is over the copy: a ViT codes a stack of $N$
+  frames, of which consecutive stacks share $N - 1$, and the PCA the last
+  frame alone, so any code of the stacks is smooth and its ``dyn_1`` small
+  by construction (the ViT before it learns: 1/23 of the PCA's); the copy's
+  error cancels that overlap.
 
 Pictures of val (``SHOWN`` windows): ``<name>.png`` (the true last frames,
 the decoded), ``<name>-restore.png`` (the true frames, the short context, its
@@ -70,7 +78,7 @@ from exp.lib.rundir import atomic_open, write_json
 from exp.lib.video_io import U8Reader
 from exp.video.data.walking_tours import videos
 from exp.video.jepa.vit import VisionModules, build_vision
-from exp.video.measure.objective import PENALTY
+from exp.video.measure.objective import FLOOR, PENALTY
 from exp.video.measure.posthoc import (
     BATCH,
     DECODER_SEED,
@@ -513,8 +521,16 @@ def _objective(line: Mapping[str, Any], pca_line: Mapping[str, Any]) -> float:
     spread = line.get("z_spread")
     if spread is None or not spread >= COLLAPSE:
         return PENALTY
-    j = max(line["recon"] / pca_line["recon"], line["dyn_1"] / pca_line["dyn_1"])
-    return min(j, PENALTY) if math.isfinite(j) else PENALTY
+    keys = ("recon", "dyn_1/copy_1")
+    got = [line.get(k) for k in keys] + [pca_line.get(k) for k in keys]
+    values = [float(x) for x in got if x is not None]
+    if len(values) < len(got) or not all(math.isfinite(x) for x in values):
+        return PENALTY
+    recon, dyn, recon_pca, dyn_pca = values
+    if not (recon_pca > 0 and dyn_pca > 0 and recon >= 0 and dyn >= 0):
+        return PENALTY
+    j = math.log(max(recon / recon_pca, dyn / dyn_pca, FLOOR))
+    return min(j, PENALTY)
 
 
 def _png(path: Path, frames: Tensor) -> None:

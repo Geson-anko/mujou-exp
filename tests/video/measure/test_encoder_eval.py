@@ -2,6 +2,7 @@
 tiny run of a small Walking Tours: the files, the keys, the objective, the
 checkpoints it reads, the resume, and the training windows."""
 
+import math
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,8 @@ import pytest
 from exp.lib.rundir import Exit
 from exp.video import loop
 from exp.video.main import local_job
-from exp.video.measure.encoder_eval import EncoderEval, stream_windows
-from exp.video.measure.objective import PENALTY
+from exp.video.measure.encoder_eval import EncoderEval, _objective, stream_windows
+from exp.video.measure.objective import FLOOR, PENALTY
 from exp.video.measure.posthoc import Parent
 from exp.video.programs.vision import DATA_ENV, PROGRAM
 from tests.video.data.test_walking_tours import numbered
@@ -76,8 +77,7 @@ class TestEncoderEval:
         assert "objective" not in lines[-1]  # test
         pca = lines[0]
         assert "recon_lin" in pca and "restore_short_all" not in pca
-        want = max(vit["recon"] / pca["recon"], vit["dyn_1"] / pca["dyn_1"])
-        assert vit["objective"] == pytest.approx(min(want, PENALTY))
+        assert vit["objective"] == pytest.approx(_objective(vit, pca))
         names = set(_files(tmp_path / "o"))
         for stem in ("pca", "init", "00000.5", "00001.0"):
             assert {f"{stem}.png", f"{stem}-dyn.png"} <= names
@@ -122,3 +122,46 @@ def test_the_stream_windows_start_evenly_and_stay_within_a_video(tmp_path):
     assert (video == video[:, :1]).all()
     assert j[:, 0].tolist() == [0, 5, 10, 15, 0, 5]
     assert (j[:, 1:] - j[:, :-1] == 2).all()
+
+
+PCA = {"recon": 0.2, "dyn_1/copy_1": 0.5}
+
+
+def _line(**kw) -> dict:
+    return {"recon": 0.3, "dyn_1/copy_1": 0.5, "z_spread": 1.0} | kw
+
+
+class TestObjective:
+    """J = log max(recon / recon_PCA, r_1 / r_1_PCA), r_1 = dyn_1/copy_1, by
+    hand on lines of round numbers."""
+
+    def test_the_log_of_the_worse_ratio(self):
+        assert _objective(_line(), PCA) == pytest.approx(math.log(1.5))
+        line = _line(**{"recon": 0.1, "dyn_1/copy_1": 1.0})
+        assert _objective(line, PCA) == pytest.approx(math.log(2.0))
+
+    def test_better_than_the_pca_on_both_is_negative(self):
+        line = _line(**{"recon": 0.1, "dyn_1/copy_1": 0.125})
+        assert _objective(line, PCA) == pytest.approx(math.log(0.5))
+
+    def test_ratios_up_to_ten_stay_apart_and_beyond_take_the_penalty(self):
+        """Ratios 3.7 and 9 (the ViT before it learns is about 3.7) rank
+        apart, below log 10; 20 is log 10 as a collapse."""
+        values = [_objective(_line(recon=0.2 * r), PCA) for r in (3.7, 9.0, 20.0)]
+        assert values[0] == pytest.approx(math.log(3.7))
+        assert values[1] == pytest.approx(math.log(9.0))
+        assert values[2] == PENALTY
+
+    def test_a_collapse_is_the_penalty_however_good_the_ratios(self):
+        line = _line(recon=0.01, z_spread=1e-4)
+        assert _objective(line, PCA) == PENALTY
+        assert _objective({"recon": 0.01, "dyn_1/copy_1": 0.1}, PCA) == PENALTY
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), None])
+    def test_a_value_that_is_not_finite_is_the_penalty(self, value):
+        assert _objective(_line(recon=value), PCA) == PENALTY
+        assert _objective(_line(), PCA | {"dyn_1/copy_1": value}) == PENALTY
+
+    def test_a_perfect_code_counts_as_the_floor(self):
+        line = _line(**{"recon": 0.0, "dyn_1/copy_1": 0.0})
+        assert _objective(line, PCA) == pytest.approx(math.log(FLOOR))
