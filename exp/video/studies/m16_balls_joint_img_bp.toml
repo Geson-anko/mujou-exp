@@ -1,0 +1,49 @@
+# M16 on the balls, the second search of the dynamics on z (m16/balls_joint,
+# the vision M15 hands over). BP on the seeds 100/101 (val). The objective is
+# in images, as criterion 2 of results/m16.md: the max over h = 5, 10 of
+# log(rec_roll{h} / min(pix_copy{h}, pix_mean{h})), the rollout decoded by the
+# vision's own reconstruction decoder (programs/joint.py). The first search
+# (m16_balls_joint_bp.toml, latent roll10/mean10) chose #14, whose decoded
+# rollout did not beat the mean image at 10 frames. Small and big.
+[study]
+name = "m16-balls-joint-img-bp-v1"
+overrides = ["+experiment=m16/balls_joint", "learner=bp", "phase=explore"]
+seeds = [100, 101]
+parallel = 10       # trials in flight (x 2 seeds runs)
+max_trials = 60
+res = "any_gpu"
+gpu_mem = 4.0
+ram = 6.0
+prio = 30
+
+[space]
+"dynamics" = {categorical = ["small", "big"]}
+"dynamics.trace" = {categorical = [true, false]}
+"optim.lr" = {float = [1e-5, 1e-3], log = true}
+"optim.tau_m" = {float = [0.03, 3.0], log = true}
+"optim.tau_v" = {float = [10.0, 300.0], log = true}
+"optim.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"dynamics.residual" = {categorical = [true, false]}
+"dynamics.open_loop" = {categorical = [0.0, 0.25, 0.5]}
+
+# #14 of m16-balls-joint-bp-v1 (the preset).
+[[enqueue]]
+"dynamics" = "small"
+"dynamics.trace" = false
+"optim.lr" = 6.612727237433702e-05
+"optim.tau_m" = 0.330517506080283
+"optim.tau_v" = 12.029949313767528
+"optim.warmup" = 300.0
+"dynamics.residual" = true
+"dynamics.open_loop" = 0.5
+
+# #19 of m16-balls-joint-bp-v1.
+[[enqueue]]
+"dynamics" = "small"
+"dynamics.trace" = true
+"optim.lr" = 7.799403797640426e-05
+"optim.tau_m" = 0.21207632655133643
+"optim.tau_v" = 35.7021549747937
+"optim.warmup" = 300.0
+"dynamics.residual" = true
+"dynamics.open_loop" = 0.0

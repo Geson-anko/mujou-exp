@@ -14,7 +14,7 @@ from exp.lib import ckpt
 from exp.lib.rundir import Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose
-from exp.video.dyn.nets import live_states
+from exp.video.dyn.nets import live_states, window_stats
 from exp.video.main import local_job
 from exp.video.measure.dynamics import open_loop
 from exp.video.programs.dynamics import PROGRAM
@@ -57,6 +57,7 @@ class _Stopping:
 
     def build(self, conf, run_dir: Path, resume):
         built = PROGRAM.build(conf, run_dir, resume)
+        self.built: Any = built  # to look at its network after the stop
         advance, count = built.advance, [0]
 
         def stopping() -> None:
@@ -180,6 +181,44 @@ class TestResume:
         assert _run(cut, extra, attempt=2) == Exit.OK
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_a_run_on_windows_resumes_as_one_never_stopped(self, tmp_path, learner):
+        """BP or PC-ALM learning on windows (``dynamics.window``), stopped at
+        frame 47 with a window pending (due at push 46, learned 0.08 s later;
+        PC-ALM's episode open): the ring, the pending window or the episode
+        and the counters resume too, and PC-ALM learns every window, settled."""
+        extra = [
+            f"learner={learner}",
+            "dynamics.trace=false",
+            "dynamics.nodes=2",
+            "dynamics.d_s=16",
+            "+window@dynamics.window=m16",
+            "dynamics.window.window=6",
+            "dynamics.window.observed=3",
+            "dynamics.window.stride=4",
+            "dynamics.window.relax=0.08",
+            "optim=adamw",
+            "optim.warmup=0",
+            "ctl.resume_every=0.5",
+        ]
+        assert _run(tmp_path / "whole", extra) == Exit.OK
+        cut = tmp_path / "cut"
+        stopping = _Stopping(47)
+        assert _run(cut, extra, stopping) == Exit.STOPPED
+        if learner == "bp":
+            assert stopping.built.net.world.pending is not None
+        else:
+            ep = stopping.built.net.block.dynamics.episode
+            assert ep is not None and not ep["done"]
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        if learner == "pc":
+            stats = window_stats(stopping.built.net.block)
+            assert stats["win_steps"] not in (None, 0)
+            assert stats["win_skipped"] == stats["win_unsettled"] == 0
 
     def test_a_stage_3_run_resumes_as_one_never_stopped(self, tmp_path):
         """The pixel stage keeps the states of the history (``fork_eval`` and
@@ -310,6 +349,43 @@ class TestLiveState:
                 assert torch.equal(pred, shown["p"]["y_hat"])
         finally:
             built.close()
+
+
+class TestOfflineStream:
+    @pytest.mark.parametrize("stage", ["m14/s0", "m14/s3"], ids=["states", "pixels"])
+    def test_the_stream_order_steps_on_the_windows_of_every_stream(
+        self, tmp_path, stage
+    ):
+        """Both observations: the states and the images rendered per step."""
+        extra = [
+            "offline.order=stream",
+            "offline.feedback=detach",
+            "offline.frames=72",
+            "offline.window=36",
+            "offline.stride=18",
+            "offline.steps=3",
+            "offline.every=1",
+            "dynamics.d_s=8",
+        ]
+        out = tmp_path / "run"
+        assert _run(out, extra, experiment=f"[{stage},m14/offline]") == Exit.OK
+        rows = _lines(out / "evals.jsonl")
+        assert [x["step"] for x in rows] == [1, 2, 3]
+        logs = _lines(out / "stream.jsonl")
+        assert any(x.get("grad_norm", 0) > 0 for x in logs)
+
+    def test_more_steps_than_the_streams_hold_is_refused_at_compose(self):
+        with pytest.raises(ValueError, match="offline.steps=4"):
+            compose(
+                [
+                    "+experiment=[m14/s0,m14/offline]",
+                    "offline.order=stream",
+                    "offline.frames=72",
+                    "offline.window=36",
+                    "offline.stride=18",
+                    "offline.steps=4",
+                ]
+            )
 
 
 class TestEnds:

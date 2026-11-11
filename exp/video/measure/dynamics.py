@@ -80,6 +80,7 @@ __all__ = [
     "evaluate_dynamics",
     "fork_eval",
     "open_loop",
+    "ratio",
     "rollout",
 ]
 
@@ -137,7 +138,7 @@ def _sq(pred: Tensor, target: Tensor) -> Tensor:
     return ((pred - target) ** 2).mean(-1)
 
 
-def _ratio(a: float, b: float) -> float:
+def ratio(a: float, b: float) -> float:
     """``a / b``, NaN or infinite rather than an error when ``b`` is 0."""
     if b == 0:
         return float("nan") if a == 0 or a != a else float("inf")
@@ -237,11 +238,11 @@ def _shape(
     for h in horizons:
         p, t = pred[:, h - 1].double(), target[:, h - 1].double()
         spread = float(p.var(0, correction=0).sum())
-        out[f"amp{h}"] = _ratio(spread, float(t.var(0, correction=0).sum()))
+        out[f"amp{h}"] = ratio(spread, float(t.var(0, correction=0).sum()))
         p0 = last if h == 1 else pred[:, h - 2]
         t0 = last if h == 1 else target[:, h - 2]
         moved = float((p - p0.double()).norm(dim=-1).mean())
-        out[f"motion{h}"] = _ratio(moved, float((t - t0.double()).norm(dim=-1).mean()))
+        out[f"motion{h}"] = ratio(moved, float((t - t0.double()).norm(dim=-1).mean()))
     return out
 
 
@@ -308,15 +309,15 @@ def evaluate_dynamics(
         for name, suffixes in BASELINE_KEYS:
             for suffix in suffixes:
                 out[f"{name}{h}{suffix}"] = base[f"{name}{h}{suffix}"]
-        out[f"roll{h}/cv{h}"] = _ratio(out[f"roll{h}"], base[f"cv{h}"])
-        out[f"roll{h}/ca{h}"] = _ratio(out[f"roll{h}"], base[f"ca{h}"])
+        out[f"roll{h}/cv{h}"] = ratio(out[f"roll{h}"], base[f"cv{h}"])
+        out[f"roll{h}/ca{h}"] = ratio(out[f"roll{h}"], base[f"ca{h}"])
         for key, suffix, bar in (
             ("bounce", "@contact", _BOUNCE),
             ("bounceball", "@contactball", _BOUNCE),
             ("gravity", "@free", _GRAVITY),
         ):
             best = _least([base[f"{name}{h}{suffix}"] for name in bar])
-            out[f"{key}{h}"] = _ratio(out[f"roll{h}{suffix}"], best)
+            out[f"{key}{h}"] = ratio(out[f"roll{h}{suffix}"], best)
     out |= _shape(pred, target, x[:, o - 1], m.horizons)
     out["nonfinite"] = int((~torch.isfinite(pred).flatten(1).all(1)).sum())
     return out
@@ -394,5 +395,5 @@ def fork_eval(
         for h in m.horizons:
             out[f"{name}{h}"] = _mean(sq[:, h - 1])
     for h in m.horizons:
-        out[f"fork{h}/forkcv{h}"] = _ratio(out[f"fork{h}"], out[f"forkcv{h}"])
+        out[f"fork{h}/forkcv{h}"] = ratio(out[f"fork{h}"], out[f"forkcv{h}"])
     return out

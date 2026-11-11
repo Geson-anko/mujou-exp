@@ -42,6 +42,9 @@ class CtlConf:
     resume_every: float = 300.0  # a checkpoint to resume from
     viz_every: float = 0.0  # the pictures to look at
     eval_test: bool = False  # also evaluate the test clips at each checkpoint
+    # replay the vjp of the vision's pc.Layer nodes from CUDA graphs when on CUDA
+    # (pc.Layer(cuda_graph=True): the same updates bit for bit, fewer launches)
+    cuda_graph: bool = True
 
 
 @dataclass(kw_only=True)
@@ -91,3 +94,11 @@ class RunConf:
                 raise ValueError(
                     f"program {self.program!r} with task {self.task!r} needs {name}"
                 )
+        window = self.dynamics.window if self.dynamics is not None else None
+        if window is not None and not window.relax < window.stride * self.time.frame:
+            # Else every window waits past the next: learned late, at the push
+            # of the next one, not relax after its own.
+            raise ValueError(
+                f"dynamics.window.relax ({window.relax} s) must be shorter than "
+                f"stride * time.frame ({window.stride * self.time.frame} s)"
+            )

@@ -34,6 +34,7 @@ from mujou.pc.optim import Optimizer
 from mujou.time import Timestamp
 from mujou.types import Device
 
+from exp.lib.cuda_graph import Replayed
 from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, pool, split_y
 from exp.video.jepa.masks import block_masks, make_views
 from exp.video.jepa.vit import BroadcastDecoder, PixelDecoder, Predictor
@@ -311,6 +312,8 @@ class JEPAHead(Node):
         learn_interval: As in ``pc.clock.LearnClock``.
         seed: The seed of ``generator``.
         device: Where the node computes.
+        cuda_graph: Replay the credit and the gradients from CUDA graphs
+            (``exp.lib.cuda_graph``; on CUDA only), the same bit for bit.
     """
 
     def __init__(
@@ -334,6 +337,7 @@ class JEPAHead(Node):
         pixel_mean: float = 0.0,
         pixel_std: float = 1.0,
         device: Device = "cpu",
+        cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
@@ -348,6 +352,8 @@ class JEPAHead(Node):
         if decoder is not None:
             self._params += decoder.parameters()
         self.optimizer = optimizer.bind(self._params)
+        on_cuda = cuda_graph and self.device.type == "cuda"
+        self._replay = Replayed(self._terms) if on_cuda else None  # not state
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
         self._samples, self._b = n, n // views  # B V, B
@@ -414,11 +420,34 @@ class JEPAHead(Node):
     ) -> list[torch.Tensor]:
         """Set the credit ``g`` of ``act``, $z$ and the terms of $L$; returns
         the predictor's gradient of $E$ when it ``learn``\\ s."""
-        b, v = self._b, self._v
         h = act["h"]
+        if self._replay is not None:
+            g, z, values, *g_theta = self._replay(
+                learn, h, act["y"], valid, self.directions
+            )
+        else:
+            g, z, values, *g_theta = self._terms(
+                learn, h, act["y"], valid, self.directions
+            )
+        self.g, self.g_of, self.cached = g, h, True
+        self.z, self.values = z, values
+        return g_theta
+
+    def _terms(
+        self,
+        learn: bool,
+        h: torch.Tensor,
+        y: torch.Tensor,
+        valid: torch.Tensor,
+        directions: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """``[g, z, values, *g_theta]`` of ``_credit`` (``g_theta`` only when
+        it learns), a function of tensors only: the one the CUDA graph
+        replays."""
+        b, v = self._b, self._v
         params = self._params if learn else []
         shape = None if self.decoder is None else self.decoder.shape
-        masks, frames = split_y(act["y"], b, v, shape)
+        masks, frames = split_y(y, b, v, shape)
         recon = None
         if self.decoder is not None:
             assert frames is not None, "the Chunker must carry the frame"
@@ -430,7 +459,7 @@ class JEPAHead(Node):
                 leaf.view(b, v, *h.shape[1:]),
                 masks,
                 valid,
-                self.directions,
+                directions,
                 self.module,
                 extra=self._extra,
                 z_pool=self._pool,
@@ -444,11 +473,8 @@ class JEPAHead(Node):
             g, *g_theta = torch.autograd.grad(  # mujou: local-autograd
                 energy, [leaf, *params], materialize_grads=True
             )
-        self.g, self.g_of, self.cached = g, h, True
-        self.z = pool(
-            h.view(b, v, *h.shape[1:])[:, 0], z_pool=self._pool, extra=self._extra
-        )
-        self.values = torch.stack(
+        z = pool(h.view(b, v, *h.shape[1:])[:, 0], z_pool=self._pool, extra=self._extra)
+        values = torch.stack(
             [
                 terms.loss.detach(),
                 terms.pred.detach(),
@@ -457,4 +483,4 @@ class JEPAHead(Node):
                 terms.valid,
             ]
         )
-        return cast(list[torch.Tensor], g_theta)
+        return [g, z, values, *cast(list[torch.Tensor], g_theta)]

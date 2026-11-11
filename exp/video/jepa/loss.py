@@ -111,6 +111,19 @@ def prediction_errors(
     return per_view.mean(-1)
 
 
+_T_POINTS_ON: dict[tuple[torch.device, torch.dtype], Tensor] = {}
+
+
+def _t_points(x: Tensor) -> Tensor:
+    """``T_POINTS`` on the device and in the dtype of ``x``, copied once: a copy
+    from the host in every call could not be replayed from a CUDA graph."""
+    key = (x.device, x.dtype)
+    t = _T_POINTS_ON.get(key)
+    if t is None:
+        t = _T_POINTS_ON[key] = T_POINTS.to(x)
+    return t
+
+
 def weighted_sigreg(x: Tensor, weights: Tensor, directions: Tensor) -> Tensor:
     r"""``exp.lib.sigreg.sigreg(x[weights > 0], ..., directions)`` for 0/1
     ``weights`` ``(n,)`` of the samples ``x`` ``(n, D)``, without the dynamic
@@ -119,7 +132,7 @@ def weighted_sigreg(x: Tensor, weights: Tensor, directions: Tensor) -> Tensor:
     characteristic function $\hat\varphi_w = \sum_i w_i e^{i t a^\top x_i} /
     n_w$, $n_w = \sum_i w_i$, averaged over the directions $a$. 0 when no
     weight is 1; a sample of weight 0 gets a gradient of exactly 0."""
-    t = T_POINTS.to(x)
+    t = _t_points(x)
     w = weights.to(x)
     n = w.sum()
     tx = (x @ directions.T).unsqueeze(-1) * t  # (n, M, T)
