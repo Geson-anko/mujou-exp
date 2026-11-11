@@ -18,17 +18,17 @@ just tb view                                                                # ht
 
 ## 書き出すもの
 
-| TensorBoard の tag                            | 元のファイル                                                                                                | step                       |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `stream/<key>`                                | `stream.jsonl`                                                                                              | `frames`                   |
-| `eval/<split>/<key>`                          | `evals.jsonl`                                                                                               | `round(t)`（仮想時間の秒） |
-| `base/<split>/run_init/<key>`                 | `baselines.json`（学習前の視覚）                                                                            | 0 と最後の step（横線）    |
-| `post/<split>/<key>`                          | posthoc の `post/decode/metrics.jsonl`（`code` が `vit` の行）                                              | `round(t)`                 |
-| `base/<split>/<code>/<key>`                   | posthoc の `post/decode/baselines.jsonl`（`pca`・`init`）                                                   | 0 と最後の step（横線）    |
-| 画像 `post/recon`・`post/restore`・`post/dyn` | posthoc の `<t>.png`・`<t>-restore.png`・`<t>-dyn.png`                                                      | `round(t)`                 |
-| 画像 `base/<code>/<kind>`                     | `init*.png`・`pca*.png`                                                                                     | 0                          |
-| テキスト `run`                                | `job.json`・`CODE.json`・`provenance/`                                                                      | 0                          |
-| HParams                                       | config の `vision.*`・`optim_vision.*`・`learner.kind`・`seed`・`name`、指標は最後の val の行（`hp/<key>`） | 最後の step                |
+| TensorBoard の tag                            | 元のファイル                                                                                                                                                                                           | step                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| `stream/<key>`                                | `stream.jsonl`                                                                                                                                                                                         | `frames`                   |
+| `eval/<split>/<key>`                          | `evals.jsonl`                                                                                                                                                                                          | `round(t)`（仮想時間の秒） |
+| `base/<split>/run_init/<key>`                 | `baselines.json`（学習前の視覚）                                                                                                                                                                       | 0 と最後の step（横線）    |
+| `post/<split>/<key>`                          | posthoc の `post/decode/metrics.jsonl`（`code` が `vit` の行）                                                                                                                                         | `round(t)`                 |
+| `base/<split>/<code>/<key>`                   | posthoc の `post/decode/baselines.jsonl`（`pca`・`init`）                                                                                                                                              | 0 と最後の step（横線）    |
+| 画像 `post/recon`・`post/restore`・`post/dyn` | posthoc の `<t>.png`・`<t>-restore.png`・`<t>-dyn.png`                                                                                                                                                 | `round(t)`                 |
+| 画像 `base/<code>/<kind>`                     | `init*.png`・`pca*.png`                                                                                                                                                                                | 0                          |
+| テキスト `run`                                | `job.json`・`CODE.json`・`provenance/`                                                                                                                                                                 | 0                          |
+| HParams                                       | config の `vision.*`・`optim_vision.*`・`learner.kind`・`seed`・`name`、指標は最後の val の行（`hp/<key>`）と posthoc の最後の `vit` の val の行（`hp/post/<key>`、同じ export に posthoc があるとき） | 最後の step                |
 
 - `task=posthoc` の job のディレクトリ（`job.json` に `parent` がある）は、親の run と同じディレクトリに書く。run と後からの評価が 1 つの run として並ぶ
 - 値が null のもの、数でないものは書かない。PNG はそのままのバイト列で載せる（幅と高さは IHDR から読む）

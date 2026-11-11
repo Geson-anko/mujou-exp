@@ -108,6 +108,7 @@ class TestExport:
             (120, pytest.approx(0.6)),
         ]
         assert steps["hp/loss"] == [(120, 0.5)]
+        assert steps["hp/post/recon"] == [(120, pytest.approx(0.4))]  # posthoc's
         images = acc.Tags()["images"]
         assert set(images) == {"post/recon", "post/restore", "base/pca/dyn"}
         img = acc.Images("post/restore")[0]

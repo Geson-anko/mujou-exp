@@ -12,7 +12,10 @@ A run directory gives (each only when its file is there)
   ``provenance/``);
 - the hyperparameters (the HParams tab): the config's ``vision.*``,
   ``optim_vision.*``, ``learner.kind``, ``seed`` (and ``name``), with the
-  last val numbers as its metrics.
+  last val numbers as its metrics (``hp/<key>``) and those of the last
+  ``vit`` val line of its posthoc (``hp/post/<key>``: ``objective``,
+  ``recon``, ``dyn_1``, ...) when the posthoc is in the same export (or in the
+  run's own ``post/decode``).
 
 The directory of a ``task=posthoc`` job (its ``job.json`` names a
 ``parent``) goes into its parent's directory of events (the parent's batch and
@@ -170,7 +173,19 @@ def _text(run_dir: Path, job: Mapping[str, Any]) -> str:
     return "\n".join(f"- {k}: `{v}`" for k, v in rows if v is not None)
 
 
-def _run_events(run_dir: Path, job: Mapping[str, Any], target: Path) -> None:
+def _post_last(run_dir: Path) -> dict[str, float]:
+    """The numbers of the last ``vit`` val line of the posthoc in ``run_dir``."""
+    lines = [
+        x
+        for x in _lines(run_dir / "post" / "decode" / "metrics.jsonl")
+        if x.get("code", "vit") == "vit" and x.get("split") == "val"
+    ]
+    return _numbers(lines[-1], ("t", "frame")) if lines else {}
+
+
+def _run_events(
+    run_dir: Path, job: Mapping[str, Any], target: Path, post: Mapping[str, float]
+) -> None:
     w = _writer(target, "run")
     try:
         for line in _lines(run_dir / "stream.jsonl"):
@@ -197,6 +212,7 @@ def _run_events(run_dir: Path, job: Mapping[str, Any], target: Path) -> None:
         }
         last = next((r for r in reversed(evals) if r.get("split") == "val"), {})
         metrics = {f"hp/{k}": v for k, v in _numbers(last, ("t", "frame")).items()}
+        metrics |= {f"hp/post/{k}": v for k, v in post.items()}
         if hp and metrics:
             for s in hparams(hp, metrics):
                 _add(w, s)
@@ -234,27 +250,37 @@ def _post_events(run_dir: Path, target: Path) -> None:
         w.close()
 
 
-def export_run(run_dir: Path, logdir: Path) -> Path:
+def export_run(
+    run_dir: Path, logdir: Path, *, post: Mapping[str, float] | None = None
+) -> Path:
     """Write the events of the run directory ``run_dir`` (module docstring);
-    returns their directory."""
+    returns their directory. ``post``: the numbers of its posthoc for the
+    HParams (``_post_last``; None: of its own ``post/decode``)."""
     job = _json(run_dir / "job.json")
     target = _target(run_dir, job, logdir)
     if job.get("parent") or (run_dir / "post" / "decode").is_dir():
         _post_events(run_dir, target)
     if not job.get("parent"):
-        _run_events(run_dir, job, target)
+        _run_events(run_dir, job, target, _post_last(run_dir) if post is None else post)
     return target
 
 
 def export(runs: Iterable[Path], logdir: Path) -> list[Path]:
     """``export_run`` of each run directory of ``runs`` (a directory without
     a ``job.json`` is a batch: each of its run directories)."""
-    out = []
+    dirs: list[Path] = []
     for path in runs:
-        dirs = (
+        dirs += (
             [path]
             if (path / "job.json").is_file()
             else sorted(d for d in path.iterdir() if (d / "job.json").is_file())
         )
-        out += [export_run(d, logdir) for d in dirs]
-    return out
+    posts: dict[Path, dict[str, float]] = {}
+    for d in dirs:
+        job = _json(d / "job.json")
+        if job.get("parent") and (last := _post_last(d)):
+            posts[_target(d, job, logdir)] = last  # the last of them wins
+    return [
+        export_run(d, logdir, post=posts.get(_target(d, _json(d / "job.json"), logdir)))
+        for d in dirs
+    ]
