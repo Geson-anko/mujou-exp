@@ -39,7 +39,8 @@ class MaskConf:
     the union of ``blocks`` rectangles of the spatial grid, each of ``scale``
     of the grid's area and of aspect ratio (height / width) log-uniform in
     ``aspect``, masking the same patches in every frame (a tube). The visible
-    patches are made exactly ``jepa.masks.expected_keep`` (``jepa.masks``)."""
+    patches are made exactly ``jepa.masks.expected_keep``, all outside the
+    blocks (``jepa.masks``)."""
 
     blocks: int
     scale: float

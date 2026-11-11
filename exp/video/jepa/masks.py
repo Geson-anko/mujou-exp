@@ -13,7 +13,12 @@ next to it.
 The packed layout (M17) draws each context view by ``multiblock_masks`` (V-JEPA's
 multi-block mask of a ``schema.vision.MaskConf``, made to keep exactly
 ``expected_keep`` patches visible, so that every sample has the same shape)
-and packs a stack and its views into one sequence (``pack_views``).
+and packs a stack and its views into one sequence (``pack_views``). The
+visible patches are always outside the blocks: ``expected_keep`` is the lower
+quartile ``KEEP_QUANTILE`` of the visible counts of the unions, a union that
+leaves fewer is drawn again (``CANDIDATES`` draws), and of one that leaves
+more, random visible patches are masked too (V-JEPA's collator cuts the
+visible patches of a batch down to its least count the same way).
 """
 
 import math
@@ -26,6 +31,8 @@ from exp.video.schema.vision import MaskConf
 
 __all__ = [
     "ASPECT",
+    "CANDIDATES",
+    "KEEP_QUANTILE",
     "block_masks",
     "block_sides",
     "expected_keep",
@@ -36,6 +43,8 @@ __all__ = [
 ]
 
 ASPECT = (0.75, 1.5)  # the range of a block's height / width
+KEEP_QUANTILE = 0.25  # expected_keep: of the visible counts of the unions
+CANDIDATES = 8  # the unions drawn for each mask of multiblock_masks
 
 
 def block_sides(
@@ -140,16 +149,28 @@ def multiblock_masks(
     generator: torch.Generator,
 ) -> Tensor:
     r"""``n`` masks ``(n, gh, gw)`` bool (True: masked) of the context view
-    ``mask``, each with exactly ``keep`` visible patches: the union of its
-    blocks (``_union``), then, among the patches, the ``keep`` of the largest
-    score $2 [\text{visible}] + u$, $u \sim U[0, 1)$, stay visible: random
-    visible ones are masked too when the union leaves more than ``keep``, and
-    random masked ones shown when it leaves fewer (V-JEPA's collator evens the
-    counts of a batch for the same reason). Drawn from ``generator``: the
-    blocks, then the scores."""
+    ``mask``, each with exactly ``keep`` visible patches, all outside its
+    blocks: for each mask ``CANDIDATES`` unions of its blocks (``_union``),
+    the first that leaves at least ``keep`` patches visible (or, when none
+    does, the one that leaves the most: the only case in which masked patches
+    are shown, of probability at most ``KEEP_QUANTILE ** CANDIDATES`` = 1.5e-5
+    at ``expected_keep``); then the ``keep``
+    patches of the largest score $2 [\text{visible}] + u$, $u \sim U[0, 1)$,
+    stay visible (random visible ones are masked too). Drawn from
+    ``generator``: the blocks of all the candidates, then the scores; no
+    value is read back to the host."""
     gh, gw = grid
-    union = _union(n, grid, mask, generator).flatten(1)  # (n, T_s)
-    u = torch.rand(n, gh * gw, generator=generator, device=generator.device)
+    dev = generator.device
+    r = CANDIDATES
+    unions = _union(n * r, grid, mask, generator).view(n, r, gh * gw)
+    visible = (~unions).sum(2)  # (n, R)
+    enough = visible >= keep
+    order = torch.arange(r, 0, -1, device=dev)  # the first of the enough ones
+    pick = torch.where(
+        enough.any(1), (enough.long() * order).argmax(1), visible.argmax(1)
+    )
+    union = unions[torch.arange(n, device=dev), pick]  # (n, T_s)
+    u = torch.rand(n, gh * gw, generator=generator, device=dev)
     score = 2 * (~union).float() + u
     shown = score.topk(keep, 1).indices
     out = torch.ones_like(union)
@@ -161,11 +182,13 @@ def expected_keep(
     grid: tuple[int, int], mask: MaskConf, *, draws: int = 4096, seed: int = 0
 ) -> int:
     """The visible patches of the context view ``mask`` (``multiblock_masks``'s
-    ``keep``): the mean visible count of ``draws`` unions of its blocks drawn
-    from a CPU generator of ``seed``, rounded, within ``[1, T_s - 1]``."""
+    ``keep``): the ``KEEP_QUANTILE`` quantile (the lower one) of the visible
+    counts of ``draws`` unions of its blocks drawn from a CPU generator of
+    ``seed``, within ``[1, T_s - 1]``."""
     g = torch.Generator().manual_seed(seed)
-    visible = (~_union(draws, grid, mask, g)).flatten(1).sum(1).double().mean()
-    return int(min(max(round(float(visible)), 1), grid[0] * grid[1] - 1))
+    visible = (~_union(draws, grid, mask, g)).flatten(1).sum(1).double()
+    q = float(visible.quantile(KEEP_QUANTILE, interpolation="lower"))
+    return int(min(max(round(q), 1), grid[0] * grid[1] - 1))
 
 
 def pack_views(

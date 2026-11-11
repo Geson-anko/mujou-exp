@@ -5,6 +5,9 @@ import torch
 
 from exp.video.jepa.masks import (
     ASPECT,
+    CANDIDATES,
+    KEEP_QUANTILE,
+    _union,
     block_masks,
     block_sides,
     expected_keep,
@@ -148,6 +151,44 @@ class TestMultiblockMasks:
         )
         assert torch.equal(a, b)
 
+    @pytest.mark.parametrize(
+        "mask", [MaskConf(blocks=8, scale=0.15), MaskConf(blocks=2, scale=0.7)]
+    )
+    def test_the_visible_patches_are_outside_the_first_union_that_leaves_keep(
+        self, mask
+    ):
+        """V-JEPA's masks on 8 x 8 at their expected_keep: replaying the
+        generator, mask i is drawn from the first of its CANDIDATES unions
+        that leaves at least keep patches visible, and none of its visible
+        patches is in that union (the blocks are never shown)."""
+        n, keep = 256, expected_keep(GRID, mask)
+        m = multiblock_masks(
+            n, GRID, mask, keep=keep, generator=torch.Generator().manual_seed(3)
+        )
+        unions = _union(
+            n * CANDIDATES, GRID, mask, torch.Generator().manual_seed(3)
+        ).view(n, CANDIDATES, -1)
+        for i in range(n):
+            first = next(c for c in range(CANDIDATES) if (~unions[i, c]).sum() >= keep)
+            assert not (~m[i].flatten() & unions[i, first]).any()
+
+    def test_with_no_union_of_enough_visible_patches_masked_ones_are_shown(self):
+        """Two blocks of 0.7 on 8 x 8 never leave 63 visible: the mask keeps
+        all the visible patches of the union of the most and shows masked
+        ones up to 63."""
+        mask = MaskConf(blocks=2, scale=0.7)
+        n = 32
+        m = multiblock_masks(
+            n, GRID, mask, keep=63, generator=torch.Generator().manual_seed(4)
+        )
+        unions = _union(
+            n * CANDIDATES, GRID, mask, torch.Generator().manual_seed(4)
+        ).view(n, CANDIDATES, -1)
+        for i in range(n):
+            visible = (~unions[i]).sum(1)
+            best = unions[i, int(visible.argmax())]
+            assert (~m[i].flatten())[~best].all() and int((~m[i]).sum()) == 63
+
     def test_a_block_of_the_kept_count_is_left_as_drawn(self):
         """One square block of 5 x 5 on 10 x 10 (scale 0.25, aspect 1) leaves
         75 visible: with keep 75 the mask is exactly one filled 5 x 5 square."""
@@ -171,6 +212,18 @@ class TestExpectedKeep:
     )
     def test_it_is_never_none_or_all(self, mask, expect):
         assert expected_keep(GRID, mask) == expect
+
+    @pytest.mark.parametrize(
+        "mask", [MaskConf(blocks=8, scale=0.15), MaskConf(blocks=2, scale=0.7)]
+    )
+    def test_it_is_the_lower_quartile_of_the_visible_counts(self, mask):
+        """The lower KEEP_QUANTILE quantile k of the same 4096 draws: at most
+        a quarter leave fewer than k visible, at least a quarter at most k."""
+        keep = expected_keep(GRID, mask)
+        g = torch.Generator().manual_seed(0)
+        visible = (~_union(4096, GRID, mask, g)).flatten(1).sum(1)
+        assert float((visible < keep).double().mean()) <= KEEP_QUANTILE
+        assert float((visible <= keep).double().mean()) >= KEEP_QUANTILE
 
 
 class TestPackViews:
