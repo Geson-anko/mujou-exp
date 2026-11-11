@@ -77,6 +77,7 @@ __all__ = [
     "FRAMES",
     "LR",
     "SHOWN",
+    "as_float",
     "STEPS",
     "ChunkSource",
     "Decoding",
@@ -131,7 +132,7 @@ def fit_decoder(
     gen: torch.Generator,
 ) -> nn.Module:
     r"""A ``decoder`` of ``z`` ``(n, D)`` to ``images`` ``(n, C, H, W)`` (on
-    one device), fit by ``steps`` steps of ``adam(lr)`` on the mean squared
+    one device; u8 frames are read as ``x / 255``, a batch at a time), fit by ``steps`` steps of ``adam(lr)`` on the mean squared
     error of ``batch`` pairs drawn with replacement.
 
     ``gen`` (a CPU generator) draws the seed of the initial weights (built on
@@ -150,10 +151,15 @@ def fit_decoder(
     for _ in range(steps):
         idx = torch.randint(len(z), (batch,), generator=gen).to(z.device)
         with torch.enable_grad():
-            loss = ((dec(z[idx]) - images[idx]) ** 2).mean()
+            loss = ((dec(z[idx]) - as_float(images[idx])) ** 2).mean()
             grads = torch.autograd.grad(loss, params)
         optimizer.step_(grads, 1.0)
     return dec
+
+
+def as_float(x: Tensor) -> Tensor:
+    """Frames in ``[0, 1]``: ``x / 255`` of u8 frames, else ``x``."""
+    return x.float() / 255 if x.dtype == torch.uint8 else x
 
 
 class ChunkSource(Protocol):
