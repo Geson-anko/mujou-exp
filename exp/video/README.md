@@ -32,7 +32,21 @@ PLAN.md 8 節の H0〜H4。各段の冒頭で閾値を確定させ、結果の�
 
 ## 実行方法
 
-M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に消した（コードは git の 433a72e に残る）。設定は hydra の preset（`conf/`、型は `schema/`）で書き、`exp.video.compose.compose` で解決する。run を起動する入口（`main.py`）はまだ無い。
+M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に消した（コードは git の 433a72e に残る）。設定は hydra の preset（`conf/experiment/`、型は `schema/`）で書き、`exp.video.compose.compose` で解決する。run の入口は `main.py`、プログラム（`programs/`）は設定の `program` で選ぶ。
+
+```bash
+# 手元で 1 本（<out> が run のディレクトリ。止めた run は同じコマンドで再開する）
+uv run python -m exp.video.main +experiment=m14/s2 learner=pc seconds=60 --out /tmp/m14
+# 4 台で（exp/lib/fleet/README.md）: snapshot を配り、投げ、結果を ./runs/ へ
+just fleet push
+just fleet submit --batch m14-s2-v1 +experiment=m14/s2 learner=pc --seeds 0,1,2 --res cpu
+just fleet pull --batch m14-s2-v1
+# optuna の探索と、上位の設定の確認（tools/sweep/README.md、study は studies/）
+just sweep run exp/video/studies/m14_s3_bp.toml
+just sweep confirm m14-s3-bp-v1 --top 2 --learners bp,pc --seeds 0,1,2 --res cpu --batch m14-s3-confirm-v1
+```
+
+run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jsonl`・`result.json`・`ckpt/`・`viz/` など）は `exp/lib/rundir.py` と fleet の README の契約のとおり。checkpoint とログは git に入れない。
 
 ## 結果
 
@@ -47,3 +61,4 @@ M13 までのスクリプト（`run.py`・`easy.py` など）は 2026-11-03 に�
 | M11 | [SIGReg による \|z\| の押し広げと `rollout10`](results/m11.md) | \|z\| は `z_norm` で直った。潜在の `rollout10` < 1 は動力学の証拠にならず、条件を画像空間に改めた |
 | M12 | [段 3: EgoDex](results/m12.md) | 残差の予測で `rollout10` 0.37〜0.50。写すだけ（0.10〜0.14）には届かない |
 | M13 | [合成動画を簡単にした土台](results/m13.md) | 未達のまま中断。玉 1 つのオンラインは適格度トレースで 5・10 フレーム先 0.49・0.92 倍（平均の画像との比） |
+| M14 | [動力学だけを学ぶ（玉の状態を観測に）](results/m14.md) | 段 1・2 は達成（段 2 の #45 で test の `roll5/cv5` 0.38〜0.44、`roll10/cv10` 0.25〜0.30、PC-ALM と BP、3 seed）。画素を観測にした段 3 は等加速度の外挿の 1.9〜2.2 倍で届かない |

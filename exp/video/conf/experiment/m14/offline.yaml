@@ -1,0 +1,20 @@
+# @package _global_
+# The offline bound (task=offline): the modules fit by Adam on windows of the
+# streams, through time; offline.local=true stops the gradient at one frame as
+# in the nodes. On its own it is stage 0; for another stage put it first and
+# name the run after both (a task preset sets the name and tags, so without
+# them every stage would be named m14/offline):
+#   +experiment=[m14/s2,m14/offline] name=m14/s2-offline 'tags=[m14,s2,offline]'
+#   dynamics=big offline.local=true
+# The data is that of the online run it bounds: the 54000 frames (1800 s) of
+# each stream, in windows of observed + the largest horizon (16 + 20), so the
+# fit predicts open loop as far as the evaluation reads.
+defaults:
+  - override /learner: none
+name: m14/offline
+tags: [m14, offline]
+task: offline
+offline:
+  local: false
+  frames: 54000
+  window: 36

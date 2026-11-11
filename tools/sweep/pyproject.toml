@@ -1,0 +1,35 @@
+[project]
+name = "mujou-exp-sweep"
+version = "0.1.0"
+description = "The optuna coordinator of the fleet: studies of runs, asked and told from the NAS"
+requires-python = ">=3.14"
+dependencies = [
+    "hydra-core==1.3.8",
+    "optuna==5.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=8.3.5",
+]
+
+[tool.uv]
+# Not installed: `sweep` is imported from tools/sweep and `exp` from the
+# checkout (or snapshot) root, both by PYTHONPATH (the CLI) or by pytest.
+package = false
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# `sweep` from here, `exp` (exp.lib.fleet, exp.video.compose) from the checkout.
+pythonpath = [".", "../.."]
+addopts = ["--color=yes", "--strict-markers"]
+
+[tool.pyright]
+pythonVersion = "3.14"
+include = ["sweep", "tests"]
+extraPaths = ["../.."]
+exclude = ["**/__pycache__", ".venv"]
+reportImplicitOverride = true

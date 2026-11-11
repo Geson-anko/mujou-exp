@@ -1,0 +1,24 @@
+{
+ "dataset": "Walking Tours (Venkataramanan et al., ICLR 2024)",
+ "card": "https://huggingface.co/datasets/shawshankvkt/Walking_Tours",
+ "license": "CC-BY-4.0",
+ "checked": "2026-11-03",
+ "notes": {
+  "license": "dataset_license is the license of the dataset card (metadata 'cc-by-4.0', body 'Creative Commons License (CC-BY)'). The local files look like the YouTube uploads themselves (see blur), whose licenses are their uploaders'; upload_license stays 'unverified' until someone reads each video's page.",
+  "blur": "The card says 'we also try to blur out all faces and license plates appearing in the video using Deface'. The local files are YouTube DASH streams (brand 'dash', handler 'ISO Media file produced by Google Inc.', AV1/VP9 at 480p, no audio), so they may be the original uploads without the blur; nobody has looked. 'unverified' until someone does.",
+  "files": "bytes, duration (s), width, height, fps and codec were read with ffmpeg 7.0.2 inside the container on std-00 from /datasets/walking_tours; url is from the dataset's WTour.txt. Venice and Zurich were decoded to the end (65999 frames at 10 fps for Venice).",
+  "status": "'ok' may be prepared; 'excluded' (with a reason) may not. prepare() refuses a video that is not here, is excluded, or whose file has another size."
+ },
+ "videos": {
+  "Amsterdam": {"file": "Amsterdam.mp4", "url": "https://www.youtube.com/watch?v=E07rTPgIvn0", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 397594056, "duration": 4912.57, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Bangkok": {"file": "Bangkok.mp4", "url": "https://www.youtube.com/watch?v=hUGcHvN4mME", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 1042534787, "duration": 10499.96, "width": 854, "height": 480, "fps": 29.97, "codec": "vp9"},
+  "Chiang_Mai": {"file": "Chiang_Mai.mp4", "url": "https://www.youtube.com/watch?v=jyxIRzlkO_g", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 426131124, "duration": 4075.23, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Istanbul": {"file": "Istanbul.mp4", "url": "https://www.youtube.com/watch?v=mA9lYWyXMYU", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 292319800, "duration": 4080.0, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Kuala_Lampur": {"file": "Kuala_Lampur.mp4", "url": "https://www.youtube.com/watch?v=yLTycPjm0nk", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 466281443, "duration": 4370.0, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Singapore": {"file": "Singapore.mp4", "url": "https://www.youtube.com/watch?v=aUJl46bEWYo", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 446129315, "duration": 5800.37, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Stockholm": {"file": "Stockholm.mp4", "url": "https://www.youtube.com/watch?v=Jr9x-RB4E1U", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 348941126, "duration": 3989.53, "width": 854, "height": 480, "fps": 30, "codec": "av1"},
+  "Venice": {"file": "Venice.mp4", "url": "https://www.youtube.com/watch?v=fGX0Te6pFvk", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 654204619, "duration": 6599.93, "width": 854, "height": 480, "fps": 29.97, "codec": "vp9"},
+  "Wildlife": {"file": "Wildlife.mp4", "url": "https://www.youtube.com/watch?v=Q0ML5oAjX_w", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 145178843, "duration": 3607.44, "width": 640, "height": 360, "fps": 29.97, "codec": "vp9"},
+  "Zurich": {"file": "Zurich.mp4", "url": "https://www.youtube.com/watch?v=_NmYvuEILw4", "dataset_license": "CC-BY-4.0", "upload_license": "unverified", "blur": "unverified", "status": "ok", "bytes": 363038724, "duration": 3899.63, "width": 854, "height": 480, "fps": 30, "codec": "vp9"}
+ }
+}

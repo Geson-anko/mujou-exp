@@ -1,0 +1,25 @@
+# M14 stage 1 (the position of one ball): the small dynamics without the eligibility
+# traces, searched by BP on the seeds 100/101 (design 5.4). Confirm the best with
+# `just sweep confirm m14-s1-small-notrace-bp-v1 --top 3 --learners bp,pc --seeds 0,1,2 ...`.
+# parallel and max_trials are the values before `fleet bench` (design 4.9).
+[study]
+name = "m14-s1-small-notrace-bp-v1"
+overrides = ["+experiment=m14/s1", "learner=bp", "dynamics=small", "dynamics.trace=false", "phase=explore"]
+seeds = [100, 101]
+parallel = 16       # trials in flight (x 2 seeds runs)
+max_trials = 160
+res = "cpu"
+
+[space]
+"optim" = {categorical = ["sgd", "adamw", "graft_adam"]}
+"optim.lr" = {float = [0.001, 0.3], log = true, when = "optim != 'adamw'"}
+"optim.lr@adamw" = {float = [1e-5, 1e-2], log = true, when = "optim == 'adamw'"}
+"optim.tau_m" = {float = [0.03, 3.0], log = true, when = "optim != 'sgd'"}
+"optim.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"dynamics.residual" = {categorical = [true, false]}
+"dynamics.open_loop" = {categorical = [0.0, 0.25, 0.5]}
+
+# The best of M13 first: SGD at 0.03 per frame.
+[[enqueue]]
+"optim" = "sgd"
+"optim.lr" = 0.03
