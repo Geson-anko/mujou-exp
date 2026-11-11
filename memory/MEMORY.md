@@ -17,6 +17,7 @@
 - [デコーダはデバッグ用](project_decoder_for_debug.md) — 再構成の評価のデコーダは各チェックポイントに後から学ぶ。システムにも mujou の実行にも入れない
 - [実動画のデータ](project_video_data.md) — Walking Tours（CC BY 4.0）に決めた。研究は非商用なので CC BY-NC も可
 - [M16 の PC-ALM は窓のエピソード](project_m16_pc_window_episodes.md) — 2026-11-04 決定、0.6 s ごとの窓で学ぶ PC-ALM を M16 のオンラインの PC-ALM とする。速さは学習が現実的な時間で終わること
+- [夢は必須の評価](project_dream_required.md) — 2026-11-11 決定、同時の学習の run は posthoc が毎チェックポイントで 1 フレームと 16 フレームから 150 フレームの夢を計算する。報告の動画は PC-ALM だけでよい
 
 ## feedback
 
