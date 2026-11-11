@@ -1,0 +1,33 @@
+[project]
+name = "mujou-exp-tb"
+version = "0.1.0"
+description = "The TensorBoard view of the runs of mujou-exp: event files written from the run directories"
+requires-python = "==3.13.*"
+dependencies = [
+    "tensorboard==2.21.0",
+    "tensorboardX==2.6.5",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=8.3.5",
+]
+
+[tool.uv]
+# Not installed: `tb` is imported from tools/tb (PYTHONPATH or pytest). No
+# torch: the export reads the files of the run contract only.
+package = false
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["--color=yes", "--strict-markers"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["tb", "tests"]
+exclude = ["**/__pycache__", ".venv"]
+reportImplicitOverride = true
