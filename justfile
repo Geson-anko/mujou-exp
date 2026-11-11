@@ -63,3 +63,8 @@ container *args:
     main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
     devcontainer up --workspace-folder "$main" > /dev/null
     devcontainer exec --workspace-folder "$main" bash -lc 'cd "$1" && shift && exec "$@"' _ "{{justfile_directory()}}" "$@"
+
+# The fleet of std-00..03 (exp/lib/fleet/README.md): just fleet doctor | push | up | submit ... | status | pull
+[positional-arguments]
+fleet *args:
+    @uv run --no-project --python 3.14 python -m exp.lib.fleet "$@"

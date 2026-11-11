@@ -1,0 +1,18 @@
+# The fleet (exp/lib/fleet, `just fleet <cmd>`): the hosts, the paths and the slots.
+nas = "/nas/geson/mujou-exp"           # shared: the queue and the finished runs (same path in the containers)
+root = "/data/geson/mujou-exp/.fleet"  # host-local: snapshots, venvs, running runs (bind-mounted with the checkout)
+checkout = "/data/geson/mujou-exp"
+container = "mujou-exp-dev-1"
+user = "vscode"
+head = "std-00"                        # answers the state queries and composes the configs at submission
+hosts = ["std-00", "std-01", "std-02", "std-03"]
+
+# Per host. To be calibrated by a sweep of bench runs (design 4.9); these are the starting values.
+[slots]
+cpu = 14     # physical cores given to runs (CPU and GPU runs alike); the 2 lowest are left to the worker
+smt = false  # true: the two threads of a core are two slots
+ram_gb = 52
+gpus = [
+  { index = 0, model = "4090", mem_gb = 22.0, jobs = 6 },
+  { index = 1, model = "4060", mem_gb = 7.0, jobs = 2 },
+]
