@@ -48,7 +48,9 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   context views, else ``c0``, ``c1``, ...;
 - ``rank``, ``z_std_min``, ``z_spread`` of the first stacks' $z$;
 - ``objective`` (val, ``vit``, minimized): $J = \log \max(\mathrm{recon} /
-  \mathrm{recon}_{PCA},\ r_1 / r_{1, PCA})$ with $r_1$ = ``dyn_1/copy_1``, at
+  \mathrm{recon}_{PCA},\ r_1 / r_{1, PCA})$ with $r_1$ = ``dyn_1/copy_1``
+  and $\mathrm{recon}_{PCA}$ the smaller of the PCA's ``recon`` and
+  ``recon_lin`` (its best known decoder), at
   most ``PENALTY`` ($\log 10$, sweep's ``DIVERGED`` too: a code ten times
   worse than the PCA ranks with one that collapsed or diverged, never
   below), a ratio below ``FLOOR`` counted as ``FLOOR``; ``PENALTY`` when $z$
@@ -561,6 +563,9 @@ def _objective(line: Mapping[str, Any], pca_line: Mapping[str, Any]) -> float:
     if len(values) < len(got) or not all(math.isfinite(x) for x in values):
         return PENALTY
     recon, dyn, recon_pca, dyn_pca = values
+    lin = pca_line.get("recon_lin")  # the PCA's best decoder: Eckart-Young's
+    if lin is not None and math.isfinite(float(lin)):
+        recon_pca = min(recon_pca, float(lin))
     if not (recon_pca > 0 and dyn_pca > 0 and recon >= 0 and dyn >= 0):
         return PENALTY
     j = math.log(max(recon / recon_pca, dyn / dyn_pca, FLOOR))

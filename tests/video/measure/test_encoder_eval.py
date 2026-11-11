@@ -220,6 +220,14 @@ class TestObjective:
         assert _objective(_line(recon=value), PCA) == PENALTY
         assert _objective(_line(), PCA | {"dyn_1/copy_1": value}) == PENALTY
 
+    def test_the_pca_yardstick_is_its_better_decoder(self):
+        """recon_lin 0.1 below recon 0.2: recon 0.3 is 3 times the PCA; a
+        recon_lin above recon (0.4) leaves the yardstick at 0.2."""
+        lin = PCA | {"recon_lin": 0.1}
+        assert _objective(_line(), lin) == pytest.approx(math.log(3.0))
+        worse = PCA | {"recon_lin": 0.4}
+        assert _objective(_line(), worse) == pytest.approx(math.log(1.5))
+
     def test_a_perfect_code_counts_as_the_floor(self):
         line = _line(**{"recon": 0.0, "dyn_1/copy_1": 0.0})
         assert _objective(line, PCA) == pytest.approx(math.log(FLOOR))
