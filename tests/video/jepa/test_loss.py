@@ -1,0 +1,289 @@
+import pytest
+import torch
+
+from exp.lib.sigreg import sigreg
+from exp.video.jepa.loss import (
+    Reconstruction,
+    jepa_loss,
+    pool,
+    prediction_errors,
+    split_y,
+    weighted_sigreg,
+)
+
+B, V, E, T, D = 3, 3, 1, 4, 5
+
+
+def _identity(x: torch.Tensor) -> torch.Tensor:
+    return x
+
+
+def _inputs(seed: int = 0):
+    g = torch.Generator().manual_seed(seed)
+    tokens = torch.randn(B, V, E + T, D, generator=g, dtype=torch.float64)
+    masks = torch.rand(B, V - 1, T, generator=g) < 0.5
+    masks[:, :, 0] = True  # at least one masked token per view
+    directions = torch.randn(7, D, generator=g, dtype=torch.float64)
+    directions = directions / directions.norm(dim=1, keepdim=True)
+    return tokens, masks, directions
+
+
+def test_pool():
+    x = torch.arange(2 * 5 * 3.0).view(2, 5, 3)
+    assert torch.equal(pool(x, z_pool="cls", extra=1), x[:, 0])
+    assert torch.equal(pool(x, z_pool="registers", extra=2), x[:, :2].mean(1))
+    assert torch.equal(pool(x, z_pool="mean", extra=2), x[:, 2:].mean(1))
+
+
+def test_the_prediction_error_by_hand():
+    """With the identity predictor, view v's error is the mean over its
+    masked patch tokens of the mean squared difference to the target's."""
+    tokens, masks, _ = _inputs()
+    got = prediction_errors(tokens, masks, _identity, extra=E, sg=False)
+    for b in range(B):
+        per_view = []
+        for v in range(1, V):
+            sq = ((tokens[b, v, E:] - tokens[b, 0, E:]) ** 2).mean(-1)  # (T,)
+            per_view.append(sq[masks[b, v - 1]].mean())
+        torch.testing.assert_close(got[b], torch.stack(per_view).mean())
+
+
+class TestJEPALoss:
+    @pytest.mark.parametrize("lam", [0.0, 0.3, 1.0])
+    def test_all_valid_is_the_lejepa_mix(self, lam):
+        """(1 - lam) mean_b L_pred + lam SIGReg of the B target z."""
+        tokens, masks, dirs = _inputs()
+        valid = torch.ones(B, dtype=torch.bool)
+        t = jepa_loss(
+            tokens,
+            masks,
+            valid,
+            dirs,
+            _identity,
+            extra=E,
+            z_pool="mean",
+            lam=lam,
+            sg=False,
+        )
+        pred = prediction_errors(tokens, masks, _identity, extra=E, sg=False)
+        z = tokens[:, 0, E:].mean(1)
+        s = sigreg(z, z.new_zeros(0, D), dirs)
+        torch.testing.assert_close(t.loss, (1 - lam) * pred.mean() + lam * s)
+        torch.testing.assert_close(t.pred, pred.mean())
+        torch.testing.assert_close(t.sigreg, s)
+        assert t.valid == B and torch.equal(t.z, z)
+
+    def test_a_stream_without_a_chunk_gets_no_gradient(self):
+        """The loss is the sum over the valid streams over B: an invalid
+        stream's tokens get exactly zero gradient, and the loss is that of the
+        valid ones with SIGReg of their z only, times |M| / B."""
+        tokens, masks, dirs = _inputs()
+        valid = torch.tensor([True, False, True])
+        x = tokens.clone().requires_grad_()
+        t = jepa_loss(
+            x, masks, valid, dirs, _identity, extra=E, z_pool="mean", lam=0.4, sg=False
+        )
+        (g,) = torch.autograd.grad(t.loss, [x])
+        assert (g[1] == 0).all() and (g[0] != 0).any()
+        pred = prediction_errors(tokens, masks, _identity, extra=E, sg=False)
+        z = tokens[valid, 0, E:].mean(1)
+        s = sigreg(z, z.new_zeros(0, D), dirs)
+        expect = (0.6 * pred[valid].sum() + 0.4 * 2 * s) / B
+        torch.testing.assert_close(t.loss, expect)
+
+    def test_no_valid_stream_is_zero(self):
+        tokens, masks, dirs = _inputs()
+        t = jepa_loss(
+            tokens,
+            masks,
+            torch.zeros(B, dtype=torch.bool),
+            dirs,
+            _identity,
+            extra=E,
+            z_pool="mean",
+            lam=0.4,
+            sg=False,
+        )
+        assert t.loss == 0 and t.valid == 0
+
+    def test_sg_stops_the_prediction_at_the_target_view(self):
+        """With sg and no SIGReg, the target view (0) gets zero gradient and
+        the context views theirs unchanged; without sg the target gets some."""
+        tokens, masks, dirs = _inputs()
+        valid = torch.ones(B, dtype=torch.bool)
+        grads = {}
+        for sg in (False, True):
+            x = tokens.clone().requires_grad_()
+            t = jepa_loss(
+                x,
+                masks,
+                valid,
+                dirs,
+                _identity,
+                extra=E,
+                z_pool="mean",
+                lam=0.0,
+                sg=sg,
+            )
+            (grads[sg],) = torch.autograd.grad(t.loss, [x])
+        assert (grads[True][:, 0] == 0).all()
+        assert (grads[False][:, 0] != 0).any()
+        torch.testing.assert_close(grads[True][:, 1:], grads[False][:, 1:])
+
+    def test_sg_leaves_the_sigreg_credit_of_the_target_view(self):
+        tokens, masks, dirs = _inputs()
+        valid = torch.ones(B, dtype=torch.bool)
+        x = tokens.clone().requires_grad_()
+        t = jepa_loss(
+            x, masks, valid, dirs, _identity, extra=E, z_pool="mean", lam=1.0, sg=True
+        )
+        (g,) = torch.autograd.grad(t.loss, [x])
+        assert (g[:, 0, E:] != 0).any() and (g[:, 1:] == 0).all()
+
+
+class TestWeightedSIGReg:
+    def test_it_is_sigreg_of_the_samples_of_weight_one(self):
+        """0/1 weights select the samples: the statistic of the selected ones
+        (exp.lib.sigreg), and a gradient of exactly 0 for the others."""
+        tokens, _, dirs = _inputs()
+        x = tokens.flatten(0, 2)[:9].clone().requires_grad_()  # (9, D)
+        w = torch.tensor([1, 0, 1, 1, 0, 0, 1, 1, 0], dtype=torch.bool)
+        got = weighted_sigreg(x, w, dirs)
+        torch.testing.assert_close(got, sigreg(x[w], x.new_zeros(0, D), dirs))
+        (g,) = torch.autograd.grad(got, [x])
+        assert (g[~w] == 0).all() and (g[w] != 0).any()
+
+    def test_no_weight_is_zero(self):
+        tokens, _, dirs = _inputs()
+        x = tokens.flatten(0, 2)[:4]
+        assert weighted_sigreg(x, torch.zeros(4, dtype=torch.bool), dirs) == 0
+
+
+class TestSIGRegOn:
+    @pytest.mark.parametrize("on", ["tokens", "both"])
+    def test_the_tokens_statistic_over_t(self, on):
+        """ "tokens": S_t = SIGReg of the valid streams' |M| T target patch
+        tokens together, over T; "both": (S_z + S_t) / 2."""
+        tokens, masks, dirs = _inputs()
+        valid = torch.tensor([True, False, True])
+        t = jepa_loss(
+            tokens,
+            masks,
+            valid,
+            dirs,
+            _identity,
+            extra=E,
+            z_pool="mean",
+            lam=0.4,
+            sg=False,
+            sigreg_on=on,
+        )
+        patches = tokens[valid, 0, E:].flatten(0, 1)  # (2 T, D)
+        s_t = sigreg(patches, patches.new_zeros(0, D), dirs) / T
+        z = tokens[valid, 0, E:].mean(1)
+        s_z = sigreg(z, z.new_zeros(0, D), dirs)
+        expect = s_t if on == "tokens" else (s_z + s_t) / 2
+        torch.testing.assert_close(t.sigreg, expect)
+        pred = prediction_errors(tokens, masks, _identity, extra=E, sg=False)
+        loss = (0.6 * pred[valid].sum() + 0.4 * 2 * expect) / B
+        torch.testing.assert_close(t.loss, loss)
+
+    def test_an_unknown_choice_is_an_error(self):
+        tokens, masks, dirs = _inputs()
+        with pytest.raises(ValueError, match="sigreg_on"):
+            jepa_loss(
+                tokens,
+                masks,
+                torch.ones(B, dtype=torch.bool),
+                dirs,
+                _identity,
+                extra=E,
+                z_pool="mean",
+                lam=0.4,
+                sg=False,
+                sigreg_on="zz",
+            )
+
+
+class TestReconstruction:
+    P = 6  # pixels of a frame: (1, 2, 3)
+
+    def _setup(self):
+        tokens, masks, dirs = _inputs()
+        g = torch.Generator().manual_seed(3)
+        w = torch.randn(self.P, D, generator=g, dtype=torch.float64)
+        frames = torch.rand(B, 1, 2, 3, generator=g, dtype=torch.float64)
+
+        def decoder(z: torch.Tensor) -> torch.Tensor:
+            return (z @ w.T).view(-1, 1, 2, 3)
+
+        return tokens, masks, dirs, w, frames, decoder
+
+    def _loss(self, tokens, masks, dirs, valid, rec, mu=0.7, lam=0.2):
+        return jepa_loss(
+            tokens,
+            masks,
+            valid,
+            dirs,
+            _identity,
+            extra=E,
+            z_pool="mean",
+            lam=lam,
+            sg=True,
+            recon=None if rec is None else rec._replace(mu=mu),
+        )
+
+    def test_the_term_is_the_mean_squared_error_to_the_standardized_frame(self):
+        """L = L_without + mu * mean over the valid streams of the mean over
+        the pixels of (g(z) - (x - m) / s)^2, g linear here."""
+        tokens, masks, dirs, w, frames, dec = self._setup()
+        valid = torch.tensor([True, False, True])
+        rec = Reconstruction(0.7, dec, 0.4, 2.0, frames)
+        t = self._loss(tokens, masks, dirs, valid, rec)
+        base = self._loss(tokens, masks, dirs, valid, None)
+        z = tokens[:, 0, E:].mean(1)
+        err = ((z @ w.T - ((frames - 0.4) / 2.0).flatten(1)) ** 2).mean(1)
+        mean = err[valid].mean()
+        torch.testing.assert_close(t.recon, mean)
+        torch.testing.assert_close(t.loss, base.loss + 0.7 * mean * 2 / B)
+        assert base.recon == 0
+
+    def test_the_gradient_to_z_matches_a_central_difference(self):
+        """With sg the prediction gives the target view no credit; the
+        reconstruction does, through z, equal to the central difference of the
+        loss (float64) and to 2 / P W^T (W z - t) / |M| spread over the T
+        patch tokens of the mean pool."""
+        tokens, masks, dirs, w, frames, dec = self._setup()
+        valid = torch.ones(B, dtype=torch.bool)
+        rec = Reconstruction(1.0, dec, 0.0, 1.0, frames)
+
+        def f(x: torch.Tensor) -> torch.Tensor:
+            return self._loss(x, masks, dirs, valid, rec, mu=1.0, lam=0.0).loss
+
+        def r(x: torch.Tensor) -> torch.Tensor:
+            return self._loss(x, masks, dirs, valid, rec, mu=1.0, lam=0.0).recon
+
+        x = tokens.clone().requires_grad_()
+        (g,) = torch.autograd.grad(f(x), [x])
+        assert (g[:, 0, E:] != 0).any()
+        z = tokens[:, 0, E:].mean(1)
+        dz = 2 / self.P * (z @ w.T - frames.flatten(1)) @ w / B
+        torch.testing.assert_close(g[:, 0, E:], dz[:, None].expand(-1, T, -1) / T)
+        eps = 1e-6
+        for idx in [(0, 0, E, 1), (1, 0, E + 2, 3), (2, 0, E + 3, 0)]:
+            up, down = tokens.clone(), tokens.clone()
+            up[idx] += eps
+            down[idx] -= eps
+            # terms.recon, not the loss: sg hides the prediction from the
+            # gradient but not from a finite difference
+            fd = (r(up) - r(down)) / (2 * eps)
+            torch.testing.assert_close(g[idx], fd, rtol=1e-6, atol=1e-9)
+
+    def test_split_y_reads_the_masks_and_the_target_frame(self):
+        y = torch.arange(2 * 3 * (4 + 6.0)).view(6, 10)
+        masks, frames = split_y(y, 2, 3, (1, 2, 3))
+        assert frames is not None
+        assert torch.equal(masks, y.view(2, 3, 10)[:, 1:, :4])
+        assert torch.equal(frames.flatten(1), y.view(2, 3, 10)[:, 0, 4:])
+        masks, frames = split_y(y, 2, 3, None)
+        assert frames is None and masks.shape == (2, 2, 10)

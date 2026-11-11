@@ -1,13 +1,13 @@
 # M14 stage 1 (the position of one ball): the small dynamics without the eligibility
 # traces, searched by BP on the seeds 100/101 (design 5.4). Confirm the best with
 # `just sweep confirm m14-s1-small-notrace-bp-v1 --top 3 --learners bp,pc --seeds 0,1,2 ...`.
-# parallel and max_trials are the values before `fleet bench` (design 4.9).
+# parallel and max_trials fit the slots measured by `fleet bench` (2026-11-03).
 [study]
 name = "m14-s1-small-notrace-bp-v1"
 overrides = ["+experiment=m14/s1", "learner=bp", "dynamics=small", "dynamics.trace=false", "phase=explore"]
 seeds = [100, 101]
-parallel = 16       # trials in flight (x 2 seeds runs)
-max_trials = 160
+parallel = 7       # trials in flight (x 2 seeds runs)
+max_trials = 60
 res = "cpu"
 
 [space]

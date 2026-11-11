@@ -16,6 +16,7 @@ NAS   /nas/geson/mujou-exp/                             全ホストのコンテ
 ホスト /data/geson/mujou-exp/.fleet/（コンテナ mujou-exp-dev-1 の中で同じパス）
         git/{repo,mujou}.git   code/<snap12>/（読み取り専用）  code/latest
         venv/<envkey>/   runs/<batch>/<run_id>/（実行中の run）  state/   worker.{log,pid,lock}
+        data/<data_version>/（準備したデータのローカルの複製。job には MUJOU_EXP_DATA で渡す）
 ```
 
 - snapshot: `push` は作業ツリーをそのまま（未追跡のファイルも、mujou の変更も）一時 index で commit にし、HEAD・ブランチ・本物の index は動かさない。ツリーがきれいなら HEAD そのもの。各ホストへ git push し、`code/<snap12>/` に展開して読み取り専用にする

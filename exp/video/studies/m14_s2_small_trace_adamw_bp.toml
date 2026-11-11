@@ -1,0 +1,28 @@
+# M14 stage 2 (the positions of three balls): the small dynamics with the
+# eligibility traces and AdamW, searched by BP on the seeds 100/101 around the
+# best of m14-s2-small-trace-bp-v1 (#50: AdamW, lr 1e-4, open_loop 0, which
+# that study found only late). Adds the second moment's time constant.
+[study]
+name = "m14-s2-small-trace-adamw-bp-v1"
+overrides = ["+experiment=m14/s2", "learner=bp", "dynamics=small", "dynamics.trace=true", "phase=explore", "optim=adamw"]
+seeds = [100, 101]
+parallel = 12       # trials in flight (x 2 seeds runs)
+max_trials = 72
+res = "cpu"
+
+[space]
+"optim.lr" = {float = [2e-5, 1e-3], log = true}
+"optim.tau_m" = {float = [0.1, 10.0], log = true}
+"optim.tau_v" = {float = [3.0, 300.0], log = true}
+"optim.warmup" = {categorical = [0.0, 60.0, 300.0]}
+"dynamics.residual" = {categorical = [true, false]}
+"dynamics.open_loop" = {categorical = [0.0, 0.1, 0.25]}
+
+# The best of m14-s2-small-trace-bp-v1.
+[[enqueue]]
+"optim.lr" = 9.610578284604683e-05
+"optim.tau_m" = 1.0231085527421513
+"optim.tau_v" = 30.0
+"optim.warmup" = 60.0
+"dynamics.residual" = true
+"dynamics.open_loop" = 0.0

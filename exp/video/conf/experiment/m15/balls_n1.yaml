@@ -1,0 +1,25 @@
+# @package _global_
+# M15 on the balls, N = 1 (images): the three balls of M14 stage 2 rendered at
+# 32x32, the tiny ViT (64 tokens), AdamW. The linear probe of each ball's
+# position from z judges it (measure.every).
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: none
+  - override /vision: vit_t
+program: vision
+name: m15/balls_n1
+tags: [m15, balls, n1]
+data:
+  balls:
+    radii: [0.06, 0.08, 0.10]
+    obs: frames
+    size: 32
+vision:
+  # Pixel reconstruction from z (off): switch on with vision.recon=<mu> (e.g. 1.0;
+  # vision.recon_hidden sets the decoder's width), see exp.video.jepa.loss.
+  recon: 0.0
+  patch: 4
+  # the mean and std of the pixels of the calib chunks (radii as above)
+  pixel_mean: 0.03
+  pixel_std: 0.12
+  frames: 1

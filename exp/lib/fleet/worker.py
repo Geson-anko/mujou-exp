@@ -619,6 +619,7 @@ class Worker:
             CUDA_VISIBLE_DEVICES="" if slot.gpu is None else str(slot.gpu),
             FLEET_HOST=self._host,
         )
+        env.setdefault("MUJOU_EXP_DATA", str(self._root / "data"))
         logs = run_dir / "logs"
         with (
             (logs / f"attempt-{attempt}.out").open("wb") as out,

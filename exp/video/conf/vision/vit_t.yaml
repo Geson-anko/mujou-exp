@@ -1,4 +1,8 @@
-# A tiny ViT (ViT-Ti: width 192, 3 heads, 12 blocks).
-dim: 192
-heads: 3
-depth: 12
+# The tiny ViT of M15: width 128, 4 heads, 6 blocks in 2 PC-ALM nodes, a
+# predictor of 2 blocks. The experiment sets the patch (4 for the 32x32 balls,
+# 8 for the 64x64 Walking Tours: 64 tokens either way).
+dim: 128
+heads: 4
+depth: 6
+nodes: 2
+pred_depth: 2
