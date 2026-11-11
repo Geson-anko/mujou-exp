@@ -12,16 +12,18 @@
 # rates, weak SIGReg on z or on z and the tokens (0.9 hurt val), V-JEPA's
 # masks (smaller ones did not help), no sg; D = 256 and the width 256 fixed.
 # The 4090s only: N = 16 does not fit the 8 GB of a 4060 (CUBLAS alloc) and
-# runs there about 3 x slower; two runs share a 4090 (gpu_mem 10) and leave
-# room for a posthoc job (12).
+# runs there about 3 x slower; two runs share a 4090 (gpu_mem 11). A posthoc
+# job of N = 16 peaks at 15 GB and a run holds about 9 GB, so a posthoc job
+# takes a 4090 alone (gpu_mem 16). v1 (posthoc 12 beside a run of 10) was
+# stopped after 30 minutes for that risk of running out of memory.
 [study]
-name = "m17-wt-bp-v1"
+name = "m17-wt-bp-v2"
 overrides = ["+experiment=m17/wt_n16", "learner=bp", "phase=explore"]
 seeds = [100, 101]
 parallel = 3        # trials in flight (x 2 seeds runs): 2 runs on each of 3 4090s
-max_trials = 24
+max_trials = 20
 res = "4090"
-gpu_mem = 10.0
+gpu_mem = 11.0
 ram = 12.0
 prio = 60
 objective_from = "posthoc"
@@ -29,7 +31,7 @@ n_startup_trials = 10
 
 [study.posthoc]
 res = "4090"        # the PCA of 18432 frames of 128 x 128 x 3 and the decoders
-gpu_mem = 12.0
+gpu_mem = 16.0
 ram = 16.0
 ckpts = "all"       # 300 s and 600 s: whether learning longer helps (the objective is the last)
 
