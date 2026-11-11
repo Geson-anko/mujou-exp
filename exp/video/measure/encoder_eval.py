@@ -90,7 +90,6 @@ from exp.video.measure.posthoc import (
     BATCH,
     DECODER_SEED,
     FIT_BATCH,
-    LR,
     STEPS,
     Parent,
     as_float,
@@ -108,6 +107,7 @@ from exp.video.schema.run import RunConf
 
 __all__ = [
     "CKPTS",
+    "DECODER_LR",
     "DYN_SHOWN",
     "PCA_SEED",
     "SHOWN",
@@ -118,6 +118,10 @@ __all__ = [
 ]
 
 PCA_SEED = 4  # added to the run's seed (DECODER_SEED 3)
+# The rate of the decoder of z: at posthoc.LR (1e-3) its fit of 128 x 128
+# frames died to a constant image on some codes (recon_fit 1.07 on a learned
+# ViT, 2026-11-12); 3e-4 fit both that one (0.66) and the PCA-256 (0.15).
+DECODER_LR = 3e-4
 WINDOWS, STREAM_STEPS = 2048, 8  # the training windows and their stacks after the first
 SHOWN, DYN_SHOWN = 8, 4  # windows of val in the pictures
 CKPTS = ("all", "last")
@@ -293,7 +297,7 @@ class EncoderEval:
             "stacks": len(self._targets),
             "steps": self._steps,
             "batch": FIT_BATCH,
-            "lr": LR,
+            "lr": DECODER_LR,
             "seed": self.conf.seed + DECODER_SEED,
             "pca_seed": self.conf.seed + PCA_SEED,
             "device": self.conf.device,
@@ -422,6 +426,7 @@ class EncoderEval:
             dec.standardize(z_train.flatten(0, 1)),
             self._targets,
             steps=self._steps,
+            lr=DECODER_LR,
             gen=gen,
         )
         mean_img = self._mean
