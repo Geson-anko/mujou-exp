@@ -46,6 +46,19 @@ just sweep run exp/video/studies/m14_s3_bp.toml
 just sweep confirm m14-s3-bp-v1 --top 2 --learners bp,pc --seeds 0,1,2 --res cpu --batch m14-s3-confirm-v1
 ```
 
+M17（Walking Tours でエンコーダを詰める）は、preset `m17/wt_n16`・`wt_n8`・`wt_n1`（`vision.layout=packed`、`vision.recon` は 0 で固定）で回し、エンコーダの評価は後から `task=posthoc` で行う。posthoc は物差し（画素の PCA と学習前の ViT）、$z$ からの再構成、$z$ の上の線形の動力学、予測器を通した復元を測る（`measure/encoder_eval.py`）。探索は `studies/m17_wt_bp.toml`（`objective_from = "posthoc"`、tools/sweep/README.md）。
+
+```bash
+# 物差しだけ（親の run なし）
+just fleet submit --batch m17-base-v1 +experiment=m17/wt_n16 task=baselines --res 4090
+# run の後に、その run の posthoc（親は NAS の run のディレクトリ）
+just fleet submit --batch m17-post-v1 +experiment=m17/wt_n16 task=posthoc --res 4090 \
+    --after <RUN_ID> --set parent=/nas/geson/mujou-exp/runs/<batch>/<RUN_ID> --set decode.ckpts=all
+# TensorBoard のビュー（tools/tb/README.md）
+just fleet pull --batch <batch> --batch m17-post-v1
+just tb export --batch <batch> m17-post-v1 && just tb view
+```
+
 run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jsonl`・`result.json`・`ckpt/`・`viz/` など）は `exp/lib/rundir.py` と fleet の README の契約のとおり。checkpoint とログは git に入れない。
 
 ## 結果
