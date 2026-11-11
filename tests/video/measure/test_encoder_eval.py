@@ -66,6 +66,8 @@ class TestEncoderEval:
             "dyn_2",
             "copy_1",
             "dyn_1/copy_1",
+            "dynw_1",
+            "copyw_1",
             "img_dyn_1",
             "img_dyn_1/copy",
             "restore_short_mask",

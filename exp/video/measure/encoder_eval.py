@@ -32,7 +32,10 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   against its last frame, over the same of the mean image (the pixel mean of
   the training stacks' last frames: 1 is the mean image); ``recon_fit`` the
   same on the training stacks; ``recon_lin`` (pca) the linear PCA's;
-- ``dyn_h``, ``copy_h``, ``dyn_h/copy_h`` (``linear_dyn.errors``) for
+- ``dyn_h``, ``copy_h``, ``dyn_h/copy_h``, and ``dynw_h``, ``copyw_h`` in
+  the coordinates whitened by the training codes' covariance
+  (``linear_dyn.errors``: every direction weighs the same, where ``dyn_h``
+  favours a code whose variance changes slowly, as the PCA's) for
   ``measure.horizons``; ``alpha`` the ridge;
 - ``img_dyn_h``: the decoded rollout $g(\hat z_h)$ against the true frame
   $h$ stacks ahead, over the mean image's error, and ``img_dyn_h/copy``, over
@@ -451,7 +454,7 @@ class EncoderEval:
             if code.linear is not None:
                 lin = pca.decode(zs[:, 0], *code.linear).view_as(f0).clamp(0, 1)
                 line["recon_lin"] = _mse(lin, f0) / base
-            line |= linear_dyn.errors(a, b, zs, horizons)
+            line |= linear_dyn.errors(a, b, zs, horizons, train=z0)
             pred = linear_dyn.rollout(a, b, zs[:, 0], max(horizons)).float()
             dyn_imgs = {}
             for h in horizons:

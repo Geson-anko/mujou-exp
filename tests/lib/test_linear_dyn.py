@@ -81,6 +81,43 @@ class TestErrors:
             errors(a, b, zs, [3])
 
 
+class TestWhitenedErrors:
+    def test_by_hand_with_a_diagonal_covariance(self):
+        """Training codes (+-2, 0), (0, +-1): C = diag(2, 0.5). The windows go
+        from 0 to the same four codes; the prediction b = (1, 0) misses by
+        (1, 0), (-3, 0), (-1, +-1). Whitened: errors 0.5, 4.5, 2.5, 2.5 (mean
+        2.5) over the variance 2, 2, 2, 2: dynw 1.25; raw: 3.5 / 2.5 = 1.4.
+        The copy (0) misses by the codes themselves: copyw 1."""
+        codes = torch.tensor([[2.0, 0.0], [-2.0, 0.0], [0.0, 1.0], [0.0, -1.0]])
+        zs = torch.stack([torch.zeros(4, 2), codes], 1).double()
+        a = torch.zeros(2, 2, dtype=torch.float64)
+        b = torch.tensor([1.0, 0.0], dtype=torch.float64)
+        e = errors(a, b, zs, [1], train=codes)
+        assert e["dyn_1"] == pytest.approx(1.4, rel=1e-12)
+        assert e["dynw_1"] == pytest.approx(1.25, rel=1e-5)
+        assert e["copyw_1"] == pytest.approx(1.0, rel=1e-5)
+
+    def test_an_invertible_linear_map_of_z_changes_nothing(self):
+        """z -> M z with A -> M A M^-1, b -> M b: the same rollout in other
+        coordinates, so dynw and copyw stay (dyn_h does not, in general)."""
+        a, b, zs = _system(5)
+        noisy = zs + 0.3 * torch.randn(
+            zs.shape, generator=torch.Generator().manual_seed(1), dtype=torch.float64
+        )
+        g = torch.Generator().manual_seed(2)
+        m = torch.randn(4, 4, generator=g, dtype=torch.float64) + 2 * torch.eye(
+            4, dtype=torch.float64
+        )
+        train = noisy[:, :-1].flatten(0, 1)
+        e = errors(a, b, noisy, [1, 3], train=train)
+        f = errors(
+            m @ a @ torch.linalg.inv(m), m @ b, noisy @ m.T, [1, 3], train=train @ m.T
+        )
+        for k in ("dynw_1", "dynw_3", "copyw_1", "copyw_3"):
+            assert f[k] == pytest.approx(e[k], rel=1e-5)
+        assert "dynw_1" not in errors(a, b, noisy, [1])
+
+
 def test_select_alpha_picks_the_least_ridge_of_a_noiseless_system():
     """With no noise, more ridge only biases A: the least scale wins."""
     _, _, zs = _system(5)
