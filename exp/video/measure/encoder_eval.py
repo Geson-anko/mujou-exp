@@ -17,8 +17,8 @@ The evaluation of a code. The training windows are ``stream_windows``:
 ``windows`` windows of ``N + STREAM_STEPS`` frames ``vision.stride`` apart
 from the loop of the training videos (none across two videos), each
 ``STREAM_STEPS + 1`` stacks; every stack has a $z$ and a last frame. A
-``posthoc.decoder`` learns the last frames from $z$ standardized by the mean
-and the std of each component over the training stacks (``_Standardized``:
+``posthoc.decoder`` learns the last frames from $z$ centred on the training
+stacks and divided by the RMS of its components' stds (``_Standardized``:
 the PCA's components and a ViT's $z$ reach the decoder at the same scale;
 ``posthoc.fit_decoder``, from the generator of ``seed + DECODER_SEED``); ``exp.lib.linear_dyn`` fits
 $z_{k+1} = A z_k + b$ on the consecutive stacks of the windows, its ridge
@@ -185,17 +185,19 @@ class _Code:
 
 
 class _Standardized(nn.Module):
-    r"""``dec`` of $(z - \mu) / \sigma$: $\mu$ and $\sigma$ the mean and the
-    std of each component of the codes ``z`` ``(n, D)``, $\sigma$ at least
-    ``1e-3`` of its mean over the components (a constant component stays 0
-    rather than amplify noise)."""
+    r"""``dec`` of $(z - \mu) / \sigma$: $\mu$ the mean of each component of
+    the codes ``z`` ``(n, D)``, $\sigma$ one scalar for all of them, the root
+    mean square of their stds (the codes reach the decoder at an RMS std of
+    1). One scale, not one per component: the PCA's last components, each
+    scaled up to std 1, drowned the first and the decoder's fit died to a
+    constant image (``recon`` 1.09 against ``recon_lin`` 0.16, 2026-11-12)."""
 
     def __init__(self, z: Tensor) -> None:
         super().__init__()
         z = z.float()
-        sd = z.std(0)
+        rms = float(z.var(0).mean().sqrt())
         self.mu: Tensor = z.mean(0)  # on the device of z, as the decoder
-        self.sd: Tensor = sd.clamp(min=1e-3 * float(sd.mean()) + 1e-12)
+        self.sd: float = max(rms, 1e-12)
         self.dec: nn.Module | None = None
 
     def standardize(self, z: Tensor) -> Tensor:

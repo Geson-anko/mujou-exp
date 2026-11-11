@@ -149,15 +149,20 @@ class TestEncoderEval:
         assert a == b
 
 
-def test_the_decoder_sees_z_standardized_on_the_training_codes():
-    """Components of std 10 and 0.1 about means 5 and -1 reach the decoder at
-    mean 0 and std 1; a constant one stays 0."""
+def test_the_decoder_sees_z_centred_at_an_rms_std_of_one():
+    """Components of std 10 and 0.1 about means 5 and -1, and a constant one,
+    reach the decoder at mean 0, divided by one scale: the RMS of the stds,
+    sqrt((100 + 0.01 + 0) / 3), so their stds keep the ratio 100 and the mean
+    of their variances is 1; the constant one stays 0."""
     g = torch.Generator().manual_seed(0)
     z = torch.randn(4096, 3, generator=g) * torch.tensor([10.0, 0.1, 0.0])
     z = z + torch.tensor([5.0, -1.0, 2.0])
     std = _Standardized(z).standardize(z)
+    sd = z.std(0)
+    scale = float((sd**2).mean().sqrt())
     torch.testing.assert_close(std.mean(0), torch.zeros(3), atol=1e-5, rtol=0)
-    torch.testing.assert_close(std[:, :2].std(0), torch.ones(2), atol=1e-5, rtol=0)
+    torch.testing.assert_close(std.std(0), sd / scale, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(float(std.var(0).mean()), 1.0, atol=1e-5, rtol=0)
     assert (std[:, 2] == 0).all()
 
 
