@@ -6,11 +6,17 @@ import math
 from pathlib import Path
 
 import pytest
+import torch
 
 from exp.lib.rundir import Exit
 from exp.video import loop
 from exp.video.main import local_job
-from exp.video.measure.encoder_eval import EncoderEval, _objective, stream_windows
+from exp.video.measure.encoder_eval import (
+    EncoderEval,
+    _objective,
+    _Standardized,
+    stream_windows,
+)
 from exp.video.measure.objective import FLOOR, PENALTY
 from exp.video.measure.posthoc import Parent
 from exp.video.programs.vision import DATA_ENV, PROGRAM
@@ -106,6 +112,18 @@ class TestEncoderEval:
         a, b = _files(tmp_path / "a"), _files(tmp_path / "b")
         del a["config.json"], b["config.json"]
         assert a == b
+
+
+def test_the_decoder_sees_z_standardized_on_the_training_codes():
+    """Components of std 10 and 0.1 about means 5 and -1 reach the decoder at
+    mean 0 and std 1; a constant one stays 0."""
+    g = torch.Generator().manual_seed(0)
+    z = torch.randn(4096, 3, generator=g) * torch.tensor([10.0, 0.1, 0.0])
+    z = z + torch.tensor([5.0, -1.0, 2.0])
+    std = _Standardized(z).standardize(z)
+    torch.testing.assert_close(std.mean(0), torch.zeros(3), atol=1e-5, rtol=0)
+    torch.testing.assert_close(std[:, :2].std(0), torch.ones(2), atol=1e-5, rtol=0)
+    assert (std[:, 2] == 0).all()
 
 
 def test_the_stream_windows_start_evenly_and_stay_within_a_video(tmp_path):

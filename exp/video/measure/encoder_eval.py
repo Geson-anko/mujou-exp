@@ -17,8 +17,10 @@ The evaluation of a code. The training windows are ``stream_windows``:
 ``windows`` windows of ``N + STREAM_STEPS`` frames ``vision.stride`` apart
 from the loop of the training videos (none across two videos), each
 ``STREAM_STEPS + 1`` stacks; every stack has a $z$ and a last frame. A
-``posthoc.decoder`` learns the last frames from $z$ (``posthoc.fit_decoder``,
-from the generator of ``seed + DECODER_SEED``); ``exp.lib.linear_dyn`` fits
+``posthoc.decoder`` learns the last frames from $z$ standardized by the mean
+and the std of each component over the training stacks (``_Standardized``:
+the PCA's components and a ViT's $z$ reach the decoder at the same scale;
+``posthoc.fit_decoder``, from the generator of ``seed + DECODER_SEED``); ``exp.lib.linear_dyn`` fits
 $z_{k+1} = A z_k + b$ on the consecutive stacks of the windows, its ridge
 chosen on the calib windows of the held-out video (``linear_dyn.select_alpha``);
 for a ViT, a token decoder (``restore.fit_token_decoder``, from the generator
@@ -67,7 +69,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import torch
 from torch import Tensor, nn
@@ -177,6 +179,29 @@ class _Code:
     @torch.no_grad()
     def z(self, stacks: Tensor) -> Tensor:
         return self._z(stacks)
+
+
+class _Standardized(nn.Module):
+    r"""``dec`` of $(z - \mu) / \sigma$: $\mu$ and $\sigma$ the mean and the
+    std of each component of the codes ``z`` ``(n, D)``, $\sigma$ at least
+    ``1e-3`` of its mean over the components (a constant component stays 0
+    rather than amplify noise)."""
+
+    def __init__(self, z: Tensor) -> None:
+        super().__init__()
+        z = z.float()
+        sd = z.std(0)
+        self.mu: Tensor = z.mean(0)  # on the device of z, as the decoder
+        self.sd: Tensor = sd.clamp(min=1e-3 * float(sd.mean()) + 1e-12)
+        self.dec: nn.Module | None = None
+
+    def standardize(self, z: Tensor) -> Tensor:
+        return (z.float() - self.mu) / self.sd
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        assert self.dec is not None
+        return self.dec(self.standardize(z))
 
 
 class EncoderEval:
@@ -385,8 +410,12 @@ class EncoderEval:
         horizons = conf.measure.horizons
         z_train, tok_train = self._encode(code, self._train)
         gen = torch.Generator().manual_seed(conf.seed + DECODER_SEED)
-        dec = fit_decoder(
-            z_train.flatten(0, 1), self._targets, steps=self._steps, gen=gen
+        dec = _Standardized(z_train.flatten(0, 1))
+        dec.dec = fit_decoder(
+            dec.standardize(z_train.flatten(0, 1)),
+            self._targets,
+            steps=self._steps,
+            gen=gen,
         )
         mean_img = self._mean
         recon_fit = self._fit_error(dec, z_train.flatten(0, 1))
