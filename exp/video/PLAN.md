@@ -1,7 +1,7 @@
 # 計画書: 動画のストリームから世界のシミュレータを PC-ALM で学ぶ
 
 - 作成: 2026-10-30
-- 状態: M16 まで実施し、M17（Walking Tours でエンコーダを詰める）を計画中（2026-11-11）。結果は [README.md](README.md) と [results/](results/)
+- 状態: M16 まで実施し、M17（Walking Tours でエンコーダを詰める）を実施中（2026-11-11〜）。結果は [README.md](README.md) と [results/](results/)
 - mujou: `881c4ee`（v0.1.0 以降の main）
 - 学習則: PC-ALM（`mujou.pc`）が中心。ノード内 BP は同じネットワークの基準としてだけ使う
 

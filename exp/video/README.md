@@ -46,7 +46,7 @@ just sweep run exp/video/studies/m14_s3_bp.toml
 just sweep confirm m14-s3-bp-v1 --top 2 --learners bp,pc --seeds 0,1,2 --res cpu --batch m14-s3-confirm-v1
 ```
 
-M17（Walking Tours でエンコーダを詰める）は、preset `m17/wt_n16`・`wt_n8`・`wt_n1`（`vision.layout=packed`、`vision.recon` は 0 で固定）で回し、エンコーダの評価は後から `task=posthoc` で行う。posthoc は物差し（画素の PCA と学習前の ViT）、$z$ からの再構成、$z$ の上の線形の動力学、予測器を通した復元を測る（`measure/encoder_eval.py`）。探索は `studies/m17_wt_bp.toml`（`objective_from = "posthoc"`、tools/sweep/README.md）。
+M17（Walking Tours でエンコーダを詰める）は、preset `m17/wt_n16`・`wt_n8`・`wt_n1`（`vision.layout=packed`、`vision.recon` は 0 で固定）で回し、エンコーダの評価は後から `task=posthoc` で行う。posthoc は物差し（画素の PCA と学習前の ViT）、$z$ からの再構成、$z$ の上の線形の動力学、予測器を通した復元を測る（`measure/encoder_eval.py`）。探索は `studies/m17_wt_bp.toml`（`objective_from = "posthoc"`、tools/sweep/README.md）。run の 1 フレーム（仮想時間の 1/30 秒）にストリームは動画を 3 フレーム（0.1 秒）進める（`data.tours.advance=3`）。動画は仮想時間に対して 3 倍速で流れ、間の 2 フレームはどのノードも推論しない。
 
 ```bash
 # 物差しだけ（親の run なし）
@@ -77,3 +77,4 @@ run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jso
 | M14 | [動力学だけを学ぶ（玉の状態を観測に）](results/m14.md) | 段 1・2 は達成（段 2 の #45 で test の `roll5/cv5` 0.38〜0.44、`roll10/cv10` 0.25〜0.30、PC-ALM と BP、3 seed）。画素を観測にした段 3 は等加速度の外挿の 1.9〜2.2 倍で届かない |
 | M15 | [画像のエンコーダを JEPA で学ぶ](results/m15.md) | 達成。JEPA に spatial broadcast decoder による最後のフレームの再構成を足し、test の `probe_pos_min` 0.957〜0.979（PC-ALM と BP、3 seed）。JEPA だけでは 0.05〜0.2 で、玉の位置が線形に読めなかった |
 | M16 | [視覚と動力学を同時に学ぶ](results/m16.md) | 達成。動力学を 0.6 秒ごとの窓の BPTT（W=36、feedback=grad、PC-ALM は窓のエピソード）で学び、test の後から学ぶデコーダで 10 フレーム先が平均の画像の 0.66〜0.79 倍（PC-ALM と BP、3 seed）。毎フレームの学習（最初の確認、BP）では 1.3〜1.5 倍で届かなかった。PC-ALM を 5 更新/フレームに縮めると学習が安定せず、採らなかった |
+| M17 | [Walking Tours でエンコーダを詰める](results/m17.md) | 実施中。回す前に決めたこと（マスク、探索の目的、PCA との比べ方）まで |
