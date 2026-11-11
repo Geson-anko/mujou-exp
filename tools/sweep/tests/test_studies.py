@@ -5,6 +5,7 @@ Composing needs the experiment preset; a study whose preset is not written yet
 is skipped (and says which).
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,10 @@ def test_the_m14_studies_are_there():
 class TestStudy:
     def test_the_rules_of_a_search(self, path: Path):
         conf = StudyConf.load(path)
-        assert conf.name == path.stem.replace("_", "-") + "-v1"
+        # -v1, -v2, ...: a changed definition is a new study (README)
+        assert re.fullmatch(
+            re.escape(path.stem.replace("_", "-")) + r"-v\d+", conf.name
+        )
         assert conf.seeds == (100, 101)  # the search seeds, never 0/1/2
         assert "phase=explore" in conf.overrides
         assert "learner=bp" in conf.overrides  # searched by BP, confirmed by both
