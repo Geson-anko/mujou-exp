@@ -1,0 +1,54 @@
+# M17 on Walking Tours (MILESTONES.md, M17 step 5): the encoder learned by BP on
+# the seeds 100/101, chosen on val by the objective of the posthoc evaluation
+# (measure.encoder_eval, the last checkpoint): max(recon / recon_PCA,
+# dyn_1 / dyn_1_PCA), the PCA of the same D. A trial waits for the posthoc job
+# after each of its runs (objective_from = "posthoc"; no pruning). vision.recon
+# stays 0 (the preset; not in the space).
+[study]
+name = "m17-wt-bp-v1"
+overrides = ["+experiment=m17/wt_n16", "learner=bp", "phase=explore"]
+seeds = [100, 101]
+parallel = 4        # trials in flight (x 2 seeds runs): the 8 GPUs of std-00..03
+max_trials = 32
+res = "any_gpu"
+gpu_mem = 7.0
+ram = 8.0
+prio = 60
+objective_from = "posthoc"
+
+[study.posthoc]
+res = "4090"        # the PCA of 18432 frames of 128 x 128 x 3 and the decoders
+gpu_mem = 12.0
+ram = 16.0
+ckpts = "last"
+
+[space]
+"vision.frames" = {categorical = [8, 16]}
+"vision.stride" = {categorical = [2, 3, 6]}
+"vision.dim" = {categorical = [192, 256, 384]}
+"vision.z_dim" = {categorical = [128, 256, 512]}
+"vision.context_masks.0.scale" = {float = [0.05, 0.25]}
+"vision.context_masks.1.scale" = {float = [0.3, 0.8]}
+"vision.sigreg_on" = {categorical = ["z", "both"]}
+"vision.sigreg" = {float = [0.01, 0.9], log = true}
+"vision.sg" = {categorical = [false, true]}
+"vision.pred_loss" = {categorical = ["l2", "l1"]}
+"vision.pred_depth" = {categorical = [2, 4]}
+"optim_vision.lr" = {float = [3e-5, 1e-3], log = true}
+"optim_vision.warmup" = {categorical = [0.0, 60.0, 300.0]}
+
+# The preset: N = 16, 0.1 s, width 256, D 256, V-JEPA's masks.
+[[enqueue]]
+"vision.frames" = 16
+"vision.stride" = 3
+"vision.dim" = 256
+"vision.z_dim" = 256
+"vision.context_masks.0.scale" = 0.15
+"vision.context_masks.1.scale" = 0.7
+"vision.sigreg_on" = "z"
+"vision.sigreg" = 0.05
+"vision.sg" = false
+"vision.pred_loss" = "l2"
+"vision.pred_depth" = 2
+"optim_vision.lr" = 1e-4
+"optim_vision.warmup" = 300.0
