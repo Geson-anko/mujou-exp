@@ -236,7 +236,7 @@ class TestPackViews:
                 [[[False, True], [True, True]], [[True, True], [True, False]]]
             ),
         ]
-        h, y = pack_views(x, views, patch=4, tubelet=2)
+        h, y = pack_views(x, views, keeps=[2, 1], patch=4, tubelet=2)
         tokens = patchify_tubelets(x.float() / 255, 4, 2)  # (2, 8, 96)
         t = 8
         assert h.shape == (2, t + 4 + 2, 96 + 1) and y.shape == (2, 2 * t)

@@ -334,7 +334,7 @@ class TestPackedModules:
             multiblock_masks(3, mods.grid, m, keep=k // 2, generator=g)
             for m, k in zip(packed_masks(), keeps, strict=True)
         ]
-        h, _ = pack_views(x, views, patch=4, tubelet=2)
+        h, _ = pack_views(x, views, keeps=[k // 2 for k in keeps], patch=4, tubelet=2)
         tokens = mods.encoder(h, mods.segments)
         torch.testing.assert_close(
             mods.z_of(tokens[:, :t]), mods.encode(x), rtol=1e-6, atol=1e-7

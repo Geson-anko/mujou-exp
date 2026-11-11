@@ -424,7 +424,7 @@ class TestStackChunker:
                     multiblock_masks(2, (4, 4), m, keep=n, generator=g)
                     for m, n in zip(packed_masks(), keeps, strict=True)
                 ]
-                h, y = pack_views(x, views, patch=4, tubelet=2)
+                h, y = pack_views(x, views, keeps=keeps, patch=4, tubelet=2)
                 assert torch.equal(act["h"], h) and torch.equal(act["y"], y)
                 assert act["mask"].tolist() == [True, k == 1]
                 assert act["reset"].tolist() == [k == 0] * 2

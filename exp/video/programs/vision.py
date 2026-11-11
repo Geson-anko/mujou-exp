@@ -444,7 +444,9 @@ class PackedMeasures:
             chunks = windows[i : i + self._batch, : v.frames].to(dev)
             b = len(chunks)
             views = [m[i : i + b].to(dev) for m in masks]
-            h, y = pack_views(chunks, views, patch=v.patch, tubelet=v.tubelet)
+            h, y = pack_views(
+                chunks, views, keeps=self.keeps, patch=v.patch, tubelet=v.tubelet
+            )
             t = jepa_loss_packed(
                 mods.encoder(h, mods.segments),
                 y,

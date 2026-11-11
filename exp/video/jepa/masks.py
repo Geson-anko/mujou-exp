@@ -192,12 +192,18 @@ def expected_keep(
 
 
 def pack_views(
-    chunks: Tensor, masks: Sequence[Tensor], *, patch: int, tubelet: int
+    chunks: Tensor,
+    masks: Sequence[Tensor],
+    *,
+    keeps: Sequence[int],
+    patch: int,
+    tubelet: int,
 ) -> tuple[Tensor, Tensor]:
     """The packed sequences of the stacks ``chunks`` ``(B, N, C, H, W)`` (u8,
     or float in ``[0, 1]``) with the context masks ``masks`` (one ``(B, gh,
-    gw)`` per context view, each of a fixed count of visible patches, the same
-    in every time slot: a tube).
+    gw)`` per context view, the same in every time slot: a tube), mask ``v``
+    with exactly ``keeps[v]`` visible patches in every row (given, so that no
+    count is read back from the device).
 
     Returns:
         ``h`` ``(B, L, P + 1)``: the target view's $T$ tubelets
@@ -215,9 +221,9 @@ def pack_views(
     ids = torch.arange(t, device=x.device).expand(b, t)
     parts = [torch.cat([tokens, ids[..., None].to(x)], 2)]
     ys = []
-    for m in masks:
+    for m, k in zip(masks, keeps, strict=True):
         masked = m.flatten(1).repeat(1, slots)  # (B, T): the tube
-        keep = t - int(masked[0].sum())  # the same in every row
+        keep = k * slots
         visible = masked.float().sort(dim=1, stable=True).indices[:, :keep]  # id order
         picked = tokens.gather(1, visible[..., None].expand(-1, -1, tokens.shape[2]))
         parts.append(torch.cat([picked, visible[..., None].to(x)], 2))

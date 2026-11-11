@@ -352,7 +352,13 @@ class StackChunker(Node):
             multiblock_masks(b, self._grid, m, keep=k, generator=self.generator)
             for m, k in zip(self._masks, self._keeps, strict=True)
         ]
-        h, y = pack_views(sample["x"], views, patch=self._patch, tubelet=self._tubelet)
+        h, y = pack_views(
+            sample["x"],
+            views,
+            keeps=self._keeps,
+            patch=self._patch,
+            tubelet=self._tubelet,
+        )
         self.next.send(
             {
                 "h": h,
