@@ -1,4 +1,6 @@
+import inspect
 import math
+import re
 from typing import Any, cast
 
 import mujou.pc as pc
@@ -6,11 +8,18 @@ import mujou.testing
 import pytest
 import torch
 
-from exp.video.jepa.loss import jepa_loss
-from exp.video.jepa.masks import block_masks, make_views
+from exp.video.jepa.loss import jepa_loss, jepa_loss_packed
+from exp.video.jepa.masks import block_masks, make_views, multiblock_masks, pack_views
 from exp.video.jepa.nets import CHUNKER_SEED, VisionBP, VisionPC, build_vision_net
-from exp.video.jepa.nodes import Chunker, FrameRing, JEPAHead, z_spec
-from exp.video.jepa.vit import build_vision
+from exp.video.jepa.nodes import (
+    Chunker,
+    FrameRing,
+    JEPAHead,
+    PackedJEPAHead,
+    StackChunker,
+    z_spec,
+)
+from exp.video.jepa.vit import Segmented, build_vision
 from exp.video.schema import (
     BallsConf,
     DataConf,
@@ -21,6 +30,7 @@ from exp.video.schema import (
     VisionConf,
 )
 from mujou import Port, TensorSpec
+from tests.video.packed import masks as packed_masks, packed_conf, stacks
 
 TAU = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
 STEPS = 17  # of TAU.period in a frame of 1/30 s
@@ -170,7 +180,8 @@ class TestHead:
             _show(run, net.prev, _sample(_frames(1, b)[0], True))
             act = run.read(net.enc2.next)
             g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
-        head: JEPAHead = net.head
+        head = net.head
+        assert isinstance(head, JEPAHead)
         h = act["h"].clone().requires_grad_()
         t = jepa_loss(
             h.view(b, v, *h.shape[1:]),
@@ -375,3 +386,162 @@ class TestEquilibriumWithRecon:
         _, with_rec = _equilibrium(1, 1, recon=2.0, recon_hidden=8, **kw)
         diff = max(float((a - b).abs().max()) for a, b in zip(plain, with_rec))
         assert diff > 1e-3
+
+
+# --- the packed layout (M17) ---------------------------------------------------
+
+
+def _stack_sample(x: torch.Tensor, reset, ready: Any = True) -> pc.msg.Sample:
+    b = x.shape[0]
+    reset = torch.as_tensor(reset).expand(b).clone()
+    ready = torch.as_tensor(ready).expand(b).clone()
+    return pc.msg.Sample(x=x, y=torch.zeros(b, 1), mask=ready, reset=reset)
+
+
+class TestStackChunker:
+    def test_it_sends_the_packed_views_of_the_masks_of_its_generator(self):
+        """The k-th write is packed with the k-th draw of multiblock_masks
+        (view by view) from the node's generator; mask and reset are the
+        host's."""
+        mods = build_vision(packed_conf(streams=2), seed=0)
+        keeps = [k // 2 for k in mods.segments[1:]]
+        node = StackChunker(
+            stack=TensorSpec((2, 4, 3, 16, 16), torch.uint8),
+            patch=4,
+            tubelet=2,
+            masks=packed_masks(),
+            keeps=keeps,
+            period=TAU.period,
+            seed=5,
+        )
+        g = torch.Generator().manual_seed(5)
+        with mujou.testing.run(node) as run:
+            for k in range(2):
+                x = stacks(2, seed=k)
+                _show(run, node.prev, _stack_sample(x, k == 0, [True, k == 1]))
+                act = run.read(node.next)
+                views = [
+                    multiblock_masks(2, (4, 4), m, keep=n, generator=g)
+                    for m, n in zip(packed_masks(), keeps, strict=True)
+                ]
+                h, y = pack_views(x, views, patch=4, tubelet=2)
+                assert torch.equal(act["h"], h) and torch.equal(act["y"], y)
+                assert act["mask"].tolist() == [True, k == 1]
+                assert act["reset"].tolist() == [k == 0] * 2
+
+
+class TestPackedHead:
+    @pytest.mark.parametrize(
+        "vision",
+        [{}, {"sg": True, "sigreg": 0.0}, {"z_dim": 8, "sigreg_on": "both"}],
+        ids=["plain", "sg", "proj-both"],
+    )
+    def test_the_credit_is_that_of_b_times_the_loss(self, vision):
+        b = 3
+        conf = packed_conf(streams=b, **({"sigreg": 0.3} | vision))
+        net = build_vision_net(conf)
+        assert isinstance(net, VisionPC)
+        with mujou.testing.run(net) as run:
+            _show(run, net.prev, _stack_sample(stacks(b), True))
+            act = run.read(net.enc2.next)
+            g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
+        head = net.head
+        assert isinstance(head, PackedJEPAHead)
+        v = conf.vision
+        assert v is not None
+        h = act["h"].clone().requires_grad_()
+        t = jepa_loss_packed(
+            h,
+            act["y"],
+            act["mask"],
+            head.directions,
+            head.directions_t if v.projected and v.sigreg_on == "both" else None,
+            head.module,
+            keeps=list(net.mods.segments[1:]),
+            proj=net.mods.proj,
+            lam=v.sigreg,
+            sg=v.sg,
+            sigreg_on=v.sigreg_on,
+            pred_loss=v.pred_loss,
+        )
+        (expect,) = torch.autograd.grad(b * t.loss, [h])
+        torch.testing.assert_close(g, expect)
+        if v.sg:
+            assert (g[:, :32] == 0).all() and (g[:, 32:] != 0).any()
+
+
+def _packed_equilibrium(streams: int, **vision):
+    frames = vision.get("frames", 4)
+    nets = [
+        build_vision_net(packed_conf(k, streams=streams, **vision))
+        for k in ("pc", "bp")
+    ]
+    pc_net, bp_net = nets
+    assert isinstance(pc_net, VisionPC) and isinstance(bp_net, VisionBP)
+    with mujou.testing.run(pc_net) as r1, mujou.testing.run(bp_net) as r2:
+        for k in range(2):
+            ready = [True] * (streams - 1) + [k == 1]
+            _show(
+                r1,
+                pc_net.prev,
+                _stack_sample(stacks(streams, frames, seed=k), k == 0, ready),
+            )
+            _show(
+                r2,
+                bp_net.prev,
+                _stack_sample(stacks(streams, frames, seed=k), k == 0, ready),
+            )
+        _hold(r1, 2000)
+        act = r2.read(bp_net.chunker.next)
+        assert torch.equal(act["h"], r1.read(pc_net.chunker.next)["h"])
+    assert torch.equal(pc_net.head.directions, bp_net.vision.directions)
+    outputs: list[torch.Tensor] = []
+    loss = bp_net.vision.terms(act, outputs).loss
+    credit = [-streams * g for g in torch.autograd.grad(loss, outputs)]
+    return pc_net, credit
+
+
+class TestPackedEquilibrium:
+    @pytest.mark.parametrize(
+        "vision",
+        [
+            {},
+            {"sg": True, "pred_loss": "l1"},
+            {"z_dim": 8, "sigreg_on": "both", "pixel_mean": 0.5, "pixel_std": 0.3},
+            {"frames": 1, "tubelet": 1, "nodes": 1},
+        ],
+        ids=["n4", "sg-l1", "proj-both", "n1"],
+    )
+    def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
+        """Hold a stack with learning off: lam of each encoder node relaxes to
+        -B dL/dy_i of JEPABP's loss at its stage's output (the views of a
+        sequence included), r to 0."""
+        pc_net, credit = _packed_equilibrium(2, **vision)
+        for name, expect in zip(pc_net.names, credit, strict=True):
+            node = getattr(pc_net, name)
+            scale = expect.abs().max()
+            assert scale > 0
+            torch.testing.assert_close(
+                node.lam, expect, rtol=1e-3, atol=1e-4 * float(scale)
+            )
+            assert node.r.abs().max() <= 1e-6 * scale
+
+
+def test_pc_and_bp_draw_the_same_packed_masks():
+    ys = []
+    for kind in ("pc", "bp"):
+        net = build_vision_net(packed_conf(kind, learn_interval=25e-3))
+        with mujou.testing.run(net) as run:
+            for k in range(3):
+                _show(run, net.prev, _stack_sample(stacks(2, seed=k), k == 0))
+            ys.append(run.read(net.chunker.next)["y"])
+    assert torch.equal(ys[0], ys[1])
+
+
+def test_the_packed_nodes_hold_no_cross_node_backward_or_grad():
+    """Locality (mujou/.claude/skills/locality-and-async): the PC-ALM nodes of
+    the packed layout differentiate their own computation only."""
+    for obj in (StackChunker, PackedJEPAHead, Segmented):
+        src = inspect.getsource(obj)
+        assert ".backward(" not in src
+        assert re.search(r"\.grad\b(?!\()", src) is None, obj.__name__

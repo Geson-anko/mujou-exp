@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from exp.video.data.frames import BallFrames, TourFrames
+from exp.video.data.frames import BallFrames, StackedTourFrames, TourFrames
 from exp.video.data.physics import BallStreams, Physics, render
 from exp.video.schema import PhysicsConf
 from tests.video.data.test_walking_tours import numbered
@@ -108,3 +108,47 @@ class TestBallFrames:
         for _ in range(5):
             for x, y in zip(a.next(), b.next()):
                 assert torch.equal(x, y)
+
+
+class TestStackedTourFrames:
+    def test_one_frame_a_step_is_tour_frames(self, root):
+        a = TourFrames(root, n=4, held_out="H")
+        b = StackedTourFrames(root, n=4, held_out="H", frames=1, stride=1, advance=1)
+        for _ in range(30):
+            images, _, reset = a.next()
+            stack, ready, reset_b = b.next()
+            assert stack.dtype == torch.uint8 and stack.shape == (4, 1, 3, 2, 2)
+            assert torch.equal(stack[:, 0].float() / 255, images)
+            assert torch.equal(reset_b, reset) and ready.all()
+
+    def test_the_stack_is_g_minus_j_stride_and_ready_within_a_video(self, root):
+        """Stream i ends at g = offset_i + 3k of the loop; its stack is frames
+        g - 2j (j = 2, 1, 0) of g's video, ready when g - 4 is in it."""
+        n, frames, stride, advance = 3, 3, 2, 3
+        s = StackedTourFrames(
+            root, n=n, held_out="H", frames=frames, stride=stride, advance=advance
+        )
+        offsets = [i * N // n for i in range(n)]  # 0, 7, 14
+        for k in range(12):
+            stack, ready, reset = s.next()
+            for i in range(n):
+                g = (offsets[i] + k * advance) % N
+                video, local = loop_frame(g)
+                want = [(video, max(local - stride * j, 0)) for j in (2, 1, 0)]
+                assert decode(stack[i].float() / 255) == want
+                assert bool(ready[i]) == (local - stride * (frames - 1) >= 0)
+                assert bool(reset[i]) == (k == 0 or local < advance)
+
+    def test_state_dict_continues_exactly(self, root):
+        kw = {"n": 2, "held_out": "H", "frames": 2, "stride": 2, "advance": 3}
+        a = StackedTourFrames(root, **kw)
+        for _ in range(5):
+            a.next()
+        b = StackedTourFrames(root, **kw)
+        b.load_state_dict(a.state_dict())
+        for x, y in zip(a.next(), b.next(), strict=True):
+            assert torch.equal(x, y)
+
+    def test_non_positive_settings_raise(self, root):
+        with pytest.raises(ValueError, match="positive"):
+            StackedTourFrames(root, n=1, held_out="H", frames=2, stride=0, advance=1)

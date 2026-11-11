@@ -51,7 +51,7 @@ class TestExperiment:
 
 
 # One field per group that tells which option was applied.
-WIDTHS = {"vit_t": 128, "vit_s": 256, "small": 256, "big": 512}
+WIDTHS = {"vit_t": 128, "vit_s": 256, "vit_m17": 256, "small": 256, "big": 512}
 
 
 def _applied(conf: RunConf, group: str) -> object:
@@ -132,3 +132,46 @@ class TestM14S0:
         )
         assert conf.learner.kind == "bp"
         assert conf.phase == "explore"
+
+
+M17 = [e for e in EXPERIMENTS if e.startswith("m17/")]
+
+
+class TestM17:
+    """M17's presets: the encoder on 128 x 128 Walking Tours at 30 fps, never a
+    reconstruction term (the user's rule)."""
+
+    @pytest.mark.parametrize("experiment", M17)
+    def test_no_reconstruction_term(self, experiment: str) -> None:
+        conf = compose([f"+experiment={experiment}"])
+        assert conf.vision is not None and conf.vision.recon == 0.0
+        assert conf.vision.layout == "packed"
+
+    def test_the_presets_are_n16_n8_and_n1(self) -> None:
+        assert M17 == ["m17/wt_n1", "m17/wt_n16", "m17/wt_n8"]
+
+    @pytest.mark.parametrize(
+        ("experiment", "frames", "tubelet"),
+        [("m17/wt_n16", 16, 2), ("m17/wt_n8", 8, 2), ("m17/wt_n1", 1, 1)],
+    )
+    def test_the_stacks_and_the_stream(
+        self, experiment: str, frames: int, tubelet: int
+    ) -> None:
+        conf = compose([f"+experiment={experiment}"])
+        v, t = conf.vision, conf.data.tours
+        assert v is not None and t is not None
+        assert (v.frames, v.tubelet, v.stride, v.patch) == (frames, tubelet, 3, 16)
+        assert (t.size, t.fps, t.advance, t.held_out) == (128, 30.0, 3, "Zurich")
+        assert [(m.blocks, m.scale) for m in v.context_masks] == [(8, 0.15), (2, 0.7)]
+        assert v.views == 3 and v.z_width == 256 and not v.projected
+        assert conf.measure.horizons == [1, 5, 10] and conf.measure.steps == 10
+        assert conf.ctl.ckpt_every == 300.0  # explore keeps the last checkpoint
+
+    def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
+        conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])
+        assert conf.vision is not None
+        assert [m.scale for m in conf.vision.context_masks] == [0.15, 0.5]
+
+    def test_horizons_beyond_the_steps_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="beyond measure.steps"):
+            compose(["+experiment=m17/wt_n16", "measure.steps=5"])

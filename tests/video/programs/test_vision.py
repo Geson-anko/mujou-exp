@@ -29,6 +29,14 @@ from exp.video.programs.vision import (
     vision_objective,
 )
 from tests.video.data.test_walking_tours import numbered
+from tests.video.packed import smooth_tours, tiny
+
+
+def tiny_m17(version: str) -> list[str]:
+    """The small run of ``m17/wt_n16`` (``test_encoder_eval.tiny``), without
+    its experiment and learner (the tests choose)."""
+    return [o for o in tiny(version) if not o.startswith(("+experiment", "learner"))]
+
 
 ROOT = Path(__file__).resolve().parents[3]
 TINY = [
@@ -409,3 +417,74 @@ class TestGIL:
         if sysconfig.get_config_var("Py_GIL_DISABLED"):
             assert prov["gil_enabled"] is False
         verify_manifest(out)
+
+
+class TestPacked:
+    """M17's packed layout as a run: Walking Tours in stacks, evaluated on the
+    windows of the held-out video, without probes or an objective."""
+
+    @pytest.fixture
+    def tours(self, tmp_path, monkeypatch) -> list[str]:
+        root = smooth_tours(tmp_path / "data" / "d", {"A": 120, "B": 80, "H": 200})
+        monkeypatch.setenv(DATA_ENV, str(root.parent))
+        return tiny_m17(root.name)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["learner=pc"],
+            ["learner=bp", "vision.z_dim=8", "vision.sigreg_on=both"],
+            ["learner=pc", "vision.frames=1", "vision.tubelet=1"],
+        ],
+        ids=["pc", "bp-proj", "pc-n1"],
+    )
+    def test_a_run_writes_the_rows_of_the_packed_layout(self, tmp_path, tours, extra):
+        out = tmp_path / "run"
+        assert _run(out, extra, experiment="m17/wt_n16", tiny=tours) == Exit.OK
+        rows = _lines(out / "evals.jsonl")
+        assert [(r["t"], r["split"]) for r in rows] == [(0.5, "val"), (1.0, "val")]
+        assert set(rows[-1]) == {
+            "t",
+            "frame",
+            "split",
+            "loss",
+            "pred",
+            "sigreg",
+            "rank",
+            "z_std_min",
+            "z_spread",
+        }
+        assert all(r["loss"] is not None for r in _lines(out / "stream.jsonl"))
+        result = json.loads((out / "result.json").read_text())
+        assert result["status"] == "completed" and result["objective"] is None
+        assert (out / "ckpt" / "00001.0.pt").is_file()
+        base = json.loads((out / "baselines.json").read_text())
+        assert {"init_loss", "init_rank", "init_z_spread"} <= set(base["val"])
+
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_resume_equals_uninterrupted(self, tmp_path, tours, learner):
+        """The stacks (StackedTourFrames' k), the StackChunker's generator and
+        the head's directions resume: the bytes of a run never stopped."""
+        extra = [f"learner={learner}", "ctl.resume_every=0.3", "ctl.log_every=0.2"]
+        kw = {"experiment": "m17/wt_n16", "tiny": tours}
+        assert _run(tmp_path / "whole", extra, **kw) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(17), **kw) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2, **kw) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+
+    def test_advance_needs_the_packed_layout(self, tmp_path, monkeypatch):
+        root = numbered(tmp_path / "data" / "d", {"A": 40, "H": 96}, size=8)
+        monkeypatch.setenv(DATA_ENV, str(root.parent))
+        tours = [
+            f"data.tours.data_version={root.name}",
+            "data.tours.held_out=H",
+            "data.tours.size=8",
+            "data.tours.advance=3",
+            "vision.patch=4",
+        ]
+        tiny = [o for o in TINY if not o.startswith("data.balls")]
+        out = tmp_path / "run"
+        assert _run(out, tours, experiment="m15/wt_n1", tiny=tiny) == Exit.ERROR

@@ -1,0 +1,50 @@
+# @package _global_
+# M17 on Walking Tours (exp/video/MILESTONES.md, M17): the 128 x 128 frames at
+# 30 fps (data 3c3e6805fdaa), the stream 3 video frames further per frame of
+# the run (10 fps learned). The encoder sees N = 16 frames 3 video frames apart
+# (0.1 s, 1.5 s in all) in tubelets of 2 frames x 16 x 16 pixels (8 x 64 = 512
+# tokens), as V-JEPA, with V-JEPA's two context views (8 blocks of 0.15, 2
+# blocks of 0.7, tubes) whose masked tokens are dropped from the encoder's input.
+# The loss is the JEPA prediction + SIGReg only: vision.recon stays 0 (the
+# decoders and the linear dynamics are learned afterwards, task=posthoc).
+defaults:
+  - /optim@optim_vision: adamw
+  - override /dynamics: none
+  - override /vision: vit_m17
+program: vision
+name: m17/wt_n16
+tags: [m17, wt, n16]
+seconds: 600.0
+data:
+  streams: 32  # B (provisional, MILESTONES M17 step 4: task=bench)
+  balls: null
+  tours:
+    data_version: 3c3e6805fdaa
+    held_out: Zurich
+    size: 128
+    fps: 30.0
+    advance: 3
+measure:
+  clips: 64  # x 4 windows: 256 windows of the held-out video per split (x 3)
+  windows: 4
+  every: 60.0
+  steps: 10  # the stacks after the first of a window: horizons up to 1 s
+  horizons: [1, 5, 10]
+ctl:
+  ckpt_every: 300.0  # also in explore: posthoc decodes the last checkpoint
+vision:
+  layout: packed
+  recon: 0.0  # never another value in M17 (tests/video/schema/test_presets.py)
+  frames: 16
+  tubelet: 2
+  stride: 3
+  views: 3
+  context_masks:
+    - {blocks: 8, scale: 0.15}  # V-JEPA's short range
+    - {blocks: 2, scale: 0.7}  # V-JEPA's long range
+  z_dim: null
+  z_pool: mean
+  sigreg_on: z
+  # of the nine training videos of 3c3e6805fdaa (every 500th frame)
+  pixel_mean: 0.46
+  pixel_std: 0.28

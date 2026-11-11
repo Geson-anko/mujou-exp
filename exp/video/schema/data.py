@@ -60,6 +60,14 @@ class ToursConf:
     held_out: str = MISSING
     size: int = 64
     fps: float = 10.0
+    # The video frames the stream moves on per frame of the run (``time.frame``;
+    # M17: 3, a video of 30 fps learned at 10 fps); 1 only with vision.layout
+    # "pixels".
+    advance: int = 1
+
+    def __post_init__(self) -> None:
+        if self.advance < 1:
+            raise ValueError(f"tours.advance must be at least 1, not {self.advance}")
 
 
 @dataclass(kw_only=True)

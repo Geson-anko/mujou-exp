@@ -39,14 +39,23 @@ is no target encoder: the target view goes through the same weights.
 The loss is computed for every stream, valid or not, and the invalid ones are
 weighted out (no shape depends on ``valid``, so nothing reads the device
 back).
+
+The packed layout (M17, ``jepa_loss_packed``) has the same $L$ with $\mu = 0$
+(no reconstruction), each context view predicting its $M_v = T - K_v$ masked
+tokens from its $K_v$ visible ones (``vit.PackedPredictor``), and the error of
+a token $\ell$ either $\frac1D \lVert\cdot\rVert^2$ (``"l2"``, LeJEPA) or
+$\frac1D \lVert\cdot\rVert_1$ (``"l1"``, V-JEPA):
+$L^{\mathrm{pred}}_b = \frac{1}{V - 1} \sum_v \frac{1}{M_v}
+\sum_{t \in \mathrm{masked}_v} \ell(\hat s_{b,v,t} - s_{b,t})$. $z_b$ is the
+mean of the target tokens, through the projection when there is one.
 """
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 from exp.lib.sigreg import T_POINTS
 
@@ -54,6 +63,8 @@ __all__ = [
     "JEPATerms",
     "Reconstruction",
     "jepa_loss",
+    "jepa_loss_packed",
+    "view_ids",
     "pool",
     "prediction_errors",
     "split_y",
@@ -227,3 +238,82 @@ def jepa_loss(
         total = total + recon.mu * rec_sum
         rec = rec_sum / n.clamp(min=1)
     return JEPATerms(total / b, pred_sum / n.clamp(min=1), s, n, z, rec)
+
+
+def view_ids(y_view: Tensor, keep: int) -> tuple[Tensor, Tensor]:
+    """The ids of the visible tokens ``(n, K)`` and of the masked ones ``(n, T
+    - K)`` of a context view, each in increasing order, from its row of ``y``
+    ``(n, T)`` (1 where masked) with ``keep`` = $K$ visible tokens."""
+    order = y_view.sort(dim=1, stable=True).indices
+    return order[:, :keep], order[:, keep:]
+
+
+def jepa_loss_packed(
+    tokens: Tensor,
+    y: Tensor,
+    valid: Tensor,
+    directions_z: Tensor,
+    directions_t: Tensor | None,
+    predictor: Callable[[Tensor, Tensor, Tensor], Tensor],
+    *,
+    keeps: Sequence[int],
+    proj: nn.Module | None,
+    lam: float,
+    sg: bool,
+    sigreg_on: str,
+    pred_loss: str,
+) -> JEPATerms:
+    r"""$L$ of the packed layout (module docstring).
+
+    Args:
+        tokens: The packed tokens ``(B, L, D)``: the target view's $T$, then
+            the $K_v$ of each context view (``masks.pack_views``).
+        y: The masks of the context views ``(B, (V - 1) T)``, 1 where masked.
+        valid: The streams that have a stack, ``(B,)`` bool.
+        directions_z: The directions of SIGReg on $z$, ``(M, D_z)``.
+        directions_t: Those on the target tokens, ``(M, D)`` (with
+            ``sigreg_on`` ``"tokens"`` or ``"both"``).
+        predictor: ``(ctx (n, K, D), ctx_ids (n, K), tgt_ids (n, M)) -> (n, M,
+            D)`` (``vit.PackedPredictor``).
+        keeps: $K_v$ of each context view.
+        proj: The map of the pooled tokens to $z$ (None: $z$ is the mean).
+        lam: $\lambda$.
+        sg: Stop the gradient of the prediction at the target tokens.
+        sigreg_on: What SIGReg sees: ``"z"``, ``"tokens"`` or ``"both"``.
+        pred_loss: ``"l2"`` or ``"l1"``.
+    """
+    b, _, d = tokens.shape
+    views = len(keeps)
+    t = y.shape[1] // views
+    target = tokens[:, :t]  # (B, T, D)
+    z = target.mean(1)
+    if proj is not None:
+        z = proj(z)
+    w = valid.to(tokens.dtype)
+    n = w.sum()
+    goal = target.detach() if sg else target
+    per_view, at = [], t
+    for v, k in enumerate(keeps):
+        ctx_ids, tgt_ids = view_ids(y[:, v * t : (v + 1) * t], k)
+        pred = predictor(tokens[:, at : at + k], ctx_ids, tgt_ids)  # (B, M, D)
+        at += k
+        s_t = goal.gather(1, tgt_ids[..., None].expand(-1, -1, d))
+        diff = pred - s_t
+        err = diff.abs() if pred_loss == "l1" else diff**2
+        per_view.append(err.mean((1, 2)))  # (B,): 1/M sum_t 1/D l
+    pred_b = torch.stack(per_view, 1).mean(1)
+    pred_sum = torch.where(valid, pred_b, 0.0).sum()
+    parts = []
+    if sigreg_on in ("z", "both"):
+        parts.append(weighted_sigreg(z, w, directions_z))
+    if sigreg_on in ("tokens", "both"):
+        dirs = directions_z if directions_t is None else directions_t
+        s_tok = weighted_sigreg(target.reshape(-1, d), w.repeat_interleave(t), dirs)
+        parts.append(s_tok / t)
+    if not parts:
+        raise ValueError(
+            f"sigreg_on must be 'z', 'tokens' or 'both', not {sigreg_on!r}"
+        )
+    s = torch.stack(parts).mean()
+    total = (1 - lam) * pred_sum + lam * n * s
+    return JEPATerms(total / b, pred_sum / n.clamp(min=1), s, n, z, torch.zeros_like(s))

@@ -3,7 +3,18 @@ import math
 import pytest
 import torch
 
-from exp.video.jepa.masks import ASPECT, block_masks, block_sides, make_views, paint
+from exp.video.jepa.masks import (
+    ASPECT,
+    block_masks,
+    block_sides,
+    expected_keep,
+    make_views,
+    multiblock_masks,
+    pack_views,
+    paint,
+)
+from exp.video.jepa.vit import patchify_tubelets
+from exp.video.schema.vision import MaskConf
 
 GRID = (8, 8)
 
@@ -116,3 +127,73 @@ class TestMakeViews:
             assert torch.equal(view[:, :, :c][~px], chunks[~px])
             assert torch.equal(view[:, :, c], px[:, :, 0].float())
             assert torch.equal(y[:, v], m.flatten(1).float())
+
+
+class TestMultiblockMasks:
+    @pytest.mark.parametrize("keep", [1, 10, 40, 63])
+    def test_exactly_keep_patches_are_visible(self, keep):
+        g = torch.Generator().manual_seed(0)
+        for mask in (MaskConf(blocks=8, scale=0.15), MaskConf(blocks=2, scale=0.7)):
+            m = multiblock_masks(64, GRID, mask, keep=keep, generator=g)
+            assert m.shape == (64, *GRID) and m.dtype == torch.bool
+            assert ((~m).flatten(1).sum(1) == keep).all()
+
+    def test_the_same_generator_draws_the_same_masks(self):
+        mask = MaskConf(blocks=8, scale=0.15)
+        a, b = (
+            multiblock_masks(
+                5, GRID, mask, keep=20, generator=torch.Generator().manual_seed(1)
+            )
+            for _ in range(2)
+        )
+        assert torch.equal(a, b)
+
+    def test_a_block_of_the_kept_count_is_left_as_drawn(self):
+        """One square block of 5 x 5 on 10 x 10 (scale 0.25, aspect 1) leaves
+        75 visible: with keep 75 the mask is exactly one filled 5 x 5 square."""
+        mask = MaskConf(blocks=1, scale=0.25, aspect=[1.0, 1.0])
+        g = torch.Generator().manual_seed(2)
+        m = multiblock_masks(16, (10, 10), mask, keep=75, generator=g)
+        for one in m:
+            rows, cols = one.nonzero(as_tuple=True)
+            assert one.sum() == 25
+            assert rows.max() - rows.min() == 4 and cols.max() - cols.min() == 4
+
+
+class TestExpectedKeep:
+    def test_one_square_block_by_hand(self):
+        mask = MaskConf(blocks=1, scale=0.25, aspect=[1.0, 1.0])
+        assert expected_keep((10, 10), mask) == 75
+
+    @pytest.mark.parametrize(
+        ("mask", "expect"),
+        [(MaskConf(blocks=4, scale=1.0), 1), (MaskConf(blocks=1, scale=0.001), 63)],
+    )
+    def test_it_is_never_none_or_all(self, mask, expect):
+        assert expected_keep(GRID, mask) == expect
+
+
+class TestPackViews:
+    def test_the_target_then_the_visible_tokens_of_each_view_in_id_order(self):
+        g = torch.Generator().manual_seed(0)
+        x = torch.randint(0, 256, (2, 4, 3, 8, 8), generator=g).to(torch.uint8)
+        views = [
+            torch.tensor([[[True, False], [False, True]]] * 2),
+            torch.tensor(
+                [[[False, True], [True, True]], [[True, True], [True, False]]]
+            ),
+        ]
+        h, y = pack_views(x, views, patch=4, tubelet=2)
+        tokens = patchify_tubelets(x.float() / 255, 4, 2)  # (2, 8, 96)
+        t = 8
+        assert h.shape == (2, t + 4 + 2, 96 + 1) and y.shape == (2, 2 * t)
+        assert torch.equal(h[:, :t, :-1], tokens)
+        assert h[:, :t, -1].tolist() == [list(range(t))] * 2
+        # view 0 shows spatial patches 1 and 2 in both slots: ids 1, 2, 5, 6
+        assert h[:, t : t + 4, -1].tolist() == [[1, 2, 5, 6]] * 2
+        assert torch.equal(h[:, t : t + 4, :-1], tokens[:, [1, 2, 5, 6]])
+        # view 1 shows patch 0 of stream 0 and patch 3 of stream 1
+        assert h[:, t + 4 :, -1].tolist() == [[0, 4], [3, 7]]
+        assert torch.equal(h[1, t + 4 :, :-1], tokens[1, [3, 7]])
+        tube = [v.flatten(1).repeat(1, 2).float() for v in views]
+        assert torch.equal(y, torch.cat(tube, 1))

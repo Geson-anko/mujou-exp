@@ -1,10 +1,19 @@
-"""The settings of the vision (M15, M16)."""
+"""The settings of the vision (M15, M16, M17)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from exp.video.schema._check import check_choice
 
-__all__ = ["POOLS", "RECON_DECODERS", "SIGREG_ON", "VisionConf"]
+__all__ = [
+    "LAYOUTS",
+    "MAX_Z_DIM",
+    "POOLS",
+    "PRED_LOSSES",
+    "RECON_DECODERS",
+    "SIGREG_ON",
+    "MaskConf",
+    "VisionConf",
+]
 
 # How z_k is read from the target view's tokens: the class token, the mean of
 # the patch tokens, or the mean of ``registers`` register tokens.
@@ -14,6 +23,38 @@ SIGREG_ON = ("z", "tokens", "both")
 # The decoder of the reconstruction: an MLP from z to all the pixels, or a
 # spatial broadcast decoder (one small MLP of z and the pixel's coordinates).
 RECON_DECODERS = ("mlp", "broadcast")
+# How a chunk reaches the encoder: "pixels" (M15, M16), every view a whole chunk
+# with the masked patches at 0 and the mask as a channel; "packed" (M17, as
+# V-JEPA), one sequence per stream of the target view's tokens and the visible
+# tokens of each context view, attention within each view only.
+LAYOUTS = ("pixels", "packed")
+# The prediction error of a token: squared (LeJEPA) or absolute (V-JEPA).
+PRED_LOSSES = ("l2", "l1")
+MAX_Z_DIM = 1024  # the largest z (M17: about 2 % of the 128 x 128 x 3 input)
+
+
+@dataclass(kw_only=True)
+class MaskConf:
+    """A context view of the ``"packed"`` layout (V-JEPA's multi-block mask):
+    the union of ``blocks`` rectangles of the spatial grid, each of ``scale``
+    of the grid's area and of aspect ratio (height / width) log-uniform in
+    ``aspect``, masking the same patches in every frame (a tube). The visible
+    patches are made exactly ``jepa.masks.expected_keep`` (``jepa.masks``)."""
+
+    blocks: int
+    scale: float
+    aspect: list[float] = field(default_factory=lambda: [0.75, 1.5])
+
+    def __post_init__(self) -> None:
+        if self.blocks < 1 or not 0 < self.scale <= 1:
+            raise ValueError(
+                f"a context mask needs blocks >= 1 and scale in (0, 1], not "
+                f"{self.blocks} and {self.scale}"
+            )
+        if len(self.aspect) != 2 or not 0 < self.aspect[0] <= self.aspect[1]:
+            raise ValueError(
+                f"aspect must be [lo, hi] with 0 < lo <= hi: {self.aspect}"
+            )
 
 
 @dataclass(kw_only=True)
@@ -38,6 +79,15 @@ class VisionConf:
     ``mask_blocks`` blocks (tubes through the frames for ``frames > 1``).
     The encoder sees the pixels standardized by ``pixel_mean`` and
     ``pixel_std`` (constants of the data, set by the experiment).
+
+    The ``"packed"`` layout (M17; ``jepa.masks.pack_views``) stacks ``frames``
+    frames ``stride`` video frames apart, cuts them into tubelets of
+    ``tubelet`` frames x ``patch`` x ``patch`` pixels (one token each, 3-D
+    sine-cosine positions), and has ``views - 1`` context views of
+    ``context_masks`` whose masked tokens are dropped from the encoder's input
+    (``mask_ratio`` and ``mask_blocks`` are unused). $z$ is the mean of the
+    target view's tokens, then a linear map to ``z_dim`` (None: no map, $z$
+    of the width ``dim``). ``pred_loss`` is the prediction error of a token.
     """
 
     patch: int = 4  # pixels per side of a patch
@@ -66,6 +116,12 @@ class VisionConf:
     # The joint program (M16) only: the encoder is the last checkpoint of the
     # M15 run the job names as its "parent" and never learns (the control).
     frozen: bool = False
+    layout: str = "pixels"  # LAYOUTS
+    tubelet: int = 0  # frames per token, "packed" only (0: all the frames)
+    stride: int = 1  # video frames between two stacked frames, "packed" only
+    z_dim: int | None = None  # "packed" only; None: dim, no projection
+    context_masks: list[MaskConf] = field(default_factory=list)  # "packed" only
+    pred_loss: str = "l2"  # PRED_LOSSES, "packed" only
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
@@ -101,6 +157,48 @@ class VisionConf:
             )
         if not 0 <= self.sigreg <= 1:
             raise ValueError(f"vision.sigreg must be in [0, 1], not {self.sigreg}")
+        check_choice("vision.layout", self.layout, LAYOUTS)
+        check_choice("vision.pred_loss", self.pred_loss, PRED_LOSSES)
+        if self.layout == "packed":
+            self._check_packed()
+
+    def _check_packed(self) -> None:
+        if self.tubelet < 1 or self.frames % self.tubelet:
+            raise ValueError(
+                f"vision.tubelet {self.tubelet} must divide vision.frames "
+                f"{self.frames} (packed)"
+            )
+        if self.stride < 1:
+            raise ValueError(f"vision.stride must be at least 1, not {self.stride}")
+        if self.views != 1 + len(self.context_masks):
+            raise ValueError(
+                f"vision.views {self.views} must be 1 + the {len(self.context_masks)}"
+                " context_masks (packed)"
+            )
+        if self.z_pool != "mean":
+            raise ValueError(f"packed pools the mean only, not {self.z_pool!r}")
+        if self.dim % 16:
+            raise ValueError(
+                f"vision.dim {self.dim} must be a multiple of 16 (the 3-D positions)"
+            )
+        if self.z_dim is not None and not 1 <= self.z_dim <= MAX_Z_DIM:
+            raise ValueError(f"vision.z_dim must be in [1, {MAX_Z_DIM}]: {self.z_dim}")
+        if self.projected and self.sigreg_on == "tokens":
+            raise ValueError(
+                "sigreg_on 'tokens' with a projection (z_dim != dim) gives the "
+                "projection no gradient: use 'z' or 'both'"
+            )
+
+    @property
+    def projected(self) -> bool:
+        """Whether $z$ is a linear map of the pooled tokens (``z_dim`` set and
+        not ``dim``)."""
+        return self.z_dim is not None and self.z_dim != self.dim
+
+    @property
+    def z_width(self) -> int:
+        """The dimension of $z$: ``z_dim`` or ``dim``."""
+        return self.z_dim if self.z_dim is not None else self.dim
 
     @property
     def decoder_hidden(self) -> int:

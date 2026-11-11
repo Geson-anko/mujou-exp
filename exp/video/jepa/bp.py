@@ -1,6 +1,6 @@
 r"""The baseline of backpropagation: the encoder and the predictor of the vision
-learned by autograd inside one node, from the same ``Chunker`` as the PC-ALM
-version."""
+learned by autograd inside one node, from the same ``Chunker`` (or
+``StackChunker``, the packed layout) as the PC-ALM version."""
 
 import math
 from typing import override
@@ -11,8 +11,20 @@ from mujou.pc.msg import Activity
 from mujou.pc.optim import Optimizer
 from mujou.types import Device
 
-from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, split_y
-from exp.video.jepa.nodes import STATS, draw_directions, stats_message, z_spec
+from exp.video.jepa.loss import (
+    JEPATerms,
+    Reconstruction,
+    jepa_loss,
+    jepa_loss_packed,
+    split_y,
+)
+from exp.video.jepa.nodes import (
+    STATS,
+    draw_directions,
+    draw_packed_directions,
+    stats_message,
+    z_spec,
+)
 from exp.video.jepa.vit import VisionModules
 from mujou import DictSpec, Node, Port, TensorSpec
 
@@ -41,6 +53,13 @@ class JEPABP(Node):
     backward, and one forward of the target views after the step; a second
     learning in the same frame computes $L$ again. ``prev`` receives the
     views; it sends no credit to the ``Chunker`` (which drops it anyway).
+
+    With modules of the packed layout (``mods.layout == "packed"``) it
+    receives the packed sequences of the ``StackChunker``, the loss is
+    ``loss.jepa_loss_packed`` with the stages attending within the views'
+    segments (``mods.segments``), the projection learns with the predictor
+    (after it), and the directions are those of ``draw_packed_directions``
+    (``PackedJEPAHead``'s). ``views`` is then unused.
 
     Args:
         mods: The modules, on ``device``.
@@ -77,10 +96,14 @@ class JEPABP(Node):
         recon: float = 0.0,
         pixel_mean: float = 0.0,
         pixel_std: float = 1.0,
+        pred_loss: str = "l2",
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.mods = mods
+        self._packed = mods.layout == "packed"
+        self._pred_loss = pred_loss
+        self.proj = mods.proj  # an attribute, so that it is in the state
         self._recon = recon, pixel_mean, pixel_std
         self.encoder, self.predictor = mods.encoder, mods.predictor
         self.decoder = mods.decoder  # an attribute, so that it is in the state
@@ -96,25 +119,41 @@ class JEPABP(Node):
         self._params = [*self.encoder.parameters(), *self.predictor.parameters()]
         if mods.decoder is not None:
             self._params += mods.decoder.parameters()
+        if mods.proj is not None:
+            self._params += mods.proj.parameters()
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
-        self._b = n // views
+        self._b = n if self._packed else n // views
         d = self.predictor.out.out_features
-        self.directions = torch.zeros(directions, d, device=self.device)
+        d_z = d if mods.proj is None else mods.proj.out_features
+        self._two = self._packed and sigreg_on in ("tokens", "both") and d_z != d
+        self.directions = torch.zeros(directions, d_z, device=self.device)
+        self.directions_t: torch.Tensor | None = None
         self.prev = Port(send=h, recv=act_spec)  # sends nothing
-        self.z_out = Port(send=z_spec(self._b, d))
+        self.z_out = Port(send=z_spec(self._b, d_z))
         self.stats = Port(send=STATS)
+
+    def _valid(self, act: Activity) -> torch.Tensor:
+        if self._packed:
+            return act["mask"]
+        return act["mask"].view(self._b, self._v)[:, 0]
 
     @override
     def on_update(self, dt: float) -> None:
         super().on_update(dt)
         act = self.prev.recv()
         tick = self.clock.tick(dt, act["time"], self.timer.now())
-        valid = act["mask"].view(self._b, self._v)[:, 0]
+        valid = self._valid(act)
         if tick.new:
             m, d = self.directions.shape
-            self.directions = draw_directions(m, d, self.generator)
+            if self._packed:
+                width = self.predictor.out.out_features
+                self.directions, self.directions_t = draw_packed_directions(
+                    m, d, width, tokens=self._two, generator=self.generator
+                )
+            else:
+                self.directions = draw_directions(m, d, self.generator)
             with torch.set_grad_enabled(self._learns):
                 terms = self.terms(act)
             self._pending = [terms.loss] if self._learns else []
@@ -130,8 +169,15 @@ class JEPABP(Node):
             self._pending = []
             self.optimizer.step_(list(grads), tick.elapsed)
             with torch.no_grad():
-                h = act["h"][:: self._v]  # the target views
-                self._send_z(act, self.encoder.pool(self.encoder(h)))
+                self._send_z(act, self._target_z(act))
+
+    def _target_z(self, act: Activity) -> torch.Tensor:
+        """$z$ of the target views of ``act`` at the current weights."""
+        if self._packed:
+            t = self.mods.segments[0]
+            return self.mods.z_of(self.encoder(act["h"][:, :t], (t,)))
+        h = act["h"][:: self._v]  # the target views
+        return self.encoder.pool(self.encoder(h))
 
     def terms(
         self, act: Activity, outputs: list[torch.Tensor] | None = None
@@ -140,10 +186,26 @@ class JEPABP(Node):
         ``directions``. With ``outputs``, it appends the output ``(B V, E + T,
         D)`` of each stage of the encoder to it, in the graph of the loss."""
         x = act["h"]
+        segments = self.mods.segments if self._packed else None
         for stage in self.encoder.stages:
-            x = stage(x)
+            x = stage(x, segments)
             if outputs is not None:
                 outputs.append(x)
+        if self._packed:
+            return jepa_loss_packed(
+                x,
+                act["y"],
+                act["mask"],
+                self.directions,
+                self.directions_t,
+                self.predictor,
+                keeps=list(self.mods.segments[1:]),
+                proj=self.mods.proj,
+                lam=self._lam,
+                sg=self._sg,
+                sigreg_on=self._sigreg_on,
+                pred_loss=self._pred_loss,
+            )
         b, v = self._b, self._v
         decoder = self.decoder
         masks, frames = split_y(
@@ -169,7 +231,7 @@ class JEPABP(Node):
         )
 
     def _send_z(self, act: Activity, z: torch.Tensor) -> None:
-        v = self._v
+        v = 1 if self._packed else self._v
         self.z_out.send(
             {
                 "h": z.detach(),

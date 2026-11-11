@@ -1,3 +1,5 @@
+from typing import override
+
 import pytest
 import torch
 
@@ -5,6 +7,7 @@ from exp.lib.sigreg import sigreg
 from exp.video.jepa.loss import (
     Reconstruction,
     jepa_loss,
+    jepa_loss_packed,
     pool,
     prediction_errors,
     split_y,
@@ -287,3 +290,131 @@ class TestReconstruction:
         assert torch.equal(frames.flatten(1), y.view(2, 3, 10)[:, 0, 4:])
         masks, frames = split_y(y, 2, 3, None)
         assert frames is None and masks.shape == (2, 2, 10)
+
+
+class _Shift(torch.nn.Module):
+    """A predictor of the packed layout one can compute by hand: each masked
+    token is predicted as the mean of the context plus a learned offset and
+    its id / 10."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        self.offset = torch.nn.Parameter(torch.linspace(-1, 1, d, dtype=torch.float64))
+
+    @override
+    def forward(self, ctx, ctx_ids, tgt_ids):
+        m = tgt_ids.shape[1]
+        base = ctx.mean(1, keepdim=True).expand(-1, m, -1)
+        return base + self.offset + tgt_ids[..., None].to(ctx) / 10
+
+
+def _packed_inputs(seed: int = 0):
+    """B = 3 streams, T = 6 tokens of D = 5, two context views keeping 2 and 4."""
+    g = torch.Generator().manual_seed(seed)
+    t, keeps = 6, [2, 4]
+    y = torch.zeros(3, 2 * t)
+    for b in range(3):
+        for v, k in enumerate(keeps):
+            masked = torch.randperm(t, generator=g)[: t - k]
+            y[b, v * t + masked] = 1.0
+    tokens = torch.randn(3, t + sum(keeps), 5, generator=g, dtype=torch.float64)
+    dirs = torch.randn(7, 5, generator=g, dtype=torch.float64)
+    return tokens, y, keeps, dirs / dirs.norm(dim=1, keepdim=True)
+
+
+class TestJEPALossPacked:
+    @pytest.mark.parametrize("pred_loss", ["l2", "l1"])
+    def test_by_hand(self, pred_loss):
+        """L = (1 / B) sum_valid [(1 - lam) L_pred_b + lam S], L_pred_b the mean
+        over the views of the mean over the masked tokens of l / D."""
+        tokens, y, keeps, dirs = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        pred = _Shift(5)
+        lam, t = 0.3, 6
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            pred,
+            keeps=keeps,
+            proj=None,
+            lam=lam,
+            sg=False,
+            sigreg_on="z",
+            pred_loss=pred_loss,
+        )
+        target = tokens[:, :t]
+        per_b = []
+        for b in range(3):
+            views, at = [], t
+            for v, k in enumerate(keeps):
+                ctx = tokens[b, at : at + k]
+                at += k
+                masked = (y[b, v * t : (v + 1) * t] == 1).nonzero().flatten()
+                guess = ctx.mean(0) + pred.offset + masked[:, None] / 10
+                diff = guess - target[b, masked]
+                err = diff.abs() if pred_loss == "l1" else diff**2
+                views.append(err.mean())
+            per_b.append(sum(views) / 2)
+        z = target.mean(1)
+        s = weighted_sigreg(z, valid.double(), dirs)
+        expect = ((1 - lam) * (per_b[0] + per_b[2]) + lam * 2 * s) / 3
+        torch.testing.assert_close(got.loss, expect)
+        torch.testing.assert_close(got.pred, (per_b[0] + per_b[2]) / 2)
+        torch.testing.assert_close(got.z, z)
+        assert got.recon == 0
+
+    def test_the_projection_and_sigreg_on_both(self):
+        """z = proj(mean); "both" averages S_z (on z, its directions) and S_t / T
+        (on the target tokens, the other directions)."""
+        tokens, y, keeps, dirs = _packed_inputs(1)
+        g = torch.Generator().manual_seed(9)
+        proj = torch.nn.Linear(5, 3).double()
+        dz = torch.randn(7, 3, generator=g, dtype=torch.float64)
+        valid = torch.ones(3, dtype=torch.bool)
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dz,
+            dirs,
+            _Shift(5),
+            keeps=keeps,
+            proj=proj,
+            lam=1.0,
+            sg=False,
+            sigreg_on="both",
+            pred_loss="l2",
+        )
+        target = tokens[:, :6]
+        z = proj(target.mean(1))
+        s_z = weighted_sigreg(z, valid.double(), dz)
+        s_t = weighted_sigreg(target.reshape(-1, 5), torch.ones(18).double(), dirs)
+        torch.testing.assert_close(got.sigreg, (s_z + s_t / 6) / 2)
+        torch.testing.assert_close(got.z, z)
+
+    def test_sg_stops_the_prediction_at_the_target(self):
+        tokens, y, keeps, dirs = _packed_inputs(2)
+        tokens.requires_grad_()
+        valid = torch.ones(3, dtype=torch.bool)
+        for sg in (False, True):
+            t = jepa_loss_packed(
+                tokens,
+                y,
+                valid,
+                dirs,
+                None,
+                _Shift(5),
+                keeps=keeps,
+                proj=None,
+                lam=0.0,
+                sg=sg,
+                sigreg_on="z",
+                pred_loss="l2",
+            )
+            (g,) = torch.autograd.grad(t.loss, [tokens])
+            target_zero = bool((g[:, :6] == 0).all())
+            assert target_zero == sg
+            assert (g[:, 6:] != 0).any()

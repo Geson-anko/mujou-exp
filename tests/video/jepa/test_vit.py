@@ -4,7 +4,12 @@ from typing import Any, cast
 import pytest
 import torch
 
-from exp.video.jepa.masks import make_views
+from exp.video.jepa.masks import (
+    expected_keep,
+    make_views,
+    multiblock_masks,
+    pack_views,
+)
 from exp.video.jepa.vit import (
     Block,
     BroadcastDecoder,
@@ -14,9 +19,12 @@ from exp.video.jepa.vit import (
     build_vision,
     extra_tokens,
     patchify,
+    patchify_tubelets,
     sincos_2d,
+    sincos_3d,
 )
 from exp.video.schema import BallsConf, DataConf, OptimConf, RunConf, VisionConf
+from tests.video.packed import masks as packed_masks, packed_conf, stacks
 
 SMALL: dict[str, Any] = {
     "patch": 4,
@@ -253,3 +261,101 @@ class TestBroadcastDecoder:
                 strict=True,
             ):
                 assert torch.equal(x, y)
+
+
+# --- the packed layout (M17) ---------------------------------------------------
+
+
+class TestTubelets:
+    def test_a_tubelet_of_all_the_frames_is_a_tube(self):
+        x = torch.rand(2, 4, 3, 8, 8)
+        assert torch.equal(patchify_tubelets(x, 4, 4), patchify(x, 4))
+
+    def test_tubelets_of_one_frame_are_the_frames_patches_slot_by_slot(self):
+        x = torch.rand(2, 3, 3, 8, 8)
+        tokens = patchify_tubelets(x, 4, 1)  # (2, 3 x 4, 3 x 16)
+        for s in range(3):
+            got = tokens[:, 4 * s : 4 * (s + 1)]
+            assert torch.equal(got, patchify(x[:, s : s + 1], 4))
+
+    def test_a_tubelet_is_its_frames_in_order(self):
+        """Token (slot s, patch q) of tau = 2 is frames 2s, 2s + 1 of patch q."""
+        x = torch.rand(1, 4, 2, 8, 8)
+        tokens = patchify_tubelets(x, 4, 2)
+        both = patchify(x[:, 2:4], 4)  # slot 1 as a tube of 2 frames
+        assert torch.equal(tokens[:, 4:], both)
+
+
+class TestSincos3d:
+    def test_the_slot_row_and_column_parts(self):
+        """dim / 4 dimensions of the slot, 3 dim / 8 of the row, 3 dim / 8 of
+        the column, each sin, cos of pos 10000^(-i / half)."""
+        grid, dim = (2, 3, 4), 32
+        pos = sincos_3d(grid, dim).double()
+        assert pos.shape == (24, 32)
+
+        def code(p: int, d: int) -> torch.Tensor:
+            half = d // 2
+            a = p / 10000 ** (torch.arange(half, dtype=torch.float64) / half)
+            return torch.cat([a.sin(), a.cos()])
+
+        for t in range(2):
+            for r in range(3):
+                for c in range(4):
+                    row = pos[t * 12 + r * 4 + c]
+                    expect = torch.cat([code(t, 8), code(r, 12), code(c, 12)])
+                    torch.testing.assert_close(row, expect, rtol=0, atol=1e-6)
+        assert len({tuple(r.tolist()) for r in pos}) == 24
+
+
+class TestSegments:
+    def test_a_segment_is_computed_on_its_own(self):
+        """Block(segments=(a, b)): the first a tokens are those of the block on
+        the first a alone, the others those on the others alone."""
+        torch.manual_seed(0)
+        block = Block(16, 2)
+        x = torch.randn(3, 7, 16)
+        out = block(x, (4, 3))
+        torch.testing.assert_close(out[:, :4], block(x[:, :4]), rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(out[:, 4:], block(x[:, 4:]), rtol=1e-6, atol=1e-6)
+        assert not torch.allclose(block(x)[:, :4], out[:, :4])
+
+
+class TestPackedModules:
+    def test_z_of_the_packed_sequence_is_that_of_the_target_view_alone(self):
+        """The context views in the same sequence do not change the target's
+        tokens: the mean of its segment is encode's z (rtol 1e-6)."""
+        conf = packed_conf(z_dim=8, sigreg_on="both")
+        mods = build_vision(conf, seed=0)
+        x = stacks(3)
+        g = torch.Generator().manual_seed(1)
+        t, *keeps = mods.segments
+        views = [
+            multiblock_masks(3, mods.grid, m, keep=k // 2, generator=g)
+            for m, k in zip(packed_masks(), keeps, strict=True)
+        ]
+        h, _ = pack_views(x, views, patch=4, tubelet=2)
+        tokens = mods.encoder(h, mods.segments)
+        torch.testing.assert_close(
+            mods.z_of(tokens[:, :t]), mods.encode(x), rtol=1e-6, atol=1e-7
+        )
+        assert mods.encode(x).shape == (3, 8)
+
+    def test_the_segments_projection_and_names(self):
+        conf = packed_conf(z_dim=8, sigreg_on="z")
+        mods = build_vision(conf, seed=0)
+        keeps = [expected_keep((4, 4), m) for m in packed_masks()]
+        assert mods.segments == (32, 2 * keeps[0], 2 * keeps[1])
+        assert mods.proj is not None and set(mods.named()) == {
+            "encoder",
+            "predictor",
+            "proj",
+        }
+        assert build_vision(packed_conf(), seed=0).proj is None
+
+    def test_the_seed_fixes_the_weights(self):
+        a = build_vision(packed_conf(z_dim=8), seed=3)
+        b = build_vision(packed_conf(z_dim=8), seed=3)
+        for (_, m), (_, n) in zip(a.named().items(), b.named().items()):
+            for p, q in zip(m.parameters(), n.parameters()):
+                assert torch.equal(p, q)

@@ -10,6 +10,7 @@ from exp.video.data.walking_tours import (
     MANIFEST,
     data_version,
     eval_clips,
+    eval_windows,
     finalize,
     prepare,
     videos,
@@ -231,3 +232,41 @@ class TestEvalClips:
             eval_clips(root, held_out="Z", clips=1, length=10, seed=0)
         with pytest.raises(ValueError, match="positive"):
             eval_clips(root, held_out="H", clips=1, length=0, seed=0)
+
+
+class TestEvalWindows:
+    @pytest.fixture
+    def root(self, tmp_path) -> Path:
+        return numbered(tmp_path / "d", {"A": 50, "H": 300})
+
+    def frame_numbers(self, x: torch.Tensor) -> torch.Tensor:
+        px = x[..., 0, 0].long()
+        return px[..., 1] + 256 * px[..., 2]
+
+    def test_stride_one_and_no_steps_are_the_clips(self, root):
+        a = eval_windows(
+            root, held_out="H", clips=5, frames=7, stride=1, steps=0, seed=3
+        )
+        b = eval_clips(root, held_out="H", clips=5, length=7, seed=3)
+        assert torch.equal(a, b)
+
+    def test_the_frames_are_stride_apart_in_slots_of_their_span(self, root):
+        """frames 4, steps 2, stride 3: 6 frames 3 apart, from slots of
+        (4 + 2 - 1) 3 + 1 = 16 frames."""
+        x = eval_windows(
+            root, held_out="H", clips=6, frames=4, stride=3, steps=2, seed=0
+        )
+        assert x.shape == (6, 6, 3, 2, 2) and x.dtype == torch.uint8
+        j = self.frame_numbers(x)
+        assert (j[:, 1:] - j[:, :-1] == 3).all()
+        assert (j[:, 0] % 16 == 0).all()
+
+    def test_too_few_slots_or_a_bad_setting_raise(self, root):
+        with pytest.raises(ValueError, match="clips"):
+            eval_windows(
+                root, held_out="H", clips=19, frames=4, stride=3, steps=2, seed=0
+            )
+        with pytest.raises(ValueError, match="positive"):
+            eval_windows(
+                root, held_out="H", clips=1, frames=4, stride=0, steps=2, seed=0
+            )

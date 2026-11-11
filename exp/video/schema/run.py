@@ -94,6 +94,13 @@ class RunConf:
                 raise ValueError(
                     f"program {self.program!r} with task {self.task!r} needs {name}"
                 )
+        v, m = self.vision, self.measure
+        if v is not None and v.layout == "packed" and max(m.horizons) > m.steps:
+            # The windows of the evaluation have measure.steps stacks after the
+            # first: the linear dynamics afterwards cannot look further.
+            raise ValueError(
+                f"measure.horizons {m.horizons} go beyond measure.steps {m.steps}"
+            )
         window = self.dynamics.window if self.dynamics is not None else None
         if window is not None and not window.relax < window.stride * self.time.frame:
             # Else every window waits past the next: learned late, at the push

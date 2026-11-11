@@ -6,7 +6,9 @@ r"""The program of M15: the vision alone (``exp.video.jepa``), for the tasks
   fixed chunks (``Measures``);
 - ``"bench"``: the same without the evaluations, to time it;
 - ``"posthoc"``: the decoder learned afterwards of each evaluation checkpoint
-  of a finished run (``exp.video.programs.posthoc``).
+  of a finished run (``exp.video.programs.posthoc``);
+- ``"baselines"`` (the packed layout): the yardsticks of the posthoc
+  evaluation alone, of the job's config (``measure.encoder_eval``).
 
 A frame: the next frame of each stream written as a ``pc.msg.Sample`` (``x``
 the images, ``reset`` where a stream starts anew), and the terms of the JEPA
@@ -48,6 +50,18 @@ The objective (val rows): $1 - $ ``probe_pos_min`` for the balls, $1 -$
 not finite or $z$ collapsed (``z_spread`` below ``COLLAPSE``, where a probe of
 the standardized $z$ would read the rounding).
 
+The packed layout (M17, ``vision.layout="packed"``) streams stacks of
+``vision.frames`` frames ``vision.stride`` video frames apart
+(``StackedTourFrames``, ``data.tours.advance`` video frames per frame of the
+run) and is evaluated by ``PackedMeasures``: the windows of
+``walking_tours.eval_windows`` (``measure.steps`` stacks after the first, for
+the linear dynamics of ``task=posthoc``), the first third calib, the second
+val, the last test, with fixed context masks per split. A row has ``loss``,
+``pred``, ``sigreg`` (``loss.jepa_loss_packed`` of the first stack of each
+window) and ``rank``, ``z_std_min``, ``z_spread``; no probe and no
+``objective`` (the decoders and the dynamics are learned afterwards, and
+``task=posthoc`` writes the objective).
+
 The prepared Walking Tours are read from ``$MUJOU_EXP_DATA/<data_version>``
 (``DATA_ENV``; by default ``.fleet/data`` of this checkout).
 """
@@ -70,13 +84,25 @@ from exp.lib.metrics import effective_rank
 from exp.lib.png import tile, write_png
 from exp.lib.rundir import EnvError, write_json
 from exp.video.data.clips import SPLIT_SEEDS, make_clips
-from exp.video.data.frames import BallFrames, FrameStreams, TourFrames
+from exp.video.data.frames import (
+    BallFrames,
+    FrameStreams,
+    StackedTourFrames,
+    StackStreams,
+    TourFrames,
+)
 from exp.video.data.physics import render
-from exp.video.data.walking_tours import eval_clips
-from exp.video.jepa.loss import Reconstruction, jepa_loss
-from exp.video.jepa.masks import block_masks, make_views
+from exp.video.data.walking_tours import eval_clips, eval_windows
+from exp.video.jepa.loss import Reconstruction, jepa_loss, jepa_loss_packed
+from exp.video.jepa.masks import (
+    block_masks,
+    expected_keep,
+    make_views,
+    multiblock_masks,
+    pack_views,
+)
 from exp.video.jepa.nets import build_vision_net, vision_modules
-from exp.video.jepa.nodes import draw_directions
+from exp.video.jepa.nodes import draw_directions, draw_packed_directions
 from exp.video.jepa.vit import VisionModules, build_vision
 from exp.video.loop import Built, Schedule, every
 from exp.video.measure.objective import PENALTY
@@ -91,10 +117,12 @@ __all__ = [
     "PROGRAM",
     "STRIDE",
     "Measures",
+    "PackedMeasures",
     "VisionProgram",
     "rebuild",
     "tours_root",
     "vision_objective",
+    "z_stats",
 ]
 
 DATA_ENV = "MUJOU_EXP_DATA"
@@ -124,8 +152,11 @@ def tours_root(t: ToursConf) -> Path:
     return root
 
 
-def vision_objective(row: Mapping[str, Any]) -> float:
-    """The objective of a val row (module docstring)."""
+def vision_objective(row: Mapping[str, Any]) -> float | None:
+    """The objective of a val row (module docstring); None for a row of the
+    packed layout (no probe: ``task=posthoc`` has the objective)."""
+    if "probe_pos_min" not in row and "thumb" not in row:
+        return None
     spread = row.get("z_spread")
     if spread is None or not spread >= COLLAPSE:
         return PENALTY
@@ -266,15 +297,12 @@ class Measures:
             zs.append(t.z)
         loss, pred, sig, rec = torch.stack(terms).mean(0).tolist()
         z = torch.cat(zs)
-        rms = float(z.pow(2).mean().sqrt())
         row = {
             "loss": loss,
             "pred": pred,
             "sigreg": sig,
             **({"recon": rec} if dec is not None else {}),
-            "rank": effective_rank(z),
-            "z_std_min": float(z.std(0).min()),
-            "z_spread": float(z.std(0).mean()) / rms if rms > 0 else 0.0,
+            **z_stats(z),
         }
         return row | self._probes(self._calib_z(mods, version), z, s)
 
@@ -336,6 +364,130 @@ class Measures:
         write_png(out / "views.png", tile(grid, scale=3))
 
 
+def z_stats(z: Tensor) -> dict[str, float]:
+    """``rank``, ``z_std_min`` and ``z_spread`` of $z$ ``(n, D)`` (module
+    docstring)."""
+    rms = float(z.pow(2).mean().sqrt())
+    return {
+        "rank": effective_rank(z),
+        "z_std_min": float(z.std(0).min()),
+        "z_spread": float(z.std(0).mean()) / rms if rms > 0 else 0.0,
+    }
+
+
+class PackedMeasures:
+    """The evaluation of the packed layout (module docstring): the windows of
+    each split ``windows`` (u8 ``(n, N + steps, C, H, W)``, on the CPU), the
+    masks of each context view ``masks`` (``(n, gh, gw)`` each) and the
+    directions of SIGReg of each split.
+
+    Args:
+        conf: The run; its vision, Walking Tours, ``measure`` and device.
+
+    Raises:
+        ValueError: The run has no vision, or does not stream Walking Tours.
+    """
+
+    def __init__(self, conf: RunConf) -> None:
+        v, t = conf.vision, conf.data.tours
+        if v is None or t is None:
+            raise ValueError(f"the run {conf.name!r} needs a vision on Walking Tours")
+        self.v: VisionConf = v
+        self._batch = conf.data.streams
+        self._dev = torch.device(conf.device)
+        n = conf.measure.clips * conf.measure.windows
+        u8 = eval_windows(
+            tours_root(t),
+            held_out=t.held_out,
+            clips=3 * n,
+            frames=v.frames,
+            stride=v.stride,
+            steps=conf.measure.steps,
+            seed=_TOURS_SEED,
+        )
+        if u8.shape[-1] != t.size:
+            raise ValueError(f"the data is of {u8.shape[-1]} pixels, not {t.size}")
+        self.windows = {
+            s: u8[i * n : (i + 1) * n] for i, s in enumerate(("calib", *_SPLITS))
+        }
+        side = t.size // v.patch
+        self.grid = (side, side)
+        self.keeps = [expected_keep(self.grid, m) for m in v.context_masks]
+        self.masks: dict[str, list[Tensor]] = {}
+        self._directions: dict[str, tuple[Tensor, Tensor | None]] = {}
+        two = v.sigreg_on in ("tokens", "both") and v.projected
+        for split in self.windows:
+            g = torch.Generator().manual_seed(SPLIT_SEEDS[split])
+            self.masks[split] = [
+                multiblock_masks(n, self.grid, m, keep=k, generator=g)
+                for m, k in zip(v.context_masks, self.keeps, strict=True)
+            ]
+            dz, dt = draw_packed_directions(
+                v.sigreg_directions, v.z_width, v.dim, tokens=two, generator=g
+            )
+            self._directions[split] = (
+                dz.to(self._dev),
+                None if dt is None else dt.to(self._dev),
+            )
+
+    @torch.no_grad()
+    def evaluate(
+        self, mods: VisionModules, split: str, *, version: int = 0
+    ) -> dict[str, float]:
+        """The row of ``split`` of ``mods`` as they are (``version`` unused:
+        no calibration)."""
+        v, dev = self.v, self._dev
+        windows, masks = self.windows[split], self.masks[split]
+        dz, dt = self._directions[split]
+        terms, zs = [], []
+        for i in range(0, len(windows), self._batch):
+            chunks = windows[i : i + self._batch, : v.frames].to(dev)
+            b = len(chunks)
+            views = [m[i : i + b].to(dev) for m in masks]
+            h, y = pack_views(chunks, views, patch=v.patch, tubelet=v.tubelet)
+            t = jepa_loss_packed(
+                mods.encoder(h, mods.segments),
+                y,
+                torch.ones(b, dtype=torch.bool, device=dev),
+                dz,
+                dt,
+                mods.predictor,
+                keeps=list(mods.segments[1:]),
+                proj=mods.proj,
+                lam=v.sigreg,
+                sg=False,
+                sigreg_on=v.sigreg_on,
+                pred_loss=v.pred_loss,
+            )
+            terms.append(torch.stack([t.loss, t.pred, t.sigreg]))
+            zs.append(t.z)
+        loss, pred, sig = torch.stack(terms).mean(0).tolist()
+        row = {"loss": loss, "pred": pred, "sigreg": sig}
+        return row | z_stats(torch.cat(zs))
+
+    def baselines(self, mods: VisionModules) -> dict[str, dict[str, float]]:
+        """``init_*``: the rows of ``mods`` as they are (before learning)."""
+        return {
+            s: {f"init_{k}": x for k, x in self.evaluate(mods, s).items()}
+            for s in _SPLITS
+        }
+
+    def visualize(self, out: Path, patch: int) -> None:
+        """``views.png``: 4 windows of val, a row each: the first stack's $N$
+        frames, then its last frame as each context view shows it (the
+        masked patches 0)."""
+        v = self.v
+        chunks = self.windows["val"][:4, : v.frames].float() / 255
+        last = chunks[:, -1]  # (4, C, H, W)
+        shown = []
+        for m in self.masks["val"]:
+            px = m[:4].repeat_interleave(patch, 1).repeat_interleave(patch, 2)
+            shown.append(last * (~px)[:, None].float())
+        grid = torch.cat([chunks, torch.stack(shown, 1)], 1)
+        out.mkdir(parents=True, exist_ok=True)
+        write_png(out / "views.png", tile(grid, scale=1))
+
+
 def _shrunk(chunks: Tensor) -> Tensor:
     """The frames of ``chunks`` ``(n, N, C, H, W)`` shrunk to ``THUMB`` x
     ``THUMB`` by the mean of each block, flattened: ``(n, N C THUMB^2)``."""
@@ -347,12 +499,26 @@ def _clean(d: Mapping[str, float]) -> dict[str, float | None]:
     return {k: (x if math.isfinite(x) else None) for k, x in d.items()}
 
 
-def _frames(conf: RunConf) -> FrameStreams:
-    b, frame = conf.data.streams, conf.time.frame
+def _frames(conf: RunConf) -> FrameStreams | StackStreams:
+    b, frame, v = conf.data.streams, conf.time.frame, conf.vision
+    assert v is not None
     if conf.data.balls is not None:
+        if v.layout == "packed":
+            raise ValueError("vision.layout 'packed' streams Walking Tours only")
         return BallFrames.of(conf.data.balls, b, frame=frame, seed=conf.seed)
     assert conf.data.tours is not None
     t = conf.data.tours
+    if v.layout == "packed":
+        return StackedTourFrames(
+            tours_root(t),
+            n=b,
+            held_out=t.held_out,
+            frames=v.frames,
+            stride=v.stride,
+            advance=t.advance,
+        )
+    if t.advance != 1:
+        raise ValueError(f"data.tours.advance {t.advance} needs vision.layout 'packed'")
     return TourFrames(tours_root(t), n=b, held_out=t.held_out)
 
 
@@ -377,7 +543,10 @@ class _Online:
         bench = conf.task == "bench"
         self.net = build_vision_net(conf)
         self.mods = vision_modules(self.net)
-        self.measures = None if bench else Measures(conf)
+        self._packed = v.layout == "packed"
+        self.measures: Measures | PackedMeasures | None = None
+        if not bench:
+            self.measures = PackedMeasures(conf) if self._packed else Measures(conf)
         if self.measures is not None:  # of the initial weights, before a resume
             base = self.measures.baselines(self.mods)
             write_json(
@@ -418,10 +587,13 @@ class _Online:
 
     def advance(self) -> None:
         k = self.host.frames
-        images, _, reset = self.streams.next()
+        images, extra, reset = self.streams.next()
         dev = self._y.device
+        # A stack's ready (packed) is its mask; a frame of the balls or the
+        # tours is always shown.
+        mask = extra.to(dev) if self._packed else self._mask
         sample = pc.msg.Sample(
-            x=images.to(dev), y=self._y, mask=self._mask, reset=reset.to(dev)
+            x=images.to(dev), y=self._y, mask=mask, reset=reset.to(dev)
         )
         p, _ = self.host.show({self.net.prev: sample}, self.net.stats)
         if k == 0:
@@ -444,8 +616,9 @@ class _Online:
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # no evaluations in a bench
         row = self.measures.evaluate(self.mods, split, version=self.host.frames)
-        if split == "val":
-            row["objective"] = vision_objective(row)
+        objective = vision_objective(row) if split == "val" else None
+        if objective is not None:
+            row["objective"] = objective
         return row
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
@@ -491,7 +664,7 @@ class VisionProgram:
         match conf.task:
             case "online" | "bench":
                 return _Online(conf, run_dir, resume)
-            case "posthoc":  # imported here: it imports this module
+            case "posthoc" | "baselines":  # imported here: it imports this module
                 from exp.video.programs.posthoc import Posthoc
 
                 return Posthoc(conf, run_dir, resume)

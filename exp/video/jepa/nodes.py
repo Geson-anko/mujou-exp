@@ -35,9 +35,22 @@ from mujou.time import Timestamp
 from mujou.types import Device
 
 from exp.lib.cuda_graph import Replayed
-from exp.video.jepa.loss import JEPATerms, Reconstruction, jepa_loss, pool, split_y
-from exp.video.jepa.masks import block_masks, make_views
-from exp.video.jepa.vit import BroadcastDecoder, PixelDecoder, Predictor
+from exp.video.jepa.loss import (
+    JEPATerms,
+    Reconstruction,
+    jepa_loss,
+    jepa_loss_packed,
+    pool,
+    split_y,
+)
+from exp.video.jepa.masks import block_masks, make_views, multiblock_masks, pack_views
+from exp.video.jepa.vit import (
+    BroadcastDecoder,
+    PackedPredictor,
+    PixelDecoder,
+    Predictor,
+)
+from exp.video.schema.vision import MaskConf
 from mujou import DictSpec, Node, Port, Stateful, TensorSpec, TimestampSpec
 
 __all__ = [
@@ -46,7 +59,10 @@ __all__ = [
     "FrameRing",
     "JEPAHead",
     "JEPAStats",
+    "PackedJEPAHead",
+    "StackChunker",
     "draw_directions",
+    "draw_packed_directions",
     "stats_message",
     "z_spec",
 ]
@@ -102,6 +118,17 @@ def draw_directions(m: int, d: int, generator: torch.Generator) -> torch.Tensor:
     ``generator`` (on its device) normalized."""
     a = torch.randn(m, d, generator=generator, device=generator.device)
     return a / torch.linalg.vector_norm(a, dim=1, keepdim=True)
+
+
+def draw_packed_directions(
+    m: int, d_z: int, d: int, *, tokens: bool, generator: torch.Generator
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """The directions of SIGReg of the packed layout: ``(m, d_z)`` on $z$, then,
+    when SIGReg also sees the tokens (``tokens``) and $z$ is not of their width
+    ``d``, ``(m, d)`` on the tokens (else None: the same as on $z$)."""
+    dz = draw_directions(m, d_z, generator)
+    dt = draw_directions(m, d, generator) if tokens and d != d_z else None
+    return dz, dt
 
 
 # --- the frames ------------------------------------------------------------------
@@ -253,6 +280,85 @@ class Chunker(Node):
                 "y": y,
                 "mask": mask.repeat_interleave(v),
                 "reset": sample["reset"].repeat_interleave(v),
+                "time": written,
+            }
+        )
+
+
+class StackChunker(Node):
+    r"""Packs the host's stacks of frames into the sequences of the encoder
+    (the packed layout, M17).
+
+    It holds no parameters. The host writes a ``pc.msg.Sample``: the stacks
+    ``x`` u8 ``(B, N, C, H, W)`` (``StackedTourFrames``), unused zeros ``y``
+    ``(B, 1)``, ``mask`` (the streams whose stack is within one video) and
+    ``reset`` ``(B,)``. In the update that first sees a write, it draws the
+    mask of each context view (in the order of ``masks``, ``B`` each, from its
+    ``generator``; ``masks.multiblock_masks`` with ``keeps``) and sends, once,
+    ``masks.pack_views``: ``h`` ``(B, L, P + 1)``, ``y`` ``(B, (V - 1) T)``,
+    and the host's ``mask`` and ``reset``. ``next`` receives the credit of the
+    first encoder node and drops it: the frames are constants.
+
+    Args:
+        stack: The spec of the stacks, ``(B, N, C, H, W)`` u8.
+        patch: The side of a patch.
+        tubelet: The frames of a tubelet.
+        masks: The context views.
+        keeps: The visible patches of each (``masks.expected_keep``).
+        period: The period of the node in seconds.
+        seed: The seed of ``generator``.
+        device: Where the node computes.
+    """
+
+    def __init__(
+        self,
+        *,
+        stack: TensorSpec,
+        patch: int,
+        tubelet: int,
+        masks: list[MaskConf],
+        keeps: list[int],
+        period: float,
+        seed: int,
+        device: Device = "cpu",
+    ) -> None:
+        super().__init__(device=device, period=period, seed=seed)
+        b, f, c, h, w = stack.shape
+        self._patch, self._tubelet = patch, tubelet
+        self._masks, self._keeps = list(masks), list(keeps)
+        self._grid = (h // patch, w // patch)
+        t = (f // tubelet) * self._grid[0] * self._grid[1]
+        length = t + sum(k * (f // tubelet) for k in keeps)
+        y = TensorSpec((b, 1))
+        mask = TensorSpec((b,), torch.bool)
+        self.prev = Port(
+            recv=DictSpec(pc.msg.Sample, x=stack, y=y, mask=mask, reset=mask)
+        )
+        h_spec = TensorSpec((b, length, tubelet * c * patch * patch + 1))
+        self.act_spec = pc.msg.activity_spec(h_spec, TensorSpec((b, len(masks) * t)), b)
+        self.next = Port(send=self.act_spec, recv=h_spec)  # the credit is dropped
+        self.seen = -1  # the time (ns) of the write seen last
+        self.register_state("seen")
+
+    @override
+    def on_update(self, dt: float) -> None:
+        super().on_update(dt)
+        sample, written = self.prev.recv_with_time()
+        if written is None or written.ns == self.seen:
+            return
+        self.seen = written.ns
+        b = sample["x"].shape[0]
+        views = [
+            multiblock_masks(b, self._grid, m, keep=k, generator=self.generator)
+            for m, k in zip(self._masks, self._keeps, strict=True)
+        ]
+        h, y = pack_views(sample["x"], views, patch=self._patch, tubelet=self._tubelet)
+        self.next.send(
+            {
+                "h": h,
+                "y": y,
+                "mask": sample["mask"],
+                "reset": sample["reset"],
                 "time": written,
             }
         )
@@ -484,3 +590,196 @@ class JEPAHead(Node):
             ]
         )
         return [g, z, values, *cast(list[torch.Tensor], g_theta)]
+
+
+class PackedJEPAHead(Node):
+    r"""The predictor, the projection and the JEPA loss of the packed layout
+    (``loss.jepa_loss_packed``) on the tokens of the last encoder node, as a
+    node of PC-ALM (M17); ``JEPAHead`` otherwise.
+
+    It receives on ``prev`` the packed tokens ``(B, L, D)`` with the context
+    masks in ``y``. In the update that first sees a frame it draws the
+    directions of SIGReg (``draw_packed_directions``). Each update it sends
+    back the credit of each sample, $\partial E / \partial h$ of $E = B L$
+    (0 for a stream whose ``mask`` is False), from one autograd of its own
+    computation from the detached tokens, computed again only when the tokens,
+    the parameters or the directions changed. It sends $z$ (after the
+    projection, ``(B, D_z)``) on ``z_out`` (send-only) and the terms of $L$ on
+    ``stats`` (the first of a frame prequential; ``recon`` 0). When its clock
+    says, it learns the predictor and the projection by $\frac1B \partial E /
+    \partial \theta = \partial L / \partial \theta$.
+
+    Args:
+        predictor: The predictor, on ``device``.
+        proj: The projection to $z$, on ``device`` (None: $z$ is the mean).
+        act_spec: The spec of what the last encoder node sends.
+        keeps: $K_v$ of each context view (tokens).
+        lam: $\lambda$, the weight of SIGReg.
+        sg: Stop the prediction's gradient at the target view.
+        sigreg_on: What SIGReg sees.
+        pred_loss: ``"l2"`` or ``"l1"``.
+        directions: The directions of SIGReg drawn per frame.
+        tau: The time constants of PC-ALM.
+        optimizer: The optimizer of the predictor and the projection.
+        learn_interval: As in ``pc.clock.LearnClock``.
+        seed: The seed of ``generator``.
+        device: Where the node computes.
+        cuda_graph: Replay the credit and the gradients from CUDA graphs (on
+            CUDA only), the same bit for bit.
+    """
+
+    def __init__(
+        self,
+        predictor: PackedPredictor,
+        *,
+        proj: torch.nn.Linear | None,
+        act_spec: DictSpec[Activity],
+        keeps: list[int],
+        lam: float,
+        sg: bool,
+        sigreg_on: str,
+        pred_loss: str,
+        directions: int,
+        tau: pc.TimeConstants,
+        optimizer: Optimizer,
+        learn_interval: float | None,
+        seed: int,
+        device: Device = "cpu",
+        cuda_graph: bool = False,
+    ) -> None:
+        super().__init__(device=device, period=tau.period, seed=seed)
+        self.module = predictor
+        self.proj = proj
+        self._keeps = list(keeps)
+        self._lam, self._sg, self._sigreg_on = lam, sg, sigreg_on
+        self._pred_loss = pred_loss
+        self.clock = pc.clock.LearnClock.of(
+            tau, period=self.period, learn_interval=learn_interval
+        )
+        self._params = list(predictor.parameters())
+        if proj is not None:
+            self._params += proj.parameters()
+        self.optimizer = optimizer.bind(self._params)
+        on_cuda = cuda_graph and self.device.type == "cuda"
+        self._replay = Replayed(self._terms) if on_cuda else None  # not state
+        h = act_spec.field("h", TensorSpec)
+        self._b, _, d = h.shape
+        d_z = d if proj is None else proj.out_features
+        dev = self.device
+        self._two = sigreg_on in ("tokens", "both") and d_z != d
+        self.directions = torch.zeros(directions, d_z, device=dev)
+        self.directions_t = torch.zeros(directions if self._two else 0, d, device=dev)
+        self.g, self.g_of = h.zeros(device=dev), h.zeros(device=dev)
+        self.cached = False
+        self.register_state("cached")
+        self.values = torch.zeros(5, device=dev)  # loss, pred, sigreg, recon, n of g
+        self.z = torch.zeros(self._b, d_z, device=dev)
+        self.prev = Port(send=h, recv=act_spec)
+        self.z_out = Port(send=z_spec(self._b, d_z))
+        self.stats = Port(send=STATS)
+
+    @override
+    def on_update(self, dt: float) -> None:
+        super().on_update(dt)
+        act = self.prev.recv()
+        tick = self.clock.tick(dt, act["time"], self.timer.now())
+        if tick.new:
+            m, d_z = self.directions.shape
+            dz, dt_ = draw_packed_directions(
+                m,
+                d_z,
+                self.directions_t.shape[1],
+                tokens=self._two,
+                generator=self.generator,
+            )
+            self.directions = dz
+            if dt_ is not None:
+                self.directions_t = dt_
+            self.cached = False
+        valid = act["mask"]
+        learn = tick.learn and bool(valid.any())
+        g_theta: list[torch.Tensor] = []
+        if learn or not (self.cached and torch.equal(act["h"], self.g_of)):
+            g_theta = self._credit(act, valid, learn)
+        self.prev.send(self.g)
+        self.z_out.send(
+            {
+                "h": self.z,
+                "y": torch.zeros(self._b, 1, device=self.device),
+                "mask": valid,
+                "reset": act["reset"],
+                "time": act["time"],
+            }
+        )
+        loss, pred, sig, rec, n = self.values
+        self.stats.send(
+            {
+                "loss": loss,
+                "pred": pred,
+                "sigreg": sig,
+                "recon": rec,
+                "n": n,
+                "time": act["time"],
+            }
+        )
+        if learn:
+            # theta moves by dL/dtheta = (1 / B) dE/dtheta.
+            self.optimizer.step_([g / self._b for g in g_theta], tick.elapsed)
+            self.cached = False
+
+    def _credit(
+        self, act: Activity, valid: torch.Tensor, learn: bool
+    ) -> list[torch.Tensor]:
+        h = act["h"]
+        args = (h, act["y"], valid, self.directions, self.directions_t)
+        if self._replay is not None:
+            g, z, values, *g_theta = self._replay(learn, *args)
+        else:
+            g, z, values, *g_theta = self._terms(learn, *args)
+        self.g, self.g_of, self.cached = g, h, True
+        self.z, self.values = z, values
+        return g_theta
+
+    def _terms(
+        self,
+        learn: bool,
+        h: torch.Tensor,
+        y: torch.Tensor,
+        valid: torch.Tensor,
+        directions: torch.Tensor,
+        directions_t: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """``[g, z, values, *g_theta]`` (``g_theta`` only when it learns), a
+        function of tensors only: the one the CUDA graph replays."""
+        params = self._params if learn else []
+        with torch.enable_grad():
+            leaf = h.detach().requires_grad_()
+            terms = jepa_loss_packed(
+                leaf,
+                y,
+                valid,
+                directions,
+                directions_t if self._two else None,
+                self.module,
+                keeps=self._keeps,
+                proj=self.proj,
+                lam=self._lam,
+                sg=self._sg,
+                sigreg_on=self._sigreg_on,
+                pred_loss=self._pred_loss,
+            )
+            energy = self._b * terms.loss
+            # The gradient of this node's own energy, from a detached leaf.
+            g, *g_theta = torch.autograd.grad(  # mujou: local-autograd
+                energy, [leaf, *params], materialize_grads=True
+            )
+        values = torch.stack(
+            [
+                terms.loss.detach(),
+                terms.pred.detach(),
+                terms.sigreg.detach(),
+                terms.recon.detach(),
+                terms.valid,
+            ]
+        )
+        return [g, terms.z.detach(), values, *cast(list[torch.Tensor], g_theta)]
