@@ -77,4 +77,4 @@ run のディレクトリの中身（`config.yaml`・`evals.jsonl`・`stream.jso
 | M14 | [動力学だけを学ぶ（玉の状態を観測に）](results/m14.md) | 段 1・2 は達成（段 2 の #45 で test の `roll5/cv5` 0.38〜0.44、`roll10/cv10` 0.25〜0.30、PC-ALM と BP、3 seed）。画素を観測にした段 3 は等加速度の外挿の 1.9〜2.2 倍で届かない |
 | M15 | [画像のエンコーダを JEPA で学ぶ](results/m15.md) | 達成。JEPA に spatial broadcast decoder による最後のフレームの再構成を足し、test の `probe_pos_min` 0.957〜0.979（PC-ALM と BP、3 seed）。JEPA だけでは 0.05〜0.2 で、玉の位置が線形に読めなかった |
 | M16 | [視覚と動力学を同時に学ぶ](results/m16.md) | 達成。動力学を 0.6 秒ごとの窓の BPTT（W=36、feedback=grad、PC-ALM は窓のエピソード）で学び、test の後から学ぶデコーダで 10 フレーム先が平均の画像の 0.66〜0.79 倍（PC-ALM と BP、3 seed）。毎フレームの学習（最初の確認、BP）では 1.3〜1.5 倍で届かなかった。PC-ALM を 5 更新/フレームに縮めると学習が安定せず、採らなかった |
-| M17 | [Walking Tours でエンコーダを詰める](results/m17.md) | 実施中。回す前に決めたこと（マスク、探索の目的、PCA との比べ方）まで |
+| M17 | [Walking Tours でエンコーダを詰める](results/m17.md) | 実施中。物差し・判定基準・計算時間・試し・診断まで。preset の JEPA（BP）は $N$ = 16・8・1 とも学ぶほど学習前の ViT より悪くなり（val の `recon` 0.63 → 0.75〜0.81、PCA-256 は 0.15）、9 つの変更でも学習前を下回らず、study の前で止めている |
