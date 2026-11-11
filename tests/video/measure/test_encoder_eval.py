@@ -94,6 +94,39 @@ class TestEncoderEval:
         assert final["decode"]["val"] == vit
         assert set(final["baselines"]["test"]) == {"pca", "init"}
 
+    def test_the_encoder_is_held_bit_for_bit(self, parent, tmp_path, monkeypatch):
+        """Every module of each code (the ViT before it learns, each
+        checkpoint) has the same bytes after its evaluation (the decoders,
+        the ridge and the token decoder fit) as before."""
+        held = []
+        evaluate = EncoderEval._evaluate
+
+        def watched(self, code, *args, **kw):
+            if code.mods is None:
+                return evaluate(self, code, *args, **kw)
+            before = {
+                f"{n}.{k}": x.detach().clone()
+                for n, m in code.mods.named().items()
+                for k, x in m.state_dict().items()
+            }
+            out = evaluate(self, code, *args, **kw)
+            after = {
+                f"{n}.{k}": x
+                for n, m in code.mods.named().items()
+                for k, x in m.state_dict().items()
+            }
+            assert before.keys() == after.keys()
+            for k, x in before.items():
+                assert torch.equal(x, after[k]), k
+            held.append(code.name)
+            return out
+
+        monkeypatch.setattr(EncoderEval, "_evaluate", watched)
+        e = _eval(parent, tmp_path / "o")
+        for _ in range(len(e)):
+            e.step()
+        assert held == ["init", "vit", "vit"]
+
     def test_ckpts_last_reads_the_last_checkpoint_only(self, parent, tmp_path):
         e = _eval(parent, tmp_path / "o", ckpts="last")
         assert len(e) == 2
