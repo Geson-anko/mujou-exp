@@ -7,7 +7,7 @@ import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
 
-from exp.lib.optim import AdamDirection, Grafted, Warmup, adam
+from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup, adam
 from mujou import TensorSpec
 
 
@@ -224,3 +224,105 @@ class TestAdam:
     def test_values_out_of_range_raise(self, lr, b1, b2, name):
         with pytest.raises(ValueError, match=name):
             adam(lr, b1, b2)
+
+
+class TestStepAdamW:
+    """The steps of ``torch.optim.AdamW`` (the oracle), with the learning rate
+    and the weight decay of each step set by hand, the decay only of the
+    parameters of two or more dimensions, and ``clip_grad_norm_``."""
+
+    @staticmethod
+    def _torch(opt: StepAdamW, params, grads) -> list[torch.Tensor]:
+        ps = [p.clone().requires_grad_() for p in params]
+        groups = [
+            {"params": [p for p in ps if p.dim() >= 2]},
+            {"params": [p for p in ps if p.dim() < 2], "weight_decay": 0.0},
+        ]
+        ref = torch.optim.AdamW(groups, lr=opt.lr, betas=opt.betas, eps=opt.eps)
+        for t, gs in enumerate(grads, start=1):
+            for p, g in zip(ps, gs, strict=True):
+                p.grad = g.clone()
+            if opt.clip > 0:
+                torch.nn.utils.clip_grad_norm_(ps, opt.clip)
+            for group in ref.param_groups:
+                group["lr"] = opt.lr_at(t)
+            ref.param_groups[0]["weight_decay"] = opt.wd_at(t)
+            ref.step()
+        return [p.detach() for p in ps]
+
+    @pytest.mark.parametrize(
+        "opt",
+        [
+            StepAdamW(lr=1e-2),
+            StepAdamW(lr=1e-2, betas=(0.8, 0.99), weight_decay=0.05),
+            StepAdamW(
+                lr=1e-2,
+                warmup_steps=3,
+                decay="cosine",
+                decay_steps=8,
+                min_lr=1e-3,
+                weight_decay=0.04,
+                weight_decay_end=0.4,
+                clip=0.5,
+            ),
+        ],
+        ids=["plain", "betas-wd", "scheduled-clipped"],
+    )
+    def test_the_steps_of_torch_adamw(self, opt):
+        params = _params(*SHAPES)
+        grads = _grads(params, 10)
+        for a, b in zip(
+            _trajectory(opt, params, grads),
+            self._torch(opt, params, grads),
+            strict=True,
+        ):
+            torch.testing.assert_close(a, b)
+
+    def test_the_schedules_by_hand(self):
+        opt = StepAdamW(
+            lr=1.0,
+            warmup_steps=4,
+            decay="cosine",
+            decay_steps=8,
+            min_lr=0.1,
+            weight_decay=0.0,
+            weight_decay_end=0.8,
+        )
+        assert [opt.lr_at(t) for t in (1, 2, 4)] == [0.25, 0.5, 1.0]
+        # half way down the cosine: the mean of 1 and 0.1; then 0.1 for good
+        assert opt.lr_at(6) == pytest.approx(0.55)
+        assert opt.lr_at(8) == pytest.approx(0.1) and opt.lr_at(20) == opt.lr_at(8)
+        assert [opt.wd_at(t) for t in (0, 4, 8, 20)] == [0.0, 0.4, 0.8, 0.8]
+        constant = StepAdamW(lr=1.0, warmup_steps=2)
+        assert [constant.lr_at(t) for t in (1, 2, 3, 1000)] == [0.5, 1.0, 1.0, 1.0]
+
+    def test_a_step_of_no_time_moves_nothing_and_the_state_resumes(self):
+        opt = StepAdamW(lr=1e-2, warmup_steps=4)
+        params = _params(*SHAPES)
+        grads = _grads(params, 6)
+        whole = _trajectory(opt, params, grads)
+        moved = [p.clone() for p in params]
+        bound = opt.bind(moved)
+        for gs in grads[:3]:
+            bound.step_(gs, 0.03)
+            bound.step_(gs, 0.0)
+        again = opt.bind(moved)
+        again.load_state_dict(bound.state_dict())
+        for gs in grads[3:]:
+            again.step_(gs, 0.03)
+        for a, b in zip(moved, whole, strict=True):
+            torch.testing.assert_close(a, b)
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"lr": 0.0},
+            {"lr": 1e-3, "betas": (0.9, 1.0)},
+            {"lr": 1e-3, "decay": "linear"},
+            {"lr": 1e-3, "decay": "cosine", "decay_steps": 5, "warmup_steps": 5},
+            {"lr": 1e-3, "weight_decay_end": 0.4},
+        ],
+    )
+    def test_refused(self, kw):
+        with pytest.raises(ValueError):
+            StepAdamW(**kw)
