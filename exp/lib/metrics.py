@@ -7,9 +7,12 @@ __all__ = ["bootstrap_se", "effective_rank", "probe_r2"]
 
 def effective_rank(z: torch.Tensor) -> float:
     """The exponential of the entropy of the normalized eigenvalues of the
-    covariance of ``z`` (``(n, D)``)."""
-    cov = torch.cov(z.T.double())
-    values = torch.linalg.eigvalsh(cov).clamp(min=0)
+    covariance of ``z`` (``(n, D)``): the squared singular values of the
+    centered ``z`` over ``n - 1`` (no ``(D, D)`` matrix: ``D`` = 16384 for the
+    flattened tokens of M17, whose eigensolver wanted 8 GiB)."""
+    x = z.double()
+    x = x - x.mean(0)
+    values = torch.linalg.svdvals(x) ** 2 / (len(x) - 1)
     p = values / values.sum()
     p = p[p > 0]
     return float(torch.exp(-(p * p.log()).sum()))

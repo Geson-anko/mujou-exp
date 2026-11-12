@@ -58,3 +58,15 @@ class TestBootstrapSE:
     def test_constant_values_have_no_error(self):
         g = torch.Generator().manual_seed(7)
         assert bootstrap_se(torch.full((50,), 2.5), gen=g) == 0.0
+
+
+def test_effective_rank_is_that_of_the_eigenvalues_of_the_covariance():
+    """The singular values give the covariance's eigenvalues, also for n < D."""
+    g = torch.Generator().manual_seed(3)
+    for n, d in ((50, 8), (6, 20)):
+        z = torch.randn(n, d, generator=g, dtype=torch.float64) * torch.arange(1, d + 1)
+        values = torch.linalg.eigvalsh(torch.cov(z.T)).clamp(min=0)
+        p = values / values.sum()
+        p = p[p > 1e-12]
+        expected = float(torch.exp(-(p * p.log()).sum()))
+        assert effective_rank(z) == pytest.approx(expected, rel=1e-9)
