@@ -470,6 +470,7 @@ class EncoderEval:
             del patches, tok_train
         calib = self._split_z(code, "calib")
         z0, z1 = z_train[:, :-1].flatten(0, 1), z_train[:, 1:].flatten(0, 1)
+        del z_train  # copied into z0, z1: room for the D x D moments of the ridge
         alpha = linear_dyn.select_alpha(z0, z1, calib)
         a, b = linear_dyn.fit(z0, z1, alpha=alpha)
         comp = (

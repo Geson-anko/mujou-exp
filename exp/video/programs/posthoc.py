@@ -60,6 +60,14 @@ __all__ = ["SPLITS", "Posthoc", "decoding", "main", "parent_dir"]
 SPLITS = ("val", "test")  # the evaluation chunks decoded (Measures)
 _SETTINGS = {"frames", "steps", "windows", "ckpts"}
 
+# The ridge of the linear dynamics on the flattened tokens (D = 16384 at 32
+# dimensions a token) needs a few float64 D x D matrices (2 GiB each) after
+# the PCA and the decoders have come and gone: expandable segments keep the
+# freed blocks from fragmenting the 4090's memory. Read by the CUDA allocator
+# at its first allocation, which comes after this import (a posthoc job
+# touches the device only in Posthoc); the values are unchanged by it.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 
 def parent_dir(job: Mapping[str, Any], run_dir: Path) -> Path:
     """The parent's run directory of the posthoc job ``job`` in ``run_dir``
