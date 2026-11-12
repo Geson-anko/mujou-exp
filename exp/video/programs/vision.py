@@ -58,7 +58,10 @@ run) and is evaluated by ``PackedMeasures``: the windows of
 the linear dynamics of ``task=posthoc``), the first third calib, the second
 val, the last test, with fixed context masks per split. A row has ``loss``,
 ``pred``, ``sigreg`` (``loss.jepa_loss_packed`` of the first stack of each
-window), ``rank``, ``z_std_min``, ``z_spread``, and the spread of the
+window, in batches of ``data.streams`` windows of a fixed shuffled order,
+``PackedMeasures.order``: a batch in time order would be a few minutes of
+one video, and its SIGReg is not that of a training batch, which mixes the
+nine videos), ``rank``, ``z_std_min``, ``z_spread``, and the spread of the
 target tokens within the stacks against that between them (the collapse of
 the tokens within a stack, which ``z_spread`` does not see; ``token_spread``):
 ``tok_within`` (the mean squared deviation of a token from its stack's mean
@@ -437,7 +440,8 @@ class PackedMeasures:
     ``encoder_eval.stream_windows`` but those across two videos) with their
     masks ``held_in_masks`` (drawn from ``HELD_IN_SEED``), and the mask kinds
     ``kinds`` (``views``, the names of the context views, then ``future``
-    when a stack has more than one time slot).
+    when a stack has more than one time slot); ``order``, the shuffled
+    order of each split's windows in the batches of the loss.
 
     Args:
         conf: The run; its vision, Walking Tours, ``measure`` and device.
@@ -471,6 +475,12 @@ class PackedMeasures:
         side = t.size // v.patch
         self.grid = (side, side)
         self.keeps = [expected_keep(self.grid, m) for m in v.context_masks]
+        # The order the loss sees the windows of a split in: shuffled, so
+        # that a batch mixes the split's minutes as a training batch mixes
+        # the nine videos (in time order a batch is a few minutes of one
+        # video, and SIGReg of z reads high however z is spread).
+        g = torch.Generator().manual_seed(_TOURS_SEED)
+        self.order = {s: torch.randperm(n, generator=g) for s in self.windows}
         self.masks: dict[str, list[Tensor]] = {}
         self._directions: dict[str, tuple[Tensor, Tensor | None]] = {}
         two = v.sigreg_on in ("tokens", "both") and v.projected
@@ -514,9 +524,10 @@ class PackedMeasures:
         dz, dt = self._directions[split]
         terms, zs, spreads = [], [], []
         for i in range(0, len(windows), self._batch):
-            chunks = windows[i : i + self._batch, : v.frames].to(dev)
+            idx = self.order[split][i : i + self._batch]
+            chunks = windows[idx, : v.frames].to(dev)
             b = len(chunks)
-            views = [m[i : i + b].to(dev) for m in masks]
+            views = [m[idx].to(dev) for m in masks]
             h, y = pack_views(
                 chunks, views, keeps=self.keeps, patch=v.patch, tubelet=v.tubelet
             )

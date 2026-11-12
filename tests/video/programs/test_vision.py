@@ -18,6 +18,8 @@ from exp.lib import ckpt
 from exp.lib.rundir import Exit, verify_manifest
 from exp.video import loop
 from exp.video.compose import compose, from_dict
+from exp.video.jepa.loss import jepa_loss_packed
+from exp.video.jepa.masks import pack_views
 from exp.video.jepa.vit import build_vision
 from exp.video.main import local_job
 from exp.video.measure.objective import PENALTY
@@ -26,6 +28,7 @@ from exp.video.programs.vision import (
     DATA_ENV,
     PROGRAM,
     Measures,
+    PackedMeasures,
     rebuild,
     spread_stats,
     token_spread,
@@ -495,6 +498,50 @@ class TestPacked:
         base = json.loads((out / "baselines.json").read_text())
         assert {"init_loss", "init_rank", "init_z_spread"} <= set(base["val"])
         assert {f"init_{k}" for k in comp} <= set(base["val"])
+
+    def test_the_loss_sees_the_windows_in_a_fixed_shuffled_order(self, tours):
+        """A batch of the evaluation's loss mixes the split (the windows are in
+        time order): the row's terms are the means over the batches of the
+        windows in ``order``."""
+        conf = compose(["+experiment=m17/wt_n16", "learner=bp", *tours])
+        v = conf.vision
+        assert v is not None
+        m = PackedMeasures(conf)
+        n = len(m.windows["val"])
+        order = m.order["val"]
+        assert sorted(order.tolist()) == list(range(n))
+        assert order.tolist() != list(range(n))
+        assert torch.equal(order, PackedMeasures(conf).order["val"])
+        mods = build_vision(conf, seed=0)
+        row = m.evaluate(mods, "val")
+        dz, dt = m._directions["val"]
+        sig, b = [], conf.data.streams
+        for i in range(0, n, b):
+            idx = order[i : i + b]
+            h, y = pack_views(
+                m.windows["val"][idx, : v.frames],
+                [x[idx] for x in m.masks["val"]],
+                keeps=m.keeps,
+                patch=v.patch,
+                tubelet=v.tubelet,
+            )
+            with torch.no_grad():
+                t = jepa_loss_packed(
+                    mods.encoder(h, mods.segments),
+                    y,
+                    torch.ones(len(idx), dtype=torch.bool),
+                    dz,
+                    dt,
+                    mods.predictor,
+                    keeps=list(mods.segments[1:]),
+                    proj=mods.proj,
+                    lam=v.sigreg,
+                    sg=False,
+                    sigreg_on=v.sigreg_on,
+                    pred_loss=v.pred_loss,
+                )
+            sig.append(float(t.sigreg))
+        assert row["sigreg"] == pytest.approx(sum(sig) / len(sig), rel=1e-5)
 
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_resume_equals_uninterrupted(self, tmp_path, tours, learner):
