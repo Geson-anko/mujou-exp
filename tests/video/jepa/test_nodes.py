@@ -433,8 +433,13 @@ class TestStackChunker:
 class TestPackedHead:
     @pytest.mark.parametrize(
         "vision",
-        [{}, {"sg": True, "sigreg": 0.0}, {"z_dim": 8, "sigreg_on": "both"}],
-        ids=["plain", "sg", "proj-both"],
+        [
+            {},
+            {"sg": True, "sigreg": 0.0},
+            {"z_dim": 8, "sigreg_on": "both"},
+            {"sigreg_on": "tokens", "token_sigreg": "raw"},
+        ],
+        ids=["plain", "sg", "proj-both", "tokens-raw"],
     )
     def test_the_credit_is_that_of_b_times_the_loss(self, vision):
         b = 3
@@ -463,6 +468,7 @@ class TestPackedHead:
             sg=v.sg,
             sigreg_on=v.sigreg_on,
             pred_loss=v.pred_loss,
+            token_sigreg=v.token_sigreg,
         )
         (expect,) = torch.autograd.grad(b * t.loss, [h])
         torch.testing.assert_close(g, expect)
@@ -509,8 +515,9 @@ class TestPackedEquilibrium:
             {"sg": True, "pred_loss": "l1"},
             {"z_dim": 8, "sigreg_on": "both", "pixel_mean": 0.5, "pixel_std": 0.3},
             {"frames": 1, "tubelet": 1, "nodes": 1},
+            {"sigreg_on": "both", "token_sigreg": "clip", "sigreg": 0.3},
         ],
-        ids=["n4", "sg-l1", "proj-both", "n1"],
+        ids=["n4", "sg-l1", "proj-both", "n1", "both-clip"],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
         """Hold a stack with learning off: lam of each encoder node relaxes to

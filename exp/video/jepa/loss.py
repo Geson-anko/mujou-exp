@@ -48,6 +48,18 @@ $\frac1D \lVert\cdot\rVert_1$ (``"l1"``, V-JEPA):
 $L^{\mathrm{pred}}_b = \frac{1}{V - 1} \sum_v \frac{1}{M_v}
 \sum_{t \in \mathrm{masked}_v} \ell(\hat s_{b,v,t} - s_{b,t})$. $z_b$ is the
 mean of the target tokens, through the projection when there is one.
+
+The SIGReg of the tokens of the packed layout ($S_t$, with ``sigreg_on``
+``"tokens"`` or ``"both"``) is one of ``TOKEN_SIGREG``: ``"scaled"`` (as
+above, the statistic of the $|M| T$ target tokens divided by $T$), ``"raw"``
+(not divided) or ``"clip"`` (not divided, of the tokens less their stack's
+mean token $s_{b,t} - \frac1T \sum_{t'} s_{b,t'}$). The statistic of
+Gaussian samples is $O(1)$ however many there are, and that of a constant
+grows with their number, so ``"scaled"`` makes the penalty of tokens that
+collapse to a constant per stack at most $S_z$: below what the prediction
+gains by the collapse, which with $z$ alone is a (near) optimum of $L$ (M17
+audit, 2026-11-12). ``"clip"`` sees only the spread within the stacks, which
+such a collapse removes: its penalty grows as $|M| T$.
 """
 
 import math
@@ -58,8 +70,10 @@ import torch
 from torch import Tensor, nn
 
 from exp.lib.sigreg import T_POINTS
+from exp.video.schema.vision import TOKEN_SIGREG
 
 __all__ = [
+    "TOKEN_SIGREG",
     "JEPATerms",
     "Reconstruction",
     "jepa_loss",
@@ -68,6 +82,7 @@ __all__ = [
     "pool",
     "prediction_errors",
     "split_y",
+    "token_sigreg_of",
     "weighted_sigreg",
 ]
 
@@ -240,6 +255,18 @@ def jepa_loss(
     return JEPATerms(total / b, pred_sum / n.clamp(min=1), s, n, z, rec)
 
 
+def token_sigreg_of(target: Tensor, w: Tensor, directions: Tensor, kind: str) -> Tensor:
+    r"""$S_t$ of the target tokens ``(B, T, D)`` of the streams of 0/1 weights
+    ``w`` ``(B,)``, along ``directions`` ``(M, D)``: ``kind`` of
+    ``TOKEN_SIGREG`` (module docstring)."""
+    b, t, d = target.shape
+    if kind not in TOKEN_SIGREG:
+        raise ValueError(f"token_sigreg must be one of {TOKEN_SIGREG}, not {kind!r}")
+    x = target - target.mean(1, keepdim=True) if kind == "clip" else target
+    s = weighted_sigreg(x.reshape(-1, d), w.repeat_interleave(t), directions)
+    return s / t if kind == "scaled" else s
+
+
 def view_ids(y_view: Tensor, keep: int) -> tuple[Tensor, Tensor]:
     """The ids of the visible tokens ``(n, K)`` and of the masked ones ``(n, T
     - K)`` of a context view, each in increasing order, from its row of ``y``
@@ -262,6 +289,7 @@ def jepa_loss_packed(
     sg: bool,
     sigreg_on: str,
     pred_loss: str,
+    token_sigreg: str = "scaled",
 ) -> JEPATerms:
     r"""$L$ of the packed layout (module docstring).
 
@@ -281,6 +309,7 @@ def jepa_loss_packed(
         sg: Stop the gradient of the prediction at the target tokens.
         sigreg_on: What SIGReg sees: ``"z"``, ``"tokens"`` or ``"both"``.
         pred_loss: ``"l2"`` or ``"l1"``.
+        token_sigreg: The SIGReg of the tokens (``TOKEN_SIGREG``).
     """
     b, _, d = tokens.shape
     views = len(keeps)
@@ -307,9 +336,14 @@ def jepa_loss_packed(
     if sigreg_on in ("z", "both"):
         parts.append(weighted_sigreg(z, w, directions_z))
     if sigreg_on in ("tokens", "both"):
-        dirs = directions_z if directions_t is None else directions_t
-        s_tok = weighted_sigreg(target.reshape(-1, d), w.repeat_interleave(t), dirs)
-        parts.append(s_tok / t)
+        parts.append(
+            token_sigreg_of(
+                target,
+                w,
+                directions_z if directions_t is None else directions_t,
+                token_sigreg,
+            )
+        )
     if not parts:
         raise ValueError(
             f"sigreg_on must be 'z', 'tokens' or 'both', not {sigreg_on!r}"

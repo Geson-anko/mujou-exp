@@ -546,6 +546,7 @@ class PackedMeasures:
                 sg=False,
                 sigreg_on=v.sigreg_on,
                 pred_loss=v.pred_loss,
+                token_sigreg=v.token_sigreg,
             )
             terms.append(torch.stack([t.loss, t.pred, t.sigreg]))
             zs.append(t.z)

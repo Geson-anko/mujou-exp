@@ -3,7 +3,7 @@ from typing import override
 import pytest
 import torch
 
-from exp.lib.sigreg import sigreg
+from exp.lib.sigreg import T_POINTS, sigreg
 from exp.video.jepa.loss import (
     Reconstruction,
     jepa_loss,
@@ -11,6 +11,7 @@ from exp.video.jepa.loss import (
     pool,
     prediction_errors,
     split_y,
+    token_sigreg_of,
     weighted_sigreg,
 )
 
@@ -418,3 +419,71 @@ class TestJEPALossPacked:
             target_zero = bool((g[:, :6] == 0).all())
             assert target_zero == sg
             assert (g[:, 6:] != 0).any()
+
+
+class TestTokenSigreg:
+    """The SIGReg of the target tokens of the packed layout."""
+
+    def _dirs(self, d: int = 5) -> torch.Tensor:
+        g = torch.Generator().manual_seed(3)
+        a = torch.randn(9, d, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def test_scaled_and_raw_are_of_all_the_tokens(self):
+        g = torch.Generator().manual_seed(0)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.tensor([1.0, 0.0, 1.0], dtype=torch.float64), self._dirs()
+        raw = weighted_sigreg(target.reshape(-1, 5), w.repeat_interleave(6), dirs)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "raw"), raw)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "scaled"), raw / 6)
+
+    def test_clip_of_tokens_constant_within_each_stack_is_that_of_zeros(self):
+        """Tokens that collapse to a constant per stack (z of any spread) are
+        zeros less the stack's mean: the empirical characteristic function is
+        1, so the statistic is n_w T int (1 - e^{-t^2/2})^2 e^{-t^2/2} dt,
+        growing with the tokens; that of "scaled" stays below S_z."""
+        g = torch.Generator().manual_seed(1)
+        clip = torch.randn(4, 1, 5, generator=g, dtype=torch.float64)
+        target = clip.expand(4, 8, 5)
+        w, dirs = torch.ones(4, dtype=torch.float64), self._dirs()
+        t = T_POINTS.double()
+        phi = torch.exp(-(t**2) / 2)
+        by_hand = 4 * 8 * torch.trapezoid((1 - phi) ** 2 * phi, t)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "clip"), by_hand)
+        s_z = weighted_sigreg(clip[:, 0], w, dirs)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "scaled"), s_z)
+
+    def test_clip_does_not_see_the_stacks_means(self):
+        g = torch.Generator().manual_seed(2)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        shift = 7 * torch.randn(3, 1, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.ones(3, dtype=torch.float64), self._dirs()
+        torch.testing.assert_close(
+            token_sigreg_of(target + shift, w, dirs, "clip"),
+            token_sigreg_of(target, w, dirs, "clip"),
+        )
+
+    @pytest.mark.parametrize("kind", ["raw", "clip"])
+    def test_the_loss_averages_it_with_s_z_on_both(self, kind):
+        tokens, y, keeps, dirs = _packed_inputs(4)
+        valid = torch.ones(3, dtype=torch.bool)
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=1.0,
+            sg=False,
+            sigreg_on="both",
+            pred_loss="l2",
+            token_sigreg=kind,
+        )
+        target = tokens[:, :6]
+        w = valid.double()
+        s_z = weighted_sigreg(target.mean(1), w, dirs)
+        s_t = token_sigreg_of(target, w, dirs, kind)
+        torch.testing.assert_close(got.sigreg, (s_z + s_t) / 2)

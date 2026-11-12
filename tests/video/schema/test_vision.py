@@ -38,6 +38,7 @@ class TestPacked:
             ({"z_dim": 64, "sigreg_on": "tokens"}, "projection"),
             ({"stride": 0}, "stride"),
             ({"pred_loss": "huber"}, "pred_loss"),
+            ({"token_sigreg": "half"}, "token_sigreg"),
         ],
     )
     def test_refused(self, kw, match):
@@ -46,6 +47,11 @@ class TestPacked:
 
     def test_the_pixels_layout_is_not_checked_so(self):
         VisionConf(frames=3, tubelet=0, views=2)  # M15's defaults stay valid
+
+    def test_the_token_sigreg_is_of_the_packed_layout(self):
+        assert _packed(sigreg_on="both", token_sigreg="clip").token_sigreg == "clip"
+        with pytest.raises(ValueError, match="packed"):
+            VisionConf(token_sigreg="clip")
 
     @pytest.mark.parametrize(
         "kw", [{"blocks": 0, "scale": 0.1}, {"blocks": 1, "scale": 1.5}]

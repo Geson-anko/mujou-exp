@@ -11,6 +11,7 @@ __all__ = [
     "PRED_LOSSES",
     "RECON_DECODERS",
     "SIGREG_ON",
+    "TOKEN_SIGREG",
     "MaskConf",
     "VisionConf",
 ]
@@ -30,6 +31,9 @@ RECON_DECODERS = ("mlp", "broadcast")
 LAYOUTS = ("pixels", "packed")
 # The prediction error of a token: squared (LeJEPA) or absolute (V-JEPA).
 PRED_LOSSES = ("l2", "l1")
+# The SIGReg of the target tokens of the packed layout (jepa.loss): of the
+# tokens divided by T, not divided, or of the tokens less their stack's mean.
+TOKEN_SIGREG = ("scaled", "raw", "clip")
 MAX_Z_DIM = 1024  # the largest z (M17: about 2 % of the 128 x 128 x 3 input)
 
 
@@ -88,7 +92,8 @@ class VisionConf:
     ``context_masks`` whose masked tokens are dropped from the encoder's input
     (``mask_ratio`` and ``mask_blocks`` are unused). $z$ is the mean of the
     target view's tokens, then a linear map to ``z_dim`` (None: no map, $z$
-    of the width ``dim``). ``pred_loss`` is the prediction error of a token.
+    of the width ``dim``). ``pred_loss`` is the prediction error of a token,
+    ``token_sigreg`` the SIGReg of the target tokens (``jepa.loss``).
     """
 
     patch: int = 4  # pixels per side of a patch
@@ -123,6 +128,9 @@ class VisionConf:
     z_dim: int | None = None  # "packed" only; None: dim, no projection
     context_masks: list[MaskConf] = field(default_factory=list)  # "packed" only
     pred_loss: str = "l2"  # PRED_LOSSES, "packed" only
+    # TOKEN_SIGREG, "packed" only: the SIGReg of the target tokens (with
+    # sigreg_on "tokens" or "both")
+    token_sigreg: str = "scaled"
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
@@ -160,6 +168,9 @@ class VisionConf:
             raise ValueError(f"vision.sigreg must be in [0, 1], not {self.sigreg}")
         check_choice("vision.layout", self.layout, LAYOUTS)
         check_choice("vision.pred_loss", self.pred_loss, PRED_LOSSES)
+        check_choice("vision.token_sigreg", self.token_sigreg, TOKEN_SIGREG)
+        if self.layout != "packed" and self.token_sigreg != "scaled":
+            raise ValueError("vision.token_sigreg is of the packed layout only")
         if self.layout == "packed":
             self._check_packed()
 

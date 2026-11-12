@@ -629,6 +629,7 @@ class PackedJEPAHead(Node):
         optimizer: The optimizer of the predictor and the projection.
         learn_interval: As in ``pc.clock.LearnClock``.
         seed: The seed of ``generator``.
+        token_sigreg: The SIGReg of the tokens (``loss.jepa_loss_packed``).
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.
@@ -650,12 +651,14 @@ class PackedJEPAHead(Node):
         optimizer: Optimizer,
         learn_interval: float | None,
         seed: int,
+        token_sigreg: str = "scaled",
         device: Device = "cpu",
         cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
         self.proj = proj
+        self._token_sigreg = token_sigreg
         self._keeps = list(keeps)
         self._lam, self._sg, self._sigreg_on = lam, sg, sigreg_on
         self._pred_loss = pred_loss
@@ -773,6 +776,7 @@ class PackedJEPAHead(Node):
                 sg=self._sg,
                 sigreg_on=self._sigreg_on,
                 pred_loss=self._pred_loss,
+                token_sigreg=self._token_sigreg,
             )
             energy = self._b * terms.loss
             # The gradient of this node's own energy, from a detached leaf.

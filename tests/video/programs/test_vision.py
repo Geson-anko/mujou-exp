@@ -539,6 +539,7 @@ class TestPacked:
                     sg=False,
                     sigreg_on=v.sigreg_on,
                     pred_loss=v.pred_loss,
+                    token_sigreg=v.token_sigreg,
                 )
             sig.append(float(t.sigreg))
         assert row["sigreg"] == pytest.approx(sum(sig) / len(sig), rel=1e-5)

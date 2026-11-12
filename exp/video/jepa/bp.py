@@ -69,6 +69,8 @@ class JEPABP(Node):
         sg: Stop the prediction's gradient at the target view.
         directions: The directions of SIGReg drawn per frame.
         sigreg_on: What SIGReg sees (``loss.jepa_loss``).
+        token_sigreg: The SIGReg of the tokens (packed,
+            ``loss.jepa_loss_packed``).
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -97,12 +99,13 @@ class JEPABP(Node):
         pixel_mean: float = 0.0,
         pixel_std: float = 1.0,
         pred_loss: str = "l2",
+        token_sigreg: str = "scaled",
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.mods = mods
         self._packed = mods.layout == "packed"
-        self._pred_loss = pred_loss
+        self._pred_loss, self._token_sigreg = pred_loss, token_sigreg
         self.proj = mods.proj  # an attribute, so that it is in the state
         self._recon = recon, pixel_mean, pixel_std
         self.encoder, self.predictor = mods.encoder, mods.predictor
@@ -205,6 +208,7 @@ class JEPABP(Node):
                 sg=self._sg,
                 sigreg_on=self._sigreg_on,
                 pred_loss=self._pred_loss,
+                token_sigreg=self._token_sigreg,
             )
         b, v = self._b, self._v
         decoder = self.decoder
