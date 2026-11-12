@@ -3,6 +3,7 @@ contract, determinism, resume (the Chunker's ring and generator among the
 state), the prequential record, Walking Tours as the stream, and the GIL."""
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -443,6 +444,11 @@ class TestPacked:
         assert _run(out, extra, experiment="m17/wt_n16", tiny=tours) == Exit.OK
         rows = _lines(out / "evals.jsonl")
         assert [(r["t"], r["split"]) for r in rows] == [(0.5, "val"), (1.0, "val")]
+        # the completion errors per mask kind (future: with two time slots)
+        kinds = ["short", "long", *(() if "vision.frames=1" in extra else ("future",))]
+        comp = {
+            f"comp_{k}{s}" for k in kinds for s in ("", "_vis", "_mean")
+        }  # of val, and of calib and the held-in stacks in the row of val
         assert set(rows[-1]) == {
             "t",
             "frame",
@@ -453,13 +459,15 @@ class TestPacked:
             "rank",
             "z_std_min",
             "z_spread",
-        }
+        } | comp | {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
+        assert all(math.isfinite(rows[-1][k]) for k in comp)
         assert all(r["loss"] is not None for r in _lines(out / "stream.jsonl"))
         result = json.loads((out / "result.json").read_text())
         assert result["status"] == "completed" and result["objective"] is None
         assert (out / "ckpt" / "00001.0.pt").is_file()
         base = json.loads((out / "baselines.json").read_text())
         assert {"init_loss", "init_rank", "init_z_spread"} <= set(base["val"])
+        assert {f"init_{k}" for k in comp} <= set(base["val"])
 
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_resume_equals_uninterrupted(self, tmp_path, tours, learner):

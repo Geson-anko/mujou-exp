@@ -47,7 +47,16 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   tokens (its ceiling). The views are ``short`` and ``long`` for two
   context views, else ``c0``, ``c1``, ...;
 - ``rank``, ``z_std_min``, ``z_spread`` of the first stacks' $z$;
-- ``objective`` (val, ``vit``, minimized): $J = \log \max(\mathrm{recon} /
+- (ViT) the completion errors of the first stacks (``measure.completion``,
+  ``PackedMeasures.completion_rows``): ``comp_<kind>``, ``comp_<kind>_vis``,
+  ``comp_<kind>_mean`` per mask kind (``short``, ``long``, ``future``), the
+  line of val also of calib (``calib_comp_*``) and of the held-in stacks of
+  the training videos (``fit_comp_*``);
+- ``objective`` (val, ``vit``, minimized), by ``measure.encoder_objective``.
+  ``"completion"`` (provisional): $\log$ of the mean of ``comp_<kind>`` over
+  the kinds, at most ``PENALTY``, ``FLOOR`` below, ``PENALTY`` when $z$
+  collapsed or a value is missing or not finite. ``"recon_dyn"`` (the
+  default): $J = \log \max(\mathrm{recon} /
   \mathrm{recon}_{PCA},\ r_1 / r_{1, PCA})$ with $r_1$ = ``dyn_1/copy_1``
   and $\mathrm{recon}_{PCA}$ the smaller of the PCA's ``recon`` and
   ``recon_lin`` (its best known decoder), at
@@ -265,8 +274,7 @@ class EncoderEval:
         self.done, self._steps = done, steps
         self._dev = torch.device(conf.device)
         self._measures = PackedMeasures(conf)
-        n = len(v.context_masks)
-        self._views = ["short", "long"] if n == 2 else [f"c{i}" for i in range(n)]
+        self._views = self._measures.views
         self._train = stream_windows(conf, root, windows=windows)  # u8, CPU
         # The last frames of the training stacks (window, stack), u8 on the device.
         self._targets = self._train[:, v.frames - 1 :].flatten(0, 1).to(self._dev)
@@ -330,7 +338,11 @@ class EncoderEval:
             pcas = self.baselines()
             for line in lines:
                 if line["split"] == "val":
-                    line["objective"] = _objective(line, pcas["val"]["pca"])
+                    line["objective"] = (
+                        _completion_objective(line, self._measures.kinds)
+                        if self.conf.measure.encoder_objective == "completion"
+                        else _objective(line, pcas["val"]["pca"])
+                    )
             _append(self.out / "metrics.jsonl", lines)
             self._last = lines
         self.done += 1
@@ -442,6 +454,11 @@ class EncoderEval:
         z0, z1 = z_train[:, :-1].flatten(0, 1), z_train[:, 1:].flatten(0, 1)
         alpha = linear_dyn.select_alpha(z0, z1, calib)
         a, b = linear_dyn.fit(z0, z1, alpha=alpha)
+        comp = (
+            {}
+            if code.mods is None
+            else self._measures.completion_rows(code.mods, list(SPLITS))
+        )
         lines = []
         for split in SPLITS:
             zs = self._split_z(code, split)
@@ -477,6 +494,7 @@ class EncoderEval:
             if code.mods is not None and tok_dec is not None:
                 restored = self._restore(code.mods, split, tok_dec, f0, line)
             line |= z_stats(zs[:, 0].float())
+            line |= comp.get(split, {})
             line["alpha"] = alpha
             lines.append(line)
             if split == "val":
@@ -575,6 +593,21 @@ def _objective(line: Mapping[str, Any], pca_line: Mapping[str, Any]) -> float:
         return PENALTY
     j = math.log(max(recon / recon_pca, dyn / dyn_pca, FLOOR))
     return min(j, PENALTY)
+
+
+def _completion_objective(line: Mapping[str, Any], kinds: Sequence[str]) -> float:
+    """The ``"completion"`` objective of a val line of the ViT (module
+    docstring): the log of the mean ``comp_<kind>`` of ``kinds``."""
+    spread = line.get("z_spread")
+    if spread is None or not spread >= COLLAPSE:
+        return PENALTY
+    got = [line.get(f"comp_{k}") for k in kinds]
+    values = [float(x) for x in got if x is not None]
+    if not values or len(values) < len(got):
+        return PENALTY
+    if not all(math.isfinite(x) and x >= 0 for x in values):
+        return PENALTY
+    return min(math.log(max(sum(values) / len(values), FLOOR)), PENALTY)
 
 
 def _png(path: Path, frames: Tensor) -> None:

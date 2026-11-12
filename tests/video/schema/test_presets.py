@@ -175,3 +175,11 @@ class TestM17:
     def test_horizons_beyond_the_steps_are_refused(self) -> None:
         with pytest.raises(ValueError, match="beyond measure.steps"):
             compose(["+experiment=m17/wt_n16", "measure.steps=5"])
+
+    def test_the_objective_is_recon_dyn_unless_completion_is_chosen(self) -> None:
+        conf = compose(["+experiment=m17/wt_n16"])
+        assert conf.measure.encoder_objective == "recon_dyn"
+        chosen = ["+experiment=m17/wt_n16", "measure.encoder_objective=completion"]
+        assert compose(chosen).measure.encoder_objective == "completion"
+        with pytest.raises(ValueError, match="encoder_objective"):
+            compose(["+experiment=m17/wt_n16", "measure.encoder_objective=loss"])

@@ -60,7 +60,15 @@ def runs(tmp_path) -> Path:
         run / "evals.jsonl",
         [
             {"t": 60.0, "frame": 1800, "split": "val", "loss": 1.0, "rank": 9.0},
-            {"t": 120.0, "frame": 3600, "split": "val", "loss": 0.5, "rank": 12.0},
+            {
+                "t": 120.0,
+                "frame": 3600,
+                "split": "val",
+                "loss": 0.5,
+                "rank": 12.0,
+                "comp_future": 0.8,  # the completion errors (M17)
+                "fit_comp_future": 0.6,
+            },
         ],
     )
     (run / "baselines.json").write_text(json.dumps({"val": {"init_loss": 2.0}}))
@@ -72,7 +80,16 @@ def runs(tmp_path) -> Path:
     d = post / "post" / "decode"
     _write(
         d / "metrics.jsonl",
-        [{"t": 120.0, "frame": 3600, "split": "val", "code": "vit", "recon": 0.4}],
+        [
+            {
+                "t": 120.0,
+                "frame": 3600,
+                "split": "val",
+                "code": "vit",
+                "recon": 0.4,
+                "comp_short": 0.7,
+            }
+        ],
     )
     _write(
         d / "baselines.jsonl",
@@ -107,6 +124,9 @@ class TestExport:
             (0, pytest.approx(0.6)),
             (120, pytest.approx(0.6)),
         ]
+        assert steps["eval/val/comp_future"] == [(120, pytest.approx(0.8))]
+        assert steps["eval/val/fit_comp_future"] == [(120, pytest.approx(0.6))]
+        assert steps["post/val/comp_short"] == [(120, pytest.approx(0.7))]
         assert steps["hp/loss"] == [(120, 0.5)]
         assert steps["hp/post/recon"] == [(120, pytest.approx(0.4))]  # posthoc's
         images = acc.Tags()["images"]

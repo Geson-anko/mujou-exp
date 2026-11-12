@@ -13,6 +13,7 @@ from exp.video import loop
 from exp.video.main import local_job
 from exp.video.measure.encoder_eval import (
     EncoderEval,
+    _completion_objective,
     _objective,
     _Standardized,
     stream_windows,
@@ -83,8 +84,19 @@ class TestEncoderEval:
         ):
             assert k in vit, k
         assert "objective" not in lines[-1]  # test
+        comp = {
+            f"comp_{k}{s}"
+            for k in ("short", "long", "future")
+            for s in ("", "_vis", "_mean")
+        }
+        prefixed = {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
+        assert comp | prefixed <= set(vit)
+        assert comp <= set(lines[-1]) and not prefixed & set(lines[-1])  # test
+        init = lines[2]
+        assert init["code"] == "init" and comp | prefixed <= set(init)
         pca = lines[0]
         assert "recon_lin" in pca and "restore_short_all" not in pca
+        assert not comp & set(pca)
         assert vit["objective"] == pytest.approx(_objective(vit, pca))
         names = set(_files(tmp_path / "o"))
         for stem in ("pca", "init", "00000.5", "00001.0"):
@@ -231,3 +243,47 @@ class TestObjective:
     def test_a_perfect_code_counts_as_the_floor(self):
         line = _line(**{"recon": 0.0, "dyn_1/copy_1": 0.0})
         assert _objective(line, PCA) == pytest.approx(math.log(FLOOR))
+
+
+class TestCompletionObjective:
+    """The provisional "completion" objective: log of the mean comp_<kind>."""
+
+    KINDS = ("short", "long", "future")
+
+    def _line(self, **kw) -> dict:
+        comp = {"comp_short": 0.5, "comp_long": 0.7, "comp_future": 0.9}
+        return comp | {"z_spread": 1.0} | kw
+
+    def test_the_log_of_the_mean(self):
+        got = _completion_objective(self._line(), self.KINDS)
+        assert got == pytest.approx(math.log(0.7))
+
+    def test_a_collapse_is_the_penalty(self):
+        line = self._line(z_spread=1e-4)
+        assert _completion_objective(line, self.KINDS) == PENALTY
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), None])
+    def test_a_value_that_is_not_finite_is_the_penalty(self, value):
+        line = self._line(comp_long=value)
+        assert _completion_objective(line, self.KINDS) == PENALTY
+
+    def test_at_most_the_penalty_and_a_perfect_one_is_the_floor(self):
+        worse = self._line(comp_short=50.0, comp_long=50.0, comp_future=50.0)
+        assert _completion_objective(worse, self.KINDS) == PENALTY
+        perfect = self._line(comp_short=0.0, comp_long=0.0, comp_future=0.0)
+        assert _completion_objective(perfect, self.KINDS) == pytest.approx(
+            math.log(FLOOR)
+        )
+
+    def test_the_run_writes_it_when_chosen(self, parent, tmp_path):
+        run_dir, root = parent
+        p = Parent.read(run_dir, device="cpu")
+        p.conf.measure.encoder_objective = "completion"
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv(DATA_ENV, str(root.parent))
+            e = EncoderEval(
+                p, p.conf, tmp_path / "o", root=root, windows=16, steps=3, ckpts="last"
+            )
+        lines = [ln for _ in range(len(e)) for ln in e.step()]
+        val = next(ln for ln in lines if ln["code"] == "vit" and ln["split"] == "val")
+        assert val["objective"] == pytest.approx(_completion_objective(val, self.KINDS))

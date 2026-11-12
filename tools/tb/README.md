@@ -31,6 +31,7 @@ just tb view                                                                # ht
 | HParams                                       | config の `vision.*`・`optim_vision.*`・`learner.kind`・`seed`・`name`、指標は最後の val の行（`hp/<key>`）と posthoc の最後の `vit` の val の行（`hp/post/<key>`、同じ export に posthoc があるとき） | 最後の step                |
 
 - `task=posthoc` の job のディレクトリ（`job.json` に `parent` がある）は、親の run と同じディレクトリに書く。run と後からの評価が 1 つの run として並ぶ
+- 鍵はファイルにあるものをそのまま書く。M17 の補完の誤差（`comp_*`・`calib_comp_*`・`fit_comp_*`）も `eval/`・`post/`・`base/` の下に出る
 - 値が null のもの、数でないものは書かない。PNG はそのままのバイト列で載せる（幅と高さは IHDR から読む）
 - Walking Tours のフレームは deface を通していない。ビューは手元だけで見て、外に出す画像（`report.html`）はぼかしてから載せる
 

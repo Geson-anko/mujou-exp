@@ -2,7 +2,13 @@
 
 from dataclasses import dataclass, field
 
-__all__ = ["MeasureConf"]
+__all__ = ["ENCODER_OBJECTIVES", "MeasureConf"]
+
+# The objectives of the posthoc evaluation of the packed layout (M17,
+# measure.encoder_eval): "recon_dyn", the worse of the reconstruction and the
+# linear dynamics against the PCA; "completion" (provisional, 2026-11-12: the
+# formula is not decided yet), the mean completion error on val.
+ENCODER_OBJECTIVES = ("recon_dyn", "completion")
 
 
 @dataclass(kw_only=True)
@@ -26,9 +32,17 @@ class MeasureConf:
     # The thresholds of a confirmation preset (the same values as the README),
     # by metric name; empty: nothing to judge.
     criteria: dict[str, float] = field(default_factory=dict)
+    # The objective of the posthoc evaluation of the packed layout
+    # (ENCODER_OBJECTIVES).
+    encoder_objective: str = "recon_dyn"
 
     def __post_init__(self) -> None:
         if not self.horizons or min(self.horizons) < 1:
             raise ValueError(f"horizons must be positive, not {self.horizons}")
         if self.steps < 0:
             raise ValueError(f"measure.steps must be >= 0, not {self.steps}")
+        if self.encoder_objective not in ENCODER_OBJECTIVES:
+            raise ValueError(
+                f"measure.encoder_objective must be one of {ENCODER_OBJECTIVES}, "
+                f"not {self.encoder_objective!r}"
+            )

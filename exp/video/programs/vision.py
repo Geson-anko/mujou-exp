@@ -60,7 +60,12 @@ val, the last test, with fixed context masks per split. A row has ``loss``,
 ``pred``, ``sigreg`` (``loss.jepa_loss_packed`` of the first stack of each
 window) and ``rank``, ``z_std_min``, ``z_spread``; no probe and no
 ``objective`` (the decoders and the dynamics are learned afterwards, and
-``task=posthoc`` writes the objective).
+``task=posthoc`` writes the objective). It also has the completion errors of
+the split (``measure.completion``, ``PackedMeasures.completion``):
+``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean`` per mask kind
+(``short``, ``long``, ``future``); the row of val also those of calib
+(``calib_comp_*``) and of the held-in stacks of the training videos
+(``fit_comp_*``), to see the gap.
 
 The prepared Walking Tours are read from ``$MUJOU_EXP_DATA/<data_version>``
 (``DATA_ENV``; by default ``.fleet/data`` of this checkout).
@@ -105,6 +110,14 @@ from exp.video.jepa.nets import build_vision_net, vision_modules
 from exp.video.jepa.nodes import draw_directions, draw_packed_directions
 from exp.video.jepa.vit import VisionModules, build_vision
 from exp.video.loop import Built, Schedule, every
+from exp.video.measure.completion import (
+    FUTURE,
+    completion,
+    future_slots,
+    future_tokens,
+    mean_token,
+    tube_tokens,
+)
 from exp.video.measure.objective import PENALTY
 from exp.video.measure.vision import THUMB, ball_probe, thumbnail_probe
 from exp.video.schema.data import ToursConf
@@ -131,6 +144,7 @@ EVAL_BATCH = 256  # chunks encoded at once for the probes' calibration
 COLLAPSE = 1e-3  # the least z_spread of a representation that did not collapse
 _SPLITS = ("val", "test")
 _TOURS_SEED = 4242  # the chunks of the held-out video
+HELD_IN_SEED = 2718  # the context masks of the held-in stacks (packed)
 _REPO = Path(__file__).resolve().parents[3]
 
 
@@ -379,7 +393,12 @@ class PackedMeasures:
     """The evaluation of the packed layout (module docstring): the windows of
     each split ``windows`` (u8 ``(n, N + steps, C, H, W)``, on the CPU), the
     masks of each context view ``masks`` (``(n, gh, gw)`` each) and the
-    directions of SIGReg of each split.
+    directions of SIGReg of each split; and, for the completion errors, the
+    held-in stacks ``held_in`` (u8 ``(n', N, C, H, W)``, ``n`` windows of
+    ``encoder_eval.stream_windows`` but those across two videos) with their
+    masks ``held_in_masks`` (drawn from ``HELD_IN_SEED``), and the mask kinds
+    ``kinds`` (``views``, the names of the context views, then ``future``
+    when a stack has more than one time slot).
 
     Args:
         conf: The run; its vision, Walking Tours, ``measure`` and device.
@@ -429,6 +448,21 @@ class PackedMeasures:
                 dz.to(self._dev),
                 None if dt is None else dt.to(self._dev),
             )
+        c = len(v.context_masks)
+        self.views = ["short", "long"] if c == 2 else [f"c{i}" for i in range(c)]
+        self._slots = v.frames // v.tubelet
+        self._future = future_slots(self._slots)
+        self.kinds = [*self.views, *((FUTURE,) if self._future else ())]
+        # imported here: it imports this module
+        from exp.video.measure.encoder_eval import stream_windows
+
+        held = stream_windows(conf, tours_root(t), windows=n, steps=0)
+        self.held_in = held[:, : v.frames]
+        g = torch.Generator().manual_seed(HELD_IN_SEED)
+        self.held_in_masks = [
+            multiblock_masks(len(held), self.grid, m, keep=k, generator=g)
+            for m, k in zip(v.context_masks, self.keeps, strict=True)
+        ]
 
     @torch.no_grad()
     def evaluate(
@@ -465,7 +499,57 @@ class PackedMeasures:
             zs.append(t.z)
         loss, pred, sig = torch.stack(terms).mean(0).tolist()
         row = {"loss": loss, "pred": pred, "sigreg": sig}
-        return row | z_stats(torch.cat(zs))
+        row |= z_stats(torch.cat(zs))
+        return row | self.completion_rows(mods, [split])[split]
+
+    def _kinds(self, split: str) -> dict[str, tuple[Tensor, int]]:
+        """The token masks ``(n, T)`` and the visible tokens of a row of each
+        mask kind on the stacks of ``split`` (``"fit"``: ``held_in``)."""
+        masks = self.held_in_masks if split == "fit" else self.masks[split]
+        slots, per = self._slots, self.grid[0] * self.grid[1]
+        out = {
+            view: (tube_tokens(m, slots), k * slots)
+            for view, m, k in zip(self.views, masks, self.keeps, strict=True)
+        }
+        if self._future:
+            grid3 = (slots, *self.grid)
+            out[FUTURE] = (
+                future_tokens(len(masks[0]), grid3, self._future),
+                (slots - self._future) * per,
+            )
+        return out
+
+    @torch.no_grad()
+    def completion(
+        self, mods: VisionModules, splits: list[str]
+    ) -> dict[str, dict[str, float]]:
+        """The completion errors (``measure.completion.completion``) of
+        ``mods`` on the held-in stacks (``"fit"``, whose mean target token is
+        the ``_mean`` predictor of every split) and on the first stack of
+        each window of ``splits``, by split."""
+        v, b, dev = self.v, self._batch, self._dev
+        mean = mean_token(mods, self.held_in, batch=b, device=dev)
+        sets = {"fit": self.held_in}
+        sets |= {s: self.windows[s][:, : v.frames] for s in splits}
+        return {
+            s: completion(mods, x, self._kinds(s), mean_token=mean, batch=b, device=dev)
+            for s, x in sets.items()
+        }
+
+    def completion_rows(
+        self, mods: VisionModules, splits: list[str]
+    ) -> dict[str, dict[str, float]]:
+        """The completion keys of the rows of ``splits`` (of ``"val"`` and
+        ``"test"``): those of the split, and in the row of val also those of
+        calib (``calib_``) and of the held-in stacks (``fit_``)."""
+        comp = self.completion(
+            mods, [*splits, *(("calib",) if "val" in splits else ())]
+        )
+        out = {s: dict(comp[s]) for s in splits}
+        if "val" in out:
+            out["val"] |= {f"calib_{k}": x for k, x in comp["calib"].items()}
+            out["val"] |= {f"fit_{k}": x for k, x in comp["fit"].items()}
+        return out
 
     def baselines(self, mods: VisionModules) -> dict[str, dict[str, float]]:
         """``init_*``: the rows of ``mods`` as they are (before learning)."""
