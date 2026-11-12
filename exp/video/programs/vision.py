@@ -61,11 +61,13 @@ optimizer) and is evaluated by ``PackedMeasures``: the windows of
 the linear dynamics of ``task=posthoc``), the first third calib, the second
 val, the last test, with fixed context masks per split. A row has ``loss``,
 ``pred``, ``sigreg`` (``loss.jepa_loss_packed`` of the first stack of each
-window, in batches of ``data.streams`` windows of a fixed shuffled order,
+window, in batches of ``PACKED_BATCH`` windows of a fixed shuffled order,
 ``PackedMeasures.order``: a batch in time order would be a few minutes of
 one video, and its SIGReg is not that of a training batch, which mixes the
-nine videos; without the past tokens of ``vision.token_buffer``: the
-evaluation has no past), ``rank``, ``z_std_min``, ``z_spread``, and the
+nine videos; of a fixed size, not ``data.streams``: SIGReg grows with its
+sample, so the rows of runs of any streams are of the same sample; without
+the past tokens of ``vision.token_buffer``: the evaluation has no past),
+``rank``, ``z_std_min``, ``z_spread``, and the
 spread of the target tokens within the stacks against that between them (the
 collapse of the tokens within a stack, which ``z_spread`` does not see;
 ``token_spread``):
@@ -154,6 +156,7 @@ from exp.video.schema.vision import VisionConf
 __all__ = [
     "COLLAPSE",
     "DATA_ENV",
+    "PACKED_BATCH",
     "PROGRAM",
     "STRIDE",
     "Measures",
@@ -170,6 +173,9 @@ __all__ = [
 DATA_ENV = "MUJOU_EXP_DATA"
 STRIDE = 30  # frames between the ends of two chunks of a clip of balls
 EVAL_BATCH = 256  # chunks encoded at once for the probes' calibration
+# The windows of a batch of the held-out loss of the packed layout (and of its
+# completion errors): the streams of the M17 runs before data.streams=1
+PACKED_BATCH = 32
 COLLAPSE = 1e-3  # the least z_spread of a representation that did not collapse
 _SPLITS = ("val", "test")
 _TOURS_SEED = 4242  # the chunks of the held-out video
@@ -472,7 +478,7 @@ class PackedMeasures:
         if v is None or t is None:
             raise ValueError(f"the run {conf.name!r} needs a vision on Walking Tours")
         self.v: VisionConf = v
-        self._batch = conf.data.streams
+        self._batch = PACKED_BATCH  # module docstring
         self._dev = torch.device(conf.device)
         n = conf.measure.clips * conf.measure.windows
         u8 = eval_windows(

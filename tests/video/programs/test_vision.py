@@ -26,6 +26,7 @@ from exp.video.measure.objective import PENALTY
 from exp.video.programs.vision import (
     COLLAPSE,
     DATA_ENV,
+    PACKED_BATCH,
     PROGRAM,
     Measures,
     PackedMeasures,
@@ -514,8 +515,9 @@ class TestPacked:
 
     def test_the_loss_sees_the_windows_in_a_fixed_shuffled_order(self, tours):
         """A batch of the evaluation's loss mixes the split (the windows are in
-        time order): the row's terms are the means over the batches of the
-        windows in ``order``."""
+        time order): the row's terms are the means over the batches of
+        PACKED_BATCH windows in ``order``, whatever ``data.streams`` (SIGReg
+        grows with its sample: the rows of one stream are of the same)."""
         conf = compose(["+experiment=m17/wt_n16", "learner=bp", *tours])
         v = conf.vision
         assert v is not None
@@ -528,7 +530,7 @@ class TestPacked:
         mods = build_vision(conf, seed=0)
         row = m.evaluate(mods, "val")
         dz, dt = m._directions["val"]
-        sig, b = [], conf.data.streams
+        sig, b = [], PACKED_BATCH
         for i in range(0, n, b):
             idx = order[i : i + b]
             h, y = pack_views(
@@ -556,6 +558,12 @@ class TestPacked:
                 )
             sig.append(float(t.sigreg))
         assert row["sigreg"] == pytest.approx(sum(sig) / len(sig), rel=1e-5)
+        one = compose(
+            ["+experiment=m17/wt_n16", "learner=bp", *tours, "data.streams=1"]
+        )
+        assert PackedMeasures(one).evaluate(mods, "val") == pytest.approx(
+            row, rel=1e-6, nan_ok=True
+        )
 
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_resume_equals_uninterrupted(self, tmp_path, tours, learner):
