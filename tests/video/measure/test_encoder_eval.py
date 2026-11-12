@@ -85,7 +85,8 @@ class TestEncoderEval:
             assert k in vit, k
         assert "objective" not in lines[-1]  # test
         comp = {
-            f"comp_{k}{s}"
+            f"{c}_{k}{s}"
+            for c in ("comp", "ncomp")
             for k in ("short", "long", "future")
             for s in ("", "_vis", "_mean")
         }

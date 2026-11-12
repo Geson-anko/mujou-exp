@@ -27,6 +27,8 @@ from exp.video.programs.vision import (
     PROGRAM,
     Measures,
     rebuild,
+    spread_stats,
+    token_spread,
     vision_objective,
 )
 from tests.video.data.test_walking_tours import numbered
@@ -420,6 +422,22 @@ class TestGIL:
         verify_manifest(out)
 
 
+class TestTokenSpread:
+    def test_by_hand(self):
+        """Two slots of two positions, D = 1: stack 0 tokens 0, 2 | 4, 6
+        (mean 3, within (9 + 1 + 1 + 9) / 4 = 5; per position the slots
+        0, 4 and 2, 6, temporal 4); stack 1 all 1 (within and temporal 0).
+        Between: the variance of 3 and 1, 1."""
+        target = torch.tensor([[0.0, 2.0, 4.0, 6.0], [1.0, 1.0, 1.0, 1.0]])
+        within, temporal, means = token_spread(target[..., None], 2)
+        assert within.tolist() == [5.0, 0.0]
+        assert temporal.tolist() == [4.0, 0.0]
+        assert means.flatten().tolist() == [3.0, 1.0]
+        stats = spread_stats(within, temporal, means, 2)
+        assert stats == {"tok_within": 2.5, "tok_between": 1.0, "tok_temporal": 2.0}
+        assert "tok_temporal" not in spread_stats(within, temporal, means, 1)
+
+
 class TestPacked:
     """M17's packed layout as a run: Walking Tours in stacks, evaluated on the
     windows of the held-out video, without probes or an objective."""
@@ -447,8 +465,17 @@ class TestPacked:
         # the completion errors per mask kind (future: with two time slots)
         kinds = ["short", "long", *(() if "vision.frames=1" in extra else ("future",))]
         comp = {
-            f"comp_{k}{s}" for k in kinds for s in ("", "_vis", "_mean")
+            f"{c}_{k}{s}"
+            for c in ("comp", "ncomp")
+            for k in kinds
+            for s in ("", "_vis", "_mean")
         }  # of val, and of calib and the held-in stacks in the row of val
+        # the spread of the tokens within the stacks (temporal: two slots)
+        spread = {
+            "tok_within",
+            "tok_between",
+            *(() if "vision.frames=1" in extra else ("tok_temporal",)),
+        }
         assert set(rows[-1]) == {
             "t",
             "frame",
@@ -459,7 +486,7 @@ class TestPacked:
             "rank",
             "z_std_min",
             "z_spread",
-        } | comp | {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
+        } | spread | comp | {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
         assert all(math.isfinite(rows[-1][k]) for k in comp)
         assert all(r["loss"] is not None for r in _lines(out / "stream.jsonl"))
         result = json.loads((out / "result.json").read_text())

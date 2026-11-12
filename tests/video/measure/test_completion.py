@@ -69,6 +69,50 @@ class TestUnexplained:
         assert math.isnan(_value(s, s))
 
 
+def _within(target: torch.Tensor, pred: torch.Tensor) -> float:
+    u = Unexplained(["p"])
+    u.add(target, {"p": pred})
+    return u.within()["p"]
+
+
+class TestWithin:
+    """$E^n$: the error over the spread of the masked tokens within each
+    stack."""
+
+    def test_each_stacks_own_mean_is_one_and_a_perfect_prediction_zero(self):
+        s = _targets()
+        assert _within(s, s.mean(1, keepdim=True)) == pytest.approx(1.0, rel=1e-12)
+        assert _within(s, s) == 0.0
+
+    def test_a_hand_computed_value(self):
+        # stack 0: targets 0, 2 (its mean 1, spread 2); stack 1: 5, 5 (spread
+        # 0); predictions off by 1 everywhere: 4 over 2
+        s = torch.tensor([[[0.0], [2.0]], [[5.0], [5.0]]])
+        assert _within(s, s + 1) == pytest.approx(4 / 2)
+
+    def test_the_value_is_the_same_under_any_scale_and_batches_sum(self):
+        s, p = _targets(0).double(), _targets(1).double()
+        base = _within(s, p)
+        for c in (1e-3, 40.0):
+            assert _within(c * s, c * p) == pytest.approx(base, rel=1e-9)
+        u = Unexplained(["p"])
+        u.add(s[:2], {"p": p[:2]})
+        u.add(s[2:], {"p": p[2:]})
+        assert u.within()["p"] == pytest.approx(base, rel=1e-12)
+
+    def test_tokens_collapsed_within_the_stacks_are_caught(self):
+        """The audit's pilot: tokens nearly constant within a stack, spread
+        between the stacks. The mean of the stack's tokens predicts them with
+        a small E (the spread between the stacks is in its denominator), but
+        not with a small E^n."""
+        g = torch.Generator().manual_seed(0)
+        clip = torch.randn(64, 1, 8, generator=g)
+        s = clip + 1e-2 * torch.randn(64, 12, 8, generator=g)
+        guess = clip + 1e-2 * torch.randn(64, 1, 8, generator=g)
+        assert _value(s, guess) < 1e-3
+        assert _within(s, guess) > 1.5
+
+
 class TestMasks:
     @pytest.mark.parametrize(("slots", "hidden"), [(1, 0), (2, 1), (4, 1), (8, 2)])
     def test_the_future_is_a_quarter_of_the_slots(self, slots, hidden):
@@ -151,3 +195,10 @@ class TestComplete:
         )
         assert got["comp_future_mean"] == pytest.approx(_value(goal, fixed), rel=1e-6)
         assert torch.allclose(fixed, mods.tokens(x[2:]).mean((0, 1)), atol=1e-6)
+        assert got["ncomp_future"] == pytest.approx(_within(goal, pred), rel=1e-6)
+        assert got["ncomp_future_vis"] == pytest.approx(
+            _within(goal, vis[:, None]), rel=1e-6
+        )
+        assert set(got) == {
+            f"{k}_future{s}" for k in ("comp", "ncomp") for s in ("", "_vis", "_mean")
+        }

@@ -26,6 +26,22 @@ a lenient bar), and ``_mean``, a fixed token, the per-dimension mean of the
 target tokens of a reference set (the held-in stacks of the training videos;
 near 1 on the reference itself, above 1 by how far the held-out set's mean
 is from it).
+
+$E$ is normalized by the spread of the masked tokens over the whole set,
+which counts the spread between the stacks too: tokens that collapse to a
+constant per stack (every token of a stack the same) still have it, and the
+mean of a stack's visible tokens then predicts its masked ones almost
+exactly. The error within the stacks (M17 audit, 2026-11-12),
+
+$$
+E^{\mathrm{n}} = \frac{\sum_{(i,t) \in \Omega} \lVert \hat s_{i,t} - s_{i,t} \rVert^2}
+         {\sum_{(i,t) \in \Omega} \lVert s_{i,t} - \bar s_{i,\Omega} \rVert^2},
+$$
+
+$\bar s_{i,\Omega}$ the mean of the masked target tokens of stack $i$,
+counts only what is to be completed within a stack: it grows without bound
+as the tokens of a stack collapse, and predicting each stack's own mean of
+its masked tokens is 1 (``ncomp_<kind>``; also for the trivial predictors).
 """
 
 from collections.abc import Mapping, Sequence
@@ -74,19 +90,23 @@ def tube_tokens(mask: Tensor, slots: int) -> Tensor:
 
 
 class Unexplained:
-    """$E$ of the module docstring of several predictors of the same target
+    r"""$E$ of the module docstring of several predictors of the same target
     tokens, summed over batches (float64): ``add`` a batch of targets ``(n,
     M, D)`` and each predictor's prediction (broadcast to it), then
-    ``values``. Not finite when the targets do not vary."""
+    ``values`` ($E$) or ``within`` ($E^{\mathrm{n}}$, the spread within each
+    of the ``n`` samples). Not finite when the targets do not vary."""
 
     def __init__(self, names: Sequence[str]) -> None:
         self._sse = dict.fromkeys(names, 0.0)
         self._sum: Tensor | None = None
         self._sq = 0.0
         self._n = 0
+        self._within = 0.0
 
     def add(self, target: Tensor, preds: Mapping[str, Tensor]) -> None:
-        s = target.double().flatten(0, -2)  # (n M, D)
+        t = target.double()
+        self._within += float(((t - t.mean(-2, keepdim=True)) ** 2).sum())
+        s = t.flatten(0, -2)  # (n M, D)
         for name, p in preds.items():
             diff = p.double().expand_as(target).flatten(0, -2) - s
             self._sse[name] += float((diff**2).sum())
@@ -103,6 +123,13 @@ class Unexplained:
         for k, sse in self._sse.items():
             out[k] = sse / var if var > 0 else float("nan")
         return out
+
+    def within(self) -> dict[str, float]:
+        within = self._within
+        return {
+            k: sse / within if within > 0 else float("nan")
+            for k, sse in self._sse.items()
+        }
 
 
 @torch.no_grad()
@@ -164,7 +191,7 @@ def completion(
     batch: int,
     device: torch.device,
 ) -> dict[str, float]:
-    """$E$ of each mask kind on the stacks ``stacks`` ``(n, N, C, H, W)``
+    r"""$E$ of each mask kind on the stacks ``stacks`` ``(n, N, C, H, W)``
     (u8, CPU), a batch of ``batch`` at a time on ``device``.
 
     Args:
@@ -179,7 +206,9 @@ def completion(
 
     Returns:
         ``comp_<kind>`` (the predictor), ``comp_<kind>_vis`` and, with
-        ``mean_token``, ``comp_<kind>_mean``.
+        ``mean_token``, ``comp_<kind>_mean``; and the same of
+        $E^{\mathrm{n}}$ as ``ncomp_<kind>``, ``ncomp_<kind>_vis``,
+        ``ncomp_<kind>_mean``.
     """
     names = ["pred", "vis", *(("mean",) if mean_token is not None else ())]
     acc = {k: Unexplained(names) for k in kinds}
@@ -194,8 +223,8 @@ def completion(
             acc[kind].add(goal, preds)
     out: dict[str, float] = {}
     for kind, a in acc.items():
-        values = a.values()
-        out[f"comp_{kind}"] = values["pred"]
-        for name in names[1:]:
-            out[f"comp_{kind}_{name}"] = values[name]
+        for key, values in (("comp", a.values()), ("ncomp", a.within())):
+            out[f"{key}_{kind}"] = values["pred"]
+            for name in names[1:]:
+                out[f"{key}_{kind}_{name}"] = values[name]
     return out

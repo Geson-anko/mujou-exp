@@ -58,11 +58,19 @@ run) and is evaluated by ``PackedMeasures``: the windows of
 the linear dynamics of ``task=posthoc``), the first third calib, the second
 val, the last test, with fixed context masks per split. A row has ``loss``,
 ``pred``, ``sigreg`` (``loss.jepa_loss_packed`` of the first stack of each
-window) and ``rank``, ``z_std_min``, ``z_spread``; no probe and no
+window), ``rank``, ``z_std_min``, ``z_spread``, and the spread of the
+target tokens within the stacks against that between them (the collapse of
+the tokens within a stack, which ``z_spread`` does not see; ``token_spread``):
+``tok_within`` (the mean squared deviation of a token from its stack's mean
+token, per dimension), ``tok_between`` (the variance of the stacks' mean
+tokens over the split, per dimension) and, with more than one time slot,
+``tok_temporal`` (the same deviation from the mean over the slots of the
+token's spatial position); no probe and no
 ``objective`` (the decoders and the dynamics are learned afterwards, and
 ``task=posthoc`` writes the objective). It also has the completion errors of
 the split (``measure.completion``, ``PackedMeasures.completion``):
-``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean`` per mask kind
+``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean`` per mask kind,
+and the same normalized within the stacks ``ncomp_*``
 (``short``, ``long``, ``future``); the row of val also those of calib
 (``calib_comp_*``) and of the held-in stacks of the training videos
 (``fit_comp_*``), to see the gap.
@@ -133,6 +141,8 @@ __all__ = [
     "PackedMeasures",
     "VisionProgram",
     "rebuild",
+    "spread_stats",
+    "token_spread",
     "tours_root",
     "vision_objective",
     "z_stats",
@@ -378,6 +388,35 @@ class Measures:
         write_png(out / "views.png", tile(grid, scale=3))
 
 
+def token_spread(target: Tensor, slots: int) -> tuple[Tensor, Tensor, Tensor]:
+    """The spread of the target tokens ``(n, T, D)`` of ``slots`` time slots
+    (in the id order, slot first) within each stack: the mean over the tokens
+    and the dimensions of the squared deviation from the stack's mean token
+    ``(n,)``, the same from the mean over the slots of the token's spatial
+    position ``(n,)``, and the stack's mean token ``(n, D)``."""
+    n, t, d = target.shape
+    mean = target.mean(1, keepdim=True)
+    within = ((target - mean) ** 2).mean((1, 2))
+    tv = target.view(n, slots, t // slots, d)
+    temporal = ((tv - tv.mean(1, keepdim=True)) ** 2).mean((1, 2, 3))
+    return within, temporal, mean[:, 0]
+
+
+def spread_stats(
+    within: Tensor, temporal: Tensor, means: Tensor, slots: int
+) -> dict[str, float]:
+    """``tok_within``, ``tok_between`` and (more than one slot)
+    ``tok_temporal`` of the ``token_spread`` of all the stacks of a split
+    (module docstring)."""
+    out = {
+        "tok_within": float(within.mean()),
+        "tok_between": float(means.var(0, unbiased=False).mean()),
+    }
+    if slots > 1:
+        out["tok_temporal"] = float(temporal.mean())
+    return out
+
+
 def z_stats(z: Tensor) -> dict[str, float]:
     """``rank``, ``z_std_min`` and ``z_spread`` of $z$ ``(n, D)`` (module
     docstring)."""
@@ -473,7 +512,7 @@ class PackedMeasures:
         v, dev = self.v, self._dev
         windows, masks = self.windows[split], self.masks[split]
         dz, dt = self._directions[split]
-        terms, zs = [], []
+        terms, zs, spreads = [], [], []
         for i in range(0, len(windows), self._batch):
             chunks = windows[i : i + self._batch, : v.frames].to(dev)
             b = len(chunks)
@@ -481,8 +520,10 @@ class PackedMeasures:
             h, y = pack_views(
                 chunks, views, keeps=self.keeps, patch=v.patch, tubelet=v.tubelet
             )
+            tokens = mods.encoder(h, mods.segments)
+            spreads.append(token_spread(tokens[:, : mods.segments[0]], self._slots))
             t = jepa_loss_packed(
-                mods.encoder(h, mods.segments),
+                tokens,
                 y,
                 torch.ones(b, dtype=torch.bool, device=dev),
                 dz,
@@ -500,6 +541,8 @@ class PackedMeasures:
         loss, pred, sig = torch.stack(terms).mean(0).tolist()
         row = {"loss": loss, "pred": pred, "sigreg": sig}
         row |= z_stats(torch.cat(zs))
+        within, temporal, means = (torch.cat(x) for x in zip(*spreads, strict=True))
+        row |= spread_stats(within, temporal, means, self._slots)
         return row | self.completion_rows(mods, [split])[split]
 
     def _kinds(self, split: str) -> dict[str, tuple[Tensor, int]]:
