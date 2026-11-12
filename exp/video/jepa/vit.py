@@ -346,22 +346,32 @@ class PackedPredictor(nn.Module):
     token at each id of ``tgt_ids`` ``(n, M)``, each plus its fixed 3-D
     position, through blocks, a ``LayerNorm`` and a linear map; the
     prediction of the tokens at ``tgt_ids`` is the last ``M`` outputs
-    ``(n, M, D)``."""
+    ``(n, M, D)``. With a ``width`` other than ``dim`` (V-JEPA's narrow
+    predictor) a linear map first takes the context to the width, where the
+    mask token, the positions and the blocks are; ``out`` maps back."""
 
     def __init__(
-        self, blocks: list[Block], dim: int, grid3: tuple[int, int, int]
+        self,
+        blocks: list[Block],
+        dim: int,
+        grid3: tuple[int, int, int],
+        width: int | None = None,
     ) -> None:
         super().__init__()
+        w = dim if width is None else width
+        self.embed = nn.Linear(dim, w) if w != dim else None
         self.blocks = nn.ModuleList(blocks)
-        self.norm = nn.LayerNorm(dim)
-        self.out = nn.Linear(dim, dim)
-        self.mask_token = nn.Parameter(torch.zeros(dim))
-        self.register_buffer("pos", sincos_3d(grid3, dim), persistent=False)
+        self.norm = nn.LayerNorm(w)
+        self.out = nn.Linear(w, dim)
+        self.mask_token = nn.Parameter(torch.zeros(w))
+        self.register_buffer("pos", sincos_3d(grid3, w), persistent=False)
         self.pos: Tensor
 
     @override
     def forward(self, ctx: Tensor, ctx_ids: Tensor, tgt_ids: Tensor) -> Tensor:
         m = tgt_ids.shape[1]
+        if self.embed is not None:
+            ctx = self.embed(ctx)
         x = torch.cat([ctx + self.pos[ctx_ids], self.mask_token + self.pos[tgt_ids]], 1)
         for block in self.blocks:
             x = block(x)
@@ -647,10 +657,11 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
             stage = Stage(blocks, v.dim, embed=embed, norm=i == v.nodes - 1)
             _init_(stage)
             stages.append(stage)
-        pred_blocks = [Block(v.dim, v.heads) for _ in range(v.pred_depth)]
+        width, heads = v.pred_dim or v.dim, v.pred_heads or v.heads
+        pred_blocks = [Block(width, heads) for _ in range(v.pred_depth)]
         predictor: Predictor | PackedPredictor
         if packed:
-            predictor = PackedPredictor(pred_blocks, v.dim, grid3)
+            predictor = PackedPredictor(pred_blocks, v.dim, grid3, v.pred_dim)
         else:
             predictor = Predictor(pred_blocks, v.dim)
         _init_(predictor)

@@ -157,6 +157,17 @@ class VisionConf:
     z_weight: float = 0.0
     projector: list[int] = field(default_factory=list)
     zpred_hidden: int = 0
+    # "packed" only: the width and the heads of the predictor's blocks (None:
+    # those of the encoder; V-JEPA's predictor is narrower, 384 of 1024)
+    pred_dim: int | None = None
+    pred_heads: int | None = None
+    # "packed" only: the prediction's targets are the target tokens through a
+    # LayerNorm without affine (the official I-JEPA / V-JEPA code)
+    target_norm: bool = False
+    # "packed", BP only, a diagnostic control (M17's rule is no EMA): the
+    # targets of the prediction are the tokens of an EMA of the encoder of
+    # this momentum per learning step (0: none, the encoder itself)
+    ema: float = 0.0
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
@@ -202,10 +213,15 @@ class VisionConf:
             or self.z_weight != 0
             or self.projector
             or self.zpred_hidden
+            or self.pred_dim is not None
+            or self.pred_heads is not None
+            or self.target_norm
+            or self.ema
         ):
             raise ValueError(
                 "vision.token_sigreg, token_weight, z_weight, projector, "
-                "zpred_hidden and sigreg_on 'views' are of the packed layout only"
+                "zpred_hidden, pred_dim, pred_heads, target_norm, ema and "
+                "sigreg_on 'views' are of the packed layout only"
             )
         if self.layout == "packed":
             self._check_packed()
@@ -254,6 +270,18 @@ class VisionConf:
             raise ValueError(
                 "vision.projector and zpred_hidden need z_weight > 0 or "
                 "sigreg_on 'views' / 'views_tokens'"
+            )
+        width, heads = self.pred_dim or self.dim, self.pred_heads or self.heads
+        if width < 1 or heads < 1 or width % heads or width % 16:
+            raise ValueError(
+                f"the predictor's width {width} must be a multiple of 16 (the 3-D "
+                f"positions) and of its heads {heads}"
+            )
+        if not 0 <= self.ema < 1:
+            raise ValueError(f"vision.ema must be in [0, 1), not {self.ema}")
+        if self.ema and self.token_weight == 0:
+            raise ValueError(
+                "vision.ema is of the targets of the tokens: token_weight 0"
             )
         if self.projected and self.sigreg_on == "tokens":
             raise ValueError(

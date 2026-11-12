@@ -574,6 +574,7 @@ class PackedMeasures:
                 projector=mods.projector,
                 zpred=mods.zpred,
                 directions_u=self._directions_u[split],
+                target_norm=v.target_norm,
             )
             assert t.zpred is not None  # of the packed loss
             terms.append(torch.stack([t.loss, t.pred, t.sigreg, t.zpred]))
@@ -635,11 +636,20 @@ class PackedMeasures:
         the ``_mean`` predictor of every split) and on the first stack of
         each window of ``splits``, by split."""
         v, b, dev = self.v, self._batch, self._dev
-        mean = mean_token(mods, self.held_in, batch=b, device=dev)
+        norm = v.target_norm
+        mean = mean_token(mods, self.held_in, batch=b, device=dev, normalize=norm)
         sets = {"fit": self.held_in}
         sets |= {s: self.windows[s][:, : v.frames] for s in splits}
         return {
-            s: completion(mods, x, self._kinds(s), mean_token=mean, batch=b, device=dev)
+            s: completion(
+                mods,
+                x,
+                self._kinds(s),
+                mean_token=mean,
+                batch=b,
+                device=dev,
+                normalize=norm,
+            )
             for s, x in sets.items()
         }
 

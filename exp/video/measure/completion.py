@@ -47,7 +47,7 @@ its masked tokens is 1 (``ncomp_<kind>``; also for the trivial predictors).
 from collections.abc import Mapping, Sequence
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 from exp.video.jepa.loss import view_ids
 from exp.video.jepa.masks import view_tokens
@@ -61,6 +61,7 @@ __all__ = [
     "future_slots",
     "future_tokens",
     "mean_token",
+    "targets",
     "tube_tokens",
 ]
 
@@ -166,15 +167,29 @@ def complete(
 
 
 @torch.no_grad()
+def targets(mods: VisionModules, x: Tensor, *, normalize: bool) -> Tensor:
+    """The target tokens ``(n, T, D)`` of the stacks ``x`` (``mods.tokens``),
+    through a LayerNorm without affine with ``normalize`` (those the
+    prediction of ``vision.target_norm`` learns)."""
+    target = mods.tokens(x)
+    return nn.functional.layer_norm(target, target.shape[-1:]) if normalize else target
+
+
+@torch.no_grad()
 def mean_token(
-    mods: VisionModules, stacks: Tensor, *, batch: int, device: torch.device
+    mods: VisionModules,
+    stacks: Tensor,
+    *,
+    batch: int,
+    device: torch.device,
+    normalize: bool = False,
 ) -> Tensor:
     """The per-dimension mean ``(D,)`` of all target tokens of the stacks
-    ``stacks`` ``(n, N, C, H, W)`` (u8, CPU): the fixed token of the
-    ``_mean`` predictor."""
+    ``stacks`` ``(n, N, C, H, W)`` (u8, CPU; ``targets``): the fixed token of
+    the ``_mean`` predictor."""
     total, count = None, 0
     for i in range(0, len(stacks), batch):
-        target = mods.tokens(stacks[i : i + batch].to(device))  # (b, T, D)
+        target = targets(mods, stacks[i : i + batch].to(device), normalize=normalize)
         s = target.double().sum((0, 1))
         total = s if total is None else total + s
         count += target.shape[0] * target.shape[1]
@@ -191,6 +206,7 @@ def completion(
     mean_token: Tensor | None,
     batch: int,
     device: torch.device,
+    normalize: bool = False,
 ) -> dict[str, float]:
     r"""$E$ of each mask kind on the stacks ``stacks`` ``(n, N, C, H, W)``
     (u8, CPU), a batch of ``batch`` at a time on ``device``.
@@ -204,6 +220,8 @@ def completion(
             (``mean_token`` of a reference set), or None (no ``_mean``).
         batch: The stacks of a batch.
         device: Where to compute.
+        normalize: The targets through a LayerNorm without affine
+            (``targets``).
 
     Returns:
         ``comp_<kind>`` (the predictor), ``comp_<kind>_vis`` and, with
@@ -215,7 +233,7 @@ def completion(
     acc = {k: Unexplained(names) for k in kinds}
     for i in range(0, len(stacks), batch):
         x = stacks[i : i + batch].to(device)
-        target = mods.tokens(x)  # (b, T, D)
+        target = targets(mods, x, normalize=normalize)  # (b, T, D)
         for kind, (masked, keep) in kinds.items():
             pred, goal, visible = complete(mods, x, target, masked[i : i + batch], keep)
             preds = {"pred": pred, "vis": visible[:, None]}

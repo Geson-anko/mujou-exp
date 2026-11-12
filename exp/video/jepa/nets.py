@@ -109,6 +109,11 @@ class VisionPC(mujou.Network):
         super().__init__()
         v, tau, b = _parts(conf)
         assert conf.optim_vision is not None  # _parts checks
+        if v.ema:
+            raise ValueError(
+                "vision.ema is a control of BP only (learner=bp): an EMA of the "
+                "encoder is not a node of PC-ALM"
+            )
         optimizer = make_optimizer(conf.optim_vision, conf.time.frame)
         self.mods, self.tau = mods, tau
         packed = v.layout == "packed"
@@ -145,6 +150,7 @@ class VisionPC(mujou.Network):
                 z_weight=v.z_weight,
                 projector=mods.projector,
                 zpred=mods.zpred,
+                target_norm=v.target_norm,
                 directions=v.sigreg_directions,
                 tau=tau,
                 optimizer=optimizer,
@@ -207,6 +213,8 @@ class VisionBP(mujou.Network):
             token_sigreg=v.token_sigreg,
             token_weight=v.token_weight,
             z_weight=v.z_weight,
+            target_norm=v.target_norm,
+            ema=v.ema,
             directions=v.sigreg_directions,
             tau=tau,
             optimizer=make_optimizer(conf.optim_vision, conf.time.frame),

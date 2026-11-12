@@ -44,6 +44,10 @@ class TestPacked:
             ({"projector": [16]}, "z_weight > 0"),
             ({"zpred_hidden": 8}, "z_weight > 0"),
             ({"z_weight": 1.0, "projector": [0]}, "widths"),
+            ({"pred_dim": 24}, "multiple of 16"),
+            ({"pred_dim": 32, "pred_heads": 3}, "heads"),
+            ({"ema": 1.0}, "ema"),
+            ({"ema": 0.9, "token_weight": 0.0, "z_weight": 1.0}, "token_weight 0"),
         ],
     )
     def test_refused(self, kw, match):
@@ -61,6 +65,12 @@ class TestPacked:
         assert not _packed().embeds_views
         with pytest.raises(ValueError, match="packed"):
             VisionConf(z_weight=1.0)
+        with pytest.raises(ValueError, match="packed"):
+            VisionConf(pred_dim=64)
+        with pytest.raises(ValueError, match="packed"):
+            VisionConf(target_norm=True)
+        with pytest.raises(ValueError, match="packed"):
+            VisionConf(ema=0.9)
 
     def test_the_token_sigreg_is_of_the_packed_layout(self):
         assert _packed(sigreg_on="both", token_sigreg="clip").token_sigreg == "clip"

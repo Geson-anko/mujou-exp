@@ -360,6 +360,8 @@ def jepa_loss_packed(
     projector: Callable[[Tensor], Tensor] | None = None,
     zpred: Callable[[Tensor, int], Tensor] | None = None,
     directions_u: Tensor | None = None,
+    target_norm: bool = False,
+    goal: Tensor | None = None,
 ) -> JEPATerms:
     r"""$L$ of the packed layout (module docstring).
 
@@ -388,6 +390,10 @@ def jepa_loss_packed(
         zpred: $q(u_v, v)$ (None: $u_v$).
         directions_u: The directions of SIGReg on $u$, ``(M, d_u)`` (with
             ``sigreg_on`` ``"views"`` or ``"views_tokens"``).
+        target_norm: The prediction's targets through a LayerNorm without
+            affine (per token).
+        goal: The prediction's targets ``(B, T, D)``, constants (the tokens
+            of an EMA of the encoder); None: the target tokens.
     """
     b, _, d = tokens.shape
     views = len(keeps)
@@ -398,7 +404,12 @@ def jepa_loss_packed(
         z = proj(z)
     w = valid.to(tokens.dtype)
     n = w.sum()
-    goal = target.detach() if sg else target
+    if goal is not None:
+        goal = goal.detach()
+    else:
+        goal = target.detach() if sg else target
+    if target_norm:
+        goal = nn.functional.layer_norm(goal, (d,))
     pred_sum = torch.zeros_like(n)
     if token_weight > 0:
         per_view, at = [], t

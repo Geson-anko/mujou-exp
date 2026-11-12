@@ -538,6 +538,7 @@ class TestPackedEquilibrium:
                 ],
             },
             {"z_weight": 1.0, "token_weight": 0.0, "sigreg_on": "views"},
+            {"pred_dim": 32, "pred_heads": 4, "target_norm": True},
         ],
         ids=[
             "n4",
@@ -548,6 +549,7 @@ class TestPackedEquilibrium:
             "future",
             "space-time",
             "z-only",
+            "wide-pred-norm",
         ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):

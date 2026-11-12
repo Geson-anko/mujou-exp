@@ -14,6 +14,7 @@ from exp.video.jepa.vit import (
     Block,
     BroadcastDecoder,
     Embed,
+    PackedPredictor,
     PixelDecoder,
     Stage,
     build_vision,
@@ -359,3 +360,16 @@ class TestPackedModules:
         for (_, m), (_, n) in zip(a.named().items(), b.named().items()):
             for p, q in zip(m.parameters(), n.parameters()):
                 assert torch.equal(p, q)
+
+
+def test_a_predictor_of_another_width_maps_to_it_and_back():
+    conf = packed_conf(pred_dim=32, pred_heads=4)
+    mods = build_vision(conf, seed=0)
+    pred = mods.predictor
+    assert isinstance(pred, PackedPredictor) and pred.embed is not None
+    assert pred.mask_token.shape == (32,) and pred.out.out_features == 16
+    ctx = torch.randn(2, 5, 16)
+    ids = torch.arange(5).expand(2, 5)
+    assert pred(ctx, ids, torch.arange(5, 9).expand(2, 4)).shape == (2, 4, 16)
+    plain = build_vision(packed_conf(), seed=0).predictor
+    assert isinstance(plain, PackedPredictor) and plain.embed is None

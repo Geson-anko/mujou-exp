@@ -2,6 +2,7 @@ r"""The baseline of backpropagation: the encoder and the predictor of the vision
 learned by autograd inside one node, from the same ``Chunker`` (or
 ``StackChunker``, the packed layout) as the PC-ALM version."""
 
+import copy
 import math
 from typing import override
 
@@ -76,6 +77,12 @@ class JEPABP(Node):
             ``loss.jepa_loss_packed``).
         token_weight: $\beta$ (packed).
         z_weight: $\alpha$ (packed).
+        target_norm: The prediction's targets through a LayerNorm without
+            affine (packed).
+        ema: The momentum of an EMA of the encoder whose target tokens are
+            the prediction's targets (packed; a control, 0: none). It moves
+            after each step: $\bar\theta \leftarrow m \bar\theta + (1 - m)
+            \theta$.
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -107,6 +114,8 @@ class JEPABP(Node):
         token_sigreg: str = "scaled",
         token_weight: float = 1.0,
         z_weight: float = 0.0,
+        target_norm: bool = False,
+        ema: float = 0.0,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -114,6 +123,7 @@ class JEPABP(Node):
         self._packed = mods.layout == "packed"
         self._pred_loss, self._token_sigreg = pred_loss, token_sigreg
         self._weights = token_weight, z_weight
+        self._target_norm, self._ema = target_norm, ema
         self.proj = mods.proj  # an attribute, so that it is in the state
         self.projector, self.zpred = mods.projector, mods.zpred  # so are these
         self._recon = recon, pixel_mean, pixel_std
@@ -135,6 +145,10 @@ class JEPABP(Node):
             if extra is not None:
                 self._params += extra.parameters()
         self.optimizer = optimizer.bind(self._params)
+        # The EMA of the encoder (a control, packed): not learned, in the state.
+        self.ema_encoder: torch.nn.Module | None = None
+        if ema:
+            self.ema_encoder = copy.deepcopy(self.encoder).requires_grad_(False)
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
         self._b = n if self._packed else n // views
@@ -188,6 +202,10 @@ class JEPABP(Node):
             self._pending = []
             self.optimizer.step_(list(grads), tick.elapsed)
             with torch.no_grad():
+                if self.ema_encoder is not None:
+                    online = self.encoder.parameters()
+                    for e, p in zip(self.ema_encoder.parameters(), online, strict=True):
+                        e.lerp_(p, 1 - self._ema)
                 self._send_z(act, self._target_z(act))
 
     def _target_z(self, act: Activity) -> torch.Tensor:
@@ -211,6 +229,11 @@ class JEPABP(Node):
             if outputs is not None:
                 outputs.append(x)
         if self._packed:
+            goal = None
+            if self.ema_encoder is not None:
+                t = self.mods.segments[0]
+                with torch.no_grad():
+                    goal = self.ema_encoder(act["h"][:, :t], (t,))
             return jepa_loss_packed(
                 x,
                 act["y"],
@@ -230,6 +253,8 @@ class JEPABP(Node):
                 projector=self.projector,
                 zpred=self.zpred,
                 directions_u=self.directions_u,
+                target_norm=self._target_norm,
+                goal=goal,
             )
         b, v = self._b, self._v
         decoder = self.decoder

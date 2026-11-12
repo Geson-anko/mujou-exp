@@ -630,3 +630,66 @@ class TestSpaceTimeCompletion:
         u = torch.randn(5, 4)
         torch.testing.assert_close(q(u, 0), u)
         torch.testing.assert_close(q(u, 1), u)
+
+
+class TestTargets:
+    def test_target_norm_predicts_the_tokens_through_a_layernorm(self):
+        """The goal of each token is its target token through a LayerNorm
+        without affine (zero mean, unit variance over its D); the context and
+        SIGReg see the tokens as they are."""
+        tokens, y, keeps, dirs = _packed_inputs(9)
+        valid = torch.ones(3, dtype=torch.bool)
+        kw = {
+            "keeps": keeps,
+            "proj": None,
+            "lam": 0.5,
+            "sg": False,
+            "sigreg_on": "z",
+            "pred_loss": "l2",
+        }
+        got = jepa_loss_packed(
+            tokens, y, valid, dirs, None, _Shift(5), target_norm=True, **kw
+        )
+        target = tokens[:, :6]
+        mu = target.mean(-1, keepdim=True)
+        var = target.var(-1, unbiased=False, keepdim=True)
+        by_hand = (target - mu) / torch.sqrt(var + 1e-5)
+        want = jepa_loss_packed(
+            tokens, y, valid, dirs, None, _Shift(5), goal=by_hand, **kw
+        )
+        torch.testing.assert_close(got.loss, want.loss)
+        torch.testing.assert_close(got.sigreg, want.sigreg)
+
+    def test_a_goal_is_a_constant_target(self):
+        """With a goal (the EMA's tokens) the prediction aims at it, and the
+        target tokens get no credit from the prediction."""
+        tokens, y, keeps, dirs = _packed_inputs(10)
+        tokens.requires_grad_()
+        g = torch.Generator().manual_seed(11)
+        goal = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        kw = {
+            "keeps": keeps,
+            "proj": None,
+            "lam": 0.0,
+            "sg": False,
+            "sigreg_on": "z",
+            "pred_loss": "l2",
+        }
+        t = jepa_loss_packed(
+            tokens,
+            y,
+            torch.ones(3, dtype=torch.bool),
+            dirs,
+            None,
+            _Shift(5),
+            goal=goal,
+            **kw,
+        )
+        (grad,) = torch.autograd.grad(t.loss, [tokens])
+        assert bool((grad[:, :6] == 0).all()) and (grad[:, 6:] != 0).any()
+        swapped = tokens.detach().clone()
+        swapped[:, :6] = goal
+        want = jepa_loss_packed(
+            swapped, y, torch.ones(3, dtype=torch.bool), dirs, None, _Shift(5), **kw
+        )
+        torch.testing.assert_close(t.pred, want.pred)

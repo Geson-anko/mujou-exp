@@ -12,7 +12,15 @@ from exp.video.jepa.nets import VisionBP, VisionPC, build_vision_net
 from exp.video.jepa.nodes import Chunker
 from exp.video.jepa.vit import build_vision
 from mujou import TensorSpec
-from tests.video.jepa.test_nodes import TAU, _conf, _frames, _sample, _show
+from tests.video.jepa.test_nodes import (
+    TAU,
+    _conf,
+    _frames,
+    _sample,
+    _show,
+    _stack_sample,
+)
+from tests.video.packed import packed_conf, stacks
 
 
 class _Recording(Optimizer):
@@ -229,3 +237,52 @@ def test_some_hundred_adam_steps_reconstruct_the_balls_better_than_the_mean_imag
         got = terms(test).recon
         base = (((test[:, 0] - mean) / std - train_mean) ** 2).mean()
     assert _math.isfinite(float(got)) and got < 0.8 * base
+
+
+class _Snapshots(BoundOptimizer):
+    """``inner``, recording the encoder's weights after each step."""
+
+    def __init__(self, inner: BoundOptimizer, encoder: torch.nn.Module) -> None:
+        self.inner, self.encoder = inner, encoder
+        self.after: list[list[torch.Tensor]] = []
+
+    @override
+    def step_(self, grads, elapsed):
+        self.inner.step_(grads, elapsed)
+        self.after.append([p.detach().clone() for p in self.encoder.parameters()])
+
+    @override
+    def state_dict(self):
+        return self.inner.state_dict()
+
+    @override
+    def load_state_dict(self, state, /):
+        self.inner.load_state_dict(state)
+
+
+class TestEMAControl:
+    """vision.ema (a control of BP only): the prediction's targets are the
+    tokens of an EMA of the encoder, moved after each step."""
+
+    def test_the_ema_follows_the_encoder_after_each_step(self):
+        m = 0.7
+        net = build_vision_net(packed_conf("bp", learn_interval=25e-3, ema=m))
+        assert isinstance(net, VisionBP)
+        node = net.vision
+        assert node.ema_encoder is not None
+        ema = [p.detach().clone() for p in node.ema_encoder.parameters()]
+        snaps = _Snapshots(node.optimizer, node.encoder)
+        node.optimizer = snaps
+        with mujou.testing.run(net) as run:
+            for k in range(3):
+                _show(run, net.prev, _stack_sample(stacks(2, seed=k), k == 0))
+        assert len(snaps.after) >= 2
+        for after in snaps.after:
+            ema = [m * e + (1 - m) * p for e, p in zip(ema, after, strict=True)]
+        for got, want in zip(node.ema_encoder.parameters(), ema, strict=True):
+            torch.testing.assert_close(got, want)
+            assert not got.requires_grad
+
+    def test_pc_alm_refuses_it(self):
+        with pytest.raises(ValueError, match="BP only"):
+            build_vision_net(packed_conf("pc", ema=0.9))

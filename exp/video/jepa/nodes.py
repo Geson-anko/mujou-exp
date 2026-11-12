@@ -648,6 +648,8 @@ class PackedJEPAHead(Node):
         projector: $h$ of $u$, on ``device`` (None: $u = z$), learned with the
             predictor.
         zpred: $q$ of the completion (None: none), learned with them.
+        target_norm: The prediction's targets through a LayerNorm without
+            affine.
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.
@@ -674,6 +676,7 @@ class PackedJEPAHead(Node):
         z_weight: float = 0.0,
         projector: Projector | None = None,
         zpred: ZPredictor | None = None,
+        target_norm: bool = False,
         device: Device = "cpu",
         cuda_graph: bool = False,
     ) -> None:
@@ -686,6 +689,7 @@ class PackedJEPAHead(Node):
         self._keeps = list(keeps)
         self._lam, self._sg, self._sigreg_on = lam, sg, sigreg_on
         self._pred_loss = pred_loss
+        self._target_norm = target_norm
         self.clock = pc.clock.LearnClock.of(
             tau, period=self.period, learn_interval=learn_interval
         )
@@ -827,6 +831,7 @@ class PackedJEPAHead(Node):
                 projector=self.projector,
                 zpred=self.zpred,
                 directions_u=directions_u if self._views else None,
+                target_norm=self._target_norm,
             )
             energy = self._b * terms.loss
             # The gradient of this node's own energy, from a detached leaf.
