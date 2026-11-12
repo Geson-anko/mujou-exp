@@ -1,10 +1,15 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
+import torch
 
 import exp.video.conf
 from exp.video.compose import compose, from_dict, to_dict
+from exp.video.jepa.loss import jepa_loss_packed
+from exp.video.jepa.masks import expected_keep
+from exp.video.jepa.nodes import draw_packed_directions
 from exp.video.schema import RunConf
 
 CONF = Path(exp.video.conf.__file__).parent
@@ -183,3 +188,76 @@ class TestM17:
         assert compose(chosen).measure.encoder_objective == "completion"
         with pytest.raises(ValueError, match="encoder_objective"):
             compose(["+experiment=m17/wt_n16", "measure.encoder_objective=loss"])
+
+
+M17 = [e for e in EXPERIMENTS if e.startswith("m17/")]
+
+
+def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
+    """The loss of the packed layout of ``conf``'s vision for the target tokens
+    ``target`` ``(B, T, D)`` (each context view's visible tokens taken from
+    them, the masks of the preset's sizes), along directions of the preset's
+    widths."""
+    v = conf.vision
+    assert v is not None
+    b, t, d = target.shape
+    slots = v.frames // v.tubelet
+    side = math.isqrt(t // slots)
+    keeps = [expected_keep((side, side), m) * slots for m in v.context_masks]
+    g = torch.Generator().manual_seed(0)
+    ys, parts = [], [target]
+    for k in keeps:
+        order = torch.rand(b, t, generator=g).argsort(1)
+        y = torch.ones(b, t)
+        y.scatter_(1, order[:, :k], 0.0)
+        ys.append(y)
+        visible = order[:, :k].sort(1).values
+        parts.append(target.gather(1, visible[..., None].expand(-1, -1, d)))
+    dz, dt = draw_packed_directions(
+        32, v.z_width, v.dim, tokens=v.sigreg_on != "z", generator=g
+    )
+    terms = jepa_loss_packed(
+        torch.cat(parts, 1),
+        torch.cat(ys, 1),
+        torch.ones(b, dtype=torch.bool),
+        dz,
+        dt,
+        predictor,
+        keeps=keeps,
+        proj=None,
+        lam=v.sigreg,
+        sg=v.sg,
+        sigreg_on=v.sigreg_on,
+        pred_loss=v.pred_loss,
+        token_sigreg=v.token_sigreg,
+    )
+    return float(terms.loss)
+
+
+@pytest.mark.parametrize("experiment", M17)
+def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
+    """The pilot's collapse (M17 audit, 2026-11-12): with SIGReg of z alone,
+    tokens constant within each stack (z standard normal over the stacks),
+    which the mean of the context predicts exactly, had a lower loss than
+    i.i.d. standard normal tokens with their best constant prediction (0, an
+    error of 1 per dimension). The loss of a preset must prefer the latter."""
+    conf = compose([f"+experiment={experiment}"])
+    v = conf.vision
+    assert v is not None
+    b, t = conf.data.streams, (v.frames // v.tubelet) * (128 // v.patch) ** 2
+    g = torch.Generator().manual_seed(1)
+    with torch.no_grad():
+        clip = torch.randn(b, 1, v.dim, generator=g).expand(b, t, v.dim)
+        collapsed = _m17_loss(
+            conf,
+            clip.contiguous(),
+            lambda ctx, ctx_ids, tgt_ids: ctx.mean(1, keepdim=True).expand(
+                -1, tgt_ids.shape[1], -1
+            ),
+        )
+        spread = _m17_loss(
+            conf,
+            torch.randn(b, t, v.dim, generator=g),
+            lambda ctx, ctx_ids, tgt_ids: ctx.new_zeros(*tgt_ids.shape, ctx.shape[2]),
+        )
+    assert collapsed > spread

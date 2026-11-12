@@ -44,7 +44,11 @@ vision:
     - {blocks: 2, scale: 0.7}  # V-JEPA's long range
   z_dim: null
   z_pool: mean
-  sigreg_on: z
+  # SIGReg of z and of the target tokens less their stack's mean: of z alone,
+  # tokens constant within a stack were a (near) optimum of the loss (the
+  # pilot's collapse; M17 audit, 2026-11-12, tests/video/schema/test_presets.py)
+  sigreg_on: both
+  token_sigreg: clip
   # of the nine training videos of 3c3e6805fdaa (every 500th frame)
   pixel_mean: 0.46
   pixel_std: 0.28
