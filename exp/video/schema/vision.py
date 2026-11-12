@@ -44,17 +44,28 @@ class MaskConf:
     of the grid's area and of aspect ratio (height / width) log-uniform in
     ``aspect``, masking the same patches in every frame (a tube). The visible
     patches are made exactly ``jepa.masks.expected_keep``, all outside the
-    blocks (``jepa.masks``)."""
+    blocks (``jepa.masks``).
+
+    With ``future`` $> 0$ the last ``future`` time slots are masked whole too:
+    the view sees the earlier slots only, outside its blocks, and its masked
+    tokens to complete are the blocks' tubes and every token of the future
+    (a space-time view; ``blocks`` 0: the past alone, no spatial blocks)."""
 
     blocks: int
     scale: float
     aspect: list[float] = field(default_factory=lambda: [0.75, 1.5])
+    future: int = 0  # the last time slots masked whole
 
     def __post_init__(self) -> None:
-        if self.blocks < 1 or not 0 < self.scale <= 1:
+        if self.blocks < 0 or not 0 < self.scale <= 1:
             raise ValueError(
-                f"a context mask needs blocks >= 1 and scale in (0, 1], not "
+                f"a context mask needs blocks >= 0 and scale in (0, 1], not "
                 f"{self.blocks} and {self.scale}"
+            )
+        if self.future < 0 or (self.blocks == 0 and self.future == 0):
+            raise ValueError(
+                f"a context mask needs future >= 0, and future >= 1 without "
+                f"blocks: {self.blocks} blocks, future {self.future}"
             )
         if len(self.aspect) != 2 or not 0 < self.aspect[0] <= self.aspect[1]:
             raise ValueError(
@@ -182,6 +193,13 @@ class VisionConf:
             )
         if self.stride < 1:
             raise ValueError(f"vision.stride must be at least 1, not {self.stride}")
+        slots = self.frames // self.tubelet
+        for m in self.context_masks:
+            if m.future >= slots:
+                raise ValueError(
+                    f"a context mask's future {m.future} must leave a time slot "
+                    f"of the {slots} visible"
+                )
         if self.views != 1 + len(self.context_masks):
             raise ValueError(
                 f"vision.views {self.views} must be 1 + the {len(self.context_masks)}"

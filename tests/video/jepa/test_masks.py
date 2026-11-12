@@ -15,6 +15,9 @@ from exp.video.jepa.masks import (
     multiblock_masks,
     pack_views,
     paint,
+    spatial_keep,
+    token_keep,
+    view_tokens,
 )
 from exp.video.jepa.vit import patchify_tubelets
 from exp.video.schema.vision import MaskConf
@@ -250,3 +253,52 @@ class TestPackViews:
         assert torch.equal(h[1, t + 4 :, :-1], tokens[1, [3, 7]])
         tube = [v.flatten(1).repeat(1, 2).float() for v in views]
         assert torch.equal(y, torch.cat(tube, 1))
+
+    def test_a_future_view_shows_the_tube_outside_its_blocks_in_the_past_only(self):
+        """Four slots of 2 x 2 patches; the view masks patch 3 and the last
+        slot whole: it shows patches 0, 1, 2 of slots 0, 1, 2 (ids 0-2, 4-6,
+        8-10), and y marks every other token."""
+        g = torch.Generator().manual_seed(1)
+        x = torch.randint(0, 256, (1, 8, 3, 8, 8), generator=g).to(torch.uint8)
+        spatial = torch.tensor([[[False, False], [False, True]]])
+        h, y = pack_views(x, [spatial], keeps=[3], patch=4, tubelet=2, futures=[1])
+        tokens = patchify_tubelets(x.float() / 255, 4, 2)
+        t = 16
+        shown = [0, 1, 2, 4, 5, 6, 8, 9, 10]
+        assert h.shape == (1, t + 9, 96 + 1)
+        assert h[0, t:, -1].tolist() == shown
+        assert torch.equal(h[0, t:, :-1], tokens[0, shown])
+        want = torch.ones(t)
+        want[shown] = 0.0
+        assert torch.equal(y[0], want)
+
+
+class TestSpaceTimeViews:
+    @pytest.mark.parametrize("future", [1, 3])
+    def test_no_visible_token_is_in_a_block_or_in_the_future(self, future):
+        """Drawn as in training: every visible token of a space-time view is
+        outside its blocks' tube and before the future slots, and there are
+        token_keep of them."""
+        slots, per = 4, GRID[0] * GRID[1]
+        mask = MaskConf(blocks=4, scale=0.15, future=future)
+        k = spatial_keep(GRID, mask)
+        g = torch.Generator().manual_seed(2)
+        spatial = multiblock_masks(64, GRID, mask, keep=k, generator=g)
+        x = torch.zeros(64, 2 * slots, 1, 32, 32)
+        h, y = pack_views(x, [spatial], keeps=[k], patch=4, tubelet=2, futures=[future])
+        ids = h[:, slots * per :, -1].long()  # (64, K)
+        assert ids.shape[1] == token_keep(GRID, slots, mask) == k * (slots - future)
+        assert int(ids.max()) < (slots - future) * per
+        hidden = spatial.flatten(1)  # (64, per)
+        assert not bool(hidden.gather(1, ids % per).any())
+        assert torch.equal(y.gather(1, ids), torch.zeros_like(ids, dtype=y.dtype))
+        assert int(y.sum()) == 64 * (slots * per - ids.shape[1])
+        assert torch.equal(y, view_tokens(spatial, slots, future))
+
+    def test_the_past_alone_draws_nothing_and_keeps_every_patch(self):
+        mask = MaskConf(blocks=0, scale=0.1, future=2)
+        g = torch.Generator().manual_seed(3)
+        state = g.get_state()
+        m = multiblock_masks(5, GRID, mask, keep=spatial_keep(GRID, mask), generator=g)
+        assert not bool(m.any()) and torch.equal(g.get_state(), state)
+        assert token_keep(GRID, 4, mask) == 2 * GRID[0] * GRID[1]

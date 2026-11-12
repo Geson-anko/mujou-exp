@@ -15,6 +15,7 @@ from torch import Tensor, nn
 
 from exp.lib.optim import adam
 from exp.video.jepa.loss import view_ids
+from exp.video.jepa.masks import view_tokens
 from exp.video.jepa.vit import VisionModules, patchify_tubelets
 from exp.video.measure.posthoc import FIT_BATCH, LR, STEPS, as_float
 
@@ -106,12 +107,20 @@ def last_slot(mods: VisionModules, tokens: Tensor) -> Tensor:
 
 @torch.no_grad()
 def restore(
-    mods: VisionModules, chunks: Tensor, mask: Tensor, dec: nn.Module, *, keep: int
+    mods: VisionModules,
+    chunks: Tensor,
+    mask: Tensor,
+    dec: nn.Module,
+    *,
+    keep: int,
+    future: int = 0,
 ) -> tuple[Tensor, Tensor]:
     """The last frames of the stacks ``chunks`` ``(n, N, C, H, W)`` (u8 or in
     ``[0, 1]``) restored from their context view of the spatial ``mask``
-    ``(n, gh, gw)`` (True: masked, ``keep`` visible patches, a tube) through
-    the encoder and the predictor (module docstring).
+    ``(n, gh, gw)`` (True: masked, ``keep`` visible patches, a tube; and the
+    last ``future`` time slots masked whole, ``masks.view_tokens``, whose
+    last frame is then masked everywhere) through the encoder and the
+    predictor (module docstring).
 
     Returns:
         The restored frames ``(n, C, H, W)`` and the masked pixels ``(n, H,
@@ -121,8 +130,8 @@ def restore(
     n = len(x)
     slots = mods.grid3[0]
     tokens = patchify_tubelets(x, mods.patch, mods.tubelet)  # (n, T, P)
-    t, k = tokens.shape[1], keep * slots
-    masked = mask.flatten(1).repeat(1, slots).float()  # (n, T), the tube
+    t, k = tokens.shape[1], keep * (slots - future)
+    masked = view_tokens(mask, slots, future)  # (n, T)
     ctx_ids, tgt_ids = view_ids(masked, k)
     picked = tokens.gather(1, ctx_ids[..., None].expand(-1, -1, tokens.shape[2]))
     h = torch.cat([picked, ctx_ids[..., None].to(picked)], 2)
@@ -134,5 +143,6 @@ def restore(
     full.scatter_(1, tgt_ids[..., None].expand(-1, -1, d), pred)
     images = picture_of(dec(last_slot(mods, full).flatten(0, 1)), n, mods.grid)
     p = mods.patch
-    pixels = mask.repeat_interleave(p, 1).repeat_interleave(p, 2)
+    seen = torch.ones_like(mask) if future else mask
+    pixels = seen.repeat_interleave(p, 1).repeat_interleave(p, 2)
     return images, pixels

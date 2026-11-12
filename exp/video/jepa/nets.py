@@ -13,6 +13,7 @@ import torch
 import mujou
 from exp.video.dyn.nets import make_optimizer
 from exp.video.jepa.bp import JEPABP
+from exp.video.jepa.masks import spatial_keep
 from exp.video.jepa.nodes import Chunker, JEPAHead, PackedJEPAHead, StackChunker
 from exp.video.jepa.vit import (
     PackedPredictor,
@@ -69,13 +70,12 @@ def _stack_chunker(
     conf: RunConf, v: VisionConf, tau: pc.TimeConstants, b: int, mods: VisionModules
 ) -> StackChunker:
     channels, size = image_shape(conf)
-    slots = mods.grid3[0]
     return StackChunker(
         stack=TensorSpec((b, v.frames, channels, size, size), torch.uint8),
         patch=v.patch,
         tubelet=v.tubelet,
         masks=v.context_masks,
-        keeps=[k // slots for k in mods.segments[1:]],
+        keeps=[spatial_keep(mods.grid, m) for m in v.context_masks],
         period=tau.period,
         seed=conf.seed + CHUNKER_SEED,
         device=conf.device,

@@ -29,6 +29,7 @@ from exp.video.schema import (
     TimeConf,
     VisionConf,
 )
+from exp.video.schema.vision import MaskConf
 from mujou import Port, TensorSpec
 from tests.video.packed import masks as packed_masks, packed_conf, stacks
 
@@ -516,8 +517,14 @@ class TestPackedEquilibrium:
             {"z_dim": 8, "sigreg_on": "both", "pixel_mean": 0.5, "pixel_std": 0.3},
             {"frames": 1, "tubelet": 1, "nodes": 1},
             {"sigreg_on": "both", "token_sigreg": "clip", "sigreg": 0.3},
+            {
+                "context_masks": [
+                    MaskConf(blocks=2, scale=0.2, future=1),
+                    MaskConf(blocks=0, scale=1.0, future=1),
+                ]
+            },
         ],
-        ids=["n4", "sg-l1", "proj-both", "n1", "both-clip"],
+        ids=["n4", "sg-l1", "proj-both", "n1", "both-clip", "future"],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
         """Hold a stack with learning off: lam of each encoder node relaxes to

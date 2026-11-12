@@ -619,9 +619,9 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
         tubelet=v.tubelet,
     )
     if packed:  # imported here: masks imports this module
-        from exp.video.jepa.masks import expected_keep
+        from exp.video.jepa.masks import token_keep
 
         t = mods.tokens_per_view
-        keeps = [expected_keep(grid, m) * grid3[0] for m in v.context_masks]
+        keeps = [token_keep(grid, grid3[0], m) for m in v.context_masks]
         mods.segments = (t, *keeps)
     return mods

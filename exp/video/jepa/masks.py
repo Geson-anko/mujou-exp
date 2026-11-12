@@ -19,6 +19,11 @@ quartile ``KEEP_QUANTILE`` of the visible counts of the unions, a union that
 leaves fewer is drawn again (``CANDIDATES`` draws), and of one that leaves
 more, random visible patches are masked too (V-JEPA's collator cuts the
 visible patches of a batch down to its least count the same way).
+
+A view of ``future`` $f > 0$ (a space-time view) also masks every token of
+the last $f$ time slots: it keeps ``spatial_keep`` patches in each of the
+first ``slots - f`` slots (``view_tokens``, ``token_keep``); with no blocks
+it keeps every patch of them.
 """
 
 import math
@@ -40,6 +45,9 @@ __all__ = [
     "multiblock_masks",
     "pack_views",
     "paint",
+    "spatial_keep",
+    "token_keep",
+    "view_tokens",
 ]
 
 ASPECT = (0.75, 1.5)  # the range of a block's height / width
@@ -161,6 +169,8 @@ def multiblock_masks(
     value is read back to the host."""
     gh, gw = grid
     dev = generator.device
+    if mask.blocks == 0:  # the past alone: no draw
+        return torch.zeros(n, gh, gw, dtype=torch.bool, device=dev)
     r = CANDIDATES
     unions = _union(n * r, grid, mask, generator).view(n, r, gh * gw)
     visible = (~unions).sum(2)  # (n, R)
@@ -191,6 +201,29 @@ def expected_keep(
     return int(min(max(round(q), 1), grid[0] * grid[1] - 1))
 
 
+def spatial_keep(grid: tuple[int, int], mask: MaskConf) -> int:
+    """The visible patches of a time slot of the context view ``mask``:
+    ``expected_keep``, or all of them without blocks."""
+    return grid[0] * grid[1] if mask.blocks == 0 else expected_keep(grid, mask)
+
+
+def token_keep(grid: tuple[int, int], slots: int, mask: MaskConf) -> int:
+    """The visible tokens of the context view ``mask`` of stacks of ``slots``
+    time slots: ``spatial_keep`` in each slot but the future ones."""
+    return spatial_keep(grid, mask) * (slots - mask.future)
+
+
+def view_tokens(mask: Tensor, slots: int, future: int = 0) -> Tensor:
+    """The token mask ``(n, T)`` float (1: masked) of the spatial ``mask``
+    ``(n, gh, gw)`` in every time slot (a tube), and every token of the last
+    ``future`` slots, in the id order (slot, row, column)."""
+    per = mask.shape[1] * mask.shape[2]
+    masked = mask.flatten(1).repeat(1, slots).float()
+    if future:
+        masked[:, (slots - future) * per :] = 1.0
+    return masked
+
+
 def pack_views(
     chunks: Tensor,
     masks: Sequence[Tensor],
@@ -198,12 +231,14 @@ def pack_views(
     keeps: Sequence[int],
     patch: int,
     tubelet: int,
+    futures: Sequence[int] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """The packed sequences of the stacks ``chunks`` ``(B, N, C, H, W)`` (u8,
     or float in ``[0, 1]``) with the context masks ``masks`` (one ``(B, gh,
     gw)`` per context view, the same in every time slot: a tube), mask ``v``
     with exactly ``keeps[v]`` visible patches in every row (given, so that no
-    count is read back from the device).
+    count is read back from the device), view ``v`` also masking its last
+    ``futures[v]`` time slots whole (None: none; ``view_tokens``).
 
     Returns:
         ``h`` ``(B, L, P + 1)``: the target view's $T$ tubelets
@@ -221,11 +256,12 @@ def pack_views(
     ids = torch.arange(t, device=x.device).expand(b, t)
     parts = [torch.cat([tokens, ids[..., None].to(x)], 2)]
     ys = []
-    for m, k in zip(masks, keeps, strict=True):
-        masked = m.flatten(1).repeat(1, slots)  # (B, T): the tube
-        keep = k * slots
-        visible = masked.float().sort(dim=1, stable=True).indices[:, :keep]  # id order
+    futures = [0] * len(masks) if futures is None else futures
+    for m, k, f in zip(masks, keeps, futures, strict=True):
+        masked = view_tokens(m, slots, f)  # (B, T)
+        keep = k * (slots - f)
+        visible = masked.sort(dim=1, stable=True).indices[:, :keep]  # id order
         picked = tokens.gather(1, visible[..., None].expand(-1, -1, tokens.shape[2]))
         parts.append(torch.cat([picked, visible[..., None].to(x)], 2))
-        ys.append(masked.float())
+        ys.append(masked)
     return torch.cat(parts, 1), torch.cat(ys, 1)

@@ -522,14 +522,23 @@ class EncoderEval:
         windows = self._measures.windows[split][:, : v.frames]
         rows: list[Tensor] = []
         mean = self._mean.expand_as(f0)
-        for view, m, keep in zip(
-            self._views, self._measures.masks[split], self._measures.keeps, strict=True
+        for view, m, keep, future in zip(
+            self._views,
+            self._measures.masks[split],
+            self._measures.keeps,
+            self._measures.futures,
+            strict=True,
         ):
             imgs, pix = [], []
             for i in range(0, len(windows), BATCH):
                 x = windows[i : i + BATCH].to(self._dev)
                 img, px = restore(
-                    mods, x, m[i : i + BATCH].to(self._dev), tok_dec, keep=keep
+                    mods,
+                    x,
+                    m[i : i + BATCH].to(self._dev),
+                    tok_dec,
+                    keep=keep,
+                    future=future,
                 )
                 imgs.append(img.clamp(0, 1))
                 pix.append(px)

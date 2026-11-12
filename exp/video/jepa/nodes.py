@@ -304,7 +304,8 @@ class StackChunker(Node):
         patch: The side of a patch.
         tubelet: The frames of a tubelet.
         masks: The context views.
-        keeps: The visible patches of each (``masks.expected_keep``).
+        keeps: The visible patches of a time slot of each
+            (``masks.spatial_keep``).
         period: The period of the node in seconds.
         seed: The seed of ``generator``.
         device: Where the node computes.
@@ -327,8 +328,11 @@ class StackChunker(Node):
         self._patch, self._tubelet = patch, tubelet
         self._masks, self._keeps = list(masks), list(keeps)
         self._grid = (h // patch, w // patch)
-        t = (f // tubelet) * self._grid[0] * self._grid[1]
-        length = t + sum(k * (f // tubelet) for k in keeps)
+        slots = f // tubelet
+        t = slots * self._grid[0] * self._grid[1]
+        length = t + sum(
+            k * (slots - m.future) for m, k in zip(masks, keeps, strict=True)
+        )
         y = TensorSpec((b, 1))
         mask = TensorSpec((b,), torch.bool)
         self.prev = Port(
@@ -358,6 +362,7 @@ class StackChunker(Node):
             keeps=self._keeps,
             patch=self._patch,
             tubelet=self._tubelet,
+            futures=[m.future for m in self._masks],
         )
         self.next.send(
             {

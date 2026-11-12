@@ -53,8 +53,19 @@ class TestPacked:
         with pytest.raises(ValueError, match="packed"):
             VisionConf(token_sigreg="clip")
 
+    def test_a_future_must_leave_a_slot(self):
+        future = [MaskConf(blocks=8, scale=0.15), MaskConf(blocks=0, scale=1, future=1)]
+        assert _packed(context_masks=future).context_masks[1].future == 1
+        with pytest.raises(ValueError, match="future"):
+            _packed(context_masks=[MASKS[0], MaskConf(blocks=1, scale=0.5, future=2)])
+
     @pytest.mark.parametrize(
-        "kw", [{"blocks": 0, "scale": 0.1}, {"blocks": 1, "scale": 1.5}]
+        "kw",
+        [
+            {"blocks": 0, "scale": 0.1},
+            {"blocks": 1, "scale": 1.5},
+            {"blocks": 1, "scale": 0.5, "future": -1},
+        ],
     )
     def test_a_mask_is_checked(self, kw):
         with pytest.raises(ValueError, match="context mask"):

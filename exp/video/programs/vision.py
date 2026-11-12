@@ -112,10 +112,11 @@ from exp.video.data.walking_tours import eval_clips, eval_windows
 from exp.video.jepa.loss import Reconstruction, jepa_loss, jepa_loss_packed
 from exp.video.jepa.masks import (
     block_masks,
-    expected_keep,
     make_views,
     multiblock_masks,
     pack_views,
+    spatial_keep,
+    view_tokens,
 )
 from exp.video.jepa.nets import build_vision_net, vision_modules
 from exp.video.jepa.nodes import draw_directions, draw_packed_directions
@@ -127,7 +128,6 @@ from exp.video.measure.completion import (
     future_slots,
     future_tokens,
     mean_token,
-    tube_tokens,
 )
 from exp.video.measure.objective import PENALTY
 from exp.video.measure.vision import THUMB, ball_probe, thumbnail_probe
@@ -474,7 +474,8 @@ class PackedMeasures:
         }
         side = t.size // v.patch
         self.grid = (side, side)
-        self.keeps = [expected_keep(self.grid, m) for m in v.context_masks]
+        self.keeps = [spatial_keep(self.grid, m) for m in v.context_masks]
+        self.futures = [m.future for m in v.context_masks]
         # The order the loss sees the windows of a split in: shuffled, so
         # that a batch mixes the split's minutes as a training batch mixes
         # the nine videos (in time order a batch is a few minutes of one
@@ -498,7 +499,8 @@ class PackedMeasures:
                 None if dt is None else dt.to(self._dev),
             )
         c = len(v.context_masks)
-        self.views = ["short", "long"] if c == 2 else [f"c{i}" for i in range(c)]
+        named = c == 2 and not any(self.futures)  # V-JEPA's two views
+        self.views = ["short", "long"] if named else [f"c{i}" for i in range(c)]
         self._slots = v.frames // v.tubelet
         self._future = future_slots(self._slots)
         self.kinds = [*self.views, *((FUTURE,) if self._future else ())]
@@ -529,7 +531,12 @@ class PackedMeasures:
             b = len(chunks)
             views = [m[idx].to(dev) for m in masks]
             h, y = pack_views(
-                chunks, views, keeps=self.keeps, patch=v.patch, tubelet=v.tubelet
+                chunks,
+                views,
+                keeps=self.keeps,
+                patch=v.patch,
+                tubelet=v.tubelet,
+                futures=self.futures,
             )
             tokens = mods.encoder(h, mods.segments)
             spreads.append(token_spread(tokens[:, : mods.segments[0]], self._slots))
@@ -563,8 +570,10 @@ class PackedMeasures:
         masks = self.held_in_masks if split == "fit" else self.masks[split]
         slots, per = self._slots, self.grid[0] * self.grid[1]
         out = {
-            view: (tube_tokens(m, slots), k * slots)
-            for view, m, k in zip(self.views, masks, self.keeps, strict=True)
+            view: (view_tokens(m, slots, f), k * (slots - f))
+            for view, m, k, f in zip(
+                self.views, masks, self.keeps, self.futures, strict=True
+            )
         }
         if self._future:
             grid3 = (slots, *self.grid)

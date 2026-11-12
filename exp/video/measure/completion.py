@@ -50,6 +50,7 @@ import torch
 from torch import Tensor
 
 from exp.video.jepa.loss import view_ids
+from exp.video.jepa.masks import view_tokens
 from exp.video.jepa.vit import VisionModules, patchify_tubelets
 
 __all__ = [
@@ -86,7 +87,7 @@ def future_tokens(n: int, grid3: tuple[int, int, int], hidden: int) -> Tensor:
 def tube_tokens(mask: Tensor, slots: int) -> Tensor:
     """The mask ``(n, T)`` float of the spatial ``mask`` ``(n, gh, gw)`` in
     every time slot (a tube, as ``masks.pack_views``)."""
-    return mask.flatten(1).repeat(1, slots).float()
+    return view_tokens(mask, slots)
 
 
 class Unexplained:
