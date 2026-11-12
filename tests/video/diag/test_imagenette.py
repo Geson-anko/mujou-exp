@@ -53,6 +53,16 @@ def test_a_view_is_of_the_shape_and_range_and_fixed_by_the_generator():
     assert float(a.min()) >= 0 and float(a.max()) <= 1
 
 
+def test_a_view_without_colour_keeps_the_colour_of_a_flat_image():
+    """Crops and flips of a flat image are the same flat image; only the
+    colour jitter and the grey scale could change it."""
+    x = torch.tensor([0.2, 0.5, 0.7]).view(1, 3, 1, 1).expand(64, 3, 32, 32)
+    v = augment(x, torch.Generator().manual_seed(4), side=16, color=False)
+    assert torch.allclose(v, x[:, :, :16, :16], atol=1e-6)
+    jittered = augment(x, torch.Generator().manual_seed(4), side=16)
+    assert not torch.allclose(jittered, x[:, :, :16, :16], atol=1e-3)
+
+
 def test_decode_resizes_the_shorter_side_and_crops_the_centre(tmp_path):
     """A 40 x 20 picture (left half black, right half white) of PNG: the
     shorter side to 16, the centre 16 x 16 cut from 32 x 16."""

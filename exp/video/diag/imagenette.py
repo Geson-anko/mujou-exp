@@ -123,13 +123,15 @@ def vision_conf(overrides: Sequence[str] = ()) -> RunConf:
     )
 
 
-def augment(x: Tensor, g: torch.Generator, *, side: int = SIDE) -> Tensor:
+def augment(
+    x: Tensor, g: torch.Generator, *, side: int = SIDE, color: bool = True
+) -> Tensor:
     """One view of each image of ``x`` (float ``(n, 3, H, W)`` in ``[0, 1]``,
     on the generator's device): a random resized crop (area 0.08 to 1 of the
     image, aspect 3/4 to 4/3) to ``side``, a horizontal flip of probability
-    1/2, LeJEPA's colour jitter (brightness, contrast and saturation by
-    factors in [0.6, 1.4], [0.6, 1.4], [0.8, 1.2]) of probability 0.8 and a
-    grey scale of probability 0.2. In ``[0, 1]``."""
+    1/2 and, with ``color``, LeJEPA's colour jitter (brightness, contrast and
+    saturation by factors in [0.6, 1.4], [0.6, 1.4], [0.8, 1.2]) of
+    probability 0.8 and a grey scale of probability 0.2. In ``[0, 1]``."""
     n, _, h, w = x.shape
     dev = x.device
 
@@ -148,6 +150,8 @@ def augment(x: Tensor, g: torch.Generator, *, side: int = SIDE) -> Tensor:
     theta[:, 1, 1], theta[:, 1, 2] = ch, cy
     grid = nn.functional.affine_grid(theta, [n, 3, side, side], align_corners=False)
     v = nn.functional.grid_sample(x, grid, mode="bilinear", align_corners=False)
+    if not color:
+        return v.clamp(0, 1)
     jitter = (rand(n) < 0.8).view(n, 1, 1, 1)
     b = (0.6 + 0.8 * rand(n)).view(n, 1, 1, 1)
     c = (0.6 + 0.8 * rand(n)).view(n, 1, 1, 1)
@@ -330,7 +334,9 @@ def train(args: argparse.Namespace) -> None:
         x = x_train[idx].to(dev).float() / 255
         with torch.enable_grad():
             if head is not None:
-                views = torch.stack([augment(x, g) for _ in range(args.views)])
+                views = torch.stack(
+                    [augment(x, g, color=args.color) for _ in range(args.views)]
+                )
                 tok = mods.tokens(views.flatten(0, 1)[:, None])  # (V n, T, D)
                 u = head(tok.mean(1)).unflatten(0, (args.views, args.batch))
                 dirs = draw_directions(v.sigreg_directions, u.shape[-1], g)
@@ -372,6 +378,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     t.add_argument("--wd", type=float, default=0.05)
     t.add_argument("--warmup", type=int, default=400)
     t.add_argument("--every", type=int, default=1000)
+    t.add_argument(
+        "--no_color", dest="color", action="store_false", help="crop and flip only"
+    )
     t.add_argument("--projector", type=int, nargs="+", default=[2048, 2048, 16])
     t.add_argument("--set", nargs="*", default=[], help="config overrides")
     args = p.parse_args(argv)
