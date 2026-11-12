@@ -464,8 +464,9 @@ class TestPacked:
                 "vision.sigreg_on=views",
                 "vision.projector=[8,4]",
             ],
+            ["learner=bp", "data.tours.sampling=iid"],
         ],
-        ids=["pc", "bp-proj", "pc-n1", "bp-space-time"],
+        ids=["pc", "bp-proj", "pc-n1", "bp-space-time", "bp-iid"],
     )
     def test_a_run_writes_the_rows_of_the_packed_layout(self, tmp_path, tours, extra):
         out = tmp_path / "run"

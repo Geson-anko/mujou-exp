@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from exp.video.data.frames import BallFrames, StackedTourFrames, TourFrames
+from exp.video.data.frames import (
+    BallFrames,
+    IIDStackedTourFrames,
+    StackedTourFrames,
+    TourFrames,
+)
 from exp.video.data.physics import BallStreams, Physics, render
 from exp.video.schema import PhysicsConf
 from tests.video.data.test_walking_tours import numbered
@@ -152,3 +157,45 @@ class TestStackedTourFrames:
     def test_non_positive_settings_raise(self, root):
         with pytest.raises(ValueError, match="positive"):
             StackedTourFrames(root, n=1, held_out="H", frames=2, stride=0, advance=1)
+
+
+class TestIIDStackedTourFrames:
+    KW: dict = {"n": 64, "held_out": "H", "frames": 3, "stride": 2}
+
+    def test_every_stack_is_whole_within_a_video_and_reset(self, root):
+        """A stack of 3 frames 2 apart ends at local frame >= 4 of its video
+        and holds frames end - 4, end - 2, end of it."""
+        s = IIDStackedTourFrames(root, seed=0, **self.KW)
+        for _ in range(5):
+            stack, ready, reset = s.next()
+            assert ready.all() and reset.all()
+            for i in range(64):
+                (v0, a), (v1, b), (v2, c) = decode(stack[i].float() / 255)
+                assert v0 == v1 == v2 and a + 2 == b and b + 2 == c and a >= 0
+
+    def test_the_ends_are_uniform_over_the_frames_that_end_a_stack(self, root):
+        """A: 7 frames, 3 ends (4, 5, 6); B: 5, 1 end; C: 9, 5 ends; 9 in all,
+        each drawn about 1 / 9 of the time; the held-out video never."""
+        s = IIDStackedTourFrames(root, seed=1, **self.KW)
+        counts: dict[tuple[int, int], int] = {}
+        draws = 0
+        for _ in range(60):
+            stack, _, _ = s.next()
+            for i in range(64):
+                end = decode(stack[i].float() / 255)[-1]
+                counts[end] = counts.get(end, 0) + 1
+                draws += 1
+        want = {(0, 4), (0, 5), (0, 6), (1, 4), (2, 4), (2, 5), (2, 6), (2, 7), (2, 8)}
+        assert set(counts) == want
+        for c in counts.values():  # 3840 draws: 427 each, sd about 19
+            assert abs(c - draws / 9) < 6 * (draws / 9) ** 0.5
+
+    def test_the_seed_and_k_fix_the_draws(self, root):
+        a = IIDStackedTourFrames(root, seed=2, **self.KW)
+        a.next()
+        b = IIDStackedTourFrames(root, seed=2, **self.KW)
+        b.load_state_dict(a.state_dict())
+        assert torch.equal(a.next()[0], b.next()[0])
+        c = IIDStackedTourFrames(root, seed=3, **self.KW)
+        c.load_state_dict({"k": 1})
+        assert not torch.equal(b.next()[0], c.next()[0])

@@ -53,7 +53,10 @@ the standardized $z$ would read the rounding).
 The packed layout (M17, ``vision.layout="packed"``) streams stacks of
 ``vision.frames`` frames ``vision.stride`` video frames apart
 (``StackedTourFrames``, ``data.tours.advance`` video frames per frame of the
-run) and is evaluated by ``PackedMeasures``: the windows of
+run; with ``data.tours.sampling`` ``"iid"`` the stacks of each frame end at
+independent uniform frames of the videos instead, ``IIDStackedTourFrames``,
+the i.i.d. control of an offline fit through the same nodes, model, loss and
+optimizer) and is evaluated by ``PackedMeasures``: the windows of
 ``walking_tours.eval_windows`` (``measure.steps`` stacks after the first, for
 the linear dynamics of ``task=posthoc``), the first third calib, the second
 val, the last test, with fixed context masks per split. A row has ``loss``,
@@ -107,6 +110,7 @@ from exp.video.data.clips import SPLIT_SEEDS, make_clips
 from exp.video.data.frames import (
     BallFrames,
     FrameStreams,
+    IIDStackedTourFrames,
     StackedTourFrames,
     StackStreams,
     TourFrames,
@@ -168,6 +172,7 @@ COLLAPSE = 1e-3  # the least z_spread of a representation that did not collapse
 _SPLITS = ("val", "test")
 _TOURS_SEED = 4242  # the chunks of the held-out video
 HELD_IN_SEED = 2718  # the context masks of the held-in stacks (packed)
+IID_SEED = 3  # added to the run's seed: the draws of the i.i.d. stacks
 _REPO = Path(__file__).resolve().parents[3]
 
 
@@ -711,6 +716,15 @@ def _frames(conf: RunConf) -> FrameStreams | StackStreams:
         return BallFrames.of(conf.data.balls, b, frame=frame, seed=conf.seed)
     assert conf.data.tours is not None
     t = conf.data.tours
+    if v.layout == "packed" and t.sampling == "iid":
+        return IIDStackedTourFrames(
+            tours_root(t),
+            n=b,
+            held_out=t.held_out,
+            frames=v.frames,
+            stride=v.stride,
+            seed=conf.seed + IID_SEED,
+        )
     if v.layout == "packed":
         return StackedTourFrames(
             tours_root(t),
@@ -720,6 +734,8 @@ def _frames(conf: RunConf) -> FrameStreams | StackStreams:
             stride=v.stride,
             advance=t.advance,
         )
+    if t.sampling != "stream":
+        raise ValueError("data.tours.sampling 'iid' needs vision.layout 'packed'")
     if t.advance != 1:
         raise ValueError(f"data.tours.advance {t.advance} needs vision.layout 'packed'")
     return TourFrames(tours_root(t), n=b, held_out=t.held_out)
