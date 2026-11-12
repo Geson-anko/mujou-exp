@@ -27,12 +27,21 @@ target tokens of a reference set (the held-in stacks of the training videos;
 near 1 on the reference itself, above 1 by how far the held-out set's mean
 is from it), and ``_pos``, the per-dimension mean of the reference's target
 tokens at the masked token's position $t$ (its time slot and spatial
-position): of the predictors that see no context and know the position, the
-best on the reference (it minimizes the squared error there, so ``_pos`` is
-at most ``_mean`` on it). A predictor below ``_pos`` uses the context;
-``comp_<kind>`` near ``comp_<kind>_pos`` says the tokens are a function of
-the position alone, $s(x, t) \approx g(t)$ (M17, 2026-11-12), the solution
-of the prediction that SIGReg of all the tokens together does not exclude.
+position), a predictor that sees no context and knows the position. With
+the same masked positions in every stack (``future``) it minimizes the
+squared error on the reference, so there ``_pos`` is at most ``_mean``; with
+masks drawn per stack (``short``, ``long``) the mean over all the stacks at
+a position is not the minimizer over the stacks that mask it, and the bound
+need not hold. Two readings (M17, 2026-11-12). A predictor below ``_pos``
+uses the context beyond the position. Tokens of the position alone, $s(x, t)
+= g(t) + e$ with $e$ small (the solution P of the prediction: its error is
+0, and SIGReg of all the tokens together penalizes it only in proportion to
+its samples), show as ``comp_<kind>_pos`` near 0: it is $D v / (D v +
+\mathrm{Var}_t g)$, $D v$ the spread of $e$ (``TestPosition``), and
+``ncomp_<kind>_pos`` near 0 too, the masked tokens of a stack still
+spreading by $g$. ``comp_<kind>`` near ``comp_<kind>_pos`` alone says only
+that the context adds nothing to the position; with both near 1 the tokens
+are independent, or have no structure by position, not P.
 
 $E$ is normalized by the spread of the masked tokens over the whole set,
 which counts the spread between the stacks too: tokens that collapse to a

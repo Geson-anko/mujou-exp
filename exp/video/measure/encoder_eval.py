@@ -67,8 +67,9 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
 - (ViT) the completion errors of the first stacks (``measure.completion``,
   ``PackedMeasures.completion_rows``): ``comp_<kind>``, ``comp_<kind>_vis``,
   ``comp_<kind>_mean``, ``comp_<kind>_pos`` (the reference's mean target
-  token at each position: near ``comp_<kind>``, tokens of the position
-  alone) and ``ncomp_*`` per mask kind (``short``, ``long``, ``future``), the
+  token at each position: near 0, with ``ncomp_<kind>_pos``, tokens of the
+  position alone; ``comp_<kind>`` below it, a predictor that uses the
+  context) and ``ncomp_*`` per mask kind (``short``, ``long``, ``future``), the
   line of val also of calib (``calib_comp_*``) and of the held-in stacks of
   the training videos (``fit_comp_*``);
 - ``objective`` (val, ``vit``, minimized), by ``measure.encoder_objective``.

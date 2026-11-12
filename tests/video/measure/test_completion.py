@@ -237,7 +237,9 @@ class TestPosition:
     error is $D v$ and the spread of the masked tokens over the set $D v +
     \mathrm{Var}_t g$ ($\mathrm{Var}_t g$ over the masked positions, summed
     over the dimensions), so $E = D v / (D v + \mathrm{Var}_t g)$, 0 at $v =
-    0$; and on the reference itself it is at most ``_mean``."""
+    0$, and the same within the stacks (``ncomp``); and on the reference
+    itself, with the same positions masked in every stack (``future``), it
+    is at most ``_mean``."""
 
     def _run(self, monkeypatch, noise: float, n: int, same: bool):
         conf = packed_conf()
@@ -263,6 +265,7 @@ class TestPosition:
     def test_tokens_of_the_position_alone_are_zero(self, monkeypatch):
         got, _, _ = self._run(monkeypatch, 0.0, 8, same=False)
         assert got["comp_future_pos"] == pytest.approx(0.0, abs=1e-12)
+        assert got["ncomp_future_pos"] == pytest.approx(0.0, abs=1e-12)
         assert got["comp_future_mean"] > 0.5
 
     def test_with_noise_it_is_v_over_v_plus_the_spread_of_g(self, monkeypatch):
@@ -270,6 +273,9 @@ class TestPosition:
         got, spread, d = self._run(monkeypatch, noise, 2048, same=False)
         expect = d * noise / (d * noise + spread)  # the noise of d dimensions
         assert got["comp_future_pos"] == pytest.approx(expect, rel=0.03)
+        # within a stack the masked tokens spread by g as well (every stack
+        # has the same g), so the normalization within the stacks is alike
+        assert got["ncomp_future_pos"] == pytest.approx(expect, rel=0.03)
 
     def test_on_the_reference_it_is_at_most_mean(self, monkeypatch):
         got, _, _ = self._run(monkeypatch, 2.0, 16, same=True)
