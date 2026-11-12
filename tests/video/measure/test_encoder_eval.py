@@ -4,9 +4,11 @@ checkpoints it reads, the resume, and the training windows."""
 
 import math
 from pathlib import Path
+from typing import override
 
 import pytest
 import torch
+from torch import nn
 
 from exp.lib.rundir import Exit
 from exp.video import loop
@@ -21,7 +23,8 @@ from exp.video.measure.encoder_eval import (
     stream_windows,
 )
 from exp.video.measure.objective import FLOOR, PENALTY
-from exp.video.measure.posthoc import Parent
+from exp.video.measure.posthoc import Parent, as_float
+from exp.video.measure.restore import last_slot, picture_of, token_decoder
 from exp.video.programs.vision import DATA_ENV, PROGRAM
 from tests.video.data.test_walking_tours import numbered
 from tests.video.packed import packed_conf, smooth_tours, tiny
@@ -54,6 +57,75 @@ def _files(out: Path) -> dict[str, bytes]:
     return {p.name: p.read_bytes() for p in sorted(out.iterdir())}
 
 
+_RESTORE = [f"restore_{w}_{k}" for w in ("short", "long") for k in ("mask", "all")] + [
+    "restore_target_short_mask",
+    "restore_target_long_mask",
+    "restore_target_all",
+]
+
+
+class _Constant(nn.Module):
+    """A token decoder of every token to the patch of the constant ``value``."""
+
+    def __init__(self, value: float, channels: int, patch: int) -> None:
+        super().__init__()
+        self._value, self._shape = value, (channels, patch, patch)
+
+    @override
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        return torch.full((len(tokens), *self._shape), self._value)
+
+
+class TestRestoreKeys:
+    """The restoration keys of a line (``EncoderEval._restore``) of the ViT
+    before it learns."""
+
+    def _restore(self, e: EncoderEval, dec: nn.Module) -> tuple[dict, list]:
+        v = e.conf.vision
+        assert v is not None
+        f0 = as_float(e._measures.windows["val"][:, v.frames - 1])
+        line: dict = {}
+        rows = e._restore(e._mods, "val", dec, f0, line)
+        return line, rows
+
+    def test_the_mean_image_is_one_on_every_key(self, parent, tmp_path):
+        """A decoder that draws the mean image (a constant one here) restores
+        and reaches the ceiling at exactly the mean image's error, on the
+        masked pixels and the whole frame, blurred or not."""
+        e = _eval(parent, tmp_path / "o")
+        e._mean = torch.full_like(e._mean, 0.4)
+        line, _ = self._restore(e, _Constant(0.4, 3, 4))
+        assert set(line) == {*_RESTORE, *(f"{k}_blur" for k in _RESTORE)}
+        for k, x in line.items():
+            assert x == pytest.approx(1.0, rel=1e-6), k
+
+    def test_the_ceiling_sees_no_predictor_and_the_rows(self, parent, tmp_path):
+        """The ceiling is the token decoder on the target tokens of the whole
+        stack: zeroing the predictor changes the restorations, not the
+        ceiling's keys; the rows are the ceiling, then per view the context
+        and its restoration."""
+        e = _eval(parent, tmp_path / "o")
+        torch.manual_seed(0)
+        dec = token_decoder(16, 4, 3)
+        line, rows = self._restore(e, dec)
+        with torch.no_grad():
+            for p in e._mods.predictor.parameters():
+                p.zero_()
+        held, _ = self._restore(e, dec)
+        for k in line:
+            same = held[k] == pytest.approx(line[k], rel=1e-6)
+            assert same == k.startswith("restore_target"), k
+        v = e.conf.vision
+        assert v is not None
+        x = e._measures.windows["val"][:, : v.frames]
+        assert len(rows) == 1 + 2 * 2
+        assert all(len(r) == min(encoder_eval.SHOWN, len(x)) for r in rows)
+        with torch.no_grad():
+            toks = last_slot(e._mods, e._mods.tokens(x))
+            ceiling = picture_of(dec(toks.flatten(0, 1)), len(x), e._mods.grid)
+        torch.testing.assert_close(rows[0], ceiling.clamp(0, 1)[: len(rows[0])])
+
+
 class TestEncoderEval:
     def test_the_units_lines_and_pictures(self, parent, tmp_path):
         e = _eval(parent, tmp_path / "o")
@@ -78,7 +150,10 @@ class TestEncoderEval:
             "restore_short_all",
             "restore_long_mask",
             "restore_long_all",
+            "restore_target_short_mask",
+            "restore_target_long_mask",
             "restore_target_all",
+            *(f"{k}_blur" for k in _RESTORE),
             "rank",
             "z_std_min",
             "z_spread",

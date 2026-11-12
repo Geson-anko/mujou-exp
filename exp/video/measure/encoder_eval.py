@@ -54,9 +54,15 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
 - ``restore_<view>_mask`` and ``restore_<view>_all`` (ViT): the restoration of
   each context view (``restore.restore``, the split's fixed masks) on the
   masked pixels and on the whole frame, over the mean image's error on the
-  same pixels; ``restore_target_all`` the token decoder on the target view's
-  tokens (its ceiling). The views are ``short`` and ``long`` for two
-  context views, else ``c0``, ``c1``, ...;
+  same pixels; ``restore_target_<view>_mask`` and ``restore_target_all`` the
+  same of the token decoder on the target tokens of the whole stack (the
+  encoder without a mask: the ceiling of the restoration, which sees what
+  the context hides) on the same masked pixels and on the whole frame; and
+  ``<key>_blur`` of each of these keys, the error blurred first
+  (``blur_error.blur_recon``; on the masked pixels ``blur_recon_masked``,
+  the blurred error image averaged over them, over the same of the mean
+  image). The views are ``short`` and ``long`` for two context views, else
+  ``c0``, ``c1``, ...;
 - ``rank``, ``z_std_min``, ``z_spread`` of the first stacks' $z$;
 - (ViT) the completion errors of the first stacks (``measure.completion``,
   ``PackedMeasures.completion_rows``): ``comp_<kind>``, ``comp_<kind>_vis``,
@@ -84,10 +90,11 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   error cancels that overlap.
 
 Pictures of val (``SHOWN`` windows): ``<name>.png`` (the true last frames,
-the decoded), ``<name>-restore.png`` (the true frames, the short context, its
-restoration, the long context, its restoration, the target ceiling: a row
-each) and ``<name>-dyn.png`` (``DYN_SHOWN`` windows, three rows each: the true
-frames, $g(\hat z_h)$, $g(z_h)$, at $h = 0$ and each horizon), ``<name>`` the
+the decoded), ``<name>-restore.png`` (the true frames, the target ceiling
+decoded from the unmasked tokens, then per context view the masked context
+and its restoration through the predictor: a row each) and
+``<name>-dyn.png`` (``DYN_SHOWN`` windows, three rows each: the true frames,
+$g(\hat z_h)$, $g(z_h)$, at $h = 0$ and each horizon), ``<name>`` the
 checkpoint's ``<t>``, ``init`` or ``pca``.
 """
 
@@ -102,7 +109,7 @@ import torch
 from torch import Tensor, nn
 
 from exp.lib import ckpt, linear_dyn, pca
-from exp.lib.blur_error import blur_recon
+from exp.lib.blur_error import blur_recon, blur_recon_masked
 from exp.lib.png import tile, write_png
 from exp.lib.rundir import atomic_open, write_json
 from exp.lib.video_io import U8Reader
@@ -146,7 +153,7 @@ PCA_SEED = 4  # added to the run's seed (DECODER_SEED 3)
 # ViT, 2026-11-12); 3e-4 fit both that one (0.66) and the PCA-256 (0.15).
 DECODER_LR = 3e-4
 WINDOWS, STREAM_STEPS = 2048, 8  # the training windows and their stacks after the first
-SHOWN, DYN_SHOWN = 8, 4  # windows of val in the pictures
+SHOWN, DYN_SHOWN = 10, 4  # windows of val in the pictures
 CKPTS = ("all", "last")
 SPLITS = ("val", "test")
 
@@ -544,13 +551,24 @@ class EncoderEval:
         line: dict[str, Any],
     ) -> list[Tensor]:
         """The restoration keys of ``line`` (module docstring) and the
-        pictures' rows of val: per view the context and its restoration, then
-        the target ceiling."""
+        pictures' rows of val: the target ceiling, then per view the context
+        and its restoration."""
         v = self.conf.vision
         assert v is not None
         windows = self._measures.windows[split][:, : v.frames]
-        rows: list[Tensor] = []
         mean = self._mean.expand_as(f0)
+        target = []
+        with torch.no_grad():
+            for i in range(0, len(windows), BATCH):
+                x = windows[i : i + BATCH].to(self._dev)
+                toks = last_slot(mods, mods.tokens(x))
+                target.append(
+                    picture_of(tok_dec(toks.flatten(0, 1)), len(x), mods.grid)
+                )
+        ceiling = torch.cat(target).clamp(0, 1)
+        line["restore_target_all"] = _mse(ceiling, f0) / _mse(mean, f0)
+        line["restore_target_all_blur"] = blur_recon(ceiling, f0, self._mean)
+        rows: list[Tensor] = [ceiling[:SHOWN]]
         for view, m, keep, future in zip(
             self._views,
             self._measures.masks[split],
@@ -572,22 +590,17 @@ class EncoderEval:
                 imgs.append(img.clamp(0, 1))
                 pix.append(px)
             img, px = torch.cat(imgs), torch.cat(pix)
-            line[f"restore_{view}_mask"] = _masked_mse(img, f0, px) / _masked_mse(
-                mean, f0, px
-            )
+            base = _masked_mse(mean, f0, px)
+            for key, got in (
+                (f"restore_{view}", img),
+                (f"restore_target_{view}", ceiling),
+            ):
+                line[f"{key}_mask"] = _masked_mse(got, f0, px) / base
+                line[f"{key}_mask_blur"] = blur_recon_masked(got, f0, self._mean, px)
             line[f"restore_{view}_all"] = _mse(img, f0) / _mse(mean, f0)
+            line[f"restore_{view}_all_blur"] = blur_recon(img, f0, self._mean)
             rows += [f0[:SHOWN] * (~px[:SHOWN])[:, None].to(f0), img[:SHOWN]]
-        target = []
-        with torch.no_grad():
-            for i in range(0, len(windows), BATCH):
-                x = windows[i : i + BATCH].to(self._dev)
-                toks = last_slot(mods, mods.tokens(x))
-                target.append(
-                    picture_of(tok_dec(toks.flatten(0, 1)), len(x), mods.grid)
-                )
-        ceiling = torch.cat(target).clamp(0, 1)
-        line["restore_target_all"] = _mse(ceiling, f0) / _mse(mean, f0)
-        return [*rows, ceiling[:SHOWN]]
+        return rows
 
     def _pictures(
         self,
