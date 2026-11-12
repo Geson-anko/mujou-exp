@@ -13,6 +13,14 @@ The units, a step each (``EncoderEval.step``):
 - unit ``1 + i``: checkpoint ``i`` of the run (``"vit"``; all of them, or the
   last only, ``ckpts``), its lines in ``metrics.jsonl`` and its pictures.
 
+The code of a stack is $z$ (``measure.posthoc_code`` ``"z"``) or, with
+``"tokens"`` (the tokens are the representation, ``vision.token_dim``), the
+stack's $T$ target tokens flattened, $D = T d$ numbers: what the decoder of
+$z$, the linear dynamics, ``rank``, ``z_std_min`` and ``z_spread`` below see
+as $z$, for the ViT before it learns too; the PCA is then of $D$ components,
+or of the most the training frames allow ($n - 1$ of $n$ frames), written
+as ``pca_rank`` in its lines when fewer than $D$.
+
 The evaluation of a code. The training windows are ``stream_windows``:
 ``windows`` windows of ``N + STREAM_STEPS`` frames ``vision.stride`` apart
 from the loop of the training videos (none across two videos), each
@@ -285,6 +293,7 @@ class EncoderEval:
         sums = torch.stack([as_float(c).sum(0) for c in self._targets.split(BATCH)])
         self._mean = (sums.sum(0) / len(self._targets))[None]  # (1, C, H, W)
         self._mods = build_vision(conf, seed=conf.seed)
+        self._tokens = conf.measure.posthoc_code == "tokens"  # module docstring
         self._calib: dict[str, Tensor] = {}
         out.mkdir(parents=True, exist_ok=True)
         if done == 0:
@@ -379,13 +388,18 @@ class EncoderEval:
         assert v is not None
         gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
         flat = as_float(self._targets).flatten(1)
-        mean, comps = pca.fit_pca(flat, v.z_width, gen=gen)
+        d = self._mods.tokens_per_view * v.token_width if self._tokens else v.z_width
+        rank = min(d, len(flat) - 1) if self._tokens else d  # module docstring
+        mean, comps = pca.fit_pca(flat, rank, gen=gen)
         del flat
 
         def pca_z(stacks: Tensor) -> Tensor:
             return pca.encode(as_float(stacks[:, -1]).flatten(1), mean, comps)
 
         lines = self._evaluate(_Code("pca", pca_z, linear=(mean, comps)), "pca")
+        if rank < d:
+            for line in lines:
+                line["pca_rank"] = rank
         init = build_vision(conf, seed=conf.seed)
         lines += self._evaluate(_Code("init", init.encode, init), "init")
         return lines
@@ -393,10 +407,10 @@ class EncoderEval:
     # -- one code -----------------------------------------------------------------
 
     def _encode(self, code: _Code, windows: Tensor) -> tuple[Tensor, Tensor | None]:
-        """$z$ ``(w, K, D)`` of the stacks of the windows ``(w, N + K - 1, C,
-        H, W)`` (CPU u8; ``_stacks``, made on the device a batch of windows at
-        a time) and, for a ViT, the tokens of the last time slot ``(w K, gh
-        gw, D)``."""
+        """The code ``(w, K, D)`` of the stacks of the windows ``(w, N + K - 1,
+        C, H, W)`` (CPU u8; ``_stacks``, made on the device a batch of windows
+        at a time; a ViT's $z$ or its flattened tokens, module docstring) and,
+        for a ViT, the tokens of the last time slot ``(w K, gh gw, d)``."""
         v = self.conf.vision
         assert v is not None
         w, k = len(windows), windows.shape[1] - v.frames + 1
@@ -409,7 +423,7 @@ class EncoderEval:
                     zs.append(code.z(x))
                     continue
                 tokens = code.mods.tokens(x)
-                zs.append(code.mods.z_of(tokens))
+                zs.append(tokens.flatten(1) if self._tokens else code.mods.z_of(tokens))
                 toks.append(last_slot(code.mods, tokens))
         z = torch.cat(zs).unflatten(0, (w, k))
         return z, torch.cat(toks) if toks else None

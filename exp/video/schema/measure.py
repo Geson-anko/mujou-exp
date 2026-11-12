@@ -2,13 +2,17 @@
 
 from dataclasses import dataclass, field
 
-__all__ = ["ENCODER_OBJECTIVES", "MeasureConf"]
+__all__ = ["ENCODER_OBJECTIVES", "POSTHOC_CODES", "MeasureConf"]
 
 # The objectives of the posthoc evaluation of the packed layout (M17,
 # measure.encoder_eval): "recon_dyn", the worse of the reconstruction and the
 # linear dynamics against the PCA; "completion" (provisional, 2026-11-12: the
 # formula is not decided yet), the mean completion error on val.
 ENCODER_OBJECTIVES = ("recon_dyn", "completion")
+# The code of a stack in the posthoc evaluation of the packed layout (M17,
+# measure.encoder_eval): "z", the pooled z; "tokens", the target tokens of the
+# stack flattened (T x the token width; vision.token_dim, 2026-11-12).
+POSTHOC_CODES = ("z", "tokens")
 
 
 @dataclass(kw_only=True)
@@ -35,6 +39,7 @@ class MeasureConf:
     # The objective of the posthoc evaluation of the packed layout
     # (ENCODER_OBJECTIVES).
     encoder_objective: str = "recon_dyn"
+    posthoc_code: str = "z"  # POSTHOC_CODES
 
     def __post_init__(self) -> None:
         if not self.horizons or min(self.horizons) < 1:
@@ -45,4 +50,9 @@ class MeasureConf:
             raise ValueError(
                 f"measure.encoder_objective must be one of {ENCODER_OBJECTIVES}, "
                 f"not {self.encoder_objective!r}"
+            )
+        if self.posthoc_code not in POSTHOC_CODES:
+            raise ValueError(
+                f"measure.posthoc_code must be one of {POSTHOC_CODES}, not "
+                f"{self.posthoc_code!r}"
             )

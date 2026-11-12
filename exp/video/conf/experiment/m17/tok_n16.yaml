@@ -8,12 +8,15 @@
 # buffer of 8192 past target tokens, 64 of each frame inserted at random rows
 # (jepa.nodes.PastTokens): the sample is the same with one stream (B = 1).
 # lambda (vision.sigreg) is a placeholder, set by the sweep from the measured
-# correlation of the tokens within a stack.
+# correlation of the tokens within a stack. The posthoc evaluation codes a
+# stack by its flattened tokens (512 x 16 = 8192 numbers).
 defaults:
   - m17/wt_n16
   - _self_
 name: m17/tok_n16
 tags: [m17, wt, n16, tok]
+measure:
+  posthoc_code: tokens
 vision:
   token_dim: 16
   sigreg_on: tokens

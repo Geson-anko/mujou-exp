@@ -195,8 +195,8 @@ class TestM17:
 
     def test_the_token_preset_is_wt_n16_with_the_tokens_as_the_code(self) -> None:
         """The tokens of 16 as the representation, SIGReg of them raw with
-        8192 past tokens; everything else, the optimizer included, that of
-        wt_n16 (2026-11-12)."""
+        8192 past tokens, the posthoc on the flattened tokens; everything
+        else, the optimizer included, that of wt_n16 (2026-11-12)."""
         conf = compose(["+experiment=m17/tok_n16"])
         base = compose(["+experiment=m17/wt_n16"])
         v, w = conf.vision, base.vision
@@ -204,10 +204,10 @@ class TestM17:
         assert (v.token_dim, v.sigreg_on, v.token_sigreg) == (16, "tokens", "raw")
         assert (v.token_buffer, v.token_insert) == (8192, 64)
         assert v.z_dim is None and v.z_width == 16
-        assert w.token_dim is None
+        assert conf.measure.posthoc_code == "tokens"
+        assert base.measure.posthoc_code == "z" and w.token_dim is None
         assert conf.optim_vision == base.optim_vision
         assert conf.data == base.data and conf.time == base.time
-        assert conf.measure == base.measure
         changed = {"token_dim", "sigreg_on", "token_sigreg", "token_buffer"}
         changed |= {"token_insert", "sigreg"}
         for name in vars(w):
@@ -215,6 +215,8 @@ class TestM17:
                 assert getattr(v, name) == getattr(w, name), name
         wide = compose(["+experiment=m17/tok_n16", "vision.token_dim=32"]).vision
         assert wide is not None and wide.z_width == 32
+        with pytest.raises(ValueError, match="posthoc_code"):
+            compose(["+experiment=m17/tok_n16", "measure.posthoc_code=pooled"])
 
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])

@@ -11,8 +11,10 @@ import torch
 from exp.lib.rundir import Exit
 from exp.video import loop
 from exp.video.main import local_job
+from exp.video.measure import encoder_eval
 from exp.video.measure.encoder_eval import (
     EncoderEval,
+    _Code,
     _completion_objective,
     _objective,
     _Standardized,
@@ -163,6 +165,74 @@ class TestEncoderEval:
         a, b = _files(tmp_path / "a"), _files(tmp_path / "b")
         del a["config.json"], b["config.json"]
         assert a == b
+
+
+@pytest.fixture(scope="module")
+def token_parent(tmp_path_factory) -> tuple[Path, Path]:
+    """A finished tiny run of m17/tok_n16 (tokens of 8: a code of 32 x 8 =
+    256 numbers, more than the training frames of 16 windows), and the
+    data's root."""
+    tmp = tmp_path_factory.mktemp("tok")
+    root = smooth_tours(tmp / "data" / "d", LENGTHS)
+    overrides = [
+        "+experiment=m17/tok_n16" if o.startswith("+experiment") else o
+        for o in tiny(root.name)
+    ]
+    overrides += ["vision.token_dim=8", "vision.token_buffer=48"]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv(DATA_ENV, str(root.parent))
+        mp.setattr(loop, "assert_free_threaded", lambda where: None)
+        job = local_job(overrides, tmp / "run")
+        assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+    return tmp / "run", root
+
+
+class TestTokenCode:
+    """measure.posthoc_code "tokens": a stack's code is its flattened target
+    tokens, for the decoder of z, the linear dynamics and the statistics of
+    z, of the ViT before it learns and of each checkpoint; the PCA of as many
+    components as the training frames allow."""
+
+    def test_the_code_is_the_flattened_tokens(self, token_parent, tmp_path):
+        e = _eval(token_parent, tmp_path / "o", ckpts="last")
+        mods = e._mods
+        assert e.conf.measure.posthoc_code == "tokens"
+        windows = e._measures.windows["val"][:3]
+        z, _ = e._encode(_Code("vit", None, mods), windows)
+        k = windows.shape[1] - mods.chunk[0] + 1
+        stacks = torch.stack([windows[:, i : i + mods.chunk[0]] for i in range(k)], 1)
+        with torch.no_grad():
+            tokens = mods.tokens(stacks.flatten(0, 1))
+        assert z.shape == (3, k, mods.tokens_per_view * 8) == (3, k, 256)
+        torch.testing.assert_close(z.flatten(0, 1), tokens.flatten(1))
+
+    def test_every_code_reaches_the_fits_at_its_dimension(
+        self, token_parent, tmp_path, monkeypatch
+    ):
+        seen: dict[str, list[int]] = {"decoder": [], "dyn": []}
+        fit, dyn = encoder_eval.fit_decoder, encoder_eval.linear_dyn.fit
+
+        def fit_watched(z, *args, **kw):
+            seen["decoder"].append(z.shape[1])
+            return fit(z, *args, **kw)
+
+        def dyn_watched(z0, z1, **kw):
+            seen["dyn"].append(z0.shape[1])
+            return dyn(z0, z1, **kw)
+
+        monkeypatch.setattr(encoder_eval, "fit_decoder", fit_watched)
+        monkeypatch.setattr(encoder_eval.linear_dyn, "fit", dyn_watched)
+        e = _eval(token_parent, tmp_path / "o", ckpts="last")
+        lines = [ln for _ in range(len(e)) for ln in e.step()]
+        n = len(e._targets)
+        assert n - 1 < 256  # the training frames allow fewer components
+        assert [ln["code"] for ln in lines] == ["pca"] * 2 + ["init"] * 2 + ["vit"] * 2
+        assert all(ln["pca_rank"] == n - 1 for ln in lines[:2])
+        assert not any("pca_rank" in ln for ln in lines[2:])
+        assert seen["decoder"] == [n - 1, 256, 256]
+        assert set(seen["dyn"][-1:]) == {256} and n - 1 in seen["dyn"]
+        assert all(ln["rank"] <= 256 for ln in lines)
+        assert {"restore_short_all", "restore_target_all"} <= set(lines[-2])
 
 
 def test_the_decoder_sees_z_centred_at_an_rms_std_of_one():
