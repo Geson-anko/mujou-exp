@@ -33,20 +33,47 @@ __all__ = ["ALPHA_SCALES", "errors", "fit", "rollout", "select_alpha"]
 
 # The ridge alpha = c tr(C00) / D, for c in 1e-8 .. 1e0.
 ALPHA_SCALES = tuple(10.0**e for e in range(-8, 1))
+# The rows of the codes converted to float64 at a time for the moments (the
+# float64 copy of all the codes is as large as a D x D matrix at n ~ D).
+_CHUNK = 4096
 
 
 def fit(z0: Tensor, z1: Tensor, *, alpha: float) -> tuple[Tensor, Tensor]:
     """$A$ ``(D, D)`` and $b$ ``(D,)`` (float64) of the pairs ``z0`` ``(n, D)``
     -> ``z1`` ``(n, D)`` (module docstring)."""
-    z0, z1 = z0.double(), z1.double()
-    m0, m1 = z0.mean(0), z1.mean(0)
-    x, y = z0 - m0, z1 - m1
-    c00 = x.T @ x
-    c10 = y.T @ x
-    eye = torch.eye(len(c00), dtype=c00.dtype, device=c00.device)
-    # A (C00 + a I) = C10, and C00 + a I is symmetric: A^T = solve(C00 + a I, C10^T).
-    a = torch.linalg.solve(c00 + alpha * eye, c10.T).T
+    m0, m1, c00, c01 = _moments(z0, z1)
+    a = _solve(c00, c01, alpha)
     return a, m1 - a @ m0
+
+
+def _moments(z0: Tensor, z1: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """$\\bar z^0$, $\\bar z^1$, $C_{00}$ and $C_{01} = C_{10}^\\top$ (float64)
+    of the pairs, summed over ``_CHUNK`` rows at a time (no float64 copy of
+    the ``(n, D)`` codes)."""
+    n, d = z0.shape
+    m0 = z0.sum(0, dtype=torch.float64) / n
+    m1 = z1.sum(0, dtype=torch.float64) / n
+    c00 = z0.new_zeros(d, d, dtype=torch.float64)
+    c01 = torch.zeros_like(c00)
+    for i in range(0, n, _CHUNK):
+        x = z0[i : i + _CHUNK].double() - m0
+        c00.addmm_(x.T, x)
+        c01.addmm_(x.T, z1[i : i + _CHUNK].double() - m1)
+    return m0, m1, c00, c01
+
+
+def _solve(c00: Tensor, c01: Tensor, alpha: float) -> Tensor:
+    """$A = C_{10} (C_{00} + \\alpha I)^{-1}$: $C_{00} + \\alpha I$ is
+    symmetric, so $A^\\top = (C_{00} + \\alpha I)^{-1} C_{01}$ (by LU;
+    ``c00`` is shifted for the factorization and restored)."""
+    diag = c00.diagonal()
+    kept = diag.clone()
+    diag.add_(alpha)
+    try:
+        lu, pivots = torch.linalg.lu_factor(c00)
+    finally:
+        diag.copy_(kept)
+    return torch.linalg.lu_solve(lu, pivots, c01).T
 
 
 def rollout(a: Tensor, b: Tensor, z0: Tensor, steps: int) -> Tensor:
@@ -81,7 +108,7 @@ def errors(
         raise ValueError(f"horizons must be in [1, {steps}], not {list(horizons)}")
     zs = zs.double()
     pred = rollout(a, b, zs[:, 0], max(horizons))
-    w = None if train is None else _whitener(train)
+    low = None if train is None else _whitener(train)
     out: dict[str, float] = {}
     for h in horizons:
         target = zs[:, h]
@@ -89,27 +116,34 @@ def errors(
         dyn = float(((pred[:, h - 1] - target) ** 2).sum(1).mean()) / var
         copy = float(((zs[:, 0] - target) ** 2).sum(1).mean()) / var
         out |= {f"dyn_{h}": dyn, f"copy_{h}": copy, f"dyn_{h}/copy_{h}": dyn / copy}
-        if w is not None:
-            var_w = _sq(w, target - target.mean(0))
-            out[f"dynw_{h}"] = _sq(w, pred[:, h - 1] - target) / var_w
-            out[f"copyw_{h}"] = _sq(w, zs[:, 0] - target) / var_w
+        if low is not None:
+            var_w = _sq(low, target - target.mean(0))
+            out[f"dynw_{h}"] = _sq(low, pred[:, h - 1] - target) / var_w
+            out[f"copyw_{h}"] = _sq(low, zs[:, 0] - target) / var_w
     return out
 
 
 def _whitener(train: Tensor) -> Tensor:
-    """$L^{-1}$ ``(D, D)`` of the Cholesky factor $L L^\top = C + \\epsilon I$
-    of the covariance of ``train`` (module docstring)."""
-    x = train.double() - train.double().mean(0)
-    c = x.T @ x / len(x)
-    eps = 1e-6 * float(c.trace()) / len(c) + 1e-300
-    eye = torch.eye(len(c), dtype=c.dtype, device=c.device)
-    low = torch.linalg.cholesky(c + eps * eye)
-    return torch.linalg.solve_triangular(low, eye, upper=False)
+    """The Cholesky factor $L$ ``(D, D)``, $L L^\\top = C + \\epsilon I$, of
+    the covariance of ``train`` (module docstring; $W = L^{-1}$), summed over
+    ``_CHUNK`` rows at a time."""
+    n, d = train.shape
+    mean = train.sum(0, dtype=torch.float64) / n
+    c = train.new_zeros(d, d, dtype=torch.float64)
+    for i in range(0, n, _CHUNK):
+        x = train[i : i + _CHUNK].double() - mean
+        c.addmm_(x.T, x)
+    c /= n
+    eps = 1e-6 * float(c.trace()) / d + 1e-300
+    c.diagonal().add_(eps)
+    return torch.linalg.cholesky(c)
 
 
-def _sq(w: Tensor, e: Tensor) -> float:
-    """The mean of $\\lVert W e \rVert^2$ over the rows of ``e`` ``(n, D)``."""
-    return float(((e.double() @ w.T) ** 2).sum(1).mean())
+def _sq(low: Tensor, e: Tensor) -> float:
+    """The mean of $\\lVert W e \\rVert^2 = \\lVert L^{-1} e \\rVert^2$ over
+    the rows of ``e`` ``(n, D)`` (solved, not with an explicit inverse)."""
+    we = torch.linalg.solve_triangular(low, e.double().T, upper=False)
+    return float((we**2).sum(0).mean())
 
 
 def select_alpha(
@@ -122,13 +156,14 @@ def select_alpha(
     """The $\\alpha = c\\,\\mathrm{tr}(C_{00}) / D$, $c$ of ``scales``, whose
     ``fit`` on ``z0`` -> ``z1`` has the least ``dyn_1`` on the windows
     ``calib`` ``(n, 1 + H, D)`` (the first of the least on a tie)."""
-    x = z0.double() - z0.double().mean(0)
-    unit = float((x**2).sum()) / z0.shape[1]  # tr(C00) / D
+    m0, m1, c00, c01 = _moments(z0, z1)
+    unit = float(c00.trace()) / z0.shape[1]  # tr(C00) / D
     best, best_err = 0.0, float("inf")
     for c in scales:
         alpha = c * unit
-        a, b = fit(z0, z1, alpha=alpha)
-        err = errors(a, b, calib[:, :2], [1])["dyn_1"]
+        a = _solve(c00, c01, alpha)
+        err = errors(a, m1 - a @ m0, calib[:, :2], [1])["dyn_1"]
+        del a
         if err < best_err:
             best, best_err = alpha, err
     return best

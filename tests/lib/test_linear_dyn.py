@@ -125,3 +125,28 @@ def test_select_alpha_picks_the_least_ridge_of_a_noiseless_system():
     unit = float(((z0 - z0.mean(0)) ** 2).sum()) / 4
     alpha = select_alpha(z0, z1, zs, scales=[1e-6, 1e-2, 1.0])
     assert alpha == pytest.approx(1e-6 * unit)
+
+
+def test_select_alpha_is_the_least_dyn_1_of_the_fits_by_definition():
+    """The choice is that of fitting each scale and measuring dyn_1 on calib."""
+    _, _, zs = _system(6, d=5, n=40)
+    g = torch.Generator().manual_seed(7)
+    noisy = zs + 0.5 * torch.randn(zs.shape, generator=g, dtype=torch.float64)
+    z0, z1 = noisy[:, :-1].flatten(0, 1), noisy[:, 1:].flatten(0, 1)
+    scales = [1e-6, 1e-2, 1e-1, 1.0, 10.0]
+    unit = float(((z0 - z0.mean(0)) ** 2).sum()) / 5
+    errs = [
+        errors(*fit(z0, z1, alpha=c * unit), noisy[:, :2], [1])["dyn_1"] for c in scales
+    ]
+    best = scales[min(range(len(scales)), key=errs.__getitem__)]
+    assert select_alpha(z0, z1, noisy, scales=scales) == pytest.approx(best * unit)
+
+
+def test_float64_inputs_are_left_as_they_were():
+    _, _, zs = _system(8)
+    z0, z1 = zs[:, :-1].flatten(0, 1), zs[:, 1:].flatten(0, 1)
+    before = [z0.clone(), z1.clone()]
+    fit(z0, z1, alpha=0.1)
+    select_alpha(z0, z1, zs)
+    errors(*fit(z0, z1, alpha=0.1), zs, [1], train=z0)
+    assert torch.equal(z0, before[0]) and torch.equal(z1, before[1])
