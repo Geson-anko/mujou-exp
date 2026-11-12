@@ -576,16 +576,17 @@ class TestPacked:
         self, tmp_path, tours, learner
     ):
         """m17/tok_n16 (the tokens of token_dim, SIGReg of them with the past
-        ones): the buffer fills in 3 frames and is replaced at random rows
-        after; stopped at frame 17 and resumed, its rows, count and draws
-        resume to the bytes of a run never stopped."""
+        ones): the buffer (24 rows and 8 tokens a frame per stream, of 2
+        streams) fills in 3 frames and is replaced at random rows after;
+        stopped at frame 17 and resumed, its rows, count and draws resume to
+        the bytes of a run never stopped."""
         extra = [
             f"learner={learner}",
             "ctl.resume_every=0.3",
             "ctl.log_every=0.2",
             "vision.token_dim=4",
-            "vision.token_buffer=48",
-            "vision.token_insert=16",
+            "vision.token_buffer=24",
+            "vision.token_insert=8",
         ]
         kw = {"experiment": "m17/tok_n16", "tiny": tours}
         assert _run(tmp_path / "whole", extra, **kw) == Exit.OK

@@ -88,9 +88,9 @@ class JEPABP(Node):
             the prediction's targets (packed; a control, 0: none). It moves
             after each step: $\bar\theta \leftarrow m \bar\theta + (1 - m)
             \theta$.
-        token_buffer: The capacity of the past target tokens (packed; 0:
-            none).
-        token_insert: The tokens of a frame inserted into them.
+        token_buffer: The capacity of the past target tokens per stream
+            (packed; 0: none).
+        token_insert: The tokens of a frame inserted into them per stream.
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.

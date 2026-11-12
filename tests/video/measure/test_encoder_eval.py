@@ -178,7 +178,8 @@ def token_parent(tmp_path_factory) -> tuple[Path, Path]:
         "+experiment=m17/tok_n16" if o.startswith("+experiment") else o
         for o in tiny(root.name)
     ]
-    overrides += ["vision.token_dim=8", "vision.token_buffer=48"]
+    overrides += ["vision.token_dim=8", "vision.token_buffer=24"]
+    overrides += ["vision.token_insert=8"]  # of the 32 tokens of a stack
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv(DATA_ENV, str(root.parent))
         mp.setattr(loop, "assert_free_threaded", lambda where: None)

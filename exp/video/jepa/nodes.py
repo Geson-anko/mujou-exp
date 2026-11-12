@@ -145,20 +145,30 @@ class PastTokens(Stateful):
     r"""The past target tokens of the SIGReg of the tokens (``vision.token_buffer``,
     ``loss.PastSums``), held by the node that computes the loss.
 
+    Its sizes are per stream: of ``streams`` streams it holds ``streams x
+    capacity`` rows and inserts ``streams x insert`` tokens per frame, so the
+    ages in the buffer do not depend on the streams (with all of them valid,
+    a row survives a frame with probability $1 - \mathrm{insert} /
+    \mathrm{capacity}$, and a row's age, in frames since the frame of its
+    tokens, is geometric of mean ``capacity / insert``).
     ``keep`` holds the target tokens of a frame ``(B, T, D)`` (detached) and
     the streams that have a stack ``(B,)``: the last kept of a frame are
     those of its last update. ``next_frame``, in the update that first sees a
-    frame, after its directions are drawn, puts ``insert`` of the tokens kept
-    into ``rows`` (``capacity`` x ``D``, ``count`` filled), drawn uniformly
-    without replacement by ``generator`` from the tokens of the streams that
-    had a stack (all of them when fewer), each into the next empty row or,
-    once full, a uniformly drawn one (``exp.lib.sigreg.insert_``: random
-    replacement, so the rows reach back further than ``capacity / insert``
-    frames). It then sums the characteristic function of the filled rows
-    along the frame's directions (``exp.lib.sigreg.ecf_sums``): ``sums``,
-    the same through the frame. A frame without a stack inserts nothing, and
-    one stream alone ($B = 1$) fills the buffer from its own past. Its state
-    is all of these.
+    frame, after its directions are drawn, puts ``streams x insert`` of the
+    tokens kept into ``rows`` (``streams x capacity`` x ``D``, ``count``
+    filled), drawn uniformly without replacement by ``generator`` from the
+    tokens of the streams that had a stack (all of them when fewer; at
+    ``insert`` = $T$ every token of each valid stream), each into the next
+    empty row or, once full, a uniformly drawn one (``exp.lib.sigreg.insert_``:
+    random replacement). It then sums the characteristic function of the
+    filled rows along the frame's directions (``exp.lib.sigreg.ecf_sums``):
+    ``sums``, the same through the frame. A frame without a stack inserts
+    nothing, and one stream alone ($B = 1$) fills the buffer from its own
+    past. Its state is all of these.
+
+    Raises:
+        ValueError: ``capacity`` or ``insert`` below 1, or ``insert`` above
+            the tokens of a stack $T$.
     """
 
     def __init__(
@@ -172,8 +182,13 @@ class PastTokens(Stateful):
         directions: int,
         device: Device,
     ) -> None:
-        self._insert = insert
-        self.rows = torch.zeros(capacity, dim, device=device)
+        if capacity < 1 or not 1 <= insert <= tokens:
+            raise ValueError(
+                f"the past tokens need capacity >= 1 and 1 <= insert <= the "
+                f"{tokens} tokens of a stack, per stream: not {capacity} and {insert}"
+            )
+        self._insert = streams * insert
+        self.rows = torch.zeros(streams * capacity, dim, device=device)
         self.count = 0
         self.kept = torch.zeros(streams, tokens, dim, device=device)
         self.kept_valid = torch.zeros(streams, dtype=torch.bool, device=device)
@@ -707,12 +722,12 @@ class PackedJEPAHead(Node):
     \partial \theta = \partial L / \partial \theta$.
 
     With ``token_buffer`` > 0 the SIGReg of the tokens also sees the past
-    target tokens of a ``PastTokens`` of that capacity (``past``), the node's
-    own: it keeps the target tokens it receives in every update, and in the
-    update that first sees a frame, after drawing the directions, inserts
-    ``token_insert`` of those of the frame before (from ``generator``) and
-    sums them along the directions of the tokens. Nothing of another node
-    goes into it.
+    target tokens of a ``PastTokens`` of that capacity per stream (``past``),
+    the node's own: it keeps the target tokens it receives in every update,
+    and in the update that first sees a frame, after drawing the directions,
+    inserts ``token_insert`` per stream of those of the frame before (from
+    ``generator``) and sums them along the directions of the tokens. Nothing
+    of another node goes into it.
 
     Args:
         predictor: The predictor, on ``device``.
@@ -736,8 +751,9 @@ class PackedJEPAHead(Node):
         zpred: $q$ of the completion (None: none), learned with them.
         target_norm: The prediction's targets through a LayerNorm without
             affine.
-        token_buffer: The capacity of the past target tokens (0: none).
-        token_insert: The tokens of a frame inserted into them.
+        token_buffer: The capacity of the past target tokens per stream (0:
+            none).
+        token_insert: The tokens of a frame inserted into them per stream.
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.

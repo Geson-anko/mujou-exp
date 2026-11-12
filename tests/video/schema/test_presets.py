@@ -195,14 +195,16 @@ class TestM17:
 
     def test_the_token_preset_is_wt_n16_with_the_tokens_as_the_code(self) -> None:
         """The tokens of 16 as the representation, SIGReg of them raw with
-        8192 past tokens, the posthoc on the flattened tokens; everything
-        else, the optimizer included, that of wt_n16 (2026-11-12)."""
+        2048 past tokens per stream, every target token of a frame inserted
+        (2026-11-12), the posthoc on the flattened tokens, 1800 s; everything
+        else, the optimizer included, that of wt_n16."""
         conf = compose(["+experiment=m17/tok_n16"])
         base = compose(["+experiment=m17/wt_n16"])
         v, w = conf.vision, base.vision
         assert v is not None and w is not None
         assert (v.token_dim, v.sigreg_on, v.token_sigreg) == (16, "tokens", "raw")
-        assert (v.token_buffer, v.token_insert) == (8192, 64)
+        assert (v.token_buffer, v.token_insert) == (2048, 512)
+        assert conf.seconds == 1800.0 and conf.ctl == base.ctl
         assert v.z_dim is None and v.z_width == 16
         assert conf.measure.posthoc_code == "tokens"
         assert base.measure.posthoc_code == "z" and w.token_dim is None

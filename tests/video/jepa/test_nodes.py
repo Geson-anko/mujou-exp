@@ -483,10 +483,11 @@ TOKENS = {
     "token_dim": 8,
     "sigreg_on": "tokens",
     "token_sigreg": "raw",
-    "token_buffer": 40,
-    "token_insert": 12,
+    "token_buffer": 20,
+    "token_insert": 6,
     "sigreg": 0.3,
-}  # the tokens of 8 as the representation, SIGReg of them with the past
+}  # the tokens of 8 as the representation, SIGReg of them with the past (per
+# stream: of 2 streams 40 rows, 12 tokens a frame)
 
 
 def _ids(streams: int, tokens: int, dim: int) -> torch.Tensor:
@@ -496,12 +497,16 @@ def _ids(streams: int, tokens: int, dim: int) -> torch.Tensor:
     return i.view(streams, tokens, 1).expand(-1, -1, dim).clone()
 
 
-def _past(capacity: int = 40, insert: int = 12, streams: int = 3) -> PastTokens:
+def _past(
+    capacity: int = 10, insert: int = 4, streams: int = 3, tokens: int = 8
+) -> PastTokens:
+    """Past tokens of ``capacity`` and ``insert`` per stream: of 3 streams, 30
+    rows and 12 tokens a frame."""
     return PastTokens(
         capacity=capacity,
         insert=insert,
         streams=streams,
-        tokens=8,
+        tokens=tokens,
         dim=4,
         directions=5,
         device="cpu",
@@ -514,25 +519,50 @@ def _dirs() -> torch.Tensor:
 
 
 class TestPastTokens:
+    @pytest.mark.parametrize("streams", [1, 4])
+    def test_the_capacity_and_the_insertion_are_per_stream(self, streams):
+        past, g = _past(streams=streams), torch.Generator().manual_seed(0)
+        assert past.rows.shape == (10 * streams, 4)
+        past.keep(_ids(streams, 8, 4), torch.ones(streams, dtype=torch.bool))
+        past.next_frame(_dirs(), g)
+        assert past.count == 4 * streams
+
+    @pytest.mark.parametrize(
+        ("capacity", "insert"), [(0, 4), (10, 0), (10, 9)], ids=["cap", "0", "T"]
+    )
+    def test_refused(self, capacity, insert):
+        with pytest.raises(ValueError, match="insert <= the 8 tokens"):
+            _past(capacity=capacity, insert=insert)
+
     def test_a_frame_inserts_k_distinct_tokens_of_the_valid_streams(self):
         past, g = _past(), torch.Generator().manual_seed(0)
         past.keep(_ids(3, 8, 4), torch.tensor([True, False, True]))
         past.next_frame(_dirs(), g)
-        assert past.count == 12
+        assert past.count == 12  # 3 streams x 4, of the 16 valid tokens
         ids = past.rows[:12, 0].long()
         assert len(set(ids.tolist())) == 12  # without replacement
         assert ((ids < 8) | (ids >= 16)).all()  # of streams 0 and 2 only
         assert (past.rows[:12] == past.rows[:12, :1]).all()  # whole rows
 
     def test_fewer_valid_tokens_than_k_insert_them_all_and_none_inserts_none(self):
-        past, g = _past(streams=1), torch.Generator().manual_seed(0)
-        past.keep(_ids(1, 8, 4), torch.tensor([True]))  # one stream: B = 1
+        past, g = _past(streams=2, insert=8), torch.Generator().manual_seed(0)
+        past.keep(_ids(2, 8, 4), torch.tensor([True, False]))  # 8 of 16 asked
         past.next_frame(_dirs(), g)
         assert past.count == 8
         assert sorted(past.rows[:8, 0].tolist()) == list(range(8))
-        past.keep(_ids(1, 8, 4), torch.tensor([False]))
+        past.keep(_ids(2, 8, 4), torch.tensor([False, False]))
         past.next_frame(_dirs(), g)
         assert past.count == 8
+
+    def test_insert_t_puts_every_token_of_each_stream(self):
+        """At insert = T (the preset's), a frame's every target token goes in,
+        one stream (B = 1) included."""
+        for streams in (1, 3):
+            past, g = _past(streams=streams, insert=8), torch.Generator()
+            past.keep(_ids(streams, 8, 4), torch.ones(streams, dtype=torch.bool))
+            past.next_frame(_dirs(), g.manual_seed(0))
+            ids = sorted(past.rows[: past.count, 0].tolist())
+            assert ids == list(range(8 * streams))
 
     def test_a_frame_is_inserted_once(self):
         past, g = _past(), torch.Generator().manual_seed(0)
@@ -544,16 +574,52 @@ class TestPastTokens:
     def test_once_full_a_frame_replaces_k_rows(self):
         """Random replacement (exp.lib.sigreg.insert_): the buffer stays full,
         and exactly the k rows drawn change, to the frame's tokens."""
-        past, g = _past(capacity=20), torch.Generator().manual_seed(0)
+        past, g = _past(capacity=7), torch.Generator().manual_seed(0)
         for k in range(2):
             past.keep(_ids(3, 8, 4) + 100 * k, torch.ones(3, dtype=torch.bool))
             past.next_frame(_dirs(), g)
-        assert past.count == 20
+        assert past.count == 21
         before = past.rows.clone()
         past.keep(_ids(3, 8, 4) + 1000, torch.ones(3, dtype=torch.bool))
         past.next_frame(_dirs(), g)
         changed = (past.rows != before).any(1)
         assert int(changed.sum()) == 12 and (past.rows[changed] >= 1000).all()
+
+    @pytest.mark.parametrize("streams", [1, 4])
+    def test_the_rows_survive_a_frame_with_probability_one_less_insert_over_capacity(
+        self, streams
+    ):
+        """Once full, each frame replaces streams x insert of the streams x
+        capacity rows drawn uniformly without replacement, independently of
+        the frames before: a row survives k frames with probability (1 -
+        insert / capacity)^k, (3/4)^k at insert = capacity / 4, whatever the
+        streams. Over 4096 x 8 rows the fraction is within 0.02 of it."""
+        tokens, capacity = 256, 1024
+        past = _past(capacity=capacity, insert=tokens, streams=streams, tokens=tokens)
+        g = torch.Generator().manual_seed(0)
+        every = torch.ones(streams, dtype=torch.bool)
+        frames = 0
+
+        def show() -> None:
+            """A frame of tokens whose second entry is the frame's number."""
+            nonlocal frames
+            frames += 1
+            x = _ids(streams, tokens, 4)
+            x[..., 1] = frames
+            past.keep(x, every)
+            past.next_frame(_dirs(), g)
+
+        while past.count < len(past.rows):
+            show()
+        survived = torch.zeros(4)
+        for _ in range(4096 // streams):  # 4096 x capacity rows in all of each k
+            first = past.rows.clone()
+            for k in range(4):
+                show()
+                survived[k] += float((past.rows == first).all(1).sum())
+        fraction = survived / (4096 * capacity)
+        expect = torch.tensor([0.75**k for k in range(1, 5)])
+        torch.testing.assert_close(fraction, expect, atol=0.005, rtol=0)
 
     def test_the_sums_are_those_of_the_filled_rows_and_detached(self):
         past, g = _past(), torch.Generator().manual_seed(0)
@@ -619,7 +685,7 @@ class TestTokenRepresentation:
             act = run.read(net.enc2.next)
             g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
         assert act["h"].shape[-1] == 8  # the encoder's tokens are of token_dim
-        assert head.past.count == 12
+        assert head.past.count == 2 * 6  # per stream
         h = act["h"].clone().requires_grad_()
         t = _token_loss(net, act, h, head.past.sums)
         (expect,) = torch.autograd.grad(b * t.loss, [h])

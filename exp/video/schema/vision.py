@@ -115,8 +115,11 @@ class VisionConf:
     ``LayerNorm``'s output linearly to ``token_dim``: the encoder's tokens are
     the representation, of ``token_dim`` each ($z$ is their mean; ``z_dim``
     must be None). ``token_buffer`` > 0 adds to the SIGReg sample of the
-    target tokens a buffer of that many past target tokens (detached), into
-    which ``token_insert`` tokens of each frame go (``jepa.nodes.PastTokens``;
+    target tokens a buffer of that many past target tokens per stream
+    (detached; ``data.streams`` x ``token_buffer`` in all), into which
+    ``token_insert`` tokens of each frame per stream go, at most the $T$ of a
+    stack (``jepa.nodes.PastTokens``; the ages in the buffer do not depend on
+    the streams;
     ``token_sigreg`` "raw" only: the Epps-Pulley statistic of the current and
     the past tokens together).
     """
@@ -180,7 +183,7 @@ class VisionConf:
     # "packed" only: the width of the encoder's output tokens (None: dim, no map)
     token_dim: int | None = None
     # "packed" only: the past target tokens in the SIGReg of the tokens (0:
-    # none) and the tokens of a frame put into them
+    # none) and the tokens of a frame put into them, both per stream
     token_buffer: int = 0
     token_insert: int = 64
 
