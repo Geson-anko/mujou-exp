@@ -647,6 +647,14 @@ class TestPastTokens:
             if isinstance(x, torch.Tensor):
                 assert torch.equal(getattr(other, name), x), name
 
+    def test_a_state_of_other_rows_is_refused(self):
+        """A state from before the sizes were per stream (capacity rows in
+        all) would else replace the rows silently."""
+        past = _past()  # 3 streams x 10 rows
+        state = past.state_dict() | {"rows": past.rows[:10].clone()}  # 10 in all
+        with pytest.raises(ValueError, match=r"rows is torch.Size\(\[30, 4\]\)"):
+            _past().load_state_dict(state)
+
 
 def _token_loss(net: VisionPC, act, h: torch.Tensor, past) -> Any:
     v = net.mods  # the head's loss of the packed layout, without a projection

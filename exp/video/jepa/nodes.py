@@ -168,7 +168,10 @@ class PastTokens(Stateful):
 
     Raises:
         ValueError: ``capacity`` or ``insert`` below 1, or ``insert`` above
-            the tokens of a stack $T$.
+            the tokens of a stack $T$; in ``load_state_dict``, a state of
+            other shapes (other sizes per stream, streams or tokens: a state
+            from before the sizes were per stream holds ``capacity`` rows in
+            all).
     """
 
     def __init__(
@@ -226,7 +229,12 @@ class PastTokens(Stateful):
 
     @override
     def load_state_dict(self, state: dict[str, Any], /) -> None:
-        for name in ("rows", "kept", "kept_valid", "cos", "sin", "n"):
+        names = ("rows", "kept", "kept_valid", "cos", "sin", "n")
+        for name in names:
+            have, got = getattr(self, name).shape, state[name].shape
+            if got != have:
+                raise ValueError(f"the past tokens' {name} is {have}, not {got}")
+        for name in names:
             setattr(self, name, state[name].to(getattr(self, name)).clone())
         self.count = int(state["count"])
 
