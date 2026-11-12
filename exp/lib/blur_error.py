@@ -12,7 +12,11 @@ e_\sigma(\hat x, x) = \operatorname{mean}\big( (G_\sigma * (\hat x - x))^2 \big)
 $$
 
 with $\bar x$ the mean image: 1 is the mean image, 0 the true frame, and
-$\sigma = 0$ the per-pixel squared error. The blur is linear, so a cosine of
+$\sigma = 0$ the per-pixel squared error. On a set of pixels $\Omega$ (the
+masked region of an image), the mean is over $\Omega$ alone, of the error
+blurred over the whole image (``blur_mse_masked``, ``blur_recon_masked``):
+it reads the pixels within the kernel's radius of $\Omega$, no others, and
+is ``blur_mse`` at $\Omega$ every pixel. The blur is linear, so a cosine of
 angular frequency $\omega$ is scaled by the kernel's response
 $K(\omega) = \sum_j k_j \cos(\omega j)$ and its error by $K(\omega)^2$: the
 error of a shift by one pixel, $2(1 - \cos\omega)$ times the energy of the
@@ -29,7 +33,15 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-__all__ = ["SIGMA", "blur_mse", "blur_recon", "gaussian_blur", "gaussian_kernel"]
+__all__ = [
+    "SIGMA",
+    "blur_mse",
+    "blur_mse_masked",
+    "blur_recon",
+    "blur_recon_masked",
+    "gaussian_blur",
+    "gaussian_kernel",
+]
 
 SIGMA = 2.0  # pixels, for 128 x 128 frames (memory/agents/recon-metric/)
 
@@ -74,3 +86,23 @@ def blur_recon(x_hat: Tensor, x: Tensor, mean: Tensor, sigma: float = SIGMA) -> 
     against the frames ``x`` ``(n, C, H, W)``, over that of the mean image
     ``mean`` ``(C, H, W)`` (1 is the mean image)."""
     return float(blur_mse(x_hat, x, sigma) / blur_mse(mean.expand_as(x), x, sigma))
+
+
+def blur_mse_masked(a: Tensor, b: Tensor, mask: Tensor, sigma: float = SIGMA) -> Tensor:
+    """$e_\\sigma$ on the pixels ``mask`` ``(n, H, W)`` bool: the mean squared
+    value of the blurred difference of ``a`` and ``b`` ``(n, C, H, W)`` over
+    the channels of the masked pixels, a scalar (not finite without one)."""
+    w = mask[:, None].to(a)
+    err = gaussian_blur(a - b, sigma) ** 2
+    return (err * w).sum() / (w.sum() * a.shape[1])
+
+
+def blur_recon_masked(
+    x_hat: Tensor, x: Tensor, mean: Tensor, mask: Tensor, sigma: float = SIGMA
+) -> float:
+    """``blur_recon`` on the pixels ``mask`` ``(n, H, W)`` bool:
+    ``blur_mse_masked`` of the reconstructions ``x_hat`` against the frames
+    ``x`` ``(n, C, H, W)``, over that of the mean image ``mean`` ``(C, H,
+    W)``."""
+    err = blur_mse_masked(x_hat, x, mask, sigma)
+    return float(err / blur_mse_masked(mean.expand_as(x), x, mask, sigma))

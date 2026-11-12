@@ -3,7 +3,14 @@ import math
 import pytest
 import torch
 
-from exp.lib.blur_error import blur_mse, blur_recon, gaussian_blur, gaussian_kernel
+from exp.lib.blur_error import (
+    blur_mse,
+    blur_mse_masked,
+    blur_recon,
+    blur_recon_masked,
+    gaussian_blur,
+    gaussian_kernel,
+)
 
 W = 64
 
@@ -117,3 +124,49 @@ class TestBlurMse:
         # detail little: K^2 = exp(-sigma^2 omega^2) for the continuous kernel,
         # off by the 0.27% of its mass beyond 3 sigma.
         assert ratio == pytest.approx(math.exp(-(sigma**2) * omega**2), rel=1e-2)
+
+
+def block(n: int, top: int, left: int, side: int) -> torch.Tensor:
+    """The mask ``(n, W, W)`` of a square of ``side`` at ``(top, left)``."""
+    m = torch.zeros(n, W, W, dtype=torch.bool)
+    m[:, top : top + side, left : left + side] = True
+    return m
+
+
+class TestMasked:
+    def test_every_pixel_is_the_unmasked_error(self):
+        a, b, mean = images(0), images(1), images(2)[0]
+        every = torch.ones(4, W, W, dtype=torch.bool)
+        torch.testing.assert_close(blur_mse_masked(a, b, every), blur_mse(a, b))
+        assert blur_recon_masked(a, b, mean, every) == pytest.approx(
+            blur_recon(a, b, mean), rel=1e-12
+        )
+
+    def test_sigma_zero_is_the_squared_error_on_the_mask(self):
+        a, b = images(0), images(1)
+        m = block(4, 10, 20, 8)
+        expect = ((a - b) ** 2)[:, :, 10:18, 20:28].mean()
+        torch.testing.assert_close(blur_mse_masked(a, b, m, 0.0), expect)
+
+    @pytest.mark.parametrize("sigma", [1.0, 2.0])
+    def test_pixels_beyond_the_kernels_radius_of_the_mask_are_not_read(self, sigma):
+        """The blurred error at a pixel reads the pixels within Chebyshev
+        distance r = ceil(3 sigma) (the reflected borders included); a change
+        farther from every masked pixel leaves the error as it is, one at the
+        radius does not."""
+        r = math.ceil(3 * sigma)
+        a, b = images(0), images(1)
+        m = block(4, 20, 20, 10)  # rows and columns 20 .. 29
+        base = blur_mse_masked(a, b, m, sigma)
+        far = a.clone()
+        near = torch.zeros(W, W, dtype=torch.bool)
+        near[20 - r : 30 + r, 20 - r : 30 + r] = True
+        far[:, :, ~near] = torch.rand(int((~near).sum()), dtype=a.dtype)
+        assert float(blur_mse_masked(far, b, m, sigma)) == pytest.approx(
+            float(base), rel=1e-12
+        )
+        edge = a.clone()
+        edge[:, :, 20 - r, 25] += 1.0  # at the radius
+        assert float(blur_mse_masked(edge, b, m, sigma)) != pytest.approx(
+            float(base), rel=1e-12
+        )
