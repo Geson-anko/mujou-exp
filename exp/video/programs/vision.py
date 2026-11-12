@@ -79,8 +79,9 @@ token's spatial position); no probe and no
 ``objective`` (the decoders and the dynamics are learned afterwards, and
 ``task=posthoc`` writes the objective). It also has the completion errors of
 the split (``measure.completion``, ``PackedMeasures.completion``):
-``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean`` per mask kind,
-and the same normalized within the stacks ``ncomp_*``; and the completion
+``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean``,
+``comp_<kind>_pos`` per mask kind, and the same normalized within the stacks
+``ncomp_*``; and the completion
 of the whole stack's embedding $u_g$ from each context view's
 (``zcomp_<view>``, $1 - R^2$ over the split; ``jepa.loss``: of $z$ itself
 without a projector and a predictor of $u$), and ``zpred`` (its term of the
@@ -145,7 +146,7 @@ from exp.video.measure.completion import (
     completion,
     future_slots,
     future_tokens,
-    mean_token,
+    position_mean,
 )
 from exp.video.measure.objective import PENALTY
 from exp.video.measure.vision import THUMB, ball_probe, thumbnail_probe
@@ -645,12 +646,13 @@ class PackedMeasures:
         self, mods: VisionModules, splits: list[str]
     ) -> dict[str, dict[str, float]]:
         """The completion errors (``measure.completion.completion``) of
-        ``mods`` on the held-in stacks (``"fit"``, whose mean target token is
-        the ``_mean`` predictor of every split) and on the first stack of
-        each window of ``splits``, by split."""
+        ``mods`` on the held-in stacks (``"fit"``, whose mean target tokens
+        per position are the ``_mean`` and ``_pos`` predictors of every
+        split) and on the first stack of each window of ``splits``, by
+        split."""
         v, b, dev = self.v, self._batch, self._dev
         norm = v.target_norm
-        mean = mean_token(mods, self.held_in, batch=b, device=dev, normalize=norm)
+        ref = position_mean(mods, self.held_in, batch=b, device=dev, normalize=norm)
         sets = {"fit": self.held_in}
         sets |= {s: self.windows[s][:, : v.frames] for s in splits}
         return {
@@ -658,7 +660,7 @@ class PackedMeasures:
                 mods,
                 x,
                 self._kinds(s),
-                mean_token=mean,
+                reference=ref,
                 batch=b,
                 device=dev,
                 normalize=norm,

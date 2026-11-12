@@ -7,16 +7,17 @@ import math
 import pytest
 import torch
 
-from exp.video.jepa.loss import jepa_loss_packed
+from exp.video.jepa.loss import jepa_loss_packed, view_ids
 from exp.video.jepa.masks import expected_keep, multiblock_masks, pack_views
 from exp.video.jepa.vit import build_vision
+from exp.video.measure import completion as completion_module
 from exp.video.measure.completion import (
     Unexplained,
     complete,
     completion,
     future_slots,
     future_tokens,
-    mean_token,
+    position_mean,
     tube_tokens,
 )
 from exp.video.schema.vision import MaskConf
@@ -168,8 +169,9 @@ class TestComplete:
         )
 
     def test_the_trivial_predictors(self):
-        """``_vis`` is the mean of the visible target tokens of each stack and
-        ``_mean`` the fixed token, through the same normalization."""
+        """``_vis`` is the mean of the visible target tokens of each stack,
+        ``_mean`` the fixed token and ``_pos`` the reference's mean token at
+        each masked position, through the same normalization."""
         conf = packed_conf()
         v = conf.vision
         assert v is not None
@@ -177,28 +179,98 @@ class TestComplete:
         x = stacks(4, frames=v.frames)
         masked = future_tokens(4, mods.grid3, 1)
         keep = int((masked[0] == 0).sum())
-        fixed = mean_token(mods, x[2:], batch=2, device=torch.device("cpu"))
+        ref = position_mean(mods, x[2:], batch=1, device=torch.device("cpu"))
         got = completion(
             mods,
             x,
             {"future": (masked, keep)},
-            mean_token=fixed,
+            reference=ref,
             batch=3,
             device=torch.device("cpu"),
         )
         with torch.no_grad():
             target = mods.tokens(x)
             pred, goal, vis = complete(mods, x, target, masked, keep)
+        _, ids = view_ids(masked, keep)
+        fixed = ref.mean(0)
+        assert torch.allclose(ref, mods.tokens(x[2:]).mean(0), atol=1e-6)
+        assert torch.allclose(fixed, mods.tokens(x[2:]).mean((0, 1)), atol=1e-6)
         assert got["comp_future"] == pytest.approx(_value(goal, pred), rel=1e-6)
         assert got["comp_future_vis"] == pytest.approx(
             _value(goal, vis[:, None]), rel=1e-6
         )
         assert got["comp_future_mean"] == pytest.approx(_value(goal, fixed), rel=1e-6)
-        assert torch.allclose(fixed, mods.tokens(x[2:]).mean((0, 1)), atol=1e-6)
+        assert got["comp_future_pos"] == pytest.approx(_value(goal, ref[ids]), rel=1e-6)
         assert got["ncomp_future"] == pytest.approx(_within(goal, pred), rel=1e-6)
         assert got["ncomp_future_vis"] == pytest.approx(
             _within(goal, vis[:, None]), rel=1e-6
         )
+        assert got["ncomp_future_pos"] == pytest.approx(
+            _within(goal, ref[ids]), rel=1e-6
+        )
         assert set(got) == {
-            f"{k}_future{s}" for k in ("comp", "ncomp") for s in ("", "_vis", "_mean")
+            f"{k}_future{s}"
+            for k in ("comp", "ncomp")
+            for s in ("", "_vis", "_mean", "_pos")
         }
+
+
+def _of_position(g: torch.Tensor, noise: float):
+    """``targets`` of tokens $g(t)$ ``(T, D)`` plus i.i.d. noise of variance
+    ``noise``, the noise of a stack drawn from a seed of its pixels (the same
+    tokens for the same stack in any batch)."""
+
+    def targets(mods, x, *, normalize):
+        seeds = x.long().flatten(1).sum(1).tolist()
+        e = [
+            torch.randn(g.shape, generator=torch.Generator().manual_seed(k))
+            for k in seeds
+        ]
+        return g + noise**0.5 * torch.stack(e)
+
+    return targets
+
+
+class TestPosition:
+    r"""``_pos`` against tokens of the position alone, $s(x, t) = g(t) + e$,
+    $e$ i.i.d. of variance $v$ in each of the $D$ dimensions: per token its
+    error is $D v$ and the spread of the masked tokens over the set $D v +
+    \mathrm{Var}_t g$ ($\mathrm{Var}_t g$ over the masked positions, summed
+    over the dimensions), so $E = D v / (D v + \mathrm{Var}_t g)$, 0 at $v =
+    0$; and on the reference itself it is at most ``_mean``."""
+
+    def _run(self, monkeypatch, noise: float, n: int, same: bool):
+        conf = packed_conf()
+        v = conf.vision
+        assert v is not None
+        mods = build_vision(conf, seed=0)
+        t, d = mods.tokens_per_view, mods.predictor.out.out_features
+        g = torch.randn(t, d, generator=torch.Generator().manual_seed(7))
+        monkeypatch.setattr(completion_module, "targets", _of_position(g, noise))
+        x = stacks(n, frames=v.frames, seed=1)
+        ref_x = x if same else stacks(n, frames=v.frames, seed=2)
+        masked = future_tokens(n, mods.grid3, 1)
+        keep = int((masked[0] == 0).sum())
+        cpu = torch.device("cpu")
+        ref = position_mean(mods, ref_x, batch=16, device=cpu)
+        got = completion(
+            mods, x, {"future": (masked, keep)}, reference=ref, batch=16, device=cpu
+        )
+        hidden = g[keep:].double()  # the future: the last ids
+        spread = float(hidden.var(0, unbiased=False).sum())
+        return got, spread, d
+
+    def test_tokens_of_the_position_alone_are_zero(self, monkeypatch):
+        got, _, _ = self._run(monkeypatch, 0.0, 8, same=False)
+        assert got["comp_future_pos"] == pytest.approx(0.0, abs=1e-12)
+        assert got["comp_future_mean"] > 0.5
+
+    def test_with_noise_it_is_v_over_v_plus_the_spread_of_g(self, monkeypatch):
+        noise = 0.5
+        got, spread, d = self._run(monkeypatch, noise, 2048, same=False)
+        expect = d * noise / (d * noise + spread)  # the noise of d dimensions
+        assert got["comp_future_pos"] == pytest.approx(expect, rel=0.03)
+
+    def test_on_the_reference_it_is_at_most_mean(self, monkeypatch):
+        got, _, _ = self._run(monkeypatch, 2.0, 16, same=True)
+        assert got["comp_future_pos"] <= got["comp_future_mean"]

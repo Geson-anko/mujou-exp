@@ -22,10 +22,17 @@ tokens cannot lower it (the loss ``pred`` can); predicting $\bar s_\Omega$ is
 1, a perfect prediction 0. The same normalization gives the trivial
 predictors: ``_vis``, the mean of the visible target tokens of the same stack
 (it reads the target view, whose visible tokens attended to the masked ones:
-a lenient bar), and ``_mean``, a fixed token, the per-dimension mean of the
+a lenient bar), ``_mean``, a fixed token, the per-dimension mean of the
 target tokens of a reference set (the held-in stacks of the training videos;
 near 1 on the reference itself, above 1 by how far the held-out set's mean
-is from it).
+is from it), and ``_pos``, the per-dimension mean of the reference's target
+tokens at the masked token's position $t$ (its time slot and spatial
+position): of the predictors that see no context and know the position, the
+best on the reference (it minimizes the squared error there, so ``_pos`` is
+at most ``_mean`` on it). A predictor below ``_pos`` uses the context;
+``comp_<kind>`` near ``comp_<kind>_pos`` says the tokens are a function of
+the position alone, $s(x, t) \approx g(t)$ (M17, 2026-11-12), the solution
+of the prediction that SIGReg of all the tokens together does not exclude.
 
 $E$ is normalized by the spread of the masked tokens over the whole set,
 which counts the spread between the stacks too: tokens that collapse to a
@@ -60,7 +67,7 @@ __all__ = [
     "completion",
     "future_slots",
     "future_tokens",
-    "mean_token",
+    "position_mean",
     "targets",
     "tube_tokens",
 ]
@@ -176,7 +183,7 @@ def targets(mods: VisionModules, x: Tensor, *, normalize: bool) -> Tensor:
 
 
 @torch.no_grad()
-def mean_token(
+def position_mean(
     mods: VisionModules,
     stacks: Tensor,
     *,
@@ -184,17 +191,18 @@ def mean_token(
     device: torch.device,
     normalize: bool = False,
 ) -> Tensor:
-    """The per-dimension mean ``(D,)`` of all target tokens of the stacks
-    ``stacks`` ``(n, N, C, H, W)`` (u8, CPU; ``targets``): the fixed token of
-    the ``_mean`` predictor."""
-    total, count = None, 0
+    """The per-position, per-dimension mean ``(T, D)`` of the target tokens
+    of the stacks ``stacks`` ``(n, N, C, H, W)`` (u8, CPU; ``targets``): row
+    $t$ is the ``_pos`` predictor of the tokens at position $t$, and the mean
+    of the rows (every stack has a token at every position) the fixed token
+    of ``_mean``."""
+    total = None
     for i in range(0, len(stacks), batch):
         target = targets(mods, stacks[i : i + batch].to(device), normalize=normalize)
-        s = target.double().sum((0, 1))
+        s = target.double().sum(0)
         total = s if total is None else total + s
-        count += target.shape[0] * target.shape[1]
     assert total is not None, "no stacks"
-    return (total / count).float()
+    return (total / len(stacks)).float()
 
 
 @torch.no_grad()
@@ -203,7 +211,7 @@ def completion(
     stacks: Tensor,
     kinds: Mapping[str, tuple[Tensor, int]],
     *,
-    mean_token: Tensor | None,
+    reference: Tensor | None,
     batch: int,
     device: torch.device,
     normalize: bool = False,
@@ -216,8 +224,9 @@ def completion(
         stacks: The stacks.
         kinds: Per kind, the token mask ``(n, T)`` and the visible tokens of
             a row.
-        mean_token: The fixed token ``(D,)`` of the ``_mean`` predictor
-            (``mean_token`` of a reference set), or None (no ``_mean``).
+        reference: The per-position mean ``(T, D)`` of the target tokens of a
+            reference set (``position_mean``), of the ``_mean`` and ``_pos``
+            predictors, or None (neither).
         batch: The stacks of a batch.
         device: Where to compute.
         normalize: The targets through a LayerNorm without affine
@@ -225,20 +234,24 @@ def completion(
 
     Returns:
         ``comp_<kind>`` (the predictor), ``comp_<kind>_vis`` and, with
-        ``mean_token``, ``comp_<kind>_mean``; and the same of
-        $E^{\mathrm{n}}$ as ``ncomp_<kind>``, ``ncomp_<kind>_vis``,
-        ``ncomp_<kind>_mean``.
+        ``reference``, ``comp_<kind>_mean`` and ``comp_<kind>_pos``; and the
+        same of $E^{\mathrm{n}}$ as ``ncomp_<kind>``, ``ncomp_<kind>_vis``,
+        ``ncomp_<kind>_mean``, ``ncomp_<kind>_pos``.
     """
-    names = ["pred", "vis", *(("mean",) if mean_token is not None else ())]
+    names = ["pred", "vis", *(("mean", "pos") if reference is not None else ())]
     acc = {k: Unexplained(names) for k in kinds}
     for i in range(0, len(stacks), batch):
         x = stacks[i : i + batch].to(device)
         target = targets(mods, x, normalize=normalize)  # (b, T, D)
         for kind, (masked, keep) in kinds.items():
-            pred, goal, visible = complete(mods, x, target, masked[i : i + batch], keep)
+            m = masked[i : i + batch]
+            pred, goal, visible = complete(mods, x, target, m, keep)
             preds = {"pred": pred, "vis": visible[:, None]}
-            if mean_token is not None:
-                preds["mean"] = mean_token.to(goal)
+            if reference is not None:
+                ref = reference.to(goal)
+                _, ids = view_ids(m.to(goal.device), keep)  # those of goal
+                preds["mean"] = ref.mean(0)
+                preds["pos"] = ref[ids]  # (b, M, D)
             acc[kind].add(goal, preds)
     out: dict[str, float] = {}
     for kind, a in acc.items():

@@ -480,7 +480,7 @@ class TestPacked:
             f"{c}_{k}{s}"
             for c in ("comp", "ncomp")
             for k in kinds
-            for s in ("", "_vis", "_mean")
+            for s in ("", "_vis", "_mean", "_pos")
         }  # of val, and of calib and the held-in stacks in the row of val
         # the spread of the tokens within the stacks (temporal: two slots)
         spread = {

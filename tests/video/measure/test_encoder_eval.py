@@ -91,7 +91,7 @@ class TestEncoderEval:
             f"{c}_{k}{s}"
             for c in ("comp", "ncomp")
             for k in ("short", "long", "future")
-            for s in ("", "_vis", "_mean")
+            for s in ("", "_vis", "_mean", "_pos")
         }
         prefixed = {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
         assert comp | prefixed <= set(vit)
