@@ -12,8 +12,11 @@ from exp.video.jepa.loss import (
     prediction_errors,
     split_y,
     token_sigreg_of,
+    view_embeddings,
     weighted_sigreg,
+    z_errors,
 )
+from exp.video.jepa.vit import ZPredictor
 
 B, V, E, T, D = 3, 3, 1, 4, 5
 
@@ -487,3 +490,143 @@ class TestTokenSigreg:
         s_z = weighted_sigreg(target.mean(1), w, dirs)
         s_t = token_sigreg_of(target, w, dirs, kind)
         torch.testing.assert_close(got.sigreg, (s_z + s_t) / 2)
+
+
+class TestSpaceTimeCompletion:
+    """The completion of the whole stack's embedding u_g from each context
+    view's u_v (LeJEPA's form; module docstring)."""
+
+    def test_u_g_is_the_pooled_target_view_and_u_v_the_pooled_context(self):
+        tokens, _, keeps, _ = _packed_inputs(5)
+        proj = torch.nn.Linear(5, 4).double()
+        head = torch.nn.Linear(4, 3).double()
+        u = view_embeddings(tokens, keeps, 6, proj, head)
+        assert u.shape == (3, 3, 3)
+        torch.testing.assert_close(u[:, 0], head(proj(tokens[:, :6].mean(1))))
+        torch.testing.assert_close(u[:, 1], head(proj(tokens[:, 6:8].mean(1))))
+        torch.testing.assert_close(u[:, 2], head(proj(tokens[:, 8:].mean(1))))
+
+    def test_by_hand(self):
+        """L = (1 / B) sum_valid [(1 - lam)(beta L_pred + alpha L_z) + lam S],
+        L_z the mean over the context views of |u_g - q(u_v, v)|^2 / d_u, S
+        the mean over the views of SIGReg of u_v."""
+        tokens, y, keeps, dirs = _packed_inputs(6)
+        valid = torch.tensor([True, True, False])
+        g = torch.Generator().manual_seed(4)
+        du = torch.randn(7, 5, generator=g, dtype=torch.float64)
+        lam, alpha, beta = 0.2, 0.7, 0.4
+
+        def zpred(u: torch.Tensor, kind: int) -> torch.Tensor:
+            return u * (kind + 2)
+
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=lam,
+            sg=False,
+            sigreg_on="views",
+            pred_loss="l2",
+            token_weight=beta,
+            z_weight=alpha,
+            zpred=zpred,
+            directions_u=du,
+        )
+        base = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=0.0,
+            sg=False,
+            sigreg_on="z",
+            pred_loss="l2",
+        )
+        u = view_embeddings(tokens, keeps, 6, None, None)
+        lz = torch.stack(
+            [((u[:, 0] - zpred(u[:, v], v - 1)) ** 2).mean(1) for v in (1, 2)], 1
+        ).mean(1)
+        w = valid.double()
+        s = torch.stack([weighted_sigreg(u[:, v], w, du) for v in range(3)]).mean()
+        pred_sum = base.pred * 2
+        expect = (
+            (1 - lam) * (beta * pred_sum + alpha * lz[:2].sum()) + lam * 2 * s
+        ) / 3
+        torch.testing.assert_close(got.loss, expect)
+        torch.testing.assert_close(got.sigreg, s)
+        assert got.zpred is not None
+        torch.testing.assert_close(got.zpred, lz[:2].mean())
+        torch.testing.assert_close(
+            z_errors(u, zpred),
+            torch.stack(
+                [((u[:, 0] - zpred(u[:, v], v - 1)) ** 2).mean(1) for v in (1, 2)], 1
+            ),
+        )
+
+    def test_a_view_that_pools_as_the_whole_completes_it_exactly(self):
+        """Tokens constant within each stack: every view pools to u_g, so the
+        completion term is 0 (and the loss is lam S alone without tokens)."""
+        g = torch.Generator().manual_seed(7)
+        clip = torch.randn(3, 1, 5, generator=g, dtype=torch.float64)
+        tokens = clip.expand(3, 12, 5).contiguous()
+        _, y, keeps, dirs = _packed_inputs(0)
+
+        def never(*_: torch.Tensor) -> torch.Tensor:
+            raise AssertionError("token_weight 0 calls no predictor")
+
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            torch.ones(3, dtype=torch.bool),
+            dirs,
+            None,
+            never,
+            keeps=keeps,
+            proj=None,
+            lam=0.0,
+            sg=False,
+            sigreg_on="z",
+            pred_loss="l2",
+            token_weight=0.0,
+            z_weight=1.0,
+        )
+        assert float(got.loss) < 1e-30 and float(got.pred) == 0.0
+
+    def test_sg_stops_the_completion_at_u_g(self):
+        tokens, y, keeps, dirs = _packed_inputs(8)
+        tokens.requires_grad_()
+        for sg in (False, True):
+            t = jepa_loss_packed(
+                tokens,
+                y,
+                torch.ones(3, dtype=torch.bool),
+                dirs,
+                None,
+                _Shift(5),
+                keeps=keeps,
+                proj=None,
+                lam=0.0,
+                sg=sg,
+                sigreg_on="z",
+                pred_loss="l2",
+                token_weight=0.0,
+                z_weight=1.0,
+            )
+            (g,) = torch.autograd.grad(t.loss, [tokens])
+            assert bool((g[:, :6] == 0).all()) == sg
+            assert (g[:, 6:] != 0).any()
+
+    def test_the_z_predictor_starts_as_the_identity(self):
+        q = ZPredictor(4, kinds=2, hidden=8)
+        u = torch.randn(5, 4)
+        torch.testing.assert_close(q(u, 0), u)
+        torch.testing.assert_close(q(u, 1), u)

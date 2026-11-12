@@ -73,7 +73,11 @@ token's spatial position); no probe and no
 ``task=posthoc`` writes the objective). It also has the completion errors of
 the split (``measure.completion``, ``PackedMeasures.completion``):
 ``comp_<kind>``, ``comp_<kind>_vis``, ``comp_<kind>_mean`` per mask kind,
-and the same normalized within the stacks ``ncomp_*``
+and the same normalized within the stacks ``ncomp_*``; and the completion
+of the whole stack's embedding $u_g$ from each context view's
+(``zcomp_<view>``, $1 - R^2$ over the split; ``jepa.loss``: of $z$ itself
+without a projector and a predictor of $u$), and ``zpred`` (its term of the
+loss) with ``vision.z_weight`` > 0
 (``short``, ``long``, ``future``); the row of val also those of calib
 (``calib_comp_*``) and of the held-in stacks of the training videos
 (``fit_comp_*``), to see the gap.
@@ -109,7 +113,13 @@ from exp.video.data.frames import (
 )
 from exp.video.data.physics import render
 from exp.video.data.walking_tours import eval_clips, eval_windows
-from exp.video.jepa.loss import Reconstruction, jepa_loss, jepa_loss_packed
+from exp.video.jepa.loss import (
+    Reconstruction,
+    jepa_loss,
+    jepa_loss_packed,
+    view_embeddings,
+    z_errors,
+)
 from exp.video.jepa.masks import (
     block_masks,
     make_views,
@@ -484,7 +494,8 @@ class PackedMeasures:
         self.order = {s: torch.randperm(n, generator=g) for s in self.windows}
         self.masks: dict[str, list[Tensor]] = {}
         self._directions: dict[str, tuple[Tensor, Tensor | None]] = {}
-        two = v.sigreg_on in ("tokens", "both") and v.projected
+        self._directions_u: dict[str, Tensor | None] = {}
+        two = v.sigreg_on in ("tokens", "both", "views_tokens") and v.projected
         for split in self.windows:
             g = torch.Generator().manual_seed(SPLIT_SEEDS[split])
             self.masks[split] = [
@@ -498,6 +509,10 @@ class PackedMeasures:
                 dz.to(self._dev),
                 None if dt is None else dt.to(self._dev),
             )
+            du = None
+            if v.sigreg_on in ("views", "views_tokens"):
+                du = draw_directions(v.sigreg_directions, v.u_width, g).to(self._dev)
+            self._directions_u[split] = du
         c = len(v.context_masks)
         named = c == 2 and not any(self.futures)  # V-JEPA's two views
         self.views = ["short", "long"] if named else [f"c{i}" for i in range(c)]
@@ -524,7 +539,7 @@ class PackedMeasures:
         v, dev = self.v, self._dev
         windows, masks = self.windows[split], self.masks[split]
         dz, dt = self._directions[split]
-        terms, zs, spreads = [], [], []
+        terms, zs, spreads, us = [], [], [], []
         for i in range(0, len(windows), self._batch):
             idx = self.order[split][i : i + self._batch]
             chunks = windows[idx, : v.frames].to(dev)
@@ -554,15 +569,43 @@ class PackedMeasures:
                 sigreg_on=v.sigreg_on,
                 pred_loss=v.pred_loss,
                 token_sigreg=v.token_sigreg,
+                token_weight=v.token_weight,
+                z_weight=v.z_weight,
+                projector=mods.projector,
+                zpred=mods.zpred,
+                directions_u=self._directions_u[split],
             )
-            terms.append(torch.stack([t.loss, t.pred, t.sigreg]))
+            assert t.zpred is not None  # of the packed loss
+            terms.append(torch.stack([t.loss, t.pred, t.sigreg, t.zpred]))
             zs.append(t.z)
-        loss, pred, sig = torch.stack(terms).mean(0).tolist()
+            u = view_embeddings(
+                tokens, mods.segments[1:], mods.segments[0], mods.proj, mods.projector
+            )
+            us.append((u[:, 0], z_errors(u, mods.zpred)))
+        loss, pred, sig, zpred = torch.stack(terms).mean(0).tolist()
         row = {"loss": loss, "pred": pred, "sigreg": sig}
+        if v.z_weight > 0:
+            row["zpred"] = zpred
         row |= z_stats(torch.cat(zs))
+        u_g, errors = (torch.cat(x) for x in zip(*us, strict=True))
+        row |= self._zcomp(u_g, errors)
         within, temporal, means = (torch.cat(x) for x in zip(*spreads, strict=True))
         row |= spread_stats(within, temporal, means, self._slots)
         return row | self.completion_rows(mods, [split])[split]
+
+    def _zcomp(self, u_g: Tensor, errors: Tensor) -> dict[str, float]:
+        r"""``zcomp_<view>``: the completion error of $u_g$ ``(n, d_u)`` from
+        each context view, $\sum_i d_u L^z_{i,v} / \sum_i \lVert u_{g,i} -
+        \bar u_g \rVert^2$ ($1 - R^2$; 1: the split's mean $u_g$) of the
+        errors ``errors`` ``(n, V - 1)`` of ``loss.z_errors``."""
+        d = u_g.shape[1]
+        u = u_g.double()
+        var = float(((u - u.mean(0)) ** 2).sum())
+        sse = errors.double().sum(0) * d  # (V - 1,)
+        return {
+            f"zcomp_{view}": float(e) / var if var > 0 else math.nan
+            for view, e in zip(self.views, sse, strict=True)
+        }
 
     def _kinds(self, split: str) -> dict[str, tuple[Tensor, int]]:
         """The token masks ``(n, T)`` and the visible tokens of a row of each
@@ -709,7 +752,8 @@ class _Online:
         self._mask = torch.ones(b, dtype=torch.bool, device=dev)
         # The sums since the last log: loss, pred, sigreg, recon, and the frames, in
         # host memory, where Host.show reads the stats (as in programs.dynamics).
-        self._acc = torch.zeros(5, dtype=torch.float64)
+        self._acc = torch.zeros(6, dtype=torch.float64)
+        self._zpred = v.layout == "packed" and v.z_weight > 0
         state = None if resume is None else resume["mujou"]
         self._run: ManualRun = mujou.testing.run(self.net, state=state)
         self.host = Host(self._run, frame=frame, period=self.net.tau.period)
@@ -750,17 +794,33 @@ class _Online:
             return
         counted = p["n"] > 0
         terms = torch.stack(
-            [p["loss"], p["pred"], p["sigreg"], p["recon"], torch.ones_like(p["n"])]
+            [
+                p["loss"],
+                p["pred"],
+                p["sigreg"],
+                p["recon"],
+                p["zpred"],
+                torch.ones_like(p["n"]),
+            ]
         )
         self._acc += torch.where(counted, terms.double(), 0.0)
 
+    def _names(self) -> tuple[str, ...]:
+        return (
+            "loss",
+            "pred",
+            "sigreg",
+            *(("recon",) if self._recon else ()),
+            *(("zpred",) if self._zpred else ()),
+        )
+
     def log(self) -> dict[str, float | None]:
-        loss, pred, sig, rec, n = self._acc.tolist()
+        loss, pred, sig, rec, zp, n = self._acc.tolist()
         self._acc.zero_()
-        names = ("loss", "pred", "sigreg", *(("recon",) if self._recon else ()))
+        names = self._names()
         if not n:
             return dict.fromkeys(names)
-        sums = {"loss": loss, "pred": pred, "sigreg": sig, "recon": rec}
+        sums = {"loss": loss, "pred": pred, "sigreg": sig, "recon": rec, "zpred": zp}
         return {k: sums[k] / n for k in names}
 
     def evaluate(self, split: str) -> dict[str, float]:
@@ -772,8 +832,7 @@ class _Online:
         return row
 
     def diverged(self, row: Mapping[str, float]) -> str | None:
-        keys = ("loss", "pred", "sigreg", *(("recon",) if self._recon else ()))
-        bad = [k for k in keys if not math.isfinite(row[k])]
+        bad = [k for k in self._names() if not math.isfinite(row[k])]
         return f"{', '.join(bad)} not finite" if bad else None
 
     def objective(

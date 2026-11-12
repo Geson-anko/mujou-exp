@@ -523,8 +523,32 @@ class TestPackedEquilibrium:
                     MaskConf(blocks=0, scale=1.0, future=1),
                 ]
             },
+            {
+                "z_weight": 1.0,
+                "token_weight": 0.5,
+                "projector": [12, 6],
+                "zpred_hidden": 8,
+                "sigreg_on": "views_tokens",
+                "token_sigreg": "clip",
+                "sigreg": 0.3,
+                "z_dim": 8,
+                "context_masks": [
+                    MaskConf(blocks=2, scale=0.2),
+                    MaskConf(blocks=1, scale=0.3, future=1),
+                ],
+            },
+            {"z_weight": 1.0, "token_weight": 0.0, "sigreg_on": "views"},
         ],
-        ids=["n4", "sg-l1", "proj-both", "n1", "both-clip", "future"],
+        ids=[
+            "n4",
+            "sg-l1",
+            "proj-both",
+            "n1",
+            "both-clip",
+            "future",
+            "space-time",
+            "z-only",
+        ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
         """Hold a stack with learning off: lam of each encoder node relaxes to
@@ -539,6 +563,20 @@ class TestPackedEquilibrium:
                 node.lam, expect, rtol=1e-3, atol=1e-4 * float(scale)
             )
             assert node.r.abs().max() <= 1e-6 * scale
+
+
+def test_the_projector_and_the_z_predictor_learn_in_the_head():
+    vision = {"z_weight": 1.0, "projector": [12, 6], "zpred_hidden": 8}
+    pc_net = build_vision_net(packed_conf("pc", **vision))
+    bp_net = build_vision_net(packed_conf("bp", **vision))
+    assert isinstance(pc_net, VisionPC) and isinstance(bp_net, VisionBP)
+    for net, params in ((pc_net, pc_net.head._params), (bp_net, bp_net.vision._params)):
+        mods = net.mods
+        assert mods.projector is not None and mods.zpred is not None
+        ids = {id(p) for p in params}
+        assert {id(p) for p in mods.projector.parameters()} <= ids
+        assert {id(p) for p in mods.zpred.parameters()} <= ids
+        assert {"projector", "zpred"} <= set(mods.named())
 
 
 def test_pc_and_bp_draw_the_same_packed_masks():

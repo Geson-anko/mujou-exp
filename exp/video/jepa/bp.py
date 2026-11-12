@@ -59,7 +59,10 @@ class JEPABP(Node):
     ``loss.jepa_loss_packed`` with the stages attending within the views'
     segments (``mods.segments``), the projection learns with the predictor
     (after it), and the directions are those of ``draw_packed_directions``
-    (``PackedJEPAHead``'s). ``views`` is then unused.
+    (``PackedJEPAHead``'s), then those of $u$ with SIGReg of the views. The
+    projector and the predictor of $u$ of the space-time completion
+    (``mods.projector``, ``mods.zpred``) learn after the projection. ``views``
+    is then unused.
 
     Args:
         mods: The modules, on ``device``.
@@ -71,6 +74,8 @@ class JEPABP(Node):
         sigreg_on: What SIGReg sees (``loss.jepa_loss``).
         token_sigreg: The SIGReg of the tokens (packed,
             ``loss.jepa_loss_packed``).
+        token_weight: $\beta$ (packed).
+        z_weight: $\alpha$ (packed).
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -100,13 +105,17 @@ class JEPABP(Node):
         pixel_std: float = 1.0,
         pred_loss: str = "l2",
         token_sigreg: str = "scaled",
+        token_weight: float = 1.0,
+        z_weight: float = 0.0,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.mods = mods
         self._packed = mods.layout == "packed"
         self._pred_loss, self._token_sigreg = pred_loss, token_sigreg
+        self._weights = token_weight, z_weight
         self.proj = mods.proj  # an attribute, so that it is in the state
+        self.projector, self.zpred = mods.projector, mods.zpred  # so are these
         self._recon = recon, pixel_mean, pixel_std
         self.encoder, self.predictor = mods.encoder, mods.predictor
         self.decoder = mods.decoder  # an attribute, so that it is in the state
@@ -122,17 +131,22 @@ class JEPABP(Node):
         self._params = [*self.encoder.parameters(), *self.predictor.parameters()]
         if mods.decoder is not None:
             self._params += mods.decoder.parameters()
-        if mods.proj is not None:
-            self._params += mods.proj.parameters()
+        for extra in (mods.proj, mods.projector, mods.zpred):
+            if extra is not None:
+                self._params += extra.parameters()
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
         n = h.shape[0]
         self._b = n if self._packed else n // views
         d = self.predictor.out.out_features
         d_z = d if mods.proj is None else mods.proj.out_features
-        self._two = self._packed and sigreg_on in ("tokens", "both") and d_z != d
+        tokens = sigreg_on in ("tokens", "both", "views_tokens")
+        self._two = self._packed and tokens and d_z != d
+        self._views = self._packed and sigreg_on in ("views", "views_tokens")
+        self._d_u = d_z if mods.projector is None else mods.projector.out_features
         self.directions = torch.zeros(directions, d_z, device=self.device)
         self.directions_t: torch.Tensor | None = None
+        self.directions_u: torch.Tensor | None = None
         self.prev = Port(send=h, recv=act_spec)  # sends nothing
         self.z_out = Port(send=z_spec(self._b, d_z))
         self.stats = Port(send=STATS)
@@ -155,6 +169,8 @@ class JEPABP(Node):
                 self.directions, self.directions_t = draw_packed_directions(
                     m, d, width, tokens=self._two, generator=self.generator
                 )
+                if self._views:
+                    self.directions_u = draw_directions(m, self._d_u, self.generator)
             else:
                 self.directions = draw_directions(m, d, self.generator)
             with torch.set_grad_enabled(self._learns):
@@ -209,6 +225,11 @@ class JEPABP(Node):
                 sigreg_on=self._sigreg_on,
                 pred_loss=self._pred_loss,
                 token_sigreg=self._token_sigreg,
+                token_weight=self._weights[0],
+                z_weight=self._weights[1],
+                projector=self.projector,
+                zpred=self.zpred,
+                directions_u=self.directions_u,
             )
         b, v = self._b, self._v
         decoder = self.decoder

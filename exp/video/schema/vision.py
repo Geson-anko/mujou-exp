@@ -19,8 +19,10 @@ __all__ = [
 # How z_k is read from the target view's tokens: the class token, the mean of
 # the patch tokens, or the mean of ``registers`` register tokens.
 POOLS = ("cls", "mean", "registers")
-# What SIGReg sees of the target view: z, its patch tokens, or both.
-SIGREG_ON = ("z", "tokens", "both")
+# What SIGReg sees of the target view: z, its patch tokens, or both; or
+# (packed) the embedding u of every view, each over the batch (LeJEPA), alone
+# or with the tokens.
+SIGREG_ON = ("z", "tokens", "both", "views", "views_tokens")
 # The decoder of the reconstruction: an MLP from z to all the pixels, or a
 # spatial broadcast decoder (one small MLP of z and the pixel's coordinates).
 RECON_DECODERS = ("mlp", "broadcast")
@@ -105,6 +107,9 @@ class VisionConf:
     target view's tokens, then a linear map to ``z_dim`` (None: no map, $z$
     of the width ``dim``). ``pred_loss`` is the prediction error of a token,
     ``token_sigreg`` the SIGReg of the target tokens (``jepa.loss``).
+    ``token_weight`` and ``z_weight`` weigh the prediction of the masked tokens
+    and the completion of the stack's embedding from each context view's
+    (``jepa.loss``; 1 and 0: the masked tokens alone).
     """
 
     patch: int = 4  # pixels per side of a patch
@@ -140,8 +145,18 @@ class VisionConf:
     context_masks: list[MaskConf] = field(default_factory=list)  # "packed" only
     pred_loss: str = "l2"  # PRED_LOSSES, "packed" only
     # TOKEN_SIGREG, "packed" only: the SIGReg of the target tokens (with
-    # sigreg_on "tokens" or "both")
+    # sigreg_on "tokens", "both" or "views_tokens")
     token_sigreg: str = "scaled"
+    # The space-time completion of the packed layout (jepa.loss): the weights
+    # of the prediction of the masked tokens (beta) and of the completion of
+    # the whole stack's embedding u_g from each context view's u_v (alpha,
+    # LeJEPA's form), u = projector(z) (the widths of its layers, the last
+    # its output; empty: u = z), predicted by a residual MLP of the view's
+    # kind of zpred_hidden units (0: none, u_v itself).
+    token_weight: float = 1.0
+    z_weight: float = 0.0
+    projector: list[int] = field(default_factory=list)
+    zpred_hidden: int = 0
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
@@ -180,8 +195,18 @@ class VisionConf:
         check_choice("vision.layout", self.layout, LAYOUTS)
         check_choice("vision.pred_loss", self.pred_loss, PRED_LOSSES)
         check_choice("vision.token_sigreg", self.token_sigreg, TOKEN_SIGREG)
-        if self.layout != "packed" and self.token_sigreg != "scaled":
-            raise ValueError("vision.token_sigreg is of the packed layout only")
+        if self.layout != "packed" and (
+            self.token_sigreg != "scaled"
+            or self.sigreg_on in ("views", "views_tokens")
+            or self.token_weight != 1
+            or self.z_weight != 0
+            or self.projector
+            or self.zpred_hidden
+        ):
+            raise ValueError(
+                "vision.token_sigreg, token_weight, z_weight, projector, "
+                "zpred_hidden and sigreg_on 'views' are of the packed layout only"
+            )
         if self.layout == "packed":
             self._check_packed()
 
@@ -213,6 +238,23 @@ class VisionConf:
             )
         if self.z_dim is not None and not 1 <= self.z_dim <= MAX_Z_DIM:
             raise ValueError(f"vision.z_dim must be in [1, {MAX_Z_DIM}]: {self.z_dim}")
+        if self.token_weight < 0 or self.z_weight < 0:
+            raise ValueError(
+                f"vision.token_weight and z_weight must be >= 0, not "
+                f"{self.token_weight} and {self.z_weight}"
+            )
+        if self.token_weight == 0 and self.z_weight == 0:
+            raise ValueError("vision.token_weight and z_weight cannot both be 0")
+        if any(w < 1 for w in self.projector) or self.zpred_hidden < 0:
+            raise ValueError(
+                f"vision.projector widths must be >= 1 and zpred_hidden >= 0: "
+                f"{self.projector}, {self.zpred_hidden}"
+            )
+        if (self.projector or self.zpred_hidden) and not self.embeds_views:
+            raise ValueError(
+                "vision.projector and zpred_hidden need z_weight > 0 or "
+                "sigreg_on 'views' / 'views_tokens'"
+            )
         if self.projected and self.sigreg_on == "tokens":
             raise ValueError(
                 "sigreg_on 'tokens' with a projection (z_dim != dim) gives the "
@@ -224,6 +266,17 @@ class VisionConf:
         """Whether $z$ is a linear map of the pooled tokens (``z_dim`` set and
         not ``dim``)."""
         return self.z_dim is not None and self.z_dim != self.dim
+
+    @property
+    def embeds_views(self) -> bool:
+        """Whether the loss embeds every view (``z_weight`` > 0 or SIGReg of
+        the views)."""
+        return self.z_weight > 0 or self.sigreg_on in ("views", "views_tokens")
+
+    @property
+    def u_width(self) -> int:
+        """The dimension of $u$: the projector's output, or ``z_width``."""
+        return self.projector[-1] if self.projector else self.z_width
 
     @property
     def z_width(self) -> int:

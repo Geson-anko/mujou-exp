@@ -49,6 +49,8 @@ from exp.video.jepa.vit import (
     PackedPredictor,
     PixelDecoder,
     Predictor,
+    Projector,
+    ZPredictor,
 )
 from exp.video.schema.vision import MaskConf
 from mujou import DictSpec, Node, Port, Stateful, TensorSpec, TimestampSpec
@@ -77,6 +79,7 @@ class JEPAStats(TypedDict):
     pred: torch.Tensor
     sigreg: torch.Tensor
     recon: torch.Tensor
+    zpred: torch.Tensor
     n: torch.Tensor
     time: Timestamp
 
@@ -88,18 +91,22 @@ STATS = DictSpec(
     pred=_SCALAR,
     sigreg=_SCALAR,
     recon=_SCALAR,
+    zpred=_SCALAR,
     n=_SCALAR,
     time=TimestampSpec(),
 )
 
 
 def stats_message(terms: JEPATerms, time: Timestamp) -> JEPAStats:
-    """The message of ``STATS`` of ``terms`` (detached)."""
+    """The message of ``STATS`` of ``terms`` (detached; ``zpred`` 0 without
+    one)."""
+    zpred = terms.zpred if terms.zpred is not None else torch.zeros_like(terms.loss)
     return {
         "loss": terms.loss.detach(),
         "pred": terms.pred.detach(),
         "sigreg": terms.sigreg.detach(),
         "recon": terms.recon.detach(),
+        "zpred": zpred.detach(),
         "n": terms.valid.detach(),
         "time": time,
     }
@@ -523,6 +530,7 @@ class JEPAHead(Node):
                 "pred": pred,
                 "sigreg": sig,
                 "recon": rec,
+                "zpred": torch.zeros_like(loss),
                 "n": n,
                 "time": act["time"],
             }
@@ -635,6 +643,11 @@ class PackedJEPAHead(Node):
         learn_interval: As in ``pc.clock.LearnClock``.
         seed: The seed of ``generator``.
         token_sigreg: The SIGReg of the tokens (``loss.jepa_loss_packed``).
+        token_weight: $\beta$ of the prediction of the tokens.
+        z_weight: $\alpha$ of the completion of $u_g$.
+        projector: $h$ of $u$, on ``device`` (None: $u = z$), learned with the
+            predictor.
+        zpred: $q$ of the completion (None: none), learned with them.
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.
@@ -657,13 +670,19 @@ class PackedJEPAHead(Node):
         learn_interval: float | None,
         seed: int,
         token_sigreg: str = "scaled",
+        token_weight: float = 1.0,
+        z_weight: float = 0.0,
+        projector: Projector | None = None,
+        zpred: ZPredictor | None = None,
         device: Device = "cpu",
         cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
         self.proj = proj
+        self.projector, self.zpred = projector, zpred  # in the state
         self._token_sigreg = token_sigreg
+        self._weights = token_weight, z_weight
         self._keeps = list(keeps)
         self._lam, self._sg, self._sigreg_on = lam, sg, sigreg_on
         self._pred_loss = pred_loss
@@ -671,22 +690,29 @@ class PackedJEPAHead(Node):
             tau, period=self.period, learn_interval=learn_interval
         )
         self._params = list(predictor.parameters())
-        if proj is not None:
-            self._params += proj.parameters()
+        for extra in (proj, projector, zpred):
+            if extra is not None:
+                self._params += extra.parameters()
         self.optimizer = optimizer.bind(self._params)
         on_cuda = cuda_graph and self.device.type == "cuda"
         self._replay = Replayed(self._terms) if on_cuda else None  # not state
         h = act_spec.field("h", TensorSpec)
         self._b, _, d = h.shape
         d_z = d if proj is None else proj.out_features
+        d_u = d_z if projector is None else projector.out_features
         dev = self.device
-        self._two = sigreg_on in ("tokens", "both") and d_z != d
+        self._two = sigreg_on in ("tokens", "both", "views_tokens") and d_z != d
+        self._views = sigreg_on in ("views", "views_tokens")
         self.directions = torch.zeros(directions, d_z, device=dev)
         self.directions_t = torch.zeros(directions if self._two else 0, d, device=dev)
+        self.directions_u = torch.zeros(
+            directions if self._views else 0, d_u, device=dev
+        )
         self.g, self.g_of = h.zeros(device=dev), h.zeros(device=dev)
         self.cached = False
         self.register_state("cached")
-        self.values = torch.zeros(5, device=dev)  # loss, pred, sigreg, recon, n of g
+        # loss, pred, sigreg, recon, n, zpred of g
+        self.values = torch.zeros(6, device=dev)
         self.z = torch.zeros(self._b, d_z, device=dev)
         self.prev = Port(send=h, recv=act_spec)
         self.z_out = Port(send=z_spec(self._b, d_z))
@@ -709,6 +735,10 @@ class PackedJEPAHead(Node):
             self.directions = dz
             if dt_ is not None:
                 self.directions_t = dt_
+            if self._views:
+                self.directions_u = draw_directions(
+                    m, self.directions_u.shape[1], self.generator
+                )
             self.cached = False
         valid = act["mask"]
         learn = tick.learn and bool(valid.any())
@@ -725,13 +755,14 @@ class PackedJEPAHead(Node):
                 "time": act["time"],
             }
         )
-        loss, pred, sig, rec, n = self.values
+        loss, pred, sig, rec, n, zp = self.values
         self.stats.send(
             {
                 "loss": loss,
                 "pred": pred,
                 "sigreg": sig,
                 "recon": rec,
+                "zpred": zp,
                 "n": n,
                 "time": act["time"],
             }
@@ -745,7 +776,14 @@ class PackedJEPAHead(Node):
         self, act: Activity, valid: torch.Tensor, learn: bool
     ) -> list[torch.Tensor]:
         h = act["h"]
-        args = (h, act["y"], valid, self.directions, self.directions_t)
+        args = (
+            h,
+            act["y"],
+            valid,
+            self.directions,
+            self.directions_t,
+            self.directions_u,
+        )
         if self._replay is not None:
             g, z, values, *g_theta = self._replay(learn, *args)
         else:
@@ -762,10 +800,12 @@ class PackedJEPAHead(Node):
         valid: torch.Tensor,
         directions: torch.Tensor,
         directions_t: torch.Tensor,
+        directions_u: torch.Tensor,
     ) -> list[torch.Tensor]:
         """``[g, z, values, *g_theta]`` (``g_theta`` only when it learns), a
         function of tensors only: the one the CUDA graph replays."""
         params = self._params if learn else []
+        token_weight, z_weight = self._weights
         with torch.enable_grad():
             leaf = h.detach().requires_grad_()
             terms = jepa_loss_packed(
@@ -782,12 +822,18 @@ class PackedJEPAHead(Node):
                 sigreg_on=self._sigreg_on,
                 pred_loss=self._pred_loss,
                 token_sigreg=self._token_sigreg,
+                token_weight=token_weight,
+                z_weight=z_weight,
+                projector=self.projector,
+                zpred=self.zpred,
+                directions_u=directions_u if self._views else None,
             )
             energy = self._b * terms.loss
             # The gradient of this node's own energy, from a detached leaf.
             g, *g_theta = torch.autograd.grad(  # mujou: local-autograd
                 energy, [leaf, *params], materialize_grads=True
             )
+        assert terms.zpred is not None  # of the packed loss
         values = torch.stack(
             [
                 terms.loss.detach(),
@@ -795,6 +841,7 @@ class PackedJEPAHead(Node):
                 terms.sigreg.detach(),
                 terms.recon.detach(),
                 terms.valid,
+                terms.zpred.detach(),
             ]
         )
         return [g, terms.z.detach(), values, *cast(list[torch.Tensor], g_theta)]

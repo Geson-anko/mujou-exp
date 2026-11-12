@@ -53,9 +53,11 @@ __all__ = [
     "PackedPredictor",
     "PixelDecoder",
     "Predictor",
+    "Projector",
     "Segmented",
     "Stage",
     "VisionModules",
+    "ZPredictor",
     "build_vision",
     "extra_tokens",
     "image_shape",
@@ -366,6 +368,58 @@ class PackedPredictor(nn.Module):
         return self.out(self.norm(x[:, -m:]))
 
 
+class Projector(nn.Module):
+    r"""LeJEPA's projector of the space-time completion (``jepa.loss``): $z$
+    ``(n, D_z)`` to $u$ ``(n, widths[-1])`` through ``Linear - LayerNorm -
+    GELU`` to each width but the last, then a ``Linear`` to it. Its weights
+    are LeCun's (as the projection of $z$, so that $u$ keeps the scale of
+    $z$), the biases 0."""
+
+    def __init__(self, d_in: int, widths: Sequence[int]) -> None:
+        super().__init__()
+        layers: list[nn.Module] = []
+        for w in widths[:-1]:
+            layers += [nn.Linear(d_in, w), nn.LayerNorm(w), nn.GELU()]
+            d_in = w
+        layers.append(nn.Linear(d_in, widths[-1]))
+        self.net = nn.Sequential(*layers)
+        self.out_features = widths[-1]
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                std = 1 / math.sqrt(m.in_features)
+                nn.init.trunc_normal_(m.weight, std=std, a=-2 * std, b=2 * std)
+                nn.init.zeros_(m.bias)
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        return self.net(z)
+
+
+class ZPredictor(nn.Module):
+    r"""The predictor of the space-time completion: $u_g$ from a context
+    view's $u_v$ ``(n, d)`` and its kind $k$ (the index of the context view),
+    $q(u_v, k) = u_v + W_2\, \mathrm{GELU}(W_1 [u_v, e_k] + b_1) + b_2$ with
+    $e_k$ one-hot of ``kinds``. $W_2$ and $b_2$ start at 0 (at first
+    $q(u_v, k) = u_v$), $W_1$ LeCun."""
+
+    def __init__(self, d: int, kinds: int, hidden: int) -> None:
+        super().__init__()
+        self._kinds = kinds
+        self.fc1 = nn.Linear(d + kinds, hidden)
+        self.fc2 = nn.Linear(hidden, d)
+        std = 1 / math.sqrt(d + kinds)
+        nn.init.trunc_normal_(self.fc1.weight, std=std, a=-2 * std, b=2 * std)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    @override
+    def forward(self, u: Tensor, kind: int) -> Tensor:
+        e = u.new_zeros(len(u), self._kinds)
+        e[:, kind] = 1.0
+        return u + self.fc2(nn.functional.gelu(self.fc1(torch.cat([u, e], 1))))
+
+
 class PixelDecoder(nn.Module):
     """The decoder of the reconstruction term (``loss.Reconstruction``): an MLP
     of one hidden layer from $z$ ``(n, D)`` to the standardized frames
@@ -446,6 +500,9 @@ class VisionModules:
     decoder: PixelDecoder | BroadcastDecoder | None = None  # with ``vision.recon`` > 0
     proj: nn.Linear | None = None
     layout: str = "pixels"
+    # the space-time completion (packed, vision.projector / zpred_hidden)
+    projector: Projector | None = None
+    zpred: ZPredictor | None = None
     tubelet: int = 0
     segments: tuple[int, ...] = ()
 
@@ -460,6 +517,10 @@ class VisionModules:
             out["decoder"] = self.decoder
         if self.proj is not None:
             out["proj"] = self.proj
+        if self.projector is not None:
+            out["projector"] = self.projector
+        if self.zpred is not None:
+            out["zpred"] = self.zpred
         return out
 
     @property
@@ -536,8 +597,9 @@ def _init_(module: nn.Module) -> None:
 def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
     """The modules of ``conf.vision`` for the frames of ``conf.data``: after
     seeding the CPU's global RNG with ``seed`` (not the CUDA ones), the
-    encoder's stages, the predictor and (packed, ``z_dim`` not the width) the
-    projection, built and initialized in this order on the CPU (so that the initial weights do not depend on the
+    encoder's stages, the predictor, (packed, ``z_dim`` not the width) the
+    projection, and (``vision.projector``, ``zpred_hidden``) the projector and
+    the predictor of $u$, built and initialized in this order on the CPU (so that the initial weights do not depend on the
     device), then moved to ``conf.device``. The CPU's global RNG is restored
     afterwards. The one place that draws the vision's initial weights, for
     PC, BP and the decoder fit afterwards.
@@ -600,6 +662,10 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
             std = 1 / math.sqrt(v.dim)
             nn.init.trunc_normal_(proj.weight, std=std, a=-2 * std, b=2 * std)
             nn.init.zeros_(proj.bias)
+        projector = Projector(v.z_width, v.projector) if v.projector else None
+        zpred = None
+        if v.zpred_hidden:
+            zpred = ZPredictor(v.u_width, len(v.context_masks), v.zpred_hidden)
         decoder = None  # built last: the others' weights do not depend on it
         if v.recon > 0:
             shape = (channels, size, size)
@@ -617,6 +683,8 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
         proj=None if proj is None else proj.to(conf.device),
         layout=v.layout,
         tubelet=v.tubelet,
+        projector=None if projector is None else projector.to(conf.device),
+        zpred=None if zpred is None else zpred.to(conf.device),
     )
     if packed:  # imported here: masks imports this module
         from exp.video.jepa.masks import token_keep

@@ -457,8 +457,15 @@ class TestPacked:
             ["learner=pc"],
             ["learner=bp", "vision.z_dim=8", "vision.sigreg_on=both"],
             ["learner=pc", "vision.frames=1", "vision.tubelet=1"],
+            [
+                "learner=bp",
+                "vision.z_weight=1.0",
+                "vision.token_weight=0.0",
+                "vision.sigreg_on=views",
+                "vision.projector=[8,4]",
+            ],
         ],
-        ids=["pc", "bp-proj", "pc-n1"],
+        ids=["pc", "bp-proj", "pc-n1", "bp-space-time"],
     )
     def test_a_run_writes_the_rows_of_the_packed_layout(self, tmp_path, tours, extra):
         out = tmp_path / "run"
@@ -478,7 +485,10 @@ class TestPacked:
             "tok_within",
             "tok_between",
             *(() if "vision.frames=1" in extra else ("tok_temporal",)),
-        }
+            "zcomp_short",
+            "zcomp_long",
+            *(("zpred",) if "vision.z_weight=1.0" in extra else ()),
+        }  # and the completion of u_g (of z) from each context view
         assert set(rows[-1]) == {
             "t",
             "frame",
@@ -492,6 +502,8 @@ class TestPacked:
         } | spread | comp | {f"{p}_{k}" for p in ("calib", "fit") for k in comp}
         assert all(math.isfinite(rows[-1][k]) for k in comp)
         assert all(r["loss"] is not None for r in _lines(out / "stream.jsonl"))
+        if "vision.z_weight=1.0" in extra:
+            assert all(r["zpred"] is not None for r in _lines(out / "stream.jsonl"))
         result = json.loads((out / "result.json").read_text())
         assert result["status"] == "completed" and result["objective"] is None
         assert (out / "ckpt" / "00001.0.pt").is_file()
