@@ -32,6 +32,9 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   against its last frame, over the same of the mean image (the pixel mean of
   the training stacks' last frames: 1 is the mean image); ``recon_fit`` the
   same on the training stacks; ``recon_lin`` (pca) the linear PCA's;
+  ``recon_blur`` and ``recon_lin_blur`` the same after a Gaussian blur of the
+  error (``blur_error.blur_recon``, $\sigma$ = 2 px: a shift by one pixel
+  costs little), the error M17 judges by;
 - ``dyn_h``, ``copy_h``, ``dyn_h/copy_h``, and ``dynw_h``, ``copyw_h`` in
   the coordinates whitened by the training codes' covariance
   (``linear_dyn.errors``: every direction weighs the same, where ``dyn_h``
@@ -89,6 +92,7 @@ import torch
 from torch import Tensor, nn
 
 from exp.lib import ckpt, linear_dyn, pca
+from exp.lib.blur_error import blur_recon
 from exp.lib.png import tile, write_png
 from exp.lib.rundir import atomic_open, write_json
 from exp.lib.video_io import U8Reader
@@ -475,11 +479,13 @@ class EncoderEval:
                 "split": split,
                 "code": code.name,
                 "recon": _mse(x_hat, f0) / base,
+                "recon_blur": blur_recon(x_hat, f0, mean_img),
                 "recon_fit": recon_fit,
             }
             if code.linear is not None:
                 lin = pca.decode(zs[:, 0], *code.linear).view_as(f0).clamp(0, 1)
                 line["recon_lin"] = _mse(lin, f0) / base
+                line["recon_lin_blur"] = blur_recon(lin, f0, mean_img)
             line |= linear_dyn.errors(a, b, zs, horizons, train=z0)
             pred = linear_dyn.rollout(a, b, zs[:, 0], max(horizons)).float()
             dyn_imgs = {}

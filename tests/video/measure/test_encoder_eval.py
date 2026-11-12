@@ -62,6 +62,7 @@ class TestEncoderEval:
         assert vit["split"] == "val" and vit["t"] == 1.0
         for k in (
             "recon",
+            "recon_blur",
             "recon_fit",
             "dyn_1",
             "dyn_2",
@@ -96,7 +97,9 @@ class TestEncoderEval:
         init = lines[2]
         assert init["code"] == "init" and comp | prefixed <= set(init)
         pca = lines[0]
-        assert "recon_lin" in pca and "restore_short_all" not in pca
+        assert {"recon_lin", "recon_lin_blur", "recon_blur"} <= set(pca)
+        assert "restore_short_all" not in pca
+        assert all(ln["recon_blur"] > 0 for ln in lines)
         assert not comp & set(pca)
         assert vit["objective"] == pytest.approx(_objective(vit, pca))
         names = set(_files(tmp_path / "o"))
