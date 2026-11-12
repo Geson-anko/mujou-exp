@@ -1,0 +1,56 @@
+# @package _global_
+# M17, the space-time completion (MILESTONES.md, M17, 2026-11-12; LeJEPA's form,
+# memory/agents/main/m17-recipe.md, section 6): the stacks of m17/wt_n16 (N = 16
+# frames 0.1 s apart, tubelets of 2 x 16 x 16, 512 tokens), three context views
+# (V-JEPA's short and long range tubes, and the past: the first 6 of the 8 time
+# slots outside 8 blocks of 0.15), each embedded on its own: u = projector(mean
+# of its tokens). Each context view's u must complete the whole stack's u_g,
+# including its unseen space and, for the past view, its last 2 slots (4 frames, 0.4 s); SIGReg of
+# u per view (LeJEPA). No token is predicted (token_weight 0), no
+# reconstruction, no EMA. AdamW by steps with the recipe's schedule.
+defaults:
+  - /optim@optim_vision: adamw_step
+  - override /dynamics: none
+  - override /vision: vit_m17
+program: vision
+name: m17/st_n16
+tags: [m17, wt, n16, st]
+seconds: 600.0
+data:
+  streams: 32
+  balls: null
+  tours:
+    data_version: 3c3e6805fdaa
+    held_out: Zurich
+    size: 128
+    fps: 30.0
+    advance: 3
+measure:
+  clips: 64
+  windows: 4
+  every: 60.0
+  steps: 10
+  horizons: [1, 5, 10]
+ctl:
+  ckpt_every: 300.0
+vision:
+  layout: packed
+  recon: 0.0  # never another value in M17 (tests/video/schema/test_presets.py)
+  frames: 16
+  tubelet: 2
+  stride: 3
+  views: 4
+  context_masks:
+    - {blocks: 8, scale: 0.15}  # V-JEPA's short range
+    - {blocks: 2, scale: 0.7}  # V-JEPA's long range
+    - {blocks: 8, scale: 0.15, future: 2}  # the past: the last 2 slots hidden
+  z_dim: null
+  z_pool: mean
+  token_weight: 0.0
+  z_weight: 1.0
+  projector: [512, 512, 64]
+  sigreg_on: views
+  sigreg: 0.05
+  sigreg_directions: 512
+  pixel_mean: 0.46
+  pixel_std: 0.28

@@ -147,13 +147,33 @@ class TestM17:
     reconstruction term (the user's rule)."""
 
     @pytest.mark.parametrize("experiment", M17)
-    def test_no_reconstruction_term(self, experiment: str) -> None:
+    def test_no_reconstruction_term_and_no_ema(self, experiment: str) -> None:
         conf = compose([f"+experiment={experiment}"])
         assert conf.vision is not None and conf.vision.recon == 0.0
-        assert conf.vision.layout == "packed"
+        assert conf.vision.layout == "packed" and conf.vision.ema == 0.0
 
-    def test_the_presets_are_n16_n8_and_n1(self) -> None:
-        assert M17 == ["m17/wt_n1", "m17/wt_n16", "m17/wt_n8"]
+    def test_the_presets_are_n16_n8_and_n1_and_the_space_time_ones(self) -> None:
+        assert M17 == [
+            "m17/st_n16",
+            "m17/st_tok_n16",
+            "m17/wt_n1",
+            "m17/wt_n16",
+            "m17/wt_n8",
+        ]
+
+    @pytest.mark.parametrize("experiment", ["m17/st_n16", "m17/st_tok_n16"])
+    def test_the_space_time_presets(self, experiment: str) -> None:
+        """The stacks of wt_n16, three context views (the past one hides the
+        last 2 of the 8 slots), the completion of u with SIGReg per view, and
+        AdamW by steps."""
+        conf = compose([f"+experiment={experiment}"])
+        v = conf.vision
+        assert v is not None and conf.optim_vision is not None
+        assert (v.frames, v.tubelet, v.stride, v.views) == (16, 2, 3, 4)
+        assert [m.future for m in v.context_masks] == [0, 0, 2]
+        assert v.z_weight == 1.0 and v.u_width == 64
+        assert v.sigreg_on in ("views", "views_tokens")
+        assert conf.optim_vision.kind == "adamw_step"
 
     @pytest.mark.parametrize(
         ("experiment", "frames", "tubelet"),
@@ -190,9 +210,6 @@ class TestM17:
             compose(["+experiment=m17/wt_n16", "measure.encoder_objective=loss"])
 
 
-M17 = [e for e in EXPERIMENTS if e.startswith("m17/")]
-
-
 def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
     """The loss of the packed layout of ``conf``'s vision for the target tokens
     ``target`` ``(B, T, D)`` (each context view's visible tokens taken from
@@ -213,8 +230,9 @@ def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
         ys.append(y)
         visible = order[:, :k].sort(1).values
         parts.append(target.gather(1, visible[..., None].expand(-1, -1, d)))
+    sigreg_on = {"views_tokens": "tokens"}.get(v.sigreg_on, v.sigreg_on)
     dz, dt = draw_packed_directions(
-        32, v.z_width, v.dim, tokens=v.sigreg_on != "z", generator=g
+        32, v.z_width, v.dim, tokens=sigreg_on != "z", generator=g
     )
     terms = jepa_loss_packed(
         torch.cat(parts, 1),
@@ -227,9 +245,11 @@ def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
         proj=None,
         lam=v.sigreg,
         sg=v.sg,
-        sigreg_on=v.sigreg_on,
+        sigreg_on=sigreg_on,
         pred_loss=v.pred_loss,
         token_sigreg=v.token_sigreg,
+        token_weight=v.token_weight,
+        target_norm=v.target_norm,
     )
     return float(terms.loss)
 
@@ -240,10 +260,18 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
     tokens constant within each stack (z standard normal over the stacks),
     which the mean of the context predicts exactly, had a lower loss than
     i.i.d. standard normal tokens with their best constant prediction (0, an
-    error of 1 per dimension). The loss of a preset must prefer the latter."""
+    error of 1 per dimension). The loss of a preset must prefer the latter
+    (its token terms: the completion of u, of the space-time presets, does
+    not see the tokens within a stack)."""
     conf = compose([f"+experiment={experiment}"])
     v = conf.vision
     assert v is not None
+    if v.token_weight == 0:
+        pytest.skip("no token is predicted")
+
+    def norm(x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.layer_norm(x, x.shape[-1:]) if v.target_norm else x
+
     b, t = conf.data.streams, (v.frames // v.tubelet) * (128 // v.patch) ** 2
     g = torch.Generator().manual_seed(1)
     with torch.no_grad():
@@ -251,7 +279,7 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
         collapsed = _m17_loss(
             conf,
             clip.contiguous(),
-            lambda ctx, ctx_ids, tgt_ids: ctx.mean(1, keepdim=True).expand(
+            lambda ctx, ctx_ids, tgt_ids: norm(ctx.mean(1, keepdim=True)).expand(
                 -1, tgt_ids.shape[1], -1
             ),
         )
