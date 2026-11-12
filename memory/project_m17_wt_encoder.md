@@ -17,3 +17,5 @@ metadata:
 **Why:** 実動画で、再構成に頼らない表現が、描き戻せることと線形に予測できることを両立するかを確かめるため。
 
 **How to apply:** M17 の run で `vision.recon` を 0 以外にしない。片方の指標だけで設定を選ばない。補完の誤差を必ず見る。デコーダの扱いは [[project-decoder-for-debug]]、データは [[project-video-data]]、見た目との照合は [[feedback-metrics-need-qualitative-check]]。
+
+- Imagenette（線形 probe）は部品が壊れていないかの確認にだけ使い、M17 の主目的にしない（ユーザー、2026-11-12）。主目的は Walking Tours の held-out での潜在のマスク予測の損失。

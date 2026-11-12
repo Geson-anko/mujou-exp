@@ -26,3 +26,4 @@
 - [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
 - [指標は定性評価と照合](feedback_metrics_need_qualitative_check.md) — 予測の数値はデコードした画像と合うか確かめてから条件に使う
 - [実時間はやめ、学習が終わる速さを守る](feedback_realtime_speed.md) — 2026-11-05、実時間の最適化は諦めた（5 更新/フレームで PC-ALM が不安定）。確認の run が 4090 で数時間で終わること
+- [手法はシンプルで基礎的に](feedback_simple_fundamental.md) — 2026-11-12、理論の裏付けのないヒューリスティック（後付けの正規化・罰・拡張）は入れない。自明な解を目的の式から導出で確かめる
