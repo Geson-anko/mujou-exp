@@ -1,0 +1,14 @@
+# AdamW by steps (exp.lib.optim.StepAdamW, M17 recipe, 2026-11-12): the betas of
+# torch, a linear warm-up of the rate over 1800 steps (60 s at about one step a
+# frame), then a cosine to 1e-3 of the peak at 18000 steps (600 s), weight decay
+# 0.05 of the matrices (V-JEPA 2: 0.04; LeJEPA: 0.05), no clipping.
+kind: adamw_step
+lr: 7.5e-5  # per step: 1e-4 per frame of "adamw" at about 1.33 steps a frame
+warmup: 0.0
+betas: [0.9, 0.999]
+weight_decay: 0.05
+warmup_steps: 1800
+decay: cosine
+decay_steps: 18000
+min_lr: 1e-3
+clip: 0.0

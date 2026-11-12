@@ -8,7 +8,7 @@ import pytest
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-from exp.lib.optim import AdamDirection, Grafted, Warmup
+from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup
 from exp.video.dyn.modules import Top, build_dynamics
 from exp.video.dyn.nets import (
     StateWorldBP,
@@ -127,6 +127,45 @@ class TestMakeOptimizer:
         assert make_optimizer(warm, frame) == Warmup(
             inner=pc.optim.SGD(tau=tau), seconds=300.0
         )
+
+    def test_adamw_step_is_step_adamw_of_the_schedules(self):
+        c = OptimConf(
+            kind="adamw_step",
+            lr=7.5e-5,
+            warmup=0.0,
+            betas=[0.9, 0.99],
+            weight_decay=0.04,
+            weight_decay_end=0.4,
+            warmup_steps=10,
+            decay="cosine",
+            decay_steps=100,
+            min_lr=1e-3,
+            clip=1.0,
+        )
+        assert make_optimizer(c, 1 / 30) == StepAdamW(
+            lr=7.5e-5,
+            betas=(0.9, 0.99),
+            weight_decay=0.04,
+            weight_decay_end=0.4,
+            warmup_steps=10,
+            decay="cosine",
+            decay_steps=100,
+            min_lr=1e-3,
+            clip=1.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            ({"kind": "adamw_step"}, "warmup_steps"),  # warmup 300 s
+            ({"kind": "adamw", "warmup_steps": 5}, "adamw_step"),
+            ({"kind": "sgd", "clip": 1.0}, "adamw_step"),
+            ({"kind": "adamw", "betas": [0.8, 0.9]}, "adamw_step"),
+        ],
+    )
+    def test_the_step_settings_belong_to_adamw_step(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            OptimConf(**kw)
 
     @pytest.mark.parametrize("lr", [0.0, -0.01])
     def test_a_rate_not_above_zero_is_an_error(self, lr):

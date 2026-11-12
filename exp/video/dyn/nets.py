@@ -10,7 +10,7 @@ import torch
 from mujou.pc.optim import Optimizer
 
 import mujou
-from exp.lib.optim import AdamDirection, Grafted, Warmup
+from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup
 from exp.video.dyn.bp import DynamicsBP
 from exp.video.dyn.modules import DynamicsModules, build_dynamics
 from exp.video.dyn.nodes import DynamicsBlock, DynamicsLayer, Source
@@ -34,7 +34,9 @@ def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
     r"""The optimizer of ``c``, with the time constant $\tau$ = ``frame / c.lr``
     of the parameters (a step of one frame moves SGD by ``lr`` times the
     gradient): ``pc.optim.SGD``, ``pc.optim.AdamW`` or ``Grafted(AdamDirection)``,
-    in ``Warmup`` over ``c.warmup`` seconds unless it is 0.
+    in ``Warmup`` over ``c.warmup`` seconds unless it is 0; or, for
+    ``"adamw_step"``, ``StepAdamW`` of ``c.lr`` per step and its schedules
+    (``frame`` unused).
 
     Raises:
         ValueError: ``c.lr`` is not > 0, or ``c.weight_decay`` is not 0 for a
@@ -42,10 +44,24 @@ def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
     """
     if not c.lr > 0:
         raise ValueError(f"optim.lr must be > 0, got {c.lr}")
-    if c.kind != "adamw" and c.weight_decay != 0:
+    if c.kind not in ("adamw", "adamw_step") and c.weight_decay != 0:
         raise ValueError(
             f"optim.kind {c.kind!r} has no weight decay; "
             f"got weight_decay {c.weight_decay} (use 'adamw')"
+        )
+    if c.kind == "adamw_step":
+        b1, b2 = c.betas
+        return StepAdamW(
+            lr=c.lr,
+            betas=(b1, b2),
+            eps=c.eps,
+            weight_decay=c.weight_decay,
+            weight_decay_end=c.weight_decay_end,
+            warmup_steps=c.warmup_steps,
+            decay=c.decay,
+            decay_steps=c.decay_steps,
+            min_lr=c.min_lr,
+            clip=c.clip,
         )
     tau = frame / c.lr
     inner: Optimizer
