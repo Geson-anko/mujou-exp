@@ -1,0 +1,23 @@
+# @package _global_
+# M17, the token sequence as the representation (MILESTONES.md, M17, decided
+# 2026-11-12): the stacks, encoder, context views and optimizer of m17/wt_n16,
+# with the last stage mapping each of the 512 tokens to token_dim = 16
+# dimensions (32: the override vision.token_dim=32). The loss is the prediction
+# of the masked tokens and SIGReg of the target tokens as samples of one law of
+# 16 dimensions (raw: not divided by T, not less the stack's mean) with a
+# buffer of 8192 past target tokens, 64 of each frame inserted at random rows
+# (jepa.nodes.PastTokens): the sample is the same with one stream (B = 1).
+# lambda (vision.sigreg) is a placeholder, set by the sweep from the measured
+# correlation of the tokens within a stack.
+defaults:
+  - m17/wt_n16
+  - _self_
+name: m17/tok_n16
+tags: [m17, wt, n16, tok]
+vision:
+  token_dim: 16
+  sigreg_on: tokens
+  token_sigreg: raw
+  token_buffer: 8192
+  token_insert: 64
+  sigreg: 0.003  # a placeholder, to be overridden

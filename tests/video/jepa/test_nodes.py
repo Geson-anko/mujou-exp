@@ -8,6 +8,7 @@ import mujou.testing
 import pytest
 import torch
 
+from exp.lib.sigreg import ecf_sums
 from exp.video.jepa.loss import jepa_loss, jepa_loss_packed
 from exp.video.jepa.masks import block_masks, make_views, multiblock_masks, pack_views
 from exp.video.jepa.nets import CHUNKER_SEED, VisionBP, VisionPC, build_vision_net
@@ -16,6 +17,7 @@ from exp.video.jepa.nodes import (
     FrameRing,
     JEPAHead,
     PackedJEPAHead,
+    PastTokens,
     StackChunker,
     z_spec,
 )
@@ -477,6 +479,193 @@ class TestPackedHead:
             assert (g[:, :32] == 0).all() and (g[:, 32:] != 0).any()
 
 
+TOKENS = {
+    "token_dim": 8,
+    "sigreg_on": "tokens",
+    "token_sigreg": "raw",
+    "token_buffer": 40,
+    "token_insert": 12,
+    "sigreg": 0.3,
+}  # the tokens of 8 as the representation, SIGReg of them with the past
+
+
+def _ids(streams: int, tokens: int, dim: int) -> torch.Tensor:
+    """Target tokens ``(B, T, D)`` whose every entry is the token's index in
+    the flattened ``(B, T)``: a row tells which token it is."""
+    i = torch.arange(streams * tokens, dtype=torch.float32)
+    return i.view(streams, tokens, 1).expand(-1, -1, dim).clone()
+
+
+def _past(capacity: int = 40, insert: int = 12, streams: int = 3) -> PastTokens:
+    return PastTokens(
+        capacity=capacity,
+        insert=insert,
+        streams=streams,
+        tokens=8,
+        dim=4,
+        directions=5,
+        device="cpu",
+    )
+
+
+def _dirs() -> torch.Tensor:
+    a = torch.randn(5, 4, generator=torch.Generator().manual_seed(9))
+    return a / a.norm(dim=1, keepdim=True)
+
+
+class TestPastTokens:
+    def test_a_frame_inserts_k_distinct_tokens_of_the_valid_streams(self):
+        past, g = _past(), torch.Generator().manual_seed(0)
+        past.keep(_ids(3, 8, 4), torch.tensor([True, False, True]))
+        past.next_frame(_dirs(), g)
+        assert past.count == 12
+        ids = past.rows[:12, 0].long()
+        assert len(set(ids.tolist())) == 12  # without replacement
+        assert ((ids < 8) | (ids >= 16)).all()  # of streams 0 and 2 only
+        assert (past.rows[:12] == past.rows[:12, :1]).all()  # whole rows
+
+    def test_fewer_valid_tokens_than_k_insert_them_all_and_none_inserts_none(self):
+        past, g = _past(streams=1), torch.Generator().manual_seed(0)
+        past.keep(_ids(1, 8, 4), torch.tensor([True]))  # one stream: B = 1
+        past.next_frame(_dirs(), g)
+        assert past.count == 8
+        assert sorted(past.rows[:8, 0].tolist()) == list(range(8))
+        past.keep(_ids(1, 8, 4), torch.tensor([False]))
+        past.next_frame(_dirs(), g)
+        assert past.count == 8
+
+    def test_a_frame_is_inserted_once(self):
+        past, g = _past(), torch.Generator().manual_seed(0)
+        past.keep(_ids(3, 8, 4), torch.ones(3, dtype=torch.bool))
+        past.next_frame(_dirs(), g)
+        past.next_frame(_dirs(), g)  # no keep in between
+        assert past.count == 12
+
+    def test_once_full_a_frame_replaces_k_rows(self):
+        """Random replacement (exp.lib.sigreg.insert_): the buffer stays full,
+        and exactly the k rows drawn change, to the frame's tokens."""
+        past, g = _past(capacity=20), torch.Generator().manual_seed(0)
+        for k in range(2):
+            past.keep(_ids(3, 8, 4) + 100 * k, torch.ones(3, dtype=torch.bool))
+            past.next_frame(_dirs(), g)
+        assert past.count == 20
+        before = past.rows.clone()
+        past.keep(_ids(3, 8, 4) + 1000, torch.ones(3, dtype=torch.bool))
+        past.next_frame(_dirs(), g)
+        changed = (past.rows != before).any(1)
+        assert int(changed.sum()) == 12 and (past.rows[changed] >= 1000).all()
+
+    def test_the_sums_are_those_of_the_filled_rows_and_detached(self):
+        past, g = _past(), torch.Generator().manual_seed(0)
+        target = _ids(3, 8, 4).requires_grad_()
+        past.keep(target, torch.ones(3, dtype=torch.bool))
+        dirs = _dirs()
+        past.next_frame(dirs, g)
+        cos, sin = ecf_sums(past.rows[:12], dirs)
+        torch.testing.assert_close(past.sums.cos, cos)
+        torch.testing.assert_close(past.sums.sin, sin)
+        assert float(past.sums.n) == 12
+        assert not (past.rows.requires_grad or past.sums.cos.requires_grad)
+
+    def test_the_state_round_trips(self):
+        past, g = _past(), torch.Generator().manual_seed(0)
+        past.keep(_ids(3, 8, 4), torch.ones(3, dtype=torch.bool))
+        past.next_frame(_dirs(), g)
+        past.keep(_ids(3, 8, 4) + 50, torch.tensor([True, False, False]))
+        other = _past()
+        other.load_state_dict(past.state_dict())
+        for p in (past, other):
+            p.next_frame(_dirs(), torch.Generator().manual_seed(1))
+        assert other.count == past.count == 20
+        for name, x in past.state_dict().items():
+            if isinstance(x, torch.Tensor):
+                assert torch.equal(getattr(other, name), x), name
+
+
+def _token_loss(net: VisionPC, act, h: torch.Tensor, past) -> Any:
+    v = net.mods  # the head's loss of the packed layout, without a projection
+    head = cast(PackedJEPAHead, net.head)
+    conf = TOKENS
+    return jepa_loss_packed(
+        h,
+        act["y"],
+        act["mask"],
+        head.directions,
+        None,
+        head.module,
+        keeps=list(v.segments[1:]),
+        proj=None,
+        lam=conf["sigreg"],
+        sg=False,
+        sigreg_on=conf["sigreg_on"],
+        pred_loss="l2",
+        token_sigreg=conf["token_sigreg"],
+        past=past,
+    )
+
+
+class TestTokenRepresentation:
+    def test_the_head_credit_with_the_past_is_that_of_b_times_the_loss(self):
+        """After two frames the buffer holds tokens of the first; the credit
+        is the gradient of B L with the head's own past sums, which count."""
+        b = 2
+        net = build_vision_net(packed_conf(streams=b, **TOKENS))
+        assert isinstance(net, VisionPC)
+        head = net.head
+        assert isinstance(head, PackedJEPAHead) and head.past is not None
+        with mujou.testing.run(net) as run:
+            for k in range(2):
+                _show(run, net.prev, _stack_sample(stacks(b, seed=k), k == 0))
+            act = run.read(net.enc2.next)
+            g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
+        assert act["h"].shape[-1] == 8  # the encoder's tokens are of token_dim
+        assert head.past.count == 12
+        h = act["h"].clone().requires_grad_()
+        t = _token_loss(net, act, h, head.past.sums)
+        (expect,) = torch.autograd.grad(b * t.loss, [h])
+        torch.testing.assert_close(g, expect)
+        assert t.sigreg != _token_loss(net, act, h, None).sigreg
+
+    def test_the_shapes_through_the_encoder_and_the_predictor(self):
+        mods = build_vision(packed_conf(token_dim=8), seed=0)
+        tokens = mods.tokens(stacks(3))
+        assert tokens.shape == (3, mods.tokens_per_view, 8)
+        torch.testing.assert_close(mods.z_of(tokens), tokens.mean(1))
+        assert mods.proj is None
+        k = mods.segments[1]
+        ids = torch.arange(mods.tokens_per_view).expand(3, -1)
+        pred = mods.predictor(tokens[:, :k], ids[:, :k], ids[:, k:])
+        assert pred.shape == (3, mods.tokens_per_view - k, 8)
+
+    def test_the_token_map_is_lecun_and_the_tokens_keep_a_unit_scale(self):
+        """The last stage's map to token_dim: weights of std 1 / sqrt(dim)
+        truncated at 2 std, zero bias, so the tokens of the LayerNorm's
+        output (unit scale per dimension) are of about unit scale."""
+        mods = build_vision(packed_conf(token_dim=8, dim=64, heads=2), seed=0)
+        out = cast(Any, mods.encoder.stages[-1]).out
+        assert isinstance(out, torch.nn.Linear) and out.out_features == 8
+        w = out.weight.detach()
+        assert (out.bias == 0).all()
+        assert float(w.abs().max()) <= 2 / math.sqrt(64) + 1e-6
+        # a normal of std s truncated at 2 s has std 0.88 s
+        assert float(w.std()) == pytest.approx(0.88 / math.sqrt(64), rel=0.1)
+        with torch.no_grad():
+            rms = float(mods.tokens(stacks(8)).pow(2).mean().sqrt())
+        assert 0.5 < rms < 2
+
+    def test_without_token_dim_no_map_and_the_same_first_weights(self):
+        """token_dim None builds no map: the older presets are unchanged, and
+        the map comes after every weight of the stages before the last."""
+        a = build_vision(packed_conf(), seed=0)
+        b = build_vision(packed_conf(token_dim=8), seed=0)
+        assert cast(Any, a.encoder.stages[-1]).out is None
+        first_a, first_b = a.encoder.stages[0], b.encoder.stages[0]
+        for (name, x), y in zip(
+            first_a.state_dict().items(), first_b.state_dict().values(), strict=True
+        ):
+            assert torch.equal(x, y), name
+
+
 def _packed_equilibrium(streams: int, **vision):
     frames = vision.get("frames", 4)
     nets = [
@@ -502,6 +691,13 @@ def _packed_equilibrium(streams: int, **vision):
         act = r2.read(bp_net.chunker.next)
         assert torch.equal(act["h"], r1.read(pc_net.chunker.next)["h"])
     assert torch.equal(pc_net.head.directions, bp_net.vision.directions)
+    past = cast(PackedJEPAHead, pc_net.head).past
+    if past is not None:
+        # The past tokens of each are of its own first frame (PC-ALM's carry
+        # its relaxation): BP takes the head's, to compare the same loss.
+        assert bp_net.vision.past is not None and past.count > 0
+        assert bp_net.vision.past.count == past.count
+        bp_net.vision.past.load_state_dict(past.state_dict())
     outputs: list[torch.Tensor] = []
     loss = bp_net.vision.terms(act, outputs).loss
     credit = [-streams * g for g in torch.autograd.grad(loss, outputs)]
@@ -539,6 +735,7 @@ class TestPackedEquilibrium:
             },
             {"z_weight": 1.0, "token_weight": 0.0, "sigreg_on": "views"},
             {"pred_dim": 32, "pred_heads": 4, "target_norm": True},
+            TOKENS,
         ],
         ids=[
             "n4",
@@ -550,6 +747,7 @@ class TestPackedEquilibrium:
             "space-time",
             "z-only",
             "wide-pred-norm",
+            "tokens-past",
         ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
@@ -595,7 +793,7 @@ def test_pc_and_bp_draw_the_same_packed_masks():
 def test_the_packed_nodes_hold_no_cross_node_backward_or_grad():
     """Locality (mujou/.claude/skills/locality-and-async): the PC-ALM nodes of
     the packed layout differentiate their own computation only."""
-    for obj in (StackChunker, PackedJEPAHead, Segmented):
+    for obj in (StackChunker, PackedJEPAHead, PastTokens, Segmented):
         src = inspect.getsource(obj)
         assert ".backward(" not in src
         assert re.search(r"\.grad\b(?!\()", src) is None, obj.__name__

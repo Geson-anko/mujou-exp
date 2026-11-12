@@ -64,9 +64,11 @@ val, the last test, with fixed context masks per split. A row has ``loss``,
 window, in batches of ``data.streams`` windows of a fixed shuffled order,
 ``PackedMeasures.order``: a batch in time order would be a few minutes of
 one video, and its SIGReg is not that of a training batch, which mixes the
-nine videos), ``rank``, ``z_std_min``, ``z_spread``, and the spread of the
-target tokens within the stacks against that between them (the collapse of
-the tokens within a stack, which ``z_spread`` does not see; ``token_spread``):
+nine videos; without the past tokens of ``vision.token_buffer``: the
+evaluation has no past), ``rank``, ``z_std_min``, ``z_spread``, and the
+spread of the target tokens within the stacks against that between them (the
+collapse of the tokens within a stack, which ``z_spread`` does not see;
+``token_spread``):
 ``tok_within`` (the mean squared deviation of a token from its stack's mean
 token, per dimension), ``tok_between`` (the variance of the stacks' mean
 tokens over the split, per dimension) and, with more than one time slot,
@@ -508,7 +510,7 @@ class PackedMeasures:
                 for m, k in zip(v.context_masks, self.keeps, strict=True)
             ]
             dz, dt = draw_packed_directions(
-                v.sigreg_directions, v.z_width, v.dim, tokens=two, generator=g
+                v.sigreg_directions, v.z_width, v.token_width, tokens=two, generator=g
             )
             self._directions[split] = (
                 dz.to(self._dev),

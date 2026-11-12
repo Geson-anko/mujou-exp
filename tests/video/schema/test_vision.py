@@ -48,11 +48,28 @@ class TestPacked:
             ({"pred_dim": 32, "pred_heads": 3}, "heads"),
             ({"ema": 1.0}, "ema"),
             ({"ema": 0.9, "token_weight": 0.0, "z_weight": 1.0}, "token_weight 0"),
+            ({"token_dim": 0}, "token_dim"),
+            ({"token_dim": 16, "z_dim": 16}, "z_dim None"),
+            ({"token_buffer": -1}, "token_buffer"),
+            ({"token_insert": 0, "token_buffer": 8}, "token_insert"),
+            ({"token_buffer": 8, "sigreg_on": "tokens"}, "'raw'"),
+            ({"token_buffer": 8, "token_sigreg": "raw"}, "'raw'"),
         ],
     )
     def test_refused(self, kw, match):
         with pytest.raises(ValueError, match=match):
             _packed(**kw)
+
+    def test_the_tokens_as_the_representation(self):
+        v = _packed(token_dim=16, sigreg_on="tokens", token_sigreg="raw")
+        assert v.token_width == v.z_width == 16 and not v.projected
+        assert _packed().token_width == 32
+        _packed(token_buffer=64, sigreg_on="both", token_sigreg="raw")
+
+    @pytest.mark.parametrize("kw", [{"token_dim": 8}, {"token_buffer": 8}])
+    def test_the_tokens_are_of_the_packed_layout_only(self, kw):
+        with pytest.raises(ValueError, match="packed layout only"):
+            VisionConf(**kw)
 
     def test_the_pixels_layout_is_not_checked_so(self):
         VisionConf(frames=3, tubelet=0, views=2)  # M15's defaults stay valid

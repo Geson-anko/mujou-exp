@@ -235,7 +235,7 @@ def _masked_loss(
     ]
     h, y = pack_views(x[:, None], masks, keeps=keeps, patch=v.patch, tubelet=1)
     dz, dt = draw_packed_directions(
-        v.sigreg_directions, v.z_width, v.dim, tokens=True, generator=g
+        v.sigreg_directions, v.z_width, v.token_width, tokens=True, generator=g
     )
     du = draw_directions(v.sigreg_directions, v.u_width, g)
     t = jepa_loss_packed(
@@ -288,7 +288,7 @@ def train(args: argparse.Namespace) -> None:
     if args.mode == "lejepa":
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(args.seed + 1)
-            head = Projector(v.dim, args.projector).to(dev)
+            head = Projector(v.token_width, args.projector).to(dev)
         params += head.parameters()
     else:
         params += mods.predictor.parameters()

@@ -61,6 +61,19 @@ gains by the collapse, which with $z$ alone is a (near) optimum of $L$ (M17
 audit, 2026-11-12). ``"clip"`` sees only the spread within the stacks, which
 such a collapse removes: its penalty grows as $|M| T$.
 
+The tokens are the representation (M17, 2026-11-12, ``vision.token_dim``),
+and ``"raw"`` is the statistic of the $|M| T$ target tokens as samples of
+one law of $D$ dimensions, with the past target tokens of a buffer
+(``past``, ``PastSums``; ``jepa.nodes.PastTokens``) among them:
+$S_t = \mathrm{EP}(\{s_{b,t}\}_{b \in M, t} \cup \{p_j\}_j)$, the $p_j$
+constants (no gradient). One stream alone ($B = 1$) then has a sample of
+its $T$ tokens and the past. Tokens equal within each stack, $s_{b,t} =
+c_b$, have the empirical characteristic function of the $c_b$: without a
+buffer their statistic is exactly $T$ times that of the $|M|$ samples $c_b$,
+$O(T)$ even when the $c_b$ are $N(0, I)$, so this collapse costs about
+$\lambda T$ against what it gains of the prediction. Preventing the collapse
+of the latent space is the only role of $S_t$, and $\lambda$ its strength.
+
 The space-time completion of the packed layout (M17, 2026-11-12; LeJEPA's
 Eq. 6-9 with one global view) embeds every view: $u_{b,0} = h(z_b)$ of the
 target view (the whole stack) and $u_{b,v} = h(z_{b,v})$ of each context
@@ -103,6 +116,7 @@ from exp.video.schema.vision import TOKEN_SIGREG
 __all__ = [
     "TOKEN_SIGREG",
     "JEPATerms",
+    "PastSums",
     "Reconstruction",
     "jepa_loss",
     "jepa_loss_packed",
@@ -180,21 +194,41 @@ def _t_points(x: Tensor) -> Tensor:
     return t
 
 
-def weighted_sigreg(x: Tensor, weights: Tensor, directions: Tensor) -> Tensor:
-    r"""``exp.lib.sigreg.sigreg(x[weights > 0], ..., directions)`` for 0/1
+class PastSums(NamedTuple):
+    r"""The part of the empirical characteristic function of past samples (a
+    buffer, held constant) along the directions of a frame:
+    ``exp.lib.sigreg.ecf_sums`` of them, ``cos`` and ``sin`` ``(M, T)``, and
+    their number ``n`` (a 0-d float, so that it is an input of a CUDA
+    graph)."""
+
+    cos: Tensor
+    sin: Tensor
+    n: Tensor
+
+
+def weighted_sigreg(
+    x: Tensor, weights: Tensor, directions: Tensor, past: PastSums | None = None
+) -> Tensor:
+    r"""``exp.lib.sigreg.sigreg(x[weights > 0], buffer, directions)`` for 0/1
     ``weights`` ``(n,)`` of the samples ``x`` ``(n, D)``, without the dynamic
-    shape: the Epps-Pulley statistic $n_w \int \lvert \hat\varphi_w(t) -
-    e^{-t^2/2} \rvert^2 e^{-t^2/2} dt$ with the weighted empirical
-    characteristic function $\hat\varphi_w = \sum_i w_i e^{i t a^\top x_i} /
-    n_w$, $n_w = \sum_i w_i$, averaged over the directions $a$. 0 when no
-    weight is 1; a sample of weight 0 gets a gradient of exactly 0."""
+    shape, and ``past`` the ``PastSums`` of ``buffer`` along ``directions``
+    (None: no buffer): the Epps-Pulley statistic $n_w \int \lvert
+    \hat\varphi_w(t) - e^{-t^2/2} \rvert^2 e^{-t^2/2} dt$ with the weighted
+    empirical characteristic function $\hat\varphi_w = (\sum_i w_i e^{i t
+    a^\top x_i} + \sum_j e^{i t a^\top p_j}) / n_w$ of the samples and the
+    past $p_j$, $n_w = \sum_i w_i + n_p$, averaged over the directions $a$. 0
+    when there is no sample; a sample of weight 0 gets a gradient of exactly
+    0, and the past none (they are constants)."""
     t = _t_points(x)
     w = weights.to(x)
     n = w.sum()
     tx = (x @ directions.T).unsqueeze(-1) * t  # (n, M, T)
     wv = w.view(-1, 1, 1)
-    re = (torch.cos(tx) * wv).sum(0) / n.clamp(min=1)  # (M, T)
-    im = (torch.sin(tx) * wv).sum(0) / n.clamp(min=1)
+    re = (torch.cos(tx) * wv).sum(0)  # (M, T)
+    im = (torch.sin(tx) * wv).sum(0)
+    if past is not None:
+        re, im, n = re + past.cos, im + past.sin, n + past.n
+    re, im = re / n.clamp(min=1), im / n.clamp(min=1)
     phi = torch.exp(-(t**2) / 2)
     err = ((re - phi) ** 2 + im**2) * phi
     return (n * torch.trapezoid(err, t, dim=-1)).mean()
@@ -224,6 +258,7 @@ class JEPATerms(NamedTuple):
     recon: Tensor  # the mean of L_rec over the valid streams (0 with none or off)
     # the mean of L_z over the valid streams (packed; None or 0 when off)
     zpred: Tensor | None = None
+    target: Tensor | None = None  # the target tokens (B, T, D) (packed)
 
 
 def jepa_loss(
@@ -287,15 +322,24 @@ def jepa_loss(
     return JEPATerms(total / b, pred_sum / n.clamp(min=1), s, n, z, rec)
 
 
-def token_sigreg_of(target: Tensor, w: Tensor, directions: Tensor, kind: str) -> Tensor:
+def token_sigreg_of(
+    target: Tensor,
+    w: Tensor,
+    directions: Tensor,
+    kind: str,
+    past: PastSums | None = None,
+) -> Tensor:
     r"""$S_t$ of the target tokens ``(B, T, D)`` of the streams of 0/1 weights
     ``w`` ``(B,)``, along ``directions`` ``(M, D)``: ``kind`` of
-    ``TOKEN_SIGREG`` (module docstring)."""
+    ``TOKEN_SIGREG`` (module docstring), with the past tokens of ``past``
+    among the samples (``"raw"`` only)."""
     b, t, d = target.shape
     if kind not in TOKEN_SIGREG:
         raise ValueError(f"token_sigreg must be one of {TOKEN_SIGREG}, not {kind!r}")
+    if past is not None and kind != "raw":
+        raise ValueError(f"the past tokens are of token_sigreg 'raw', not {kind!r}")
     x = target - target.mean(1, keepdim=True) if kind == "clip" else target
-    s = weighted_sigreg(x.reshape(-1, d), w.repeat_interleave(t), directions)
+    s = weighted_sigreg(x.reshape(-1, d), w.repeat_interleave(t), directions, past)
     return s / t if kind == "scaled" else s
 
 
@@ -362,6 +406,7 @@ def jepa_loss_packed(
     directions_u: Tensor | None = None,
     target_norm: bool = False,
     goal: Tensor | None = None,
+    past: PastSums | None = None,
 ) -> JEPATerms:
     r"""$L$ of the packed layout (module docstring).
 
@@ -394,6 +439,8 @@ def jepa_loss_packed(
             affine (per token).
         goal: The prediction's targets ``(B, T, D)``, constants (the tokens
             of an EMA of the encoder); None: the target tokens.
+        past: The past target tokens among the samples of $S_t$, along its
+            directions (``token_sigreg`` ``"raw"``; None: none).
     """
     b, _, d = tokens.shape
     views = len(keeps)
@@ -443,6 +490,7 @@ def jepa_loss_packed(
                 w,
                 directions_z if directions_t is None else directions_t,
                 token_sigreg,
+                past,
             )
         )
     if views_on:
@@ -465,4 +513,5 @@ def jepa_loss_packed(
         z,
         torch.zeros_like(s),
         z_sum / n.clamp(min=1),
+        target,
     )

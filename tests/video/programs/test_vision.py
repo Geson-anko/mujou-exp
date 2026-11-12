@@ -571,6 +571,33 @@ class TestPacked:
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
 
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_the_token_preset_resumes_with_its_past_tokens(
+        self, tmp_path, tours, learner
+    ):
+        """m17/tok_n16 (the tokens of token_dim, SIGReg of them with the past
+        ones): the buffer fills in 3 frames and is replaced at random rows
+        after; stopped at frame 17 and resumed, its rows, count and draws
+        resume to the bytes of a run never stopped."""
+        extra = [
+            f"learner={learner}",
+            "ctl.resume_every=0.3",
+            "ctl.log_every=0.2",
+            "vision.token_dim=4",
+            "vision.token_buffer=48",
+            "vision.token_insert=16",
+        ]
+        kw = {"experiment": "m17/tok_n16", "tiny": tours}
+        assert _run(tmp_path / "whole", extra, **kw) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(17), **kw) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2, **kw) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        rows = _lines(tmp_path / "whole" / "stream.jsonl")
+        assert all(math.isfinite(r["sigreg"]) for r in rows if r["sigreg"] is not None)
+
     def test_advance_needs_the_packed_layout(self, tmp_path, monkeypatch):
         root = numbered(tmp_path / "data" / "d", {"A": 40, "H": 96}, size=8)
         monkeypatch.setenv(DATA_ENV, str(root.parent))

@@ -156,6 +156,7 @@ class TestM17:
         assert M17 == [
             "m17/st_n16",
             "m17/st_tok_n16",
+            "m17/tok_n16",
             "m17/wt_n1",
             "m17/wt_n16",
             "m17/wt_n8",
@@ -191,6 +192,29 @@ class TestM17:
         assert v.views == 3 and v.z_width == 256 and not v.projected
         assert conf.measure.horizons == [1, 5, 10] and conf.measure.steps == 10
         assert conf.ctl.ckpt_every == 300.0  # explore keeps the last checkpoint
+
+    def test_the_token_preset_is_wt_n16_with_the_tokens_as_the_code(self) -> None:
+        """The tokens of 16 as the representation, SIGReg of them raw with
+        8192 past tokens; everything else, the optimizer included, that of
+        wt_n16 (2026-11-12)."""
+        conf = compose(["+experiment=m17/tok_n16"])
+        base = compose(["+experiment=m17/wt_n16"])
+        v, w = conf.vision, base.vision
+        assert v is not None and w is not None
+        assert (v.token_dim, v.sigreg_on, v.token_sigreg) == (16, "tokens", "raw")
+        assert (v.token_buffer, v.token_insert) == (8192, 64)
+        assert v.z_dim is None and v.z_width == 16
+        assert w.token_dim is None
+        assert conf.optim_vision == base.optim_vision
+        assert conf.data == base.data and conf.time == base.time
+        assert conf.measure == base.measure
+        changed = {"token_dim", "sigreg_on", "token_sigreg", "token_buffer"}
+        changed |= {"token_insert", "sigreg"}
+        for name in vars(w):
+            if name not in changed:
+                assert getattr(v, name) == getattr(w, name), name
+        wide = compose(["+experiment=m17/tok_n16", "vision.token_dim=32"]).vision
+        assert wide is not None and wide.z_width == 32
 
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])
@@ -232,7 +256,7 @@ def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
         parts.append(target.gather(1, visible[..., None].expand(-1, -1, d)))
     sigreg_on = {"views_tokens": "tokens"}.get(v.sigreg_on, v.sigreg_on)
     dz, dt = draw_packed_directions(
-        32, v.z_width, v.dim, tokens=sigreg_on != "z", generator=g
+        32, v.z_width, v.token_width, tokens=sigreg_on != "z", generator=g
     )
     terms = jepa_loss_packed(
         torch.cat(parts, 1),
@@ -273,9 +297,10 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
         return torch.nn.functional.layer_norm(x, x.shape[-1:]) if v.target_norm else x
 
     b, t = conf.data.streams, (v.frames // v.tubelet) * (128 // v.patch) ** 2
+    d = v.token_width
     g = torch.Generator().manual_seed(1)
     with torch.no_grad():
-        clip = torch.randn(b, 1, v.dim, generator=g).expand(b, t, v.dim)
+        clip = torch.randn(b, 1, d, generator=g).expand(b, t, d)
         collapsed = _m17_loss(
             conf,
             clip.contiguous(),
@@ -285,7 +310,7 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
         )
         spread = _m17_loss(
             conf,
-            torch.randn(b, t, v.dim, generator=g),
+            torch.randn(b, t, d, generator=g),
             lambda ctx, ctx_ids, tgt_ids: ctx.new_zeros(*tgt_ids.shape, ctx.shape[2]),
         )
     assert collapsed > spread

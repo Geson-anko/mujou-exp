@@ -21,6 +21,7 @@ from exp.video.jepa.loss import (
 )
 from exp.video.jepa.nodes import (
     STATS,
+    PastTokens,
     draw_directions,
     draw_packed_directions,
     stats_message,
@@ -63,7 +64,11 @@ class JEPABP(Node):
     (``PackedJEPAHead``'s), then those of $u$ with SIGReg of the views. The
     projector and the predictor of $u$ of the space-time completion
     (``mods.projector``, ``mods.zpred``) learn after the projection. ``views``
-    is then unused.
+    is then unused. With ``token_buffer`` > 0 the SIGReg of the tokens sees
+    the past target tokens of a ``PastTokens`` as ``PackedJEPAHead`` has them
+    (``past``; the same draws from the same seed): it keeps the target tokens
+    of the frame's first $L$ and of each step's new $z$, and the frame's first
+    update, after drawing the directions, inserts those of the frame before.
 
     Args:
         mods: The modules, on ``device``.
@@ -83,6 +88,9 @@ class JEPABP(Node):
             the prediction's targets (packed; a control, 0: none). It moves
             after each step: $\bar\theta \leftarrow m \bar\theta + (1 - m)
             \theta$.
+        token_buffer: The capacity of the past target tokens (packed; 0:
+            none).
+        token_insert: The tokens of a frame inserted into them.
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -116,6 +124,8 @@ class JEPABP(Node):
         z_weight: float = 0.0,
         target_norm: bool = False,
         ema: float = 0.0,
+        token_buffer: int = 0,
+        token_insert: int = 64,
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -161,6 +171,17 @@ class JEPABP(Node):
         self.directions = torch.zeros(directions, d_z, device=self.device)
         self.directions_t: torch.Tensor | None = None
         self.directions_u: torch.Tensor | None = None
+        self.past: PastTokens | None = None  # the past target tokens (state)
+        if token_buffer:
+            self.past = PastTokens(
+                capacity=token_buffer,
+                insert=token_insert,
+                streams=self._b,
+                tokens=mods.segments[0],
+                dim=d,
+                directions=directions,
+                device=self.device,
+            )
         self.prev = Port(send=h, recv=act_spec)  # sends nothing
         self.z_out = Port(send=z_spec(self._b, d_z))
         self.stats = Port(send=STATS)
@@ -185,10 +206,17 @@ class JEPABP(Node):
                 )
                 if self._views:
                     self.directions_u = draw_directions(m, self._d_u, self.generator)
+                if self.past is not None:
+                    on = self.directions_t  # those of the tokens, or of z
+                    on = self.directions if on is None else on
+                    self.past.next_frame(on, self.generator)
             else:
                 self.directions = draw_directions(m, d, self.generator)
             with torch.set_grad_enabled(self._learns):
                 terms = self.terms(act)
+            if self.past is not None:
+                assert terms.target is not None  # of the packed loss
+                self.past.keep(terms.target, valid)
             self._pending = [terms.loss] if self._learns else []
             self.stats.send(stats_message(terms, act["time"]))
             self._send_z(act, terms.z)
@@ -209,10 +237,14 @@ class JEPABP(Node):
                 self._send_z(act, self._target_z(act))
 
     def _target_z(self, act: Activity) -> torch.Tensor:
-        """$z$ of the target views of ``act`` at the current weights."""
+        """$z$ of the target views of ``act`` at the current weights (packed:
+        their tokens are kept for the past tokens)."""
         if self._packed:
             t = self.mods.segments[0]
-            return self.mods.z_of(self.encoder(act["h"][:, :t], (t,)))
+            tokens = self.encoder(act["h"][:, :t], (t,))
+            if self.past is not None:
+                self.past.keep(tokens, act["mask"])
+            return self.mods.z_of(tokens)
         h = act["h"][:: self._v]  # the target views
         return self.encoder.pool(self.encoder(h))
 
@@ -255,6 +287,7 @@ class JEPABP(Node):
                 directions_u=self.directions_u,
                 target_norm=self._target_norm,
                 goal=goal,
+                past=None if self.past is None else self.past.sums,
             )
         b, v = self._b, self._v
         decoder = self.decoder

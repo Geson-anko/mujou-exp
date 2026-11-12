@@ -110,6 +110,15 @@ class VisionConf:
     ``token_weight`` and ``z_weight`` weigh the prediction of the masked tokens
     and the completion of the stack's embedding from each context view's
     (``jepa.loss``; 1 and 0: the masked tokens alone).
+
+    With ``token_dim`` (packed, M17 2026-11-12) the last stage maps its
+    ``LayerNorm``'s output linearly to ``token_dim``: the encoder's tokens are
+    the representation, of ``token_dim`` each ($z$ is their mean; ``z_dim``
+    must be None). ``token_buffer`` > 0 adds to the SIGReg sample of the
+    target tokens a buffer of that many past target tokens (detached), into
+    which ``token_insert`` tokens of each frame go (``jepa.nodes.PastTokens``;
+    ``token_sigreg`` "raw" only: the Epps-Pulley statistic of the current and
+    the past tokens together).
     """
 
     patch: int = 4  # pixels per side of a patch
@@ -168,6 +177,12 @@ class VisionConf:
     # targets of the prediction are the tokens of an EMA of the encoder of
     # this momentum per learning step (0: none, the encoder itself)
     ema: float = 0.0
+    # "packed" only: the width of the encoder's output tokens (None: dim, no map)
+    token_dim: int | None = None
+    # "packed" only: the past target tokens in the SIGReg of the tokens (0:
+    # none) and the tokens of a frame put into them
+    token_buffer: int = 0
+    token_insert: int = 64
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
@@ -217,11 +232,13 @@ class VisionConf:
             or self.pred_heads is not None
             or self.target_norm
             or self.ema
+            or self.token_dim is not None
+            or self.token_buffer
         ):
             raise ValueError(
                 "vision.token_sigreg, token_weight, z_weight, projector, "
-                "zpred_hidden, pred_dim, pred_heads, target_norm, ema and "
-                "sigreg_on 'views' are of the packed layout only"
+                "zpred_hidden, pred_dim, pred_heads, target_norm, ema, token_dim, "
+                "token_buffer and sigreg_on 'views' are of the packed layout only"
             )
         if self.layout == "packed":
             self._check_packed()
@@ -288,6 +305,29 @@ class VisionConf:
                 "sigreg_on 'tokens' with a projection (z_dim != dim) gives the "
                 "projection no gradient: use 'z' or 'both'"
             )
+        self._check_tokens()
+
+    def _check_tokens(self) -> None:
+        if self.token_dim is not None:
+            if self.token_dim < 1:
+                raise ValueError(f"vision.token_dim must be >= 1: {self.token_dim}")
+            if self.z_dim is not None:
+                raise ValueError(
+                    "vision.token_dim needs z_dim None: z is the mean of the tokens"
+                )
+        if self.token_buffer < 0 or self.token_insert < 1:
+            raise ValueError(
+                f"vision.token_buffer must be >= 0 and token_insert >= 1, not "
+                f"{self.token_buffer} and {self.token_insert}"
+            )
+        if self.token_buffer and (
+            self.token_sigreg != "raw"
+            or self.sigreg_on not in ("tokens", "both", "views_tokens")
+        ):
+            raise ValueError(
+                "vision.token_buffer is of the SIGReg of the tokens: it needs "
+                "sigreg_on 'tokens', 'both' or 'views_tokens' and token_sigreg 'raw'"
+            )
 
     @property
     def projected(self) -> bool:
@@ -308,8 +348,14 @@ class VisionConf:
 
     @property
     def z_width(self) -> int:
-        """The dimension of $z$: ``z_dim`` or ``dim``."""
-        return self.z_dim if self.z_dim is not None else self.dim
+        """The dimension of $z$: ``z_dim`` or ``token_width``."""
+        return self.z_dim if self.z_dim is not None else self.token_width
+
+    @property
+    def token_width(self) -> int:
+        """The dimension of the encoder's output tokens: ``token_dim`` or
+        ``dim``."""
+        return self.token_dim if self.token_dim is not None else self.dim
 
     @property
     def decoder_hidden(self) -> int:

@@ -3,8 +3,9 @@ from typing import override
 import pytest
 import torch
 
-from exp.lib.sigreg import T_POINTS, sigreg
+from exp.lib.sigreg import T_POINTS, ecf_sums, sigreg
 from exp.video.jepa.loss import (
+    PastSums,
     Reconstruction,
     jepa_loss,
     jepa_loss_packed,
@@ -490,6 +491,71 @@ class TestTokenSigreg:
         s_z = weighted_sigreg(target.mean(1), w, dirs)
         s_t = token_sigreg_of(target, w, dirs, kind)
         torch.testing.assert_close(got.sigreg, (s_z + s_t) / 2)
+
+
+def _past(buffer: torch.Tensor, dirs: torch.Tensor) -> PastSums:
+    cos, sin = ecf_sums(buffer, dirs)
+    return PastSums(cos, sin, torch.tensor(float(len(buffer)), dtype=buffer.dtype))
+
+
+class TestPastTokens:
+    """The SIGReg of the tokens with the past target tokens of a buffer among
+    its samples (vision.token_buffer)."""
+
+    def _dirs(self, d: int = 5) -> torch.Tensor:
+        g = torch.Generator().manual_seed(3)
+        a = torch.randn(9, d, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def test_it_is_sigreg_of_the_current_and_the_past_samples_together(self):
+        """The statistic of the samples of weight 1 and the buffer is that of
+        exp.lib.sigreg.sigreg on them concatenated, and so is its gradient to
+        the current samples (the buffer a constant)."""
+        g = torch.Generator().manual_seed(0)
+        x = torch.randn(9, 5, generator=g, dtype=torch.float64).requires_grad_()
+        buffer = torch.randn(11, 5, generator=g, dtype=torch.float64)
+        w = torch.tensor([1, 0, 1, 1, 0, 0, 1, 1, 0], dtype=torch.bool)
+        dirs = self._dirs()
+        got = weighted_sigreg(x, w, dirs, _past(buffer, dirs))
+        expect = sigreg(x[w], buffer, dirs)
+        torch.testing.assert_close(got, expect)
+        (g_got,) = torch.autograd.grad(got, [x])
+        (g_expect,) = torch.autograd.grad(expect, [x])
+        torch.testing.assert_close(g_got, g_expect)
+        assert (g_got[~w] == 0).all()
+
+    def test_the_raw_token_statistic_of_the_valid_streams_and_the_past(self):
+        g = torch.Generator().manual_seed(1)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        buffer = torch.randn(7, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.tensor([1.0, 0.0, 1.0], dtype=torch.float64), self._dirs()
+        got = token_sigreg_of(target, w, dirs, "raw", _past(buffer, dirs))
+        expect = sigreg(target[[0, 2]].reshape(-1, 5), buffer, dirs)
+        torch.testing.assert_close(got, expect)
+
+    def test_tokens_constant_within_each_stack_are_t_times_the_stacks(self):
+        """Tokens s_{b,t} = c_b have the empirical characteristic function of
+        the c_b: the statistic of the B T tokens is exactly T times that of
+        the B samples c_b (module docstring of jepa.loss)."""
+        g = torch.Generator().manual_seed(2)
+        c = torch.randn(4, 1, 5, generator=g, dtype=torch.float64)
+        t = 8
+        w, dirs = torch.ones(4, dtype=torch.float64), self._dirs()
+        tokens = token_sigreg_of(c.expand(4, t, 5), w, dirs, "raw")
+        torch.testing.assert_close(tokens, t * weighted_sigreg(c[:, 0], w, dirs))
+
+    @pytest.mark.parametrize("kind", ["scaled", "clip"])
+    def test_only_raw_takes_the_past(self, kind):
+        dirs = self._dirs()
+        past = _past(torch.zeros(2, 5, dtype=torch.float64), dirs)
+        with pytest.raises(ValueError, match="raw"):
+            token_sigreg_of(
+                torch.zeros(1, 2, 5, dtype=torch.float64),
+                torch.ones(1, dtype=torch.float64),
+                dirs,
+                kind,
+                past,
+            )
 
 
 class TestSpaceTimeCompletion:

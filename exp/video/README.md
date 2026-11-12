@@ -48,6 +48,8 @@ just sweep confirm m14-s3-bp-v1 --top 2 --learners bp,pc --seeds 0,1,2 --res cpu
 
 M17（Walking Tours でエンコーダを詰める）は、preset `m17/wt_n16`・`wt_n8`・`wt_n1`（`vision.layout=packed`、`vision.recon` は 0 で固定）で回し、エンコーダの評価は後から `task=posthoc` で行う。posthoc は物差し（画素の PCA と学習前の ViT）、$z$ からの再構成、$z$ の上の線形の動力学、予測器を通した復元を測る（`measure/encoder_eval.py`）。探索は `studies/m17_wt_bp.toml`（`objective_from = "posthoc"`、tools/sweep/README.md）。run の 1 フレーム（仮想時間の 1/30 秒）にストリームは動画を 3 フレーム（0.1 秒）進める（`data.tours.advance=3`）。動画は仮想時間に対して 3 倍速で流れ、間の 2 フレームはどのノードも推論しない。
 
+トークン列を表現にする preset は `m17/tok_n16`（2026-11-12 の決定）。`wt_n16` と同じ積み・エンコーダ・optimizer で、最後の段が各トークンを `vision.token_dim` = 16 次元に線形に写す（32 次元は `vision.token_dim=32` で上書きする）。SIGReg は、トークンを 16 次元の 1 つの分布の標本とみてかける（`token_sigreg=raw`。$T$ で割らず、積みの平均も引かない）。標本には、いまのトークンに加えて、過去のターゲットのトークン 8192 個（`vision.token_buffer`）も入れる。過去のトークンは毎フレーム 64 個（`vision.token_insert`）を、ランダムに選んだ行に入れ替える（`jepa/nodes.py` の `PastTokens`）。ストリームが 1 本でも、標本は同じ形に組める。$\lambda$（`vision.sigreg`）の 0.003 は仮の値で、実際のトークンが積みの中でどれだけ相関するかを測ってから、掃引で決める。
+
 ```bash
 # 物差しだけ（親の run なし）
 just fleet submit --batch m17-base-v1 +experiment=m17/wt_n16 task=baselines --res 4090

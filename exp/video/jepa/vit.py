@@ -28,7 +28,11 @@ of the target view's $T$ tokens and the visible tokens of each context view
 each to the width and adds its fixed 3-D position, and the blocks attend
 within each view's segment only (``Block``'s ``segments``), so the views of a
 sample do not mix. $z$ is the mean of the target view's tokens, through a
-linear map (``proj``) when ``vision.z_dim`` is not the width.
+linear map (``proj``) when ``vision.z_dim`` is not the width. With
+``vision.token_dim`` the last stage maps each token to ``token_dim``
+dimensions after its ``LayerNorm`` (``Stage``'s ``out``): the tokens the
+encoder sends are the representation, and the predictor maps them to its
+width and back (``PackedPredictor``).
 """
 
 import math
@@ -261,8 +265,9 @@ class PackedEmbed(nn.Module):
 
 class Stage(nn.Module):
     """The module of one encoder node: the embedding (the first stage only),
-    blocks, and the final ``LayerNorm`` (the last stage only); ``segments``
-    goes to every block (``Block``)."""
+    blocks, and the final ``LayerNorm`` (the last stage only), then, with
+    ``out`` (the last stage, ``vision.token_dim``), a linear map of each token
+    to ``out`` dimensions; ``segments`` goes to every block (``Block``)."""
 
     def __init__(
         self,
@@ -271,11 +276,13 @@ class Stage(nn.Module):
         *,
         embed: Embed | PackedEmbed | None = None,
         norm: bool = False,
+        out: int | None = None,
     ) -> None:
         super().__init__()
         self.embed = embed
         self.blocks = nn.ModuleList(blocks)
         self.norm = nn.LayerNorm(dim) if norm else None
+        self.out = nn.Linear(dim, out) if out is not None else None
 
     @override
     def forward(self, x: Tensor, segments: Sequence[int] | None = None) -> Tensor:
@@ -283,7 +290,9 @@ class Stage(nn.Module):
             x = self.embed(x)
         for block in self.blocks:
             x = block(x, segments)
-        return x if self.norm is None else self.norm(x)
+        if self.norm is not None:
+            x = self.norm(x)
+        return x if self.out is None else self.out(x)
 
 
 class Segmented(nn.Module):
@@ -588,11 +597,19 @@ def _init_(module: nn.Module) -> None:
     position. With std 0.02 the content is a few hundredths of the position,
     and the pooled $z$ of every image is nearly the same before anything
     learns, a collapse that SIGReg on $z$ cannot undo (its gradient is the
-    same for every sample there)."""
-    patch = {id(m.proj) for m in module.modules() if isinstance(m, Embed | PackedEmbed)}
+    same for every sample there). So are those of a stage's map of the tokens
+    to ``vision.token_dim`` (``Stage.out``): the tokens of the representation
+    keep the unit scale of the ``LayerNorm``'s output, as the projection of
+    $z$ does."""
+    lecun = {id(m.proj) for m in module.modules() if isinstance(m, Embed | PackedEmbed)}
+    lecun |= {
+        id(m.out)
+        for m in module.modules()
+        if isinstance(m, Stage) and m.out is not None
+    }
     for m in module.modules():
         if isinstance(m, nn.Linear):
-            std = 1 / math.sqrt(m.in_features) if id(m) in patch else INIT_STD
+            std = 1 / math.sqrt(m.in_features) if id(m) in lecun else INIT_STD
             nn.init.trunc_normal_(m.weight, std=std, a=-2 * std, b=2 * std)
             nn.init.zeros_(m.bias)
         elif isinstance(m, nn.LayerNorm):
@@ -654,14 +671,18 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
                     std=v.pixel_std,
                 )
             blocks = [Block(v.dim, v.heads) for _ in range(per)]
-            stage = Stage(blocks, v.dim, embed=embed, norm=i == v.nodes - 1)
+            last = i == v.nodes - 1
+            out = v.token_dim if last else None
+            stage = Stage(blocks, v.dim, embed=embed, norm=last, out=out)
             _init_(stage)
             stages.append(stage)
         width, heads = v.pred_dim or v.dim, v.pred_heads or v.heads
         pred_blocks = [Block(width, heads) for _ in range(v.pred_depth)]
         predictor: Predictor | PackedPredictor
         if packed:
-            predictor = PackedPredictor(pred_blocks, v.dim, grid3, v.pred_dim)
+            predictor = PackedPredictor(
+                pred_blocks, v.token_width, grid3, v.pred_dim or v.dim
+            )
         else:
             predictor = Predictor(pred_blocks, v.dim)
         _init_(predictor)
