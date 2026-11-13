@@ -9,6 +9,8 @@ from torch import nn
 
 from exp.video.diag.early_shrink import (
     attribution,
+    gain_bound,
+    linear_inputs,
     output_change,
     owners,
     params_of,
@@ -147,3 +149,51 @@ def test_output_change_counts_the_bias_and_skips_unused_maps():
     base = float((x @ init["a.weight"].T + init["a.bias"]).norm())
     assert list(r) == ["a"]
     assert math.isclose(r["a"], float(d.norm()) * math.sqrt(5) / base, rel_tol=1e-9)
+
+
+def test_gain_bound_of_isotropic_inputs_is_one():
+    """x = sqrt(2) I_n: every eigenvalue of x^T x is 2, so bound = 1 and the
+    participation is n."""
+    n = 6
+    out = gain_bound(2**0.5 * torch.eye(n, dtype=torch.float64))
+    assert out["n"] == n
+    assert math.isclose(out["bound"], 1.0, rel_tol=1e-12)
+    assert math.isclose(out["participation"], n, rel_tol=1e-12)
+
+
+def test_gain_bound_of_inputs_on_one_line_is_sqrt_n():
+    """x = a v^T: one eigenvalue, so bound = sqrt(n) and participation 1.
+    With W_0 = I (|x W_0^T|_F = |x|_F, |W_0|_F = sqrt(n)) a change whose rows
+    all lie along v has |x Delta^T|_F = |x|_F |Delta|_F, so the ratio of the
+    relative changes is sqrt(n) exactly: the bound is reached."""
+    g = torch.Generator().manual_seed(6)
+    k, n = 7, 9
+    a = torch.randn(k, 1, generator=g, dtype=torch.float64)
+    v = torch.randn(1, n, generator=g, dtype=torch.float64)
+    out = gain_bound(a @ v)
+    assert math.isclose(out["bound"], math.sqrt(n), rel_tol=1e-9)
+    assert math.isclose(out["participation"], 1.0, rel_tol=1e-9)
+    lin = nn.Linear(n, n, bias=True).double()
+    with torch.no_grad():
+        lin.weight.copy_(torch.eye(n, dtype=torch.float64))
+        lin.bias.zero_()
+    mods = {"e": lin}
+    init = {k_: t.detach().clone() for k_, t in params_of(mods).items()}
+    step = 1e-3 * (v / v.norm()).expand(n, n)  # every row along v
+    with torch.no_grad():
+        lin.weight.add_(step)
+    x = a @ v
+    r_out = output_change(mods, init, lambda: lin(x))["e"]
+    r_w = float(step.norm()) / math.sqrt(n)
+    assert math.isclose(r_out / r_w, math.sqrt(n), rel_tol=1e-9)
+
+
+def test_linear_inputs_are_what_each_map_saw():
+    torch.manual_seed(7)
+    first, second = nn.Linear(3, 4), nn.Linear(4, 2)
+    mods = {"m": nn.Sequential(first, second)}
+    x = torch.randn(2, 5, 3)
+    got = linear_inputs(mods, lambda: mods["m"](x))
+    assert list(got) == ["m.0", "m.1"]
+    torch.testing.assert_close(got["m.0"], x.flatten(0, 1))
+    torch.testing.assert_close(got["m.1"], first(x).flatten(0, 1).detach())

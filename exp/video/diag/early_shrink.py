@@ -38,6 +38,10 @@ $\delta x^\top$ moves the output on an input like $x$ by about $\eta
 about $\lVert x\rVert_2 / \sqrt n$: for inputs of $n$ elements of one size
 the ratio is $\eta n$, large for the patch embedding's $n = \tau C p^2$.
 
+``gain_bound`` (at time 0, of each linear map's inputs from the val
+stacks): the most the ratio of ``output_change`` to ``rel`` can be, and the
+inputs' effective dimension (``gain_bound``'s docstring).
+
 ``attribution``: for each module that holds parameters, the row with that
 module's tensors back at $\theta_0$ and every other at the checkpoint
 (``revert``), and the row with only that module at the checkpoint
@@ -103,12 +107,12 @@ def weight_change(init: Params, now: Params) -> dict[str, dict[str, float]]:
     return out
 
 
-def output_change(
-    modules: Mapping[str, nn.Module], init: Params, forward: Callable[[], object]
-) -> dict[str, float]:
-    """``output_change`` (module docstring) of each ``nn.Linear`` of
-    ``modules`` on the inputs it gets in ``forward()``, by the name of its
-    weight without ``.weight``; ``init`` holds the weights at the start."""
+def linear_inputs(
+    modules: Mapping[str, nn.Module], forward: Callable[[], object]
+) -> dict[str, Tensor]:
+    """The inputs ``(k, n)`` each ``nn.Linear`` of ``modules`` gets in
+    ``forward()`` (its rows over every call), by the name of its weight
+    without ``.weight``; a map that gets none is left out."""
     seen: dict[str, list[Tensor]] = {}
     hooks = []
     for m, mod in modules.items():
@@ -127,18 +131,49 @@ def output_change(
     finally:
         for h in hooks:
             h.remove()
+    return {
+        k: torch.cat([x.flatten(0, -2) for x in xs]) for k, xs in seen.items() if xs
+    }
+
+
+def output_change(
+    modules: Mapping[str, nn.Module], init: Params, forward: Callable[[], object]
+) -> dict[str, float]:
+    """``output_change`` (module docstring) of each ``nn.Linear`` of
+    ``modules`` on the inputs it gets in ``forward()`` (``linear_inputs``);
+    ``init`` holds the weights at the start."""
     now = params_of(modules)
     out = {}
-    for name, xs in seen.items():
-        if not xs:
-            continue
-        x = torch.cat([x.flatten(0, -2) for x in xs]).double()
+    for name, x in linear_inputs(modules, forward).items():
+        x = x.double()
         w0, b0 = init[f"{name}.weight"].double(), init[f"{name}.bias"].double()
         w = now[f"{name}.weight"].detach().double()
         b = now[f"{name}.bias"].detach().double()
         moved = float((x @ (w - w0).T + (b - b0)).norm())
         out[name] = moved / float((x @ w0.T + b0).norm())
     return out
+
+
+def gain_bound(x: Tensor) -> dict[str, float]:
+    r"""How much more the output of a linear map on the inputs ``x``
+    ``(k, n)`` can move, relatively, than its weights: for $W_0$ of i.i.d.
+    entries $\lVert x W_0^\top\rVert_F \approx \lVert W_0\rVert_F
+    \lVert x\rVert_F / \sqrt n$, and $\lVert x \Delta W^\top\rVert_F \le
+    \lVert\Delta W\rVert_F\,\sigma_{\max}(x)$, so the output's relative
+    change over the weights' is at most ``bound`` $= \sqrt n\,
+    \sigma_{\max}(x) / \lVert x\rVert_F = \sqrt{n \lambda_{\max} /
+    \sum_i \lambda_i}$ ($\lambda$ the eigenvalues of $x^\top x$; 1 for
+    isotropic inputs, $\sqrt n$ for inputs on one line), reached by a change
+    along the inputs' top direction. Also ``participation`` $(\sum
+    \lambda)^2 / \sum \lambda^2$, the inputs' effective dimension, and
+    ``n``."""
+    lam = torch.linalg.eigvalsh(x.double().T @ x.double())
+    total = float(lam.sum())
+    return {
+        "n": x.shape[1],
+        "bound": math.sqrt(x.shape[1] * float(lam.max()) / total),
+        "participation": total**2 / float((lam**2).sum()),
+    }
 
 
 def owners(names: Sequence[str]) -> dict[str, list[str]]:
@@ -201,7 +236,7 @@ def run_conf(run_dir: Path) -> RunConf:
 def _write(out: Path, row: Mapping[str, Any]) -> None:
     with (out / "rows.jsonl").open("a") as f:
         f.write(json.dumps(row) + "\n")
-    big = ("weight_change", "output_change")
+    big = ("weight_change", "output_change", "gain_bound", "attribution")
     print(json.dumps({k: v for k, v in row.items() if k not in big}))
 
 
@@ -224,7 +259,17 @@ def live(args: argparse.Namespace) -> None:
         stacks = online.measures.windows["val"][:PACKED_BATCH, : online.mods.chunk[0]]
         stacks = stacks.to(conf.device)
         row0 = built.evaluate("val")
-        _write(args.out, {"t": 0.0, "frame": 0, "learn": args.learn, **pick(row0)})
+        inputs = linear_inputs(built.modules(), lambda: online.mods.tokens(stacks))
+        _write(
+            args.out,
+            {
+                "t": 0.0,
+                "frame": 0,
+                "learn": args.learn,
+                **pick(row0),
+                "gain_bound": {k: gain_bound(x) for k, x in inputs.items()},
+            },
+        )
         for u in range(1, s.units + 1):
             built.advance()
             if u % every and u != s.units:
@@ -266,6 +311,9 @@ def checkpoints(args: argparse.Namespace) -> None:
     def measure() -> dict[str, float]:
         return pick(measures.evaluate(mods, "val"))
 
+    def forward() -> Tensor:
+        return mods.tokens(stacks)
+
     base = json.loads((args.run_dir / "baselines.json").read_text())["val"]
     row0 = measure()
     _write(
@@ -274,15 +322,17 @@ def checkpoints(args: argparse.Namespace) -> None:
             "ckpt": "init",
             **row0,
             "baselines": {k: base[f"init_{k}"] for k in row0},
+            "gain_bound": {
+                k: gain_bound(x)
+                for k, x in linear_inputs(mods.named(), forward).items()
+            },
         },
     )
     for name in args.ckpt:
         header = ckpt.load_eval(args.run_dir / "ckpt" / f"{name}.pt", mods.named())
         row: dict[str, Any] = {"ckpt": name, "t": header["t"], **measure()}
         row["weight_change"] = weight_change(init, params)
-        row["output_change"] = output_change(
-            mods.named(), init, lambda: mods.tokens(stacks)
-        )
+        row["output_change"] = output_change(mods.named(), init, forward)
         if args.attribute:
             row["attribution"] = attribution(params, init, measure)
         _write(args.out, row)
