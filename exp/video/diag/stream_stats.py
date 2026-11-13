@@ -13,24 +13,40 @@ $$E\,S = S_0 + f'(0)\,(N - 1)\,r + O(r^2), \quad S_0 = \sqrt{2\pi} -
 3^{3/2} = 0.4824,$$
 
 since $N\,E|\hat\varphi(t) - e^{-t^2/2}|^2 = (1 - e^{-t^2}) + (N - 1)
-(e^{-t^2(1 - r)} - e^{-t^2})$. Averaged over the directions $a$, the
-correlation of the projections $a^\top y$ is $\operatorname{tr} C_\Delta /
-\operatorname{tr} C_0$ for a representation $y$ of second moments $C$ about
-the centre SIGReg drives it to (0): the normalized autocovariance below,
-centred by the mean of the training set. The bias $f'(0)(N-1)\bar r$ is below
-$f'(0)$ when $\bar r \le 1/(N-1)$; there the effective sample size
-$N / (1 + (N - 1)\bar r)$ is at least $N/2$. ``crossings`` reports, for each
-$N$ of ``ns``, the smallest lag with $\rho(\Delta) \le 1/(N-1)$; ``n_eff``
-the effective size at each lag. A buffer of points $\Delta$ apart has pairs
-$\Delta, 2\Delta, \dots$ apart, so with $\rho$ decreasing its $\bar r$ is at
-most $\rho(\Delta)$: the effective size at $\rho(\Delta)$ is a lower bound.
-Of a representation that is not isotropic, the projection's correlation
-differs between directions; the trace ratio is its mean.
+(e^{-t^2(1 - r)} - e^{-t^2})$. The premise is a projection of unit
+variance in every direction: the representation SIGReg drives to, isotropic
+about 0 ($C_0 = I$, $C$ the second moments about the centre 0, here the mean
+of the training set). There, averaged over the directions $a$, the
+correlation of the projections $a^\top y$ is $\operatorname{tr} C_\Delta / D$
+(to first order in $r$ the bias averages linearly over the directions). Of a
+representation that is not yet isotropic, the same quantity is the whitened
+mean $\operatorname{tr}(C_0^{-1/2} C_\Delta C_0^{-1/2}) / D$: the correlation
+the stream keeps after any linear map that makes the representation
+isotropic. The trace ratio $\operatorname{tr} C_\Delta / \operatorname{tr}
+C_0$ is not it: it weighs each direction by its variance (of a few large
+directions it is their correlation). ``corr`` measures the trace ratio of the
+pixels (their whitening, of $16 \times 49152$ dimensions, is not computed):
+a reference, not the premise. ``repr`` measures both of the representations,
+the whitened mean as the curve ``white``.
 
-- ``corr``: the pixels. A frame is flattened (128 x 128 x 3 in $[0, 1]$);
-  only the frames of the grid $t = 0, s, 2s, \dots$ of each training video
-  ($s$ = ``stride``, 3: the stacks' spacing and the stream's advance per
-  learning step) enter. $m_a$ is the mean of video $a$'s grid frames, $m =
+The scale of the bias is $f'(0)(N-1)\bar r$; the criterion $\bar r \le
+1/(N-1)$, a bias of at most $f'(0)$, an effective sample size $N / (1 + (N -
+1)\bar r)$ of at least $N/2$, is a convention on that scale, not derived.
+``crossings`` reports, for each $N$ of ``ns``, the smallest lag with
+$\rho(\Delta) \le 1/(N-1)$; ``n_eff`` the effective size at each lag. The
+mean correlation $\bar r$ of a buffer is over all its pairs, not that of its
+nearest points: of the points on the grid filling a window of $K$ grid steps
+of one stream, $\bar r(K) = \sum_{l=1}^{K-1} 2(K - l)\rho(l) / (K(K-1))$
+(``window_mean``, $\rho$ linear between the measured lags), so a buffer of
+$N$ points spread over that window has at most about $1/\bar r(K)$
+effective samples, whatever $N$. Over the whole loop of the training videos,
+centred by its own mean, the mean over all pairs is $-1/(M-1) \approx 0$: the
+constraint is the length of stream a buffer spans, not the spacing.
+
+- ``corr``: the pixels. A frame is flattened (128 x 128 x 3, its u8
+  values: the ratios do not depend on the scale); only the frames of the
+  grid $t = 0, s, 2s, \dots$ of each training video ($s$ = ``stride``, 3:
+  the stacks' spacing and the stream's advance per learning step) enter. $m_a$ is the mean of video $a$'s grid frames, $m =
   \sum_a J_a m_a / \sum_a J_a$ ($J_a$ its grid frames), $d_a = m_a - m$, $y =
   x - m$ (``g``) and $u = x - m_a$ (``w``). A data point is a stack $Y_j =
   (y_{j-N+1}, \dots, y_j)$ of $N$ = ``frames`` consecutive grid frames
@@ -44,10 +60,12 @@ differs between directions; the trace ratio is its mean.
   $\rho$ is the same ratio of the sums over all videos. Its error is the
   jackknife over the videos (the videos are the independent units; $m$ held
   fixed): $\hat\sigma^2 = \frac{A-1}{A} \sum_a (\rho_{-a} - \bar\rho_{-})^2$,
-  and the 95% bound $\rho + t_{A-1}\hat\sigma$, $t_{A-1}$ the 0.975 quantile
-  of Student's t of $A - 1$ degrees of freedom (``t_quantile``). The lags are
-  $\mathrm{round}(2^{i/3})$ grid steps up to the shortest video less a stack
-  (so every video has anchors at every lag).
+  and the upper end $\rho + t_{A-1}\hat\sigma$ of the two-sided 95%
+  interval, $t_{A-1}$ the 0.975 quantile of Student's t of $A - 1$ degrees of
+  freedom (``t_quantile``). The lags are $\mathrm{round}(2^{i/3})$ grid steps
+  up to the shortest video less a stack (so every video has anchors at every
+  lag; the largest, $2^{15}$ steps or 54.6 min, is the largest of them at or
+  below the 60.1 min of Wildlife less a stack).
 
   The reference of two data points of different videos (``g``): the mean over
   all pairs of a stack of video $a$ and one of $b$ of $\langle Y, Y'
@@ -64,7 +82,14 @@ differs between directions; the trace ratio is its mean.
   codes every stack $Y_j$ of the grid, by its flattened target tokens
   (``tokens``) and/or their pooled $z$ (``z``, ``VisionModules.z_of``); the
   codes are the rows, a data point is one row ($N = 1$ in the above), and the
-  reference is that of one row.
+  reference is that of one row. Each code has two curves: ``g`` (the trace
+  ratio) and ``white``, the same of the codes whitened by $C_0^{-1/2}$
+  (``whitener``, $C_0$ pooled over the training videos about $m$, held fixed
+  in the jackknife as $m$ is): its $\rho$ is the whitened mean. Of the codes
+  in ``--spectrum``, ``spectrum`` gives at each lag the least and the largest
+  correlation over the directions of the whitened codes, the extreme
+  eigenvalues of the symmetric part of their lag matrix (``lag_spectrum``,
+  whose mean eigenvalue is the ``white`` $\rho$).
 
 - ``budget``: from finished runs (``job.json``, ``result.json``,
   ``exit/attempt-*.json``), the learning steps per wall-clock second (one
@@ -120,6 +145,7 @@ __all__ = [
     "curve",
     "drift",
     "frame_mean",
+    "lag_spectrum",
     "lag_sums",
     "log_lags",
     "main",
@@ -127,9 +153,12 @@ __all__ = [
     "reference",
     "report",
     "run_speed",
+    "settled",
     "stack_codes",
     "stack_products",
     "t_quantile",
+    "whitener",
+    "window_mean",
 ]
 
 NS = (32, 256, 1024)  # the sample sizes of a SIGReg asked about
@@ -298,6 +327,18 @@ def crossing(lags: Sequence[int], rho: Sequence[float], bound: float) -> int | N
     return None
 
 
+def settled(lags: Sequence[int], rho: Sequence[float], bound: float) -> int | None:
+    """The smallest lag from which $\\rho \\le$ ``bound`` at every larger
+    measured lag, or None (``crossing`` is the first lag below it)."""
+    at = None
+    for lag, r in zip(lags, rho, strict=True):
+        if r > bound:
+            at = None
+        elif at is None:
+            at = lag
+    return at
+
+
 def n_eff(rho: float, n: int) -> float | None:
     """$N / (1 + (N - 1)\\rho)$, None where $1 + (N - 1)\\rho \\le 0$ (no $N$
     exchangeable points have that mean correlation)."""
@@ -312,6 +353,83 @@ def drift(a: Tensor, b: Tensor) -> float:
     n = len(b)
     apart = 2 * n / (n - 1) * float(((b - b.mean(0)) ** 2).sum(1).mean())
     return float(((a - b) ** 2).sum(1).mean()) / apart
+
+
+@torch.no_grad()
+def whitener(
+    rows: Sequence[Tensor], mean: Tensor, *, dev: torch.device, chunk: int = 4096
+) -> tuple[Tensor, dict[str, Any]]:
+    """The whitening $W$ ``(D, r)`` float64 on ``dev`` of the rows ``(J_a,
+    D)`` of all videos about ``mean`` $m$: with $C_0 = \\sum_a \\sum_j (x_j -
+    m)(x_j - m)^\\top / \\sum_a J_a = U \\Lambda U^\\top$, $W = U_r
+    \\Lambda_r^{-1/2}$ over the $r$ eigenvalues above $D\\,\\epsilon\\,
+    \\lambda_{\\max}$ ($\\epsilon$ of float64: the numerical rank of
+    ``torch.linalg.matrix_rank``), so $W^\\top C_0 W = I_r$ and $(x - m) W$
+    is $C_0^{-1/2}(x - m)$ in the eigenbasis. With it ``rank`` $r$, the
+    participation ratio ``pr`` $(\\sum \\lambda)^2 / \\sum \\lambda^2$ and the
+    largest eigenvalues ``eig_top`` over their sum."""
+    d = rows[0].shape[1]
+    m = mean.to(dev).double()
+    c0 = torch.zeros(d, d, dtype=torch.float64, device=dev)
+    count = 0
+    for x in rows:
+        for i in range(0, len(x), chunk):
+            y = x[i : i + chunk].to(dev).double() - m
+            c0 += y.T @ y
+        count += len(x)
+    lam, u = torch.linalg.eigh(c0 / count)
+    lam, u = lam.flip(0), u.flip(1)  # descending
+    keep = lam > d * torch.finfo(torch.float64).eps * lam[0]
+    w = u[:, keep] * lam[keep].rsqrt()
+    info = {
+        "rank": int(keep.sum()),
+        "pr": float(lam.sum() ** 2 / (lam**2).sum()),
+        "eig_top": (lam[:64] / lam.sum()).tolist(),
+    }
+    return w, info
+
+
+@torch.no_grad()
+def lag_spectrum(
+    rows: Sequence[Tensor], lags: Sequence[int], *, dev: torch.device
+) -> list[list[float]]:
+    """At each lag $k$ (in rows), the least and the largest eigenvalue of
+    $M_k = r\\,\\mathrm{sym}(\\sum_a \\sum_j w_j w_{j+k}^\\top) /
+    \\sqrt{\\sum \\lVert w_j \\rVert^2 \\sum \\lVert w_{j+k} \\rVert^2}$ over
+    the centred whitened rows $w$ ``(J_a, r)`` of each video: the correlation
+    along its eigen-directions, whose mean $\\operatorname{tr} M_k / r$ is the
+    curve's $\\rho$ (``lag_sums`` of one row)."""
+    r = rows[0].shape[1]
+    out = []
+    for k in lags:
+        num = torch.zeros(r, r, dtype=torch.float64, device=dev)
+        d0 = d1 = 0.0
+        for x in rows:
+            if len(x) <= k:
+                continue
+            y = x.to(dev).double()
+            num += y[:-k].T @ y[k:]
+            d0 += float((y[:-k] ** 2).sum())
+            d1 += float((y[k:] ** 2).sum())
+        e = torch.linalg.eigvalsh((num + num.T) / 2 * r / math.sqrt(d0 * d1))
+        out.append([float(e[0]), float(e[-1])])
+    return out
+
+
+def window_mean(lags: Sequence[int], rho: Sequence[float], k: int) -> float:
+    """$\\bar r(K) = \\sum_{l=1}^{K-1} 2(K - l)\\rho(l) / (K(K-1))$, the mean
+    correlation over all pairs of the $K$ = ``k`` consecutive points of the
+    grid, $\\rho(l)$ linear between the measured ``lags`` (``lags[0]`` = 1,
+    ``lags[-1]`` $\\ge K - 1$)."""
+    if lags[0] != 1 or lags[-1] < k - 1 or k < 2:
+        raise ValueError(f"the lags {lags[0]}..{lags[-1]} do not cover {k - 1}")
+    lag = torch.tensor(lags, dtype=torch.float64)
+    r = torch.tensor(rho, dtype=torch.float64)
+    ls = torch.arange(1, k, dtype=torch.float64)
+    i = torch.searchsorted(lag, ls).clamp(1, len(lags) - 1)  # lag[i-1] < l <= lag[i]
+    t = (ls - lag[i - 1]) / (lag[i] - lag[i - 1])
+    at = r[i - 1] + t * (r[i] - r[i - 1])
+    return float((2 * (k - ls) * at).sum() / (k * (k - 1)))
 
 
 def run_speed(run_dir: Path) -> dict[str, Any]:
@@ -539,19 +657,36 @@ def reprs(args: argparse.Namespace) -> dict[str, Any]:
         out["models"][label] = spec
         for k in kinds:
             rows = codes.pop(k)
-            cur = _curves(
-                lambda a, rows=rows: rows[a].to(dev),
-                names,
-                frames=1,
-                stride=args.stride,
-                fps=args.fps,
-                ns=args.ns,
-                centres=("g",),
-                dev=dev,
+            common: dict[str, Any] = {
+                "frames": 1,
+                "stride": args.stride,
+                "fps": args.fps,
+                "ns": args.ns,
+                "centres": ("g",),
+                "dev": dev,
+            }
+            cur = _curves(lambda a, rows=rows: rows[a].to(dev), names, **common)
+            m = torch.cat([x.double().sum(0, keepdim=True) for x in rows]).sum(0) / sum(
+                len(x) for x in rows
             )
+            w, info = whitener(rows, m, dev=dev)
+            m_dev = m.to(dev)
+
+            def white(a: int, rows=rows, w=w, m_dev=m_dev) -> Tensor:
+                return ((rows[a].to(dev).double() - m_dev) @ w).float()
+
+            wcur = _curves(white, names, **common)
+            cur["curves"]["white"] = wcur["curves"]["g"]
+            cur["whitener"] = info
+            if k in args.spectrum:
+                grid = [lag // args.stride for lag in cur["lags"]]
+                cur["spectrum"] = lag_spectrum(
+                    [white(a) for a in range(len(names))], grid, dev=dev
+                )
             cur["dim"] = rows[0].shape[1]
             out["codes"][f"{label}/{k}"] = cur
-            del rows
+            print(f"white {label}/{k} rank {info['rank']}", flush=True)
+            del rows, w
     return out
 
 
@@ -673,25 +808,34 @@ def report(args: argparse.Namespace) -> str:
     ``drift.json`` of ``--dir``."""
     c = json.loads((args.dir / "corr.json").read_text())
     curves = {f"pixels/{k}": v for k, v in c["curves"].items()}
+    codes: dict[str, Any] = {}
     for name in args.repr:
         r = json.loads((args.dir / name).read_text())
         assert r["codes"] and all(x["lags"] == c["lags"] for x in r["codes"].values())
         for label, x in r["codes"].items():
-            curves[f"{label}/g"] = x["curves"]["g"]
+            for centre, cur in x["curves"].items():
+                curves[f"{label}/{centre}"] = cur
+            codes[label] = x
     fps, lags, ns = c["fps"], c["lags"], c["ns"]
     octaves = [i for i in range(len(lags)) if i % 3 == 0 or i == len(lags) - 1]
+    parts = [  # the trace ratios (and pixels/w), then the whitened means
+        {k: v for k, v in curves.items() if not k.endswith("/white")},
+        {k: v for k, v in curves.items() if k.endswith("/white")},
+    ]
     lines = [f"t95 (dof {len(c['videos']) - 1}) = {c['t95']:.4f}", ""]
-    lines += _table(
-        ["ラグ", *curves],
-        [
-            [_dur(lags[i] / fps)]
-            + [f"{v['rho'][i]:.4f} ± {v['se'][i]:.4f}" for v in curves.values()]
-            for i in octaves
-        ],
-    )
-    lines += [""]
+    for group in parts:
+        lines += _table(
+            ["ラグ", *group],
+            [
+                [_dur(lags[i] / fps)]
+                + [f"{v['rho'][i]:.4f} ± {v['se'][i]:.4f}" for v in group.values()]
+                for i in octaves
+            ],
+        )
+        lines += [""]
     head = ["曲線", "別々の動画", "動画の平均の割合"]
-    head += [f"N={k}（{1 / (k - 1):.4f}）" for k in ns] + ["最後のラグの ρ"]
+    head += [f"N={k}（{1 / (k - 1):.4f}）" for k in ns]
+    head += [f"以後ずっと N={k}" for k in ns] + ["最後のラグの ρ"]
     rows = []
     for key, v in curves.items():
         ref = v["reference"]
@@ -705,18 +849,63 @@ def report(args: argparse.Namespace) -> str:
             lo = None if cr["lag"] is None else cr["lag"] / fps
             hi = None if cr["lag_upper"] is None else cr["lag_upper"] / fps
             cells += [f"{_dur(lo)}（{_dur(hi)}）"]
+        for k in ns:
+            at = settled(lags, v["rho"], 1 / (k - 1))
+            cells += [_dur(None if at is None else at / fps)]
         cells += [f"{v['rho'][-1]:.4f} ± {v['se'][-1]:.4f}"]
         rows.append(cells)
     lines += _table(head, rows) + [""]
-    g_curves = {k: v for k, v in curves.items() if k.endswith("/g")}
+    stride = c["stride"]
+    grid = [lag // stride for lag in lags]
+    for group in parts:
+        g_curves = {k: v for k, v in group.items() if not k.endswith("/w")}
+        lines += _table(
+            ["ラグ", *g_curves],
+            [
+                [_dur(lags[i] / fps)]
+                + [
+                    " / ".join(_f(v["neff"][str(k)][i], ".0f") for k in ns)
+                    for v in g_curves.values()
+                ]
+                for i in octaves
+            ],
+        )
+        lines += [""]
+    for group in parts:  # a window of K grid points, K - 1 steps wide
+        g_curves = {k: v for k, v in group.items() if not k.endswith("/w")}
+        lines += _table(
+            ["窓", *g_curves],
+            [
+                [_dur(lags[i] / fps)]
+                + [
+                    f"{(rb := window_mean(grid, v['rho'], grid[i] + 1)):.4f}"
+                    f"（{_f(1 / rb if rb > 0 else None, '.0f')}）"
+                    for v in g_curves.values()
+                ]
+                for i in octaves
+            ],
+        )
+        lines += [""]
+    head = ["符号", "D", "rank", "参加比", "上位 5 の割合"]
     lines += _table(
-        ["ラグ", *g_curves],
+        head,
+        [
+            [
+                label,
+                f"{x['dim']}",
+                f"{x['whitener']['rank']}",
+                f"{x['whitener']['pr']:.3g}",
+                f"{sum(x['whitener']['eig_top'][:5]):.3f}",
+            ]
+            for label, x in codes.items()
+        ],
+    )
+    spec = {label: x["spectrum"] for label, x in codes.items() if "spectrum" in x}
+    lines += [""] + _table(
+        ["ラグ", *spec],
         [
             [_dur(lags[i] / fps)]
-            + [
-                " / ".join(_f(v["neff"][str(k)][i], ".0f") for k in ns)
-                for v in g_curves.values()
-            ]
+            + [f"{v[i][0]:.4f} 〜 {v[i][1]:.4f}" for v in spec.values()]
             for i in octaves
         ],
     )
@@ -800,6 +989,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     e.add_argument("--runs", type=Path, default=Path("/nas/geson/mujou-exp/runs"))
     e.add_argument("--model", nargs="+", required=True)  # label=batch:run:ckpt:codes
     e.add_argument("--batch", type=int, default=128)
+    e.add_argument("--spectrum", nargs="*", default=["z"])  # codes of lag_spectrum
     b = sub.add_parser("budget")
     b.add_argument("--corr", type=Path, nargs="+", required=True)
     b.add_argument("--runs", type=Path, nargs="+", required=True)
