@@ -58,6 +58,38 @@ class TestRestore:
             got = patches_of(img[i : i + 1], 4)[ids[6:] - 16]
             torch.testing.assert_close(got, drawn)
 
+    def test_with_a_target_encoder_the_visible_patches_are_its_tokens(self):
+        """With I-JEPA's target encoder (weights apart from the online
+        encoder's), a visible patch is dec of the target encoder's token of
+        the context, the decoder's space; a masked one is dec of the
+        predictor's output on the online encoder's context."""
+        mods = build_vision(packed_conf(ema=0.9), seed=0)
+        assert mods.target is not None
+        torch.manual_seed(0)
+        with torch.no_grad():
+            for p in mods.target.parameters():
+                p.add_(0.1 * torch.randn_like(p))
+        dec = token_decoder(16, 4, 3)
+        x, m = stacks(2), _mask(2)
+        img, _ = restore(mods, x, m, dec, keep=6)
+        masked = m.flatten(1).repeat(1, 2)  # (2, 32): both slots
+        for i in range(2):
+            ids = (~masked[i]).nonzero().flatten()
+            hidden = masked[i].nonzero().flatten()
+            seq = patchify_tubelets(x[i : i + 1].float() / 255, 4, 2)[:, ids]
+            h = torch.cat([seq, ids[None, :, None].float()], 2)
+            with torch.no_grad():
+                seen = mods.target(h, (len(ids),))[0]  # (12, D)
+                online = mods.encoder(h, (len(ids),))
+                pred = mods.predictor(online, ids[None], hidden[None])[0]
+                drawn = dec(seen[6:])  # the last slot's visible tokens
+                filled = dec(pred[hidden >= 16])  # the last slot's masked ones
+                stale = dec(online[0, 6:])
+            got = patches_of(img[i : i + 1], 4)
+            torch.testing.assert_close(got[ids[6:] - 16], drawn)
+            torch.testing.assert_close(got[hidden[hidden >= 16] - 16], filled)
+            assert not torch.allclose(drawn, stale)
+
 
 class TestPatches:
     def test_picture_inverts_patches(self):

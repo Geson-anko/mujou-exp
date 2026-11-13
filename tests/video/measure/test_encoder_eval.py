@@ -2,6 +2,7 @@
 tiny run of a small Walking Tours: the files, the keys, the objective, the
 checkpoints it reads, the resume, and the training windows."""
 
+import dataclasses
 import math
 from pathlib import Path
 from typing import override
@@ -12,6 +13,7 @@ from torch import nn
 
 from exp.lib.rundir import Exit
 from exp.video import loop
+from exp.video.jepa.vit import VisionModules, build_vision
 from exp.video.main import local_job
 from exp.video.measure import encoder_eval
 from exp.video.measure.encoder_eval import (
@@ -309,6 +311,67 @@ class TestTokenCode:
         assert set(seen["dyn"][-1:]) == {256} and n - 1 in seen["dyn"]
         assert all(ln["rank"] <= 256 for ln in lines)
         assert {"restore_short_all", "restore_target_all"} <= set(lines[-2])
+
+
+def _with_target(e: EncoderEval) -> VisionModules:
+    """The modules of ``e``'s run with I-JEPA's target encoder (vision.ema)
+    whose weights differ from the online encoder's."""
+    v = e.conf.vision
+    assert v is not None
+    conf = dataclasses.replace(
+        e.conf, vision=dataclasses.replace(v, ema=0.9, token_buffer=0)
+    )
+    mods = build_vision(conf, seed=conf.seed)
+    assert mods.target is not None
+    with torch.no_grad():
+        for p in mods.target.parameters():
+            p.add_(0.1 * torch.randn_like(p))
+    return mods
+
+
+class TestTheTargetEncoder:
+    """With I-JEPA's target encoder, posthoc measures its tokens (the
+    prediction's targets): the code of the decoder, the linear dynamics and
+    the statistics, the token decoder's tokens, and the ceiling."""
+
+    def test_the_code_and_the_slot_tokens_are_the_target_encoders(
+        self, token_parent, tmp_path
+    ):
+        e = _eval(token_parent, tmp_path / "o", ckpts="last")
+        mods = _with_target(e)
+        windows = e._measures.windows["val"][:3]
+        z, slot = e._encode(_Code("vit", None, mods), windows)
+        assert slot is not None
+        n = mods.chunk[0]
+        k = windows.shape[1] - n + 1
+        stacks = torch.stack([windows[:, i : i + n] for i in range(k)], 1)
+        with torch.no_grad():
+            target = mods.target_tokens(stacks.flatten(0, 1))
+            online = mods.tokens(stacks.flatten(0, 1))
+        assert not torch.allclose(target, online)
+        torch.testing.assert_close(z.flatten(0, 1), target.flatten(1))
+        torch.testing.assert_close(slot, last_slot(mods, target))
+
+    def test_the_ceiling_decodes_the_target_encoders_tokens(
+        self, token_parent, tmp_path
+    ):
+        e = _eval(token_parent, tmp_path / "o", ckpts="last")
+        mods = _with_target(e)
+        v = e.conf.vision
+        assert v is not None
+        x = e._measures.windows["val"][:, : v.frames]
+        f0 = as_float(e._measures.windows["val"][:, v.frames - 1])
+        torch.manual_seed(0)
+        dec = token_decoder(8, v.patch, 3)
+        rows = e._restore(mods, "val", dec, f0, {})
+        with torch.no_grad():
+            pictures = [
+                picture_of(dec(last_slot(mods, t).flatten(0, 1)), len(x), mods.grid)
+                for t in (mods.target_tokens(x), mods.tokens(x))
+            ]
+        want, online = (p.clamp(0, 1)[: len(rows[0])] for p in pictures)
+        assert not torch.allclose(want, online)
+        torch.testing.assert_close(rows[0], want)
 
 
 def test_the_decoder_sees_z_centred_at_an_rms_std_of_one():

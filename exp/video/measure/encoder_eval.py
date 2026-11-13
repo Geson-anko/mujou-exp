@@ -17,7 +17,11 @@ The code of a stack is $z$ (``measure.posthoc_code`` ``"z"``) or, with
 ``"tokens"`` (the tokens are the representation, ``vision.token_dim``), the
 stack's $T$ target tokens flattened, $D = T d$ numbers: what the decoder of
 $z$, the linear dynamics, ``rank``, ``z_std_min`` and ``z_spread`` below see
-as $z$, for the ViT before it learns too; the PCA is then of $D$ components,
+as $z$, for the ViT before it learns too. A ViT's tokens, here and in the
+token decoder and the restoration's ceiling below, are the prediction's
+targets (``VisionModules.target_tokens``): with I-JEPA's target encoder
+(``vision.ema``) the target encoder's, which I-JEPA evaluates and toward
+which the predictor's outputs are trained; else the encoder's; the PCA is then of $D$ components,
 or of the most the training frames allow ($n - 1$ of $n$ frames), written
 as ``pca_rank`` in its lines when fewer than $D$.
 
@@ -55,9 +59,8 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   each context view (``restore.restore``, the split's fixed masks) on the
   masked pixels and on the whole frame, over the mean image's error on the
   same pixels; ``restore_target_<view>_mask`` and ``restore_target_all`` the
-  same of the token decoder on the target tokens of the whole stack (the
-  encoder without a mask: the ceiling of the restoration, which sees what
-  the context hides) on the same masked pixels and on the whole frame; and
+  same of the token decoder on the target tokens of the whole stack (no
+  mask: the ceiling of the restoration, which sees what the context hides) on the same masked pixels and on the whole frame; and
   ``<key>_blur`` of each of these keys, the error blurred first
   (``blur_error.blur_recon``; on the masked pixels ``blur_recon_masked``,
   the blurred error image averaged over them, over the same of the mean
@@ -432,7 +435,7 @@ class EncoderEval:
                 if code.mods is None:
                     zs.append(code.z(x))
                     continue
-                tokens = code.mods.tokens(x)
+                tokens = code.mods.target_tokens(x)  # module docstring
                 zs.append(tokens.flatten(1) if self._tokens else code.mods.z_of(tokens))
                 toks.append(last_slot(code.mods, tokens))
         z = torch.cat(zs).unflatten(0, (w, k))
@@ -562,7 +565,7 @@ class EncoderEval:
         with torch.no_grad():
             for i in range(0, len(windows), BATCH):
                 x = windows[i : i + BATCH].to(self._dev)
-                toks = last_slot(mods, mods.tokens(x))
+                toks = last_slot(mods, mods.target_tokens(x))
                 target.append(
                     picture_of(tok_dec(toks.flatten(0, 1)), len(x), mods.grid)
                 )

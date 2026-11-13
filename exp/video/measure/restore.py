@@ -3,11 +3,17 @@ through the encoder and the predictor, drawn back to pixels.
 
 A token decoder (``token_decoder``, learned afterwards with the encoder held:
 ``fit_token_decoder``) maps a token of the target view's last time slot to the
-patch of the stack's last frame it covers. ``restore`` shows a stack's context
-view (the visible tokens only, as in training) to the encoder, predicts the
-masked tokens with the predictor, and draws the last time slot: the visible
-positions from the context's own tokens, the masked ones from the predictions.
-It reads neither the target view nor the masked pixels.
+patch of the stack's last frame it covers. The tokens it learns are the
+prediction's targets (``VisionModules.target_tokens``): with I-JEPA's target
+encoder (``vision.ema``) the target encoder's, the space the predictor's
+outputs are trained toward; else the encoder's. ``restore`` shows a stack's
+context view (the visible tokens only, as in training) to the encoder,
+predicts the masked tokens with the predictor, and draws the last time slot:
+the masked positions from the predictions, the visible ones from the
+context's own tokens through the encoder of the decoder's space (the target
+encoder when there is one: the online encoder's context tokens, which the
+predictor reads, are of another space). It reads neither the target view nor
+the masked pixels.
 """
 
 import torch
@@ -137,9 +143,11 @@ def restore(
     h = torch.cat([picked, ctx_ids[..., None].to(picked)], 2)
     ctx = mods.encoder(h, (k,))  # (n, K, D)
     pred = mods.predictor(ctx, ctx_ids, tgt_ids)  # (n, T - K, D)
+    # The visible positions in the decoder's space (module docstring).
+    seen_tokens = ctx if mods.target is None else mods.target(h, (k,))
     d = ctx.shape[2]
     full = ctx.new_zeros(n, t, d)
-    full.scatter_(1, ctx_ids[..., None].expand(-1, -1, d), ctx)
+    full.scatter_(1, ctx_ids[..., None].expand(-1, -1, d), seen_tokens)
     full.scatter_(1, tgt_ids[..., None].expand(-1, -1, d), pred)
     images = picture_of(dec(last_slot(mods, full).flatten(0, 1)), n, mods.grid)
     p = mods.patch
