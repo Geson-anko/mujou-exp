@@ -121,7 +121,9 @@ class VisionPC(mujou.Network):
         for i, (name, stage) in enumerate(
             zip(self.names, mods.encoder.stages, strict=True)
         ):
-            module, moves = self._node_module(i, cast(Stage, stage), optimizer, v)
+            module, moves = self._node_module(
+                i, cast(Stage, stage), optimizer, v, conf.time.frame
+            )
             node = pc.Layer(
                 module,
                 act_spec=spec,
@@ -194,12 +196,13 @@ class VisionPC(mujou.Network):
         )
 
     def _node_module(
-        self, i: int, stage: Stage, optimizer: Optimizer, v: VisionConf
+        self, i: int, stage: Stage, optimizer: Optimizer, v: VisionConf, frame: float
     ) -> tuple[torch.nn.Module, Optimizer]:
         """The module and the optimizer of encoder node ``i``: the stage
         (``Segmented``, packed) and ``optimizer``; with the target encoder
         (``vision.ema``) the stage and its copy (``ema.TargetStage``) and
-        ``optimizer`` followed by the copy's move (``ema.Following``)."""
+        ``optimizer`` followed by the copy's move (``ema.Following``, ``v.ema``
+        per ``frame`` seconds)."""
         mods = self.mods
         if v.layout != "packed":
             return stage, optimizer
@@ -208,7 +211,10 @@ class VisionPC(mujou.Network):
         assert v.ema  # build_vision builds the target with it only
         target = cast(Stage, mods.target.stages[i])
         module = TargetStage(stage, target, mods.segments, first=i == 0)
-        return module, Following(optimizer, online=stage, target=target, momentum=v.ema)
+        moves = Following(
+            optimizer, online=stage, target=target, momentum=v.ema, frame=frame
+        )
+        return module, moves
 
 
 class VisionBP(mujou.Network):
@@ -236,6 +242,7 @@ class VisionBP(mujou.Network):
             z_weight=v.z_weight,
             target_norm=v.target_norm,
             ema=v.ema,
+            frame=conf.time.frame,
             token_buffer=v.token_buffer,
             token_insert=v.token_insert,
             directions=v.sigreg_directions,

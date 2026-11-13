@@ -2,11 +2,19 @@ r"""The target encoder of I-JEPA (M17, ``vision.ema``): an exponential moving
 average of the encoder's parameters, without gradient, whose tokens of the
 whole stack are the prediction's targets.
 
-After each learning step of the encoder, $\bar\theta \leftarrow m \bar\theta
-+ (1 - m) \theta$ (``ema_``), $m$ constant per step (I-JEPA ramps it to 1
-over a fixed number of epochs, which a continual stream does not have). The
-optimizer of the node that learns the encoder makes the move, right after its
-step (``Following``): ``JEPABP``'s for the whole encoder, and in PC-ALM each
+The copy follows the encoder in time, as the optimizers of mujou do
+(``mujou.pc.optim``: time constants in seconds, not in steps): $\tau
+\dot{\bar\theta} = \theta - \bar\theta$. Solved exactly over a step that
+weighs ``elapsed`` seconds with $\theta$ held at its value after the step,
+$\bar\theta \leftarrow \theta + (\bar\theta - \theta) e^{-\mathrm{elapsed} /
+\tau}$, that is ``ema_`` with the momentum $m^{\mathrm{elapsed} /
+\mathrm{frame}}$, where $m$ = ``vision.ema`` is the momentum per frame and
+$\tau = -\mathrm{frame} / \ln m$. A step of one frame is I-JEPA's $\bar\theta
+\leftarrow m \bar\theta + (1 - m) \theta$ exactly; how often the node learns
+does not change the flow. $m$ is constant (I-JEPA ramps it to 1 over a fixed
+number of epochs, which a continual stream does not have). The optimizer of
+the node that learns the encoder makes the move, right after its step
+(``Following``): ``JEPABP``'s for the whole encoder, and in PC-ALM each
 encoder node's for its own stage.
 
 In PC-ALM the encoder is cut into nodes, one ``Stage`` each. Each node holds
@@ -72,23 +80,34 @@ class TargetStage(nn.Module):
 
 
 class Following(Optimizer):
-    """``inner``, and after each of its steps ``ema_(target, online,
-    momentum)``: how the node that learns ``online`` (an encoder node with a
-    ``TargetStage``, or ``JEPABP``) moves its parameters. Bind it to the
-    node's parameters that learn, ``online``'s among them; the state of the
-    bound optimizer is ``inner``'s (``target`` is in the node's state as a
-    module of its own)."""
+    """``inner``, and after each of its steps of ``elapsed`` seconds
+    ``ema_(target, online, momentum ** (elapsed / frame))``: how the node that
+    learns ``online`` (an encoder node with a ``TargetStage``, or ``JEPABP``)
+    moves its parameters. ``momentum`` is per ``frame`` seconds (the module's
+    docstring). Bind it to the node's parameters that learn, ``online``'s
+    among them; the state of the bound optimizer is ``inner``'s (``target`` is
+    in the node's state as a module of its own)."""
 
     def __init__(
-        self, inner: Optimizer, *, online: nn.Module, target: nn.Module, momentum: float
+        self,
+        inner: Optimizer,
+        *,
+        online: nn.Module,
+        target: nn.Module,
+        momentum: float,
+        frame: float,
     ) -> None:
+        if not frame > 0:
+            raise ValueError(f"frame must be > 0, not {frame}")
         self._inner, self._online, self._target = inner, online, target
-        self._momentum = momentum
+        self._momentum, self._frame = momentum, frame
 
     @override
     def bind(self, params: Iterable[Tensor]) -> BoundOptimizer:
         bound = self._inner.bind(params)
-        return _BoundFollowing(bound, self._online, self._target, self._momentum)
+        return _BoundFollowing(
+            bound, self._online, self._target, self._momentum, self._frame
+        )
 
 
 class _BoundFollowing(BoundOptimizer):
@@ -98,14 +117,16 @@ class _BoundFollowing(BoundOptimizer):
         online: nn.Module,
         target: nn.Module,
         momentum: float,
+        frame: float,
     ) -> None:
         self._inner, self._online, self._target = inner, online, target
-        self._momentum = momentum
+        self._momentum, self._frame = momentum, frame
 
     @override
     def step_(self, grads: Sequence[Tensor], elapsed: float) -> None:
         self._inner.step_(grads, elapsed)
-        ema_(self._target, self._online, self._momentum)
+        # m ** 1.0 is m itself: a step of one frame is the per-step formula.
+        ema_(self._target, self._online, self._momentum ** (elapsed / self._frame))
 
     @override
     def state_dict(self) -> dict[str, Any]:

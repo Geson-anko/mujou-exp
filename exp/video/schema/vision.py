@@ -190,10 +190,13 @@ class VisionConf:
     # "packed" only: the prediction's targets are the target tokens through a
     # LayerNorm without affine (the official I-JEPA / V-JEPA code)
     target_norm: bool = False
-    # "packed" only: the momentum m per learning step of the target encoder
-    # (I-JEPA), an EMA of the encoder whose tokens are the prediction's
-    # targets (0: no target encoder, the encoder itself; the runs before
-    # 2026-11-13 hold 0 and build no target module)
+    # "packed" only: the momentum m per frame (time.frame) of the target
+    # encoder (I-JEPA), an EMA of the encoder in time whose tokens are the
+    # prediction's targets: a step of elapsed seconds moves it by
+    # m ** (elapsed / frame) (jepa.ema), so the time constant -frame / ln m
+    # does not depend on how often the encoder learns (0: no target encoder,
+    # the encoder itself; the runs before 2026-11-13 hold 0 and build no
+    # target module)
     ema: float = 0.0
     # "packed" only: the width of the encoder's output tokens (None: dim, no map)
     token_dim: int | None = None

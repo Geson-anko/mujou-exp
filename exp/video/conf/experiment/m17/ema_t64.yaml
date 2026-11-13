@@ -3,9 +3,10 @@
 # 2026-11-13): a single stream cannot give SIGReg the i.i.d. samples it needs
 # (results/m17.md, the measurements toward a per-data-point SIGReg). The
 # prediction's targets are the tokens of an EMA of the encoder on the whole
-# stack (jepa.ema), of momentum 0.996 per learning step: one step is 0.1 s of
-# the stream for any data.streams, so the time constant 1 / (1 - m) = 250 steps
-# is 25 s of the stream. I-JEPA ramps m to 1 over a fixed number of epochs; a
+# stack (jepa.ema), of momentum 0.996 per frame of time (time.frame, in which
+# the stream advances 0.1 s), whatever the steps: the time constant
+# -frame / ln m ~ 250 frames is 25 s of the stream for any data.streams and
+# time.learn_interval. I-JEPA ramps m to 1 over a fixed number of epochs; a
 # continual stream has none, so m stays constant. No SIGReg term
 # (vision.sigreg 0: the stats still report S of the tokens, of no weight) and
 # no past tokens. The representation is the T tokens of d each, D = T d = 1024:

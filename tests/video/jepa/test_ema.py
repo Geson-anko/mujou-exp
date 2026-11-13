@@ -4,13 +4,14 @@ credit in both learners."""
 
 import inspect
 import json
+import math
 import re
 from typing import Any, override
 
 import mujou.testing
 import pytest
 import torch
-from mujou.pc.optim import BoundOptimizer
+from mujou.pc.optim import BoundOptimizer, Optimizer
 from torch import nn
 
 from exp.lib import ckpt
@@ -59,12 +60,12 @@ class _After(BoundOptimizer):
 
     def __init__(self, inner: BoundOptimizer, online: nn.Module, target: nn.Module):
         self.inner, self.online, self.target = inner, online, target
-        self.after: list[tuple[list[torch.Tensor], list[torch.Tensor]]] = []
+        self.after: list[tuple[list[torch.Tensor], list[torch.Tensor], float]] = []
 
     @override
     def step_(self, grads, elapsed):
         self.inner.step_(grads, elapsed)
-        self.after.append((_clone(self.online), _clone(self.target)))
+        self.after.append((_clone(self.online), _clone(self.target), elapsed))
 
     @override
     def state_dict(self):
@@ -102,18 +103,21 @@ def _learn(kind: str, m: float, frames: int = 3) -> tuple[Any, list[_After]]:
 @pytest.mark.parametrize("kind", ["bp", "pc"])
 class TestTheTargetEncoder:
     def test_it_moves_by_the_formula_after_each_step(self, kind):
-        """theta_bar_k = m theta_bar_{k-1} + (1 - m) theta_k, theta_k the
-        online weights after step k, from the initial copy."""
+        """theta_bar_k = a theta_bar_{k-1} + (1 - a) theta_k, a = m **
+        (elapsed_k / frame), theta_k the online weights after step k of
+        elapsed_k seconds, from the initial copy."""
         m = 0.7
         net, recs = _learn(kind, m)
+        frame = packed_conf(kind).time.frame
         init = build_vision(packed_conf(kind, ema=m), seed=0).target
         assert init is not None
         stages = [init] if kind == "bp" else list(init.stages)
         for rec, start in zip(recs, stages, strict=True):
             assert len(rec.after) >= 2
             prev = _clone(start)
-            for online, target in rec.after:
-                want = [m * e + (1 - m) * p for e, p in zip(prev, online)]
+            for online, target, elapsed in rec.after:
+                a = m ** (elapsed / frame)
+                want = [a * e + (1 - a) * p for e, p in zip(prev, online)]
                 for got, w in zip(target, want, strict=True):
                     torch.testing.assert_close(got, w)
                 prev = target
@@ -150,7 +154,11 @@ def test_following_at_m_0_makes_the_target_the_online_after_each_step():
     inner = packed_conf("bp").optim_vision
     assert inner is not None
     opt = Following(
-        make_optimizer(inner, 1 / 30), online=online, target=target, momentum=0.0
+        make_optimizer(inner, 1 / 30),
+        online=online,
+        target=target,
+        momentum=0.0,
+        frame=1 / 30,
     ).bind(list(online.parameters()))
     before = _clone(online)
     opt.step_([torch.ones_like(p) for p in online.parameters()], 1 / 30)
@@ -158,6 +166,93 @@ def test_following_at_m_0_makes_the_target_the_online_after_each_step():
     assert all(
         torch.equal(a, b) for a, b in zip(target.parameters(), online.parameters())
     )
+
+
+class _Still(BoundOptimizer):
+    """An inner optimizer that does not move the online parameters."""
+
+    @override
+    def step_(self, grads, elapsed):
+        pass
+
+    @override
+    def state_dict(self):
+        return {}
+
+    @override
+    def load_state_dict(self, state, /):
+        pass
+
+
+class _StillOptimizer(Optimizer):
+    @override
+    def bind(self, params):
+        return _Still()
+
+
+def _follow(m: float, frame: float, elapsed: list[float]) -> list[torch.Tensor]:
+    """The target after steps of ``elapsed`` seconds toward a still online."""
+    g = torch.Generator().manual_seed(0)
+    online, target = nn.Linear(3, 2), nn.Linear(3, 2)
+    for p in [*target.parameters(), *online.parameters()]:
+        p.data = torch.randn(p.shape, generator=g)
+    opt = Following(
+        _StillOptimizer(), online=online, target=target, momentum=m, frame=frame
+    ).bind(list(online.parameters()))
+    for dt in elapsed:
+        opt.step_([torch.zeros_like(p) for p in online.parameters()], dt)
+    return _clone(target)
+
+
+class TestFollowingInTime:
+    """tau d(theta_bar)/dt = theta - theta_bar with theta held: theta_bar(t) =
+    theta + (theta_bar(0) - theta) exp(-t / tau), tau = -frame / ln m."""
+
+    def test_a_step_of_one_frame_is_the_per_step_formula_bit_for_bit(self):
+        m, frame = 0.7, 1 / 30
+        g = torch.Generator().manual_seed(1)
+        online, target, ref = nn.Linear(3, 2), nn.Linear(3, 2), nn.Linear(3, 2)
+        for p in [*target.parameters(), *online.parameters()]:
+            p.data = torch.randn(p.shape, generator=g)
+        ref.load_state_dict(target.state_dict())
+        opt = Following(
+            _StillOptimizer(), online=online, target=target, momentum=m, frame=frame
+        ).bind(list(online.parameters()))
+        opt.step_([torch.zeros_like(p) for p in online.parameters()], frame)
+        ema_(ref, online, m)
+        assert all(
+            torch.equal(a, b) for a, b in zip(target.parameters(), ref.parameters())
+        )
+
+    def test_the_flow_does_not_depend_on_how_often_it_steps(self):
+        """Three steps of frame / 3 are one step of frame."""
+        m, frame = 0.7, 1 / 30
+        once = _follow(m, frame, [frame])
+        thrice = _follow(m, frame, [frame / 3] * 3)
+        for a, b in zip(once, thrice, strict=True):
+            torch.testing.assert_close(a, b)
+
+    def test_it_is_the_exponential_of_the_time_constant(self):
+        m, frame, t = 0.9, 0.1, 0.37
+        g = torch.Generator().manual_seed(0)
+        online, target = nn.Linear(3, 2), nn.Linear(3, 2)
+        for p in [*target.parameters(), *online.parameters()]:
+            p.data = torch.randn(p.shape, generator=g)
+        start, theta = _clone(target), _clone(online)
+        got = _follow(m, frame, [t])
+        decay = math.exp(-t / (-frame / math.log(m)))
+        for g_, s0, th in zip(got, start, theta, strict=True):
+            torch.testing.assert_close(g_, th + (s0 - th) * decay)
+
+    def test_frame_must_be_positive(self):
+        with pytest.raises(ValueError, match="frame"):
+            Following(
+                _StillOptimizer(),
+                online=nn.Linear(1, 1),
+                target=nn.Linear(1, 1),
+                momentum=0.5,
+                frame=0.0,
+            )
 
 
 def test_ema_0_of_an_older_run_builds_no_target_and_loads_its_checkpoint(tmp_path):

@@ -89,9 +89,13 @@ class JEPABP(Node):
             affine (packed).
         ema: The momentum $m$ of the target encoder ``mods.target``
             (packed, ``vision.ema``; 0: none, and ``mods`` has none), whose
-            tokens of the whole stack are the prediction's targets. It moves
-            after each step: $\bar\theta \leftarrow m \bar\theta + (1 - m)
-            \theta$ (``ema.Following``).
+            tokens of the whole stack are the prediction's targets, per
+            ``frame``. It moves after each step of ``elapsed`` seconds:
+            $\bar\theta \leftarrow m^{\mathrm{elapsed}/\mathrm{frame}}
+            \bar\theta + (1 - m^{\mathrm{elapsed}/\mathrm{frame}}) \theta$
+            (``ema.Following``).
+        frame: The time of $m$, in seconds (the period of the frames; used
+            with ``ema`` only).
         token_buffer: The capacity of the past target tokens per stream
             (packed; 0: none).
         token_insert: The tokens of a frame inserted into them per stream.
@@ -128,6 +132,7 @@ class JEPABP(Node):
         z_weight: float = 0.0,
         target_norm: bool = False,
         ema: float = 0.0,
+        frame: float = 1 / 30,
         token_buffer: int = 0,
         token_insert: int = 64,
         device: Device = "cpu",
@@ -165,7 +170,11 @@ class JEPABP(Node):
         self.target = mods.target
         if mods.target is not None:
             optimizer = Following(
-                optimizer, online=self.encoder, target=mods.target, momentum=ema
+                optimizer,
+                online=self.encoder,
+                target=mods.target,
+                momentum=ema,
+                frame=frame,
             )
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
