@@ -43,6 +43,12 @@ __all__ = [
 ]
 
 
+def _check_positive(owner: str, name: str, value: float) -> None:
+    """As ``pc.optim.AdamW`` checks its time constants and ``eps``."""
+    if not 0 < value < math.inf:
+        raise ValueError(f"{owner}.{name} must be finite and > 0, got {value!r}")
+
+
 class BoundDirection(Stateful):
     """The direction of an optimizer bound to the parameters of one node."""
 
@@ -64,6 +70,9 @@ class DirectionOptimizer(Optimizer):
     """
 
     tau: float
+
+    def __post_init__(self) -> None:
+        _check_positive(type(self).__name__, "tau", self.tau)
 
     @abstractmethod
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
@@ -133,11 +142,21 @@ class _Stepped(BoundOptimizer):
 class AdamDirection(DirectionOptimizer):
     r"""The direction of ``pc.optim.AdamW``, $\hat m / (\sqrt{\hat v} + \varepsilon)$,
     with the moments and masses moved exactly in time as there. Stepped by
-    itself, it is ``pc.optim.AdamW`` without weight decay."""
+    itself, it is ``pc.optim.AdamW`` without weight decay.
+
+    Raises:
+        ValueError: ``tau``, ``tau_m``, ``tau_v`` or ``eps`` is not finite and
+            > 0 (as in ``pc.optim.AdamW``).
+    """
 
     tau_m: float
     tau_v: float
     eps: float = 1e-8
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name in ("tau_m", "tau_v", "eps"):
+            _check_positive("AdamDirection", name, getattr(self, name))
 
     @override
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
@@ -198,10 +217,20 @@ class RMSPropDirection(DirectionOptimizer):
     a_v (1 - c_v)$, $a_v = 1 - e^{-\text{elapsed}/\tau_v}$, $\hat v = v /
     c_v$. Stepped by itself with steps of ``elapsed`` $\delta$, it is Adam of
     $\beta_1 = 0$, $\beta_2 = e^{-\delta/\tau_v}$ and the learning rate
-    $\delta / \tau$."""
+    $\delta / \tau$.
+
+    Raises:
+        ValueError: ``tau``, ``tau_v`` or ``eps`` is not finite and > 0 (as in
+            ``pc.optim.AdamW``).
+    """
 
     tau_v: float
     eps: float = 1e-8
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name in ("tau_v", "eps"):
+            _check_positive("RMSPropDirection", name, getattr(self, name))
 
     @override
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:

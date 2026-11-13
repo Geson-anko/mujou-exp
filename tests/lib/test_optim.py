@@ -100,6 +100,27 @@ class TestRMSPropDirection:
             torch.testing.assert_close(x, y, rtol=0, atol=0)
 
 
+BAD = [0.0, -1.0, math.inf, math.nan]
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.parametrize("name", ["tau", "tau_m", "tau_v", "eps"])
+def test_adam_direction_refuses_what_adamw_refuses(name, bad):
+    kw = {"tau": 2.0, "tau_m": 0.3, "tau_v": 3.0, "eps": 1e-8, name: bad}
+    with pytest.raises(ValueError, match=f"AdamDirection.{name} must be finite"):
+        AdamDirection(**kw)
+    with pytest.raises(ValueError, match=f"AdamW.{name} must be finite"):
+        pc.optim.AdamW(**kw)
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.parametrize("name", ["tau", "tau_v", "eps"])
+def test_rmsprop_direction_refuses_a_constant_not_finite_and_positive(name, bad):
+    kw = {"tau": 2.0, "tau_v": 3.0, "eps": 1e-8, name: bad}
+    with pytest.raises(ValueError, match=f"RMSPropDirection.{name} must be finite"):
+        RMSPropDirection(**kw)
+
+
 class TestGrafted:
     def test_the_step_has_the_size_of_sgd(self):
         params = _params(*SHAPES)

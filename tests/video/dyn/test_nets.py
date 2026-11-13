@@ -118,10 +118,11 @@ class TestMakeOptimizer:
 
     def test_the_kinds_take_the_time_constant_of_the_rate(self):
         frame = 1 / 30
-        c = OptimConf(lr=0.01, warmup=0.0, tau_m=0.2, tau_v=20.0)
+        c = OptimConf(kind="adamw", lr=0.01, warmup=0.0, tau_m=0.2, tau_v=20.0)
         tau = frame / 0.01
-        assert make_optimizer(c, frame) == pc.optim.SGD(tau=tau)
-        adamw = replace(c, kind="adamw", weight_decay=0.1)
+        sgd = OptimConf(lr=0.01, warmup=0.0)
+        assert make_optimizer(sgd, frame) == pc.optim.SGD(tau=tau)
+        adamw = replace(c, weight_decay=0.1)
         assert make_optimizer(adamw, frame) == pc.optim.AdamW(
             tau=tau, tau_m=0.2, tau_v=20.0, weight_decay=0.1
         )
@@ -129,9 +130,9 @@ class TestMakeOptimizer:
         assert make_optimizer(graft, frame) == Grafted(
             inner=AdamDirection(tau=tau, tau_m=0.2, tau_v=20.0)
         )
-        rmsprop = replace(c, kind="rmsprop")
+        rmsprop = replace(c, kind="rmsprop", tau_m=0.3)
         assert make_optimizer(rmsprop, frame) == RMSPropDirection(tau=tau, tau_v=20.0)
-        warm = replace(c, warmup=300.0)
+        warm = replace(sgd, warmup=300.0)
         assert make_optimizer(warm, frame) == Warmup(
             inner=pc.optim.SGD(tau=tau), seconds=300.0
         )
@@ -174,6 +175,33 @@ class TestMakeOptimizer:
     def test_the_step_settings_belong_to_adamw_step(self, kw, match):
         with pytest.raises(ValueError, match=match):
             OptimConf(**kw)
+
+    @pytest.mark.parametrize(
+        ("kind", "kw"),
+        [
+            ("sgd", {"tau_m": 0.2}),
+            ("rmsprop", {"tau_m": 0.2}),
+            ("sgd", {"tau_v": 20.0}),
+            ("adamw_step", {"warmup": 0.0, "tau_m": 0.2}),
+            ("adamw_step", {"warmup": 0.0, "tau_v": 20.0}),
+        ],
+    )
+    def test_a_moment_the_kind_has_not_is_an_error(self, kind, kw):
+        """A sweep of it would otherwise change nothing."""
+        name = next(k for k in kw if k.startswith("tau"))
+        with pytest.raises(ValueError, match=f"optim.{name} is of the kinds"):
+            OptimConf(kind=kind, **kw)
+
+    @pytest.mark.parametrize(
+        ("kind", "kw"),
+        [
+            ("adamw", {"tau_m": 0.2, "tau_v": 20.0}),
+            ("graft_adam", {"tau_m": 0.2, "tau_v": 20.0}),
+            ("rmsprop", {"tau_v": 20.0}),
+        ],
+    )
+    def test_a_kind_takes_its_moments(self, kind, kw):
+        assert OptimConf(kind=kind, **kw).kind == kind
 
     @pytest.mark.parametrize("lr", [0.0, -0.01])
     def test_a_rate_not_above_zero_is_an_error(self, lr):
