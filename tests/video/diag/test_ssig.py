@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from exp.lib.sigreg import epps_pulley, sigreg
-from exp.video.diag.ssig import bench, bound, expected_s, spread_of_sums
+from exp.video.diag.ssig import SCALES, bench, bound, expected_s, spread_of_sums
 from tests.video.packed import tiny
 
 
@@ -65,6 +65,25 @@ def test_at_lambda_star_the_collapse_and_iid_tokens_cost_the_same():
     iid = (1 - lam) * 1.0 + lam * b["s_iid"]
     assert collapse == pytest.approx(iid, rel=1e-12)
     assert b["s_collapse"] > b["s_iid"] and 0 < lam < 1
+
+
+def test_at_the_scaled_lambda_star_the_collapse_costs_the_cheapest_iid_tokens():
+    """lambda*_v: the collapse ties with the iid tokens of the cheapest scale
+    on SCALES, below it is cheaper than all of them, and it is at most
+    lambda* (the scale 1)."""
+    n = 33
+    b = bound(16, 4, n, draws=2000)
+    v = SCALES.to(torch.float64)
+    s_v = expected_s(v, n)
+
+    def iid(lam: float) -> float:
+        return float(((1 - lam) * v + lam * s_v).min())
+
+    lam = b["lam_star_scaled"]
+    assert lam * b["s_collapse"] == pytest.approx(iid(lam), rel=1e-12)
+    below = 0.99 * lam
+    assert below * b["s_collapse"] < iid(below)
+    assert 0 < lam <= b["lam_star"]
 
 
 def test_the_bench_runs_both_stores_with_the_buffer_full():

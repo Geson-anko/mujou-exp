@@ -32,16 +32,39 @@ tokens, and the speed of the two ways of storing the buffer.
   $n$ = 257 (the buffer of 256 and the current stack). It compares two
   points of the loss, not its minimum: below $\lambda^*$ the collapse is
   cheaper than iid tokens; above, the loss still may have other cheap
-  solutions.
+  solutions. The iid tokens are held at $v = 1$ there; the encoder may pick
+  their scale as well, of cost $(1 - \lambda) v + \lambda E\,S(v)$ (the
+  error of predicting $N(0, v)$ by 0 is $v$), and the collapse is dearer than
+  the cheapest of them only for
+
+  $$\lambda > \lambda^*_v = \min_v \frac{v}{v + S_c - E\,S(v)}$$
+
+  (``lam_star_scaled``, on the same grid of scales; the collapse is dearer
+  than iid tokens of variance $v$ iff $\lambda$ exceeds the term of $v$),
+  $\lambda^*_v \le \lambda^*$, the term of $v = 1$. Either bound rules out
+  one solution only, the code of $d$ numbers per stack ($m = d$ below): tokens
+  $s_{b,t} = W_t c_b$ of a latent $c_b \in \mathbb{R}^m$, $m > d$, that the
+  visible tokens determine also predict exactly, and their projections
+  $(\sum_t W_t^\top a_t)^\top c_b$ have a spread over the directions of
+  relative variance about $2/m$: as $m$ grows their statistic falls to
+  $S_0$, below that of iid tokens for every $\lambda < 1$. Whether such a
+  code is a collapse depends on $m$, which only the learned code tells
+  (its rank).
 - ``bench``: the learning steps per second of ``JEPABP`` with the buffer full
   (random rows: the cost does not depend on the values), the stored
   representations (``z``) against the stored inputs encoded anew at each
   step (``input``), on random u8 stacks of the preset's shape, after
-  ``warmup`` frames. One frame of the run is one step (``time.frame`` 1/30 s,
-  ``time.learn_interval`` 25 ms).
+  ``warmup`` frames. A step is a frame of the run (``time.frame`` 1/30 s of
+  virtual time, in which the stream advances 0.1 s): ``JEPABP`` evaluates its
+  loss once in a frame and, ``time.learn_interval`` (25 ms) being shorter
+  than a frame, learns once in it (``mujou.pc.clock.LearnClock`` learns 25
+  ms after the input's write and starts again at the next frame), so a step
+  is also one learning step; with ``input`` each one encodes the whole buffer
+  anew. A run of 1800 s is 54000 frames, whatever its speed.
 
 Run: ``python -m exp.video.diag.ssig bound`` and ``python -m
-exp.video.diag.ssig bench --arm t128 --device mps``.
+exp.video.diag.ssig bench --arm t128 --device cpu`` (``cpu`` or
+``cuda[:i]``, as ``RunConf.device``).
 """
 
 import argparse
@@ -60,9 +83,19 @@ from exp.lib.sigreg import T_POINTS
 from exp.video.compose import compose
 from exp.video.jepa.nets import VisionBP, build_vision_net
 
-__all__ = ["ARMS", "bench", "bound", "expected_s", "main", "spread_of_sums"]
+__all__ = [
+    "ARMS",
+    "SCALES",
+    "bench",
+    "bound",
+    "expected_s",
+    "main",
+    "spread_of_sums",
+]
 
 ARMS = {"t512": (512, 2), "t128": (128, 8), "t64": (64, 16)}  # (T, d), D = 1024
+# the scales of the collapse and of the iid tokens: 481 points, 1/8 to 8, log
+SCALES = torch.exp(torch.linspace(math.log(1 / 8), math.log(8), 481))
 
 
 def expected_s(v: Tensor, n: int, t: Tensor = T_POINTS) -> Tensor:
@@ -85,23 +118,27 @@ def spread_of_sums(t: int, d: int, draws: int, gen: torch.Generator) -> Tensor:
 
 
 def bound(t: int, d: int, n: int, *, draws: int = 20000, seed: int = 0) -> dict:
-    """$\\lambda^*$ of the arm $(T, d)$ at ``n`` samples (module docstring):
-    the mean over ``draws`` directions, the scale $k$ minimized on a grid of
-    481 points from 1/8 to 8, log-spaced."""
+    """$\\lambda^*$ and $\\lambda^*_v$ of the arm $(T, d)$ at ``n`` samples
+    (module docstring): the mean over ``draws`` directions, the scales on
+    ``SCALES``."""
     s2 = spread_of_sums(t, d, draws, torch.Generator().manual_seed(seed))
-    scales = torch.exp(torch.linspace(math.log(1 / 8), math.log(8), 481))
-    costs = torch.stack([expected_s(k * s2, n).mean() for k in scales])
+    costs = torch.stack([expected_s(k * s2, n).mean() for k in SCALES])
     i = int(costs.argmin())
     s_c, s_0 = float(costs[i]), float(expected_s(torch.tensor(1.0), n))
+    v = SCALES.to(torch.float64)
+    terms = v / (v + s_c - expected_s(v, n))  # lambda at which iid of v ties
+    j = int(torch.where(terms > 0, terms, math.inf).argmin())
     return {
         "T": t,
         "d": d,
         "n": n,
         "s_collapse": s_c,
-        "scale": float(scales[i]),
+        "scale": float(SCALES[i]),
         "s_iid": s_0,
         "spread_var": float(s2.var()),
         "lam_star": 1 / (1 + s_c - s_0),
+        "scale_iid": float(v[j]),
+        "lam_star_scaled": float(terms[j]),
     }
 
 

@@ -73,9 +73,19 @@ E_a E S_{\mathrm{iid}}(v_a)) / (f'(0)(n - 1))$ (to first order), a number of
 the arm and $\rho$ alone, against which the $\bar r$ of any representation's
 curve can be read.
 
+The lower end rules out the code of $d$ numbers per stack only (Cw, $m = d$
+in ``ssig``): codes of a latent of $m > d$ numbers that the context
+determines also have $L$ = 0 and a statistic that falls toward $S_0$ as $m$
+grows, so no $\lambda < 1$ makes H cheaper than them; whether the learned
+code is one, and of which $m$, only its rank tells. H and I are held at the
+scale 1, though the encoder may rescale them too (``ssig``'s
+``lam_star_scaled`` does it for the iid tokens against Cw).
+
 It compares points of the loss, not its minima, and holds at the steady
 state of the buffer whatever it stores (with ``z`` the gradient only reaches
-the current sample, which changes the path, not the values compared). One
+the current sample, which changes the path, not the values compared; its
+rows are of the encoders that made them, a mean of $N k$ learning steps
+before, taken here to be of the current one). One
 grid serves every span of an arm when it lies in every window that is not
 empty: the ends of the
 intersection of those windows and their geometric mean (``common``); the
