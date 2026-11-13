@@ -11,6 +11,7 @@ from exp.video.diag.ssig import bound
 from exp.video.jepa.loss import jepa_loss_packed
 from exp.video.jepa.masks import expected_keep
 from exp.video.jepa.nodes import draw_packed_directions
+from exp.video.jepa.vit import build_vision
 from exp.video.schema import RunConf
 
 CONF = Path(exp.video.conf.__file__).parent
@@ -299,6 +300,23 @@ class TestM17:
         assert v.sigreg > b["lam_star"]
         slow = compose([f"+experiment=m17/ssig_{arm}", "vision.datapoint_every=24"])
         assert slow.vision is not None and slow.vision.datapoint_every == 24
+
+    @pytest.mark.parametrize("arm", ["t512", "t128", "t64"])
+    def test_the_data_point_arm_starts_from_the_ema_arms_untrained_encoder(
+        self, arm: str
+    ) -> None:
+        """The untrained encoder of m17/ssig_<arm> at a seed is that of
+        m17/ema_<arm> (its online encoder, the one whose tokens it codes) at
+        the same seed: the stream correlation of the EMA run's ``init``
+        (``stream_stats repr``) is that of the data-point run's start."""
+        encoders = []
+        for name in (f"m17/ssig_{arm}", f"m17/ema_{arm}"):
+            conf = compose([f"+experiment={name}", "seed=100", "device=cpu"])
+            encoders.append(build_vision(conf, seed=conf.seed).encoder.state_dict())
+        ssig, ema = encoders
+        assert ssig.keys() == ema.keys()
+        for key, value in ssig.items():
+            assert torch.equal(value, ema[key]), key
 
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])

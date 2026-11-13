@@ -98,11 +98,15 @@ beyond the last one either held at its value or 0 (``tail``: the two bound
 it for a curve that decreases to a non-negative value); the band of a curve
 is $\kappa \pm t_{0.975}\, \hat\sigma$ (its jackknife), clipped to $[-1, 1]$.
 $\rho$ is that of the untrained ViT (``lam_calib pooled``, $d$ = 16, the
-training stream: 0.122, results/m17-calib/lam_calib_d16.json).
+training stream: 0.122, results/m17-calib/lam_calib_d16.json). With ``--own``
+an arm reads only the curves of the model labelled by its name (``repr
+--model t512=...``: ``t512/tokens/white``), its own untrained ViT.
 
 Run (CPU, seconds; directions seed 0)::
 
     python -m exp.video.diag.ssig_window --curves pixels/g tok_init/tokens/white
+    python -m exp.video.diag.ssig_window --own --curves t512/tokens/white \
+        t128/tokens/white t64/tokens/white
 """
 
 import argparse
@@ -291,10 +295,12 @@ def windows(
     spans: Sequence[int],
     n_buf: int,
     draws: int,
+    own: bool = False,
 ) -> list[dict[str, Any]]:
     """The windows of every arm, $\\rho$, curve and span (module docstring):
     of the curve (``mid``, and ``mid_zero_tail``) and of the ends of its
-    band (``low``, ``high``)."""
+    band (``low``, ``high``). With ``own`` an arm takes only the curves whose
+    model label is its name."""
     n = n_buf + 1
     curves = load_curves(root, names)
     s_0 = float(expected_s(torch.tensor(1.0), n))
@@ -307,6 +313,8 @@ def windows(
         for rho in rhos:
             stream = Stream((1 - rho) + rho * s2, n)
             for name, cur in curves.items():
+                if own and name.split("/")[0] != arm:
+                    continue
                 band = [cur["t95"] * s for s in cur["se"]]
                 for k in spans:
                     lags, w = weights[k]
@@ -415,9 +423,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--spans", type=int, nargs="+", default=list(SPANS))
     p.add_argument("--buffer", type=int, default=N_BUF)
     p.add_argument("--draws", type=int, default=20000)
+    p.add_argument("--own", action="store_true", help="an arm's own curves only")
     p.add_argument("--out", type=Path)
     args = p.parse_args(argv)
-    rows = windows(args.dir, args.curves, args.rho, args.spans, args.buffer, args.draws)
+    rows = windows(
+        args.dir, args.curves, args.rho, args.spans, args.buffer, args.draws, args.own
+    )
     grids = common(rows)
     if args.out is not None:
         args.out.write_text(

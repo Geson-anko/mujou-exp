@@ -193,6 +193,27 @@ def test_the_command_reads_the_curves_and_gives_a_row_per_arm_and_span(tmp_path)
     assert len(table(rows).splitlines()) == 2 + len(rows)
 
 
+def test_with_own_an_arm_reads_only_the_curves_of_its_label(tmp_path):
+    lags = [3, 6, 12]
+    corr = {"stride": 3, "lags": lags, "t95": 2.0, "curves": {"g": _curve([0.5] * 3)}}
+    code = {
+        "stride": 3,
+        "lags": lags,
+        "t95": 2.0,
+        "curves": {"white": _curve([0.0] * 3)},
+    }
+    rep = {"codes": {"t512/tokens": code, "t64/tokens": code}}
+    (tmp_path / "corr.json").write_text(json.dumps(corr))
+    (tmp_path / "repr-arms.json").write_text(json.dumps(rep))
+    names = ["t512/tokens/white", "t64/tokens/white"]
+    rows = windows(tmp_path, names, [0.12], [1, 3], 8, 200, own=True)
+    assert sorted({(r["arm"], r["curve"]) for r in rows}) == [
+        ("t512", "t512/tokens/white"),
+        ("t64", "t64/tokens/white"),
+    ]
+    assert len(rows) == 2 * 2  # the arms with a curve x spans
+
+
 def test_the_common_grid_is_the_intersection_of_the_windows_not_empty():
     def row(k, grid):
         return {
