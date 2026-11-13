@@ -82,6 +82,12 @@ def test_the_training_loss_is_the_mean_of_the_300_s_before():
     assert train_loss([], 300.0) is None
 
 
+def test_the_training_loss_skips_the_null_rows_of_a_diverged_run():
+    """The loop writes a non-finite loss as null; the mean is of the rest."""
+    stream = [{"t": 400.0, "loss": 1.0}, {"t": 500.0, "loss": None}]
+    assert train_loss(stream, 600.0) == 1.0
+
+
 def _write(path: Path, job: dict[str, Any], **files: Any) -> None:
     path.mkdir(parents=True)
     (path / "job.json").write_text(json.dumps(job))
@@ -157,8 +163,45 @@ def test_load_groups_the_runs_and_reads_the_untrained_vit_of_the_seed(
     assert got[("adamw", 1e-4, 300.0)]["L"] is True
     assert got[("adamw", 1e-4, 300.0)]["learns"] is None  # no posthoc
     shown = summary(runs, 1800.0)
-    assert "| `sgd` | 0.01 | – |" in shown
-    assert "| `adamw` | なし | 0.0001（warmup 300 秒） |" in shown
+    assert "| `sgd` | 0.01 | – | – |" in shown
+    assert "| `adamw` | なし | 0.0001（warmup 300 秒） | – |" in shown
+
+
+def test_a_run_that_diverged_fails_l_and_learns_and_is_listed(tmp_path: Path):
+    """As the loop leaves it: the last eval row has a null loss, the run
+    stops before 1800 s and ``result.json`` says ``diverged``; there is no
+    posthoc at 1800 s. J at 1800 s is not finite, so L and learns fail
+    (not unknown), and the summary lists the lr as diverged."""
+    _sweep(tmp_path)
+    rid = "m17-ssig_t128-00000009-s100"
+    _write(
+        tmp_path / "m17-opt-v1" / rid,
+        {
+            "run_id": rid,
+            "seed": 100,
+            "name": "m17/ssig_t128",
+            "config": {"optim_vision": {"kind": "sgd", "lr": 1.0, "warmup": 0.0}},
+        },
+        **{
+            "evals.jsonl": [
+                {"split": "val", "t": 60.0, "loss": 0.9, **HEALTHY_EV},
+                {"split": "val", "t": 120.0, "loss": None},
+            ],
+            "stream.jsonl": [{"t": 100.0, "loss": 2.0}, {"t": 110.0, "loss": None}],
+            "baselines.json": {"val": {"init_loss": 1.0}},
+            "result.json": {
+                "status": "diverged",
+                "reason": "loss not finite",
+                "t_end": 120.0,
+            },
+        },
+    )
+    runs = load(tmp_path)
+    c = run_criteria(runs, rid, 1800.0)
+    assert c["L"] is False and c["learns"] is False
+    assert c["U"] is None  # no posthoc at 1800 s
+    assert train_loss(runs.train[rid]["stream"], 300.0) == 2.0
+    assert "| `sgd` | 0.01 | – | 1 |" in summary(runs, 1800.0)
 
 
 def test_the_drift_table_takes_the_pairs_300_s_apart(tmp_path: Path):

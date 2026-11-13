@@ -20,13 +20,18 @@ before the runs, at ``--t`` (1800 s) on val:
 - ``learns``: L and U and C
 
 A missing value is unknown (``?``), not a pass; a value that is not finite
-fails (a comparison with NaN is false). Shown beside them and not judged: the
-curves of the held-out $J$, pred and $S$ at each checkpoint (time 0 from
+fails (a comparison with NaN is false). The loop writes a non-finite value as
+``null`` and stops a run that diverged (``status`` ``diverged`` in its
+``result.json``, at ``t_end``), so the $J$ of such a run that is missing or
+``null`` at ``--t`` is taken as not finite: L and learns fail.
+
+Shown beside them and not judged: the curves of the held-out $J$, pred and $S$ at each checkpoint (time 0 from
 ``baselines.json``), the training loss (``stream.jsonl``, the mean over the
 300 s before each checkpoint), the posthoc ``rank`` and ``z_spread``, and,
 given ``--drift`` (the outputs of ``python -m exp.video.diag.stream_stats
-drift`` of the runs), the drift of the stored code between consecutive
-checkpoints.
+drift`` of the runs), the drift between consecutive checkpoints of the
+current encoder's code of fixed held-in stacks: a stand-in for the staleness
+of the stored $z$, which it does not read.
 
 Run from the repository root: ``python -m exp.video.diag.opt_sweep_tables
 [--runs runs] [--t 1800] [--drift drift.json]``.
@@ -34,6 +39,7 @@ Run from the repository root: ``python -m exp.video.diag.opt_sweep_tables
 
 import argparse
 import json
+import math
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
@@ -93,7 +99,7 @@ def load(
     train: dict[str, dict[str, Any]] = {}
     groups: dict[Key, list[str]] = defaultdict(list)
     for run, j in _jobs(root, train_batch):
-        base_p = run / "baselines.json"
+        base_p, res_p = run / "baselines.json", run / "result.json"
         train[j["run_id"]] = dict(
             key=key_of(j),
             arm=_arm(j),
@@ -101,6 +107,7 @@ def load(
             ev=jl(run / "evals.jsonl"),
             stream=jl(run / "stream.jsonl"),
             init=json.loads(base_p.read_text()) if base_p.exists() else {},
+            result=json.loads(res_p.read_text()) if res_p.exists() else {},
         )
         groups[key_of(j)].append(j["run_id"])
     post: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -145,7 +152,11 @@ def untrained(runs: OptRuns, rid: str, split: str = "val") -> dict[str, Any]:
 def train_loss(stream: Sequence[dict[str, Any]], t: float, key: str = "loss") -> Any:
     """The mean of ``key`` of the training rows in the 300 s before ``t``
     (None if there are none)."""
-    xs = [r[key] for r in stream if t - 300 < r.get("t", -1) <= t and key in r]
+    xs = [
+        r[key]
+        for r in stream
+        if t - 300 < r.get("t", -1) <= t and r.get(key) is not None
+    ]
     return sum(xs) / len(xs) if xs else None
 
 
@@ -178,13 +189,25 @@ def criteria(
     return out
 
 
+def diverged(runs: OptRuns, rid: str) -> bool:
+    """Whether the run stopped because it diverged (its ``result.json``)."""
+    return runs.train[rid]["result"].get("status") == "diverged"
+
+
+def objective(runs: OptRuns, rid: str, t: float, split: str = "val") -> Any:
+    """$J$ at ``t``; NaN when it is missing or ``null`` in a run that
+    diverged (not finite)."""
+    j = ev(runs, rid, t, "loss", split)
+    return math.nan if j is None and diverged(runs, rid) else j
+
+
 def run_criteria(
     runs: OptRuns, rid: str, t: float, split: str = "val"
 ) -> dict[str, bool | None]:
     """``criteria`` of run ``rid`` at ``t``."""
     return criteria(
         ev(runs, rid, 0.0, "loss", split),
-        ev(runs, rid, t, "loss", split),
+        objective(runs, rid, t, split),
         row(runs.train[rid]["ev"], t, split),
         row(runs.post.get(rid, []), t, split),
         untrained(runs, rid, split),
@@ -206,7 +229,7 @@ def verdict_table(runs: OptRuns, t: float, split: str = "val") -> str:
     """Per run, sorted by optimizer then learning rate (the curve of each
     criterion over lr): $J$ at 0 and ``t``, their difference and L, ``U_KEYS`` of the run and
     of the untrained ViT and U, the five of C and C, and learns."""
-    head = ["run", "seed", "J(0)", f"J({t:g})", f"J({t:g}) − J(0)", "L"]
+    head = ["run", "seed", "終わり", "J(0)", f"J({t:g})", f"J({t:g}) − J(0)", "L"]
     head += [f"`{k}`（run / 学習前）" for k in U_KEYS] + ["U"]
     head += [*C_NAMES[:-1], "C", "learns"]
     rows = []
@@ -214,7 +237,7 @@ def verdict_table(runs: OptRuns, t: float, split: str = "val") -> str:
         for rid in runs.groups[k]:
             c = run_criteria(runs, rid, t, split)
             init = untrained(runs, rid, split)
-            cells = [label(k), str(runs.train[rid]["seed"])]
+            cells = [label(k), str(runs.train[rid]["seed"]), end(runs, rid)]
             j0, j = ev(runs, rid, 0.0, "loss", split), ev(runs, rid, t, "loss", split)
             dj = None if j0 is None or j is None else j - j0
             cells += [fmt(j0), fmt(j), fmt(dj), MARK[c["L"]]]
@@ -228,12 +251,21 @@ def verdict_table(runs: OptRuns, t: float, split: str = "val") -> str:
     return "\n".join(_md(head, rows))
 
 
+def end(runs: OptRuns, rid: str) -> str:
+    """How the run ended: its ``status`` and ``t_end`` (``?`` without
+    ``result.json``)."""
+    r = runs.train[rid]["result"]
+    if not r:
+        return "?"
+    return f"{r.get('status')} t={fmt(r.get('t_end'))}"
+
+
 def summary(runs: OptRuns, t: float, split: str = "val") -> str:
-    """Per optimizer: the learning rates whose runs learn, and those whose
-    criteria are unknown."""
+    """Per optimizer: the learning rates whose runs learn, those whose
+    criteria are unknown, and those whose runs diverged."""
     rows = []
     for kind in sorted({k[0] for k in runs.groups}, key=lambda x: _order((x, 0, 0))):
-        learn, unknown = [], []
+        learn, unknown, div = [], [], []
         for k in sorted(runs.groups, key=_order):
             if k[0] != kind:
                 continue
@@ -243,10 +275,18 @@ def summary(runs: OptRuns, t: float, split: str = "val") -> str:
                 learn.append(name)
             elif any(g is None for g in got) and not any(g is False for g in got):
                 unknown.append(name)
+            if any(diverged(runs, r) for r in runs.groups[k]):
+                div.append(name)
         rows.append(
-            [f"`{kind}`", "、".join(learn) or "なし", "、".join(unknown) or "–"]
+            [
+                f"`{kind}`",
+                "、".join(learn) or "なし",
+                "、".join(unknown) or "–",
+                "、".join(div) or "–",
+            ]
         )
-    return "\n".join(_md(["optimizer", "学べた lr", "不明な lr"], rows))
+    head = ["optimizer", "学べた lr", "不明な lr", "発散した lr"]
+    return "\n".join(_md(head, rows))
 
 
 def curve_table(
@@ -324,6 +364,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(summary(runs, t))
     print(f"\n### L・U・C（val、{t:g} 秒）\n")
     print(verdict_table(runs, t))
+    reasons = [
+        f"- {label(k)}: {runs.train[r]['result'].get('reason')}"
+        for k in sorted(runs.groups, key=_order)
+        for r in runs.groups[k]
+        if diverged(runs, r)
+    ]
+    if reasons:
+        print("\n発散の理由（`result.json` の `reason`）:\n")
+        print("\n".join(reasons))
     print("\n### 時刻 0 の値（学習前）\n")
     print(base_table(runs))
     times = [0.0, *TIMES]
@@ -336,7 +385,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"\n### posthoc の `{key}`（val）\n")
         print(curve_table(runs, ph, key, TIMES))
     if args.drift:
-        print("\n### 貯めた符号の drift（300 秒ごと）\n")
+        print("\n### 符号の drift（固定した積み、300 秒あいた checkpoint の対）\n")
         print(drift_table(runs, args.drift))
 
 
