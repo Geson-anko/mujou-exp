@@ -673,7 +673,7 @@ GAUSS = {
     "datapoint_law": "gauss",
     "sigreg": 0.3,
 }  # the Gaussian moment matching of the data points (32 numbers each) with
-# 20 past data points per stream (of 2 streams 40 rows, at least D + 3 = 35)
+# 20 past data points per stream (of 2 streams 40 rows, at least D + 5 = 37)
 
 
 def _fill(points: PastPoints, seed: int = 0) -> None:
@@ -782,12 +782,12 @@ class TestPastPoints:
         with pytest.raises(ValueError, match="capacity >= 1 and every >= 1"):
             _points(capacity=capacity, every=every)
 
-    def test_the_moments_are_made_at_each_insertion_from_d_plus_3_rows(self):
+    def test_the_moments_are_made_at_each_insertion_from_d_plus_5_rows(self):
         """With moments the buffer makes buffer_moments of its filled rows at
-        each insertion (off until width + 3 = 6 rows), none in a frame
+        each insertion (off until width + 5 = 8 rows), none in a frame
         without one; they are in the state and round-trip."""
         points = PastPoints(
-            capacity=8,
+            capacity=10,
             every=2,
             streams=1,
             width=3,
@@ -797,18 +797,18 @@ class TestPastPoints:
             moments=True,
         )
         g = torch.Generator().manual_seed(0)
-        for j in range(18):
+        for j in range(24):
             points.next_frame(None, g)
-            if points.count < 6:
+            if points.count < 8:
                 assert float(points.on) == 0
             else:
                 expect = buffer_moments(points.filled)
                 for got, want in zip(points.moments, expect, strict=True):
                     torch.testing.assert_close(got, want)
             points.keep(torch.randn(1, 3, generator=g), torch.tensor([True]))
-        assert points.count == 8 and float(points.on) == 1
+        assert points.count == 10 and float(points.on) == 1
         other = PastPoints(
-            capacity=8,
+            capacity=10,
             every=2,
             streams=1,
             width=3,
@@ -821,8 +821,8 @@ class TestPastPoints:
         for got, want in zip(other.moments, points.moments, strict=True):
             assert torch.equal(got, want)
 
-    def test_the_moments_need_d_plus_3_rows_in_all(self):
-        with pytest.raises(ValueError, match="at least 6 rows"):
+    def test_the_moments_need_d_plus_5_rows_in_all(self):
+        with pytest.raises(ValueError, match="at least 8 rows"):
             PastPoints(
                 capacity=2,
                 every=1,
@@ -1160,6 +1160,17 @@ def _packed_equilibrium(streams: int, **vision):
     outputs: list[torch.Tensor] = []
     loss = bp_net.vision.terms(act, outputs).loss
     credit = [-streams * g for g in torch.autograd.grad(loss, outputs)]
+    if vision.get("datapoint_law") == "gauss":
+        # the gauss term is on and moves the credit well past the tolerance
+        # of the comparison (rtol 1e-3): with it off the credit differs
+        bp_points = bp_net.vision.points
+        assert bp_points is not None and float(bp_points.on) == 1
+        bp_points.on = torch.zeros_like(bp_points.on)
+        outputs = []
+        loss = bp_net.vision.terms(act, outputs).loss
+        without = [-streams * g for g in torch.autograd.grad(loss, outputs)]
+        for c, w in zip(credit, without, strict=True):
+            assert (c - w).abs().max() > 1e-2 * c.abs().max()
     return pc_net, credit
 
 

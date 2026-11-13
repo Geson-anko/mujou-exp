@@ -157,9 +157,11 @@ class VisionConf:
     \,\|\, N(0, I))$ of their law, instead of SIGReg, its gradient at the
     current data points estimated from the mean and the precision of the
     buffer (``exp.lib.gauss_kl``; ``datapoint_store`` "z" only, and the
-    buffer's ``data.streams`` x ``datapoint_buffer`` rows at least $D + 3$:
-    the term is off until the buffer holds $D + 3$, from where the estimate
-    exists; ``sigreg_directions`` are unused).
+    buffer's ``data.streams`` x ``datapoint_buffer`` rows at least $D + 5$:
+    the term is off until the buffer holds $D + 5$, from where the estimate
+    is unbiased and of finite variance, ``exp.lib.gauss_kl.min_rows``;
+    ``sigreg_directions`` are unused). Its presets leave $\lambda$
+    (``sigreg``) nan, which the range check refuses: each run names it.
 
     With ``ema`` $m$ (packed, M17 2026-11-13; I-JEPA, V-JEPA) the prediction's
     targets are the tokens of the target encoder on the whole stack: a copy of

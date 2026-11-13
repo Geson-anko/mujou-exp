@@ -35,7 +35,7 @@ from mujou.time import Timestamp
 from mujou.types import Device
 
 from exp.lib.cuda_graph import Replayed
-from exp.lib.gauss_kl import GaussMoments, buffer_moments, off
+from exp.lib.gauss_kl import GaussMoments, buffer_moments, min_rows, off
 from exp.lib.sigreg import T_POINTS, ecf_sums, insert_
 from exp.video.jepa.loss import (
     JEPATerms,
@@ -268,14 +268,14 @@ class PastPoints(Stateful):
     With ``moments`` (``vision.datapoint_law`` "gauss") an insertion of at
     least one row also makes the ``exp.lib.gauss_kl.buffer_moments`` of the
     filled rows (``moments``, constants until the next insertion; off while
-    fewer than ``width + 3`` rows are filled), and they are in the state.
+    fewer than ``min_rows(width)`` = ``width + 5`` rows are filled), and they
+    are in the state. Filled rows of a singular scatter give moments of
+    $\tilde F = +\infty$ and a NaN precision (``buffer_moments``).
 
     Raises:
         ValueError: ``capacity`` or ``every`` below 1, or with ``moments``
-            fewer than ``width + 3`` rows in all (the precision would never
-            exist); in ``load_state_dict``, a state of other shapes; in
-            ``next_frame``, filled rows of a singular scatter
-            (``buffer_moments``).
+            fewer than ``width + 5`` rows in all (the term would never be
+            on); in ``load_state_dict``, a state of other shapes.
     """
 
     def __init__(
@@ -295,10 +295,10 @@ class PastPoints(Stateful):
                 f"the past data points need capacity >= 1 and every >= 1, not "
                 f"{capacity} and {every}"
             )
-        if moments and streams * capacity < width + 3:
+        if moments and streams * capacity < min_rows(width):
             raise ValueError(
                 f"the moments of data points of {width} numbers need at least "
-                f"{width + 3} rows, not {streams} x {capacity}"
+                f"{min_rows(width)} rows, not {streams} x {capacity}"
             )
         self._every = every
         self._moments = moments

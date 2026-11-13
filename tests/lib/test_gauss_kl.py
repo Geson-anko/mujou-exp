@@ -9,6 +9,8 @@ from exp.lib.gauss_kl import (
     buffer_moments,
     gauss_kl_grad,
     kl_gauss,
+    min_rows,
+    plugin_bias,
 )
 
 D = 4
@@ -37,19 +39,32 @@ class TestValue:
         )
         torch.testing.assert_close(kl_gauss(mean, cov), ref)
 
-    def test_the_buffer_value_is_the_kl_of_its_sample_moments(self):
-        """kl is KL(N(mean, S / (n - 1)) || N(0, I)) of the rows' sample mean
-        and unbiased covariance."""
+    def test_the_buffer_value_is_unbiased_and_the_plugin_is_not(self):
+        """For iid Gaussian rows E kl = F (kl the unbiased estimate), while
+        the closed form of the sample moments, KL(N(mean, S / (n - 1)) ||
+        N(0, I)) (torch.distributions), is off by plugin_bias. 4000 buffers
+        of n = 30, the tolerance 5 standard errors of the Monte Carlo."""
+        n, reps = 30, 4000
         mean, cov = _law()
-        rows = _rows(40, mean, cov, torch.Generator().manual_seed(1))
-        m = buffer_moments(rows)
-        ref = kl_divergence(
-            MultivariateNormal(rows.mean(0), torch.cov(rows.T)),
-            MultivariateNormal(torch.zeros(D).double(), torch.eye(D).double()),
-        )
-        torch.testing.assert_close(m.kl, ref)
-        torch.testing.assert_close(m.mean, rows.mean(0))
-        assert float(m.on) == 1
+        f = kl_gauss(mean, cov)
+        g = torch.Generator().manual_seed(1)
+        std = MultivariateNormal(torch.zeros(D).double(), torch.eye(D).double())
+        kl, plug = [], []
+        for _ in range(reps):
+            rows = _rows(n, mean, cov, g)
+            m = buffer_moments(rows)
+            assert float(m.on) == 1
+            torch.testing.assert_close(m.mean, rows.mean(0))
+            kl.append(m.kl)
+            ref = MultivariateNormal(rows.mean(0), torch.cov(rows.T))
+            plug.append(kl_divergence(ref, std))
+        for x, expect in (
+            (torch.stack(kl), f),
+            (torch.stack(plug), f + plugin_bias(n, D, float(cov.trace()))),
+        ):
+            se = float(x.std()) / math.sqrt(reps)
+            assert abs(float(x.mean() - expect)) <= 5 * se
+        assert plugin_bias(n, D, float(cov.trace())) > 10 * se
 
     def test_the_precision_is_n_less_d_less_2_times_the_inverse_scatter(self):
         rows = _rows(40, *_law(), torch.Generator().manual_seed(1))
@@ -76,18 +91,20 @@ class TestGradient:
         m = GaussMoments(mu.detach(), torch.linalg.inv(sigma.detach()), one, one)
         torch.testing.assert_close(grad, gauss_kl_grad(z, m) / len(z))
 
-    def test_the_gradient_is_0_at_the_optimum_and_off_below_d_plus_3(self):
+    def test_the_gradient_is_0_at_the_optimum_and_off_below_d_plus_5(self):
         """At mu = 0, Sigma = I (exact moments) g(z) = z - z = 0; a buffer
-        of D + 2 rows gives no precision (off: 0), one of D + 3 does."""
-        z = torch.randn(5, D, dtype=torch.float64)
+        of D + 4 rows gives no precision (off: 0), one of D + 5 does (the
+        first count of a precision unbiased and of finite variance)."""
+        g = torch.Generator().manual_seed(3)
+        z = torch.randn(5, D, generator=g, dtype=torch.float64)
         eye = torch.eye(D, dtype=torch.float64)
         one = torch.ones((), dtype=torch.float64)
         exact = GaussMoments(torch.zeros(D, dtype=torch.float64), eye, one * 0, one)
         assert gauss_kl_grad(z, exact).abs().max() == 0
-        g = torch.Generator().manual_seed(3)
-        few = buffer_moments(torch.randn(D + 2, D, generator=g, dtype=torch.float64))
+        assert min_rows(D) == D + 5
+        few = buffer_moments(torch.randn(D + 4, D, generator=g, dtype=torch.float64))
         assert float(few.on) == 0 and gauss_kl_grad(z, few).abs().max() == 0
-        enough = buffer_moments(torch.randn(D + 3, D, generator=g, dtype=torch.float64))
+        enough = buffer_moments(torch.randn(D + 5, D, generator=g, dtype=torch.float64))
         assert float(enough.on) == 1 and float(enough.precision.abs().max()) > 0
 
     def test_the_expected_gradient_is_the_populations_for_iid_rows(self):
@@ -96,9 +113,9 @@ class TestGradient:
         z^T] = Sigma + mu mu^T - I, which at mu = 0, Sigma = I (the expected
         gradient of a linear encoder at its optimum) is 0. The plug-in
         inverse (S / (n - 1))^-1
-        has the mean (n - 1) / (n - D - 2) Sigma^-1 instead (1.16 here),
-        far outside the tolerance. 4000 buffers of n = 30, the tolerance 5
-        standard errors of the Monte Carlo."""
+        has the mean (n - 1) / (n - D - 2) Sigma^-1 instead (29 / 24 = 1.21
+        here), far outside the tolerance. 4000 buffers of n = 30, the
+        tolerance 5 standard errors of the Monte Carlo."""
         n, reps = 30, 4000
         mean, cov = _law()
         g = torch.Generator().manual_seed(4)
@@ -109,8 +126,9 @@ class TestGradient:
         se = ps.std(0) / math.sqrt(reps)
         assert ((ps.mean(0) - inv).abs() <= 5 * se).all()
         plug = ps * (n - 1) / (n - D - 2)  # (S / (n - 1))^-1
-        bias = (plug.mean(0) - inv).diagonal() / inv.diagonal()
-        assert (bias > 0.1).all()
+        expect = inv * (n - 1) / (n - D - 2)
+        assert ((plug.mean(0) - expect).abs() <= 5 * se * (n - 1) / (n - D - 2)).all()
+        assert ((expect - inv).diagonal() > 20 * se.diagonal()).all()
         # mu = 0, Sigma = I: the expected gradient of a linear encoder is 0
         zero, eye = torch.zeros(D, dtype=torch.float64), torch.eye(D).double()
         outer = []
@@ -124,7 +142,8 @@ class TestGradient:
 
 class TestCollapses:
     """The trivial solutions have det Sigma = 0: F = +inf, and a buffer of
-    them is refused (its scatter has no Cholesky factor)."""
+    them gives kl = +inf and a NaN precision (its scatter has no Cholesky
+    factor), so the steps carry NaN and the run is marked diverged."""
 
     @staticmethod
     def _collapses() -> dict[str, torch.Tensor]:
@@ -143,10 +162,12 @@ class TestCollapses:
         }
 
     @pytest.mark.parametrize("kind", ["C", "P", "Cw"])
-    def test_f_is_inf_and_the_buffer_is_refused(self, kind):
+    def test_f_is_inf_and_the_precision_nan(self, kind):
         rows = self._collapses()[kind]
         cov = torch.cov(rows.T)
         assert torch.linalg.matrix_rank(cov) < rows.shape[1]
         assert kl_gauss(rows.mean(0), cov) == math.inf
-        with pytest.raises(ValueError, match="singular"):
-            buffer_moments(rows)
+        m = buffer_moments(rows)
+        assert float(m.kl) == math.inf and float(m.on) == 1
+        assert m.precision.isnan().all()
+        assert gauss_kl_grad(rows[:1], m).isnan().all()

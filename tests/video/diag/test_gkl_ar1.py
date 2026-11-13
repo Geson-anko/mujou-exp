@@ -61,7 +61,9 @@ def test_the_gauss_step_of_exact_moments_is_w_less_1_over_w():
     s, so E[g s^T] / m = (w - 1 / w) / m I, the linearization of the
     learning rate (rate 2 eta / m at w = 1)."""
     w, m = 1.3, 5
-    s = torch.randn(7, m, dtype=torch.float64)
+    s = torch.randn(
+        7, m, generator=torch.Generator().manual_seed(0), dtype=torch.float64
+    )
     one = torch.ones((), dtype=torch.float64)
     exact = GaussMoments(
         torch.zeros(m, dtype=torch.float64),
@@ -113,7 +115,10 @@ def test_an_iid_stream_has_c_star_1_and_stays_at_the_optimum():
     assert again | {"seconds": 0} == trained | {"seconds": 0}
 
 
-def test_the_report_has_a_row_per_trained_run_and_c_star_of_gauss():
+def test_the_report_has_a_row_per_trained_run_and_c_star_over_the_seeds():
+    """A row per trained run; the frozen runs of one m, N and tau make one
+    row of the mean c* over their seeds and its standard error sd / sqrt(k)
+    (c* 1.0 and 1.1: mean 1.05, se 0.05 / sqrt(2) * sqrt(2) = 0.05)."""
     base = {"dim": 4, "buffer": 8, "every": 1, "steps": 10, "seed": 0}
     rows = [
         base
@@ -128,7 +133,9 @@ def test_the_report_has_a_row_per_trained_run_and_c_star_of_gauss():
             "eig_max": 1.2,
             "mu_norm": 0.0,
         },
-        base | {"law": "gauss", "tau": 1.0, "frozen": True, "c_star": 1.05},
+        base | {"law": "gauss", "tau": 2.0, "frozen": True, "c_star": 1.0},
+        base | {"law": "gauss", "tau": 2.0, "frozen": True, "c_star": 1.1, "seed": 1},
     ]
     out = report(rows)
-    assert "| gauss | 1 | +0.1000 |" in out and "1.0500 |" in out
+    assert "| gauss | 4 | 8 | 1 | +0.1000 |" in out
+    assert "| 4 | 8 | 0.5 | 2 | 0.25 | 2 | 1.0500 | 0.0500 |" in out

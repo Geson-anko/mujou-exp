@@ -643,12 +643,14 @@ class TestPacked:
     def test_the_gauss_preset_resumes_with_its_moments(self, tmp_path, tours, learner):
         """m17/gkl_t128 (the Gaussian moment matching of the data points) with
         data points of 32 numbers and 40 rows per stream (of 2 streams): the
-        term starts once the buffer holds 35 rows (the training's sigreg,
-        F^ / D, becomes > 0), the buffer and its moments are resumable state
-        (a run stopped at frame 17 and resumed writes the bytes of one never
-        stopped), and the evaluation, without a buffer, records 0."""
+        term starts once the buffer holds 37 rows (the training's sigreg,
+        F~ / D, is 0 before and not after), the buffer and its moments are
+        resumable state (a run stopped at frame 17 and resumed writes the
+        bytes of one never stopped), and the evaluation, without a buffer,
+        records 0. (lambda is mandatory in the preset: any value here.)"""
         extra = [
             f"learner={learner}",
+            "vision.sigreg=0.5",
             "ctl.resume_every=0.3",
             "ctl.log_every=0.2",
             "vision.token_dim=1",
@@ -664,7 +666,7 @@ class TestPacked:
             assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
         sig = [r["sigreg"] for r in _lines(tmp_path / "whole" / "stream.jsonl")]
         sig = [x for x in sig if x is not None]
-        assert sig[0] == 0 and sig[-1] > 0 and all(math.isfinite(x) for x in sig)
+        assert sig[0] == 0 and sig[-1] != 0 and all(math.isfinite(x) for x in sig)
         assert all(r["sigreg"] == 0 for r in _lines(cut / "evals.jsonl"))
 
     @pytest.mark.parametrize("learner", ["pc", "bp"])

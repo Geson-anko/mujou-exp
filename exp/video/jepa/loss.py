@@ -92,13 +92,14 @@ the term of the data points is the Gaussian moment matching instead of
 SIGReg: $S = F / D$, $F = \mathrm{KL}(N(\mu, \Sigma) \,\|\, N(0, I))$ of
 the law of $x_b$, whose gradient at $x_b$ is estimated from the moments of
 the buffer (``moments``, ``exp.lib.gauss_kl.GaussMoments``; the stored
-representations, constants): $\lambda n S$ has the value $\lambda n \hat F
-/ D$ ($\hat F$ the closed form of the buffer's sample moments) and the
+representations, constants): $\lambda n S$ has the value $\lambda n \tilde F
+/ D$ ($\tilde F$ the estimate of $F$ from the buffer, ``GaussMoments.kl``) and the
 gradient $\lambda w_b \hat g_b / D$ at each $x_b$, $\hat g_b = x_b - \hat P
 (x_b - \hat\mu)$, so that the step's expected gradient is that of $F$
 (``exp.lib.gauss_kl``). Without moments (the evaluation, which has no
-buffer, or a buffer of fewer than $D + 3$ rows) $S = 0$: $F$ needs at least
-$D + 3$ samples.
+buffer, or a buffer of fewer than $D + 5$ rows) $S = 0$: the estimate is
+unbiased and of finite variance from $D + 5$ samples
+(``exp.lib.gauss_kl.min_rows``).
 
 The space-time completion of the packed layout (M17, 2026-11-12; LeJEPA's
 Eq. 6-9 with one global view) embeds every view: $u_{b,0} = h(z_b)$ of the
@@ -264,7 +265,7 @@ def weighted_sigreg(
 
 def gauss_part(x: Tensor, weights: Tensor, moments: GaussMoments | None) -> Tensor:
     r"""$S$ of the data points ``x`` ``(B, D)`` with the law ``"gauss"``
-    (module docstring) for 0/1 ``weights`` ``(B,)``: the value $\hat F / D$
+    (module docstring) for 0/1 ``weights`` ``(B,)``: the value $\tilde F / D$
     (times ``moments.on``), and $n_w S$ ($n_w = \sum_b w_b$) of the gradient
     $w_b \hat g_b / D$ at each $x_b$. 0 without ``moments``."""
     d = x.shape[1]

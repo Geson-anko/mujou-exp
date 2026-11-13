@@ -22,7 +22,7 @@ frames (1), at a uniform row once full, as the head of the runs has it.
 \leftarrow b - \eta\, g$) of $g$:
 
 - ``gauss``: $\hat g_t / m$, the credit of $F / m$ (``gauss_kl_grad`` of
-  the buffer's moments; off until it holds $m + 3$ rows);
+  the buffer's moments; off until it holds $m + 5$ rows);
 - ``sigreg``: $\partial S / \partial z_t$, $S$ the Epps-Pulley statistic of
   $z_t$ and the buffer along ``directions`` unit directions drawn anew each
   step (``exp.lib.sigreg.sigreg_from_sums``; its expectation over the
@@ -73,7 +73,9 @@ $\hat P (s_t - \hat\mu)$ is biased.
 
 Run: ``python -m exp.video.diag.gkl_ar1 run --law gauss --tau 100 --out
 <json>`` (one law and $\tau$ per process; ``--frozen`` for $c^*$), then
-``python -m exp.video.diag.gkl_ar1 report <json> ...`` (a Markdown table).
+``python -m exp.video.diag.gkl_ar1 report <json> ...`` (Markdown tables:
+the trained runs, and $c^*$ over the seeds of each ``dim``, ``buffer`` and
+$\tau$ with its standard error).
 """
 
 import argparse
@@ -250,21 +252,41 @@ def run(
 
 
 def report(results: Sequence[dict[str, Any]]) -> str:
-    """The Markdown table of ``run``'s results, by law, then ``tau``."""
+    r"""The Markdown tables of ``run``'s results: the trained runs by law,
+    then ``dim``, ``buffer`` and ``tau``; and $c^*$ of the frozen runs by
+    ``dim``, ``buffer`` and ``tau``, the mean over their seeds and its
+    standard error (the sd over the seeds over $\sqrt{\text{seeds}}$; the
+    seeds are independent streams and buffers)."""
     lines = [
-        "| law | tau | mean(tr Sigma / m - 1) | se | sd over time | "
-        "eig min | eig max | norm mu | c* (frozen) |",
-        "| -- | --: | --: | --: | --: | --: | --: | --: | --: |",
+        "| law | m | N | tau | mean(tr Sigma / m - 1) | se | sd over time | "
+        "eig min | eig max | norm mu |",
+        "| -- | --: | --: | --: | --: | --: | --: | --: | --: | --: |",
     ]
     trained = [r for r in results if not r["frozen"]]
-    frozen = {r["tau"]: r for r in results if r["frozen"]}
-    for r in sorted(trained, key=lambda r: (r["law"], r["tau"])):
-        c = frozen.get(r["tau"]) if r["law"] == "gauss" else None
+    for r in sorted(trained, key=lambda r: (r["law"], r["dim"], r["buffer"], r["tau"])):
         lines.append(
-            f"| {r['law']} | {r['tau']:g} | {r['mean_dev']:+.4f} | "
-            f"{r['se']:.4f} | {r['sd_dev']:.4f} | {r['eig_min']:.3f} | "
-            f"{r['eig_max']:.3f} | {r['mu_norm']:.3f} | "
-            f"{'-' if c is None else format(c['c_star'], '.4f')} |"
+            f"| {r['law']} | {r['dim']} | {r['buffer']} | {r['tau']:g} | "
+            f"{r['mean_dev']:+.4f} | {r['se']:.4f} | {r['sd_dev']:.4f} | "
+            f"{r['eig_min']:.3f} | {r['eig_max']:.3f} | {r['mu_norm']:.3f} |"
+        )
+    frozen: dict[tuple[int, int, float, int], list[float]] = {}
+    for r in results:
+        if r["frozen"]:
+            k = (r["dim"], r["buffer"], r["tau"], r["every"])
+            frozen.setdefault(k, []).append(r["c_star"])
+    if frozen:
+        lines += [
+            "",
+            "| m | N | m / N | tau | tau / (N k) | seeds | c* | se |",
+            "| --: | --: | --: | --: | --: | --: | --: | --: |",
+        ]
+    for (dim, buffer, tau, every), cs in sorted(frozen.items()):
+        c = torch.tensor(cs, dtype=torch.float64)
+        se = float(c.std()) / math.sqrt(len(cs)) if len(cs) > 1 else math.nan
+        lines.append(
+            f"| {dim} | {buffer} | {dim / buffer:.4g} | {tau:g} | "
+            f"{tau / (buffer * every):.3g} | {len(cs)} | {float(c.mean()):.4f} | "
+            f"{se:.4f} |"
         )
     return "\n".join(lines)
 

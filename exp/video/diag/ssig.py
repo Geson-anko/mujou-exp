@@ -68,7 +68,8 @@ tokens, and the speed of the two ways of storing the buffer.
 
 Run: ``python -m exp.video.diag.ssig bound`` and ``python -m
 exp.video.diag.ssig bench --arm t128 --device cpu [--preset gkl]`` (``cpu``
-or ``cuda[:i]``, as ``RunConf.device``).
+or ``cuda[:i]``, as ``RunConf.device``; ``gkl`` needs its $\lambda$ as an
+override, ``vision.sigreg=<lambda>``, which the cost does not depend on).
 """
 
 import argparse

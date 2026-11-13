@@ -104,6 +104,7 @@ def test_the_bench_runs_the_gauss_preset_with_its_moments():
     its moments at each step's insertion."""
     over = tiny("none") + [
         "+experiment=m17/gkl_t128",
+        "vision.sigreg=0.5",  # mandatory in the preset; the cost does not see it
         "vision.token_dim=1",
         "vision.datapoint_buffer=40",
     ]

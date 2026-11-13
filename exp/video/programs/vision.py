@@ -70,8 +70,8 @@ the past tokens of ``vision.token_buffer`` or the past data points of
 ``vision.datapoint_buffer``: the evaluation has no past; with ``sigreg_on``
 ``"datapoints"`` its ``sigreg`` is that of the batch's data points, its
 flattened target tokens, and with ``vision.datapoint_law`` ``"gauss"`` it is
-0: $F$ needs at least $D + 3$ data points, more than a batch and a split
-(``exp.lib.gauss_kl``; the training's ``sigreg`` is $\hat F / D$ of the
+0: $F$ needs at least $D + 5$ data points, more than a batch and a split
+(``exp.lib.gauss_kl``; the training's ``sigreg`` is $\tilde F / D$ of the
 buffer);
 with ``vision.ema`` the targets of ``pred`` are the target encoder's tokens,
 as in training),

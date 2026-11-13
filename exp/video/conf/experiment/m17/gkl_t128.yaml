@@ -6,17 +6,18 @@
 # m17/ssig_t128 and m17/ema_t128, 128 tokens (patch 32, tubelet 2: 8 slots x 4 x 4) of d = 8.
 # Its gradient at the current stack is z - P (z - m), from the mean m and
 # the precision P = (n - D - 2) S^-1 of a buffer of N = 4096 past data
-# points (decided; N >= D + 3 for P to exist), stored as representations
+# points (decided; N >= D + 5 for P to be unbiased and of finite variance),
+# stored as representations
 # (detached), one every vision.datapoint_every frames (k = 1; a row's age is
 # geometric of mean N k frames, 6.8 min at k = 1) at a uniformly drawn row
-# once full. The term is off until the buffer holds D + 3 rows (from where
-# P exists). No target encoder and no past tokens; one stream (B = 1); the
+# once full. The term is off until the buffer holds D + 5 rows (from where
+# P is unbiased and of finite variance; exp.lib.gauss_kl.min_rows). No target encoder and no past tokens; one stream (B = 1); the
 # rest, the optimizer, 1800 s and the checkpoints every 300 s included,
 # that of m17/tok_n16, as m17/ssig_t128.
-# lambda (vision.sigreg) is a PLACEHOLDER, not calibrated: any lambda > 0
-# rules out the collapses (F = +inf there), so lambda is a temperature, to
-# be swept by decades before any run; 0.5 weighs the two means per
-# coordinate (the prediction error and F / D) equally.
+# lambda (vision.sigreg) is mandatory: .nan, which the schema refuses, so
+# that each run names its lambda (it has no derivation of its own). Any
+# lambda > 0 rules out the collapses (F = +inf there), so lambda is a
+# temperature, swept by decades.
 defaults:
   - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
   - _self_
@@ -29,7 +30,7 @@ vision:
   tubelet: 2
   token_dim: 8
   sigreg_on: datapoints
-  sigreg: 0.5  # PLACEHOLDER: to be swept by decades
+  sigreg: .nan  # lambda, mandatory (nan is refused): swept by decades
   token_buffer: 0
   datapoint_buffer: 4096  # N, per stream
   datapoint_every: 1  # k

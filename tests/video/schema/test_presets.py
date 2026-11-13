@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import exp.video.conf
+from exp.lib.gauss_kl import min_rows
 from exp.video.compose import compose, from_dict, to_dict
 from exp.video.diag.ssig import bound
 from exp.video.jepa.loss import jepa_loss_packed
@@ -44,15 +45,21 @@ def test_every_yaml_is_an_experiment_or_a_group_option() -> None:
     assert found - {"run"} == listed
 
 
+# The presets with a mandatory value (.nan, refused by the schema): the
+# lambda of the Gaussian moment matching has no derivation of its own, so
+# each run names it (any value of [0, 1] composes).
+MANDATORY = {f"m17/gkl_{arm}": ["vision.sigreg=0.1"] for arm in ("t512", "t128", "t64")}
+
+
 @pytest.mark.parametrize("experiment", EXPERIMENTS)
 class TestExperiment:
     def test_composes_to_run_conf(self, experiment: str) -> None:
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         assert isinstance(conf, RunConf)
         assert conf.name == experiment
 
     def test_round_trips_through_json(self, experiment: str) -> None:
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         back = from_dict(json.loads(json.dumps(to_dict(conf))))
         assert isinstance(back, RunConf)
         assert back == conf
@@ -153,7 +160,7 @@ class TestM17:
     def test_no_reconstruction_term_and_the_target_encoder_of_ema_only(
         self, experiment: str
     ) -> None:
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         assert conf.vision is not None and conf.vision.recon == 0.0
         assert conf.vision.layout == "packed"
         ema = experiment.startswith("m17/ema_")
@@ -183,7 +190,7 @@ class TestM17:
         """The stacks of wt_n16, three context views (the past one hides the
         last 2 of the 8 slots), the completion of u with SIGReg per view, and
         AdamW by steps."""
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         v = conf.vision
         assert v is not None and conf.optim_vision is not None
         assert (v.frames, v.tubelet, v.stride, v.views) == (16, 2, 3, 4)
@@ -199,7 +206,7 @@ class TestM17:
     def test_the_stacks_and_the_stream(
         self, experiment: str, frames: int, tubelet: int
     ) -> None:
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         v, t = conf.vision, conf.data.tours
         assert v is not None and t is not None
         assert (v.frames, v.tubelet, v.stride, v.patch) == (frames, tubelet, 3, 16)
@@ -251,7 +258,7 @@ class TestM17:
         (2026-11-13): no SIGReg term, no past tokens, no LayerNorm on the
         targets, one stream; D = T d = 1024 in each arm (T of 128 x 128
         frames, N = 16), and everything else that of tok_n16."""
-        conf = compose([f"+experiment={experiment}"])
+        conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
         base = compose(["+experiment=m17/tok_n16"])
         v, w = conf.vision, base.vision
         assert v is not None and w is not None
@@ -319,15 +326,20 @@ class TestM17:
     ) -> None:
         """The Gaussian moment matching of the data points (2026-11-13):
         m17/ssig_<arm> with datapoint_law 'gauss' and N = 4096 (decided; at
-        least D + 3 = 1027 for the precision to exist), and lambda the
-        placeholder 0.5 (to be swept by decades)."""
-        conf = compose([f"+experiment=m17/gkl_{arm}"])
+        least D + 5 = 1029 for the precision to be unbiased and of finite
+        variance), and lambda mandatory: the preset alone is refused."""
+        with pytest.raises(
+            ValueError, match=r"vision.sigreg must be in \[0, 1\], not nan"
+        ):
+            compose([f"+experiment=m17/gkl_{arm}"])
+        conf = compose([f"+experiment=m17/gkl_{arm}", "vision.sigreg=0.01"])
         ssig = compose([f"+experiment=m17/ssig_{arm}"])
         v, w = conf.vision, ssig.vision
         assert v is not None and w is not None
-        assert (v.datapoint_law, v.datapoint_buffer, v.sigreg) == ("gauss", 4096, 0.5)
+        assert (v.datapoint_law, v.datapoint_buffer, v.sigreg) == ("gauss", 4096, 0.01)
         tokens = (v.frames // v.tubelet) * (128 // v.patch) ** 2
-        assert tokens * v.token_width == 1024 <= v.datapoint_buffer - 3
+        assert tokens * v.token_width == 1024
+        assert min_rows(1024) == 1029 <= v.datapoint_buffer
         assert conf.data == ssig.data and conf.seconds == ssig.seconds
         assert conf.ctl == ssig.ctl and conf.measure == ssig.measure
         assert conf.time == ssig.time and conf.optim_vision == ssig.optim_vision
@@ -429,7 +441,7 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
     error of 1 per dimension). The loss of a preset must prefer the latter
     (its token terms: the completion of u, of the space-time presets, does
     not see the tokens within a stack)."""
-    conf = compose([f"+experiment={experiment}"])
+    conf = compose([f"+experiment={experiment}", *MANDATORY.get(experiment, [])])
     v = conf.vision
     assert v is not None
     if v.token_weight == 0:
@@ -441,6 +453,10 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
         # 2026-11-13: a method of the loss itself is future work).
         assert v.sigreg == 0.0
         pytest.skip("the target encoder: no term of the loss prevents collapse")
+    if v.datapoint_law == "gauss":
+        # F = +inf there at any lambda > 0, which tests/lib/test_gauss_kl.py
+        # (TestCollapses) checks; this SIGReg loss is not the gauss law's
+        pytest.skip("the moment matching: tokens constant in a stack have F = +inf")
 
     def norm(x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.layer_norm(x, x.shape[-1:]) if v.target_norm else x
