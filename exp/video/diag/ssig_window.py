@@ -266,11 +266,11 @@ def solutions(
 
 def load_curves(root: Path, names: Sequence[str]) -> dict[str, dict[str, Any]]:
     """The curves ``<model>/<code>/<centre>`` (``pixels/<centre>`` of
-    ``corr.json``) of the ``stream_stats`` outputs in ``root``: lags in
-    frames of 0.1 s, ``rho`` and ``se``, ``t95``."""
+    ``corr.json``, if ``root`` has it) of the ``stream_stats`` outputs in
+    ``root``: lags in frames of 0.1 s, ``rho`` and ``se``, ``t95``."""
     found: dict[str, dict[str, Any]] = {}
-    c = json.loads((root / "corr.json").read_text())
-    tables = [("pixels", c)]
+    corr = root / "corr.json"
+    tables = [("pixels", json.loads(corr.read_text()))] if corr.exists() else []
     for path in sorted(root.glob("repr-*.json")):
         r = json.loads(path.read_text())
         tables += list(r["codes"].items())

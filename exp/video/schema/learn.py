@@ -18,11 +18,16 @@ __all__ = [
 ]
 
 LEARNERS = ("pc", "bp", "none")
-OPTIMIZERS = ("sgd", "adamw", "graft_adam", "adamw_step")
+OPTIMIZERS = ("sgd", "adamw", "graft_adam", "rmsprop", "adamw_step")
 DECAYS = ("constant", "cosine")  # exp.lib.optim.StepAdamW
 ORDERS = ("random", "stream")
 FEEDBACKS = ("grad", "detach", "teacher")
 CREDITS = ("bptt", "own")
+# The moments' time constants: their defaults in OptimConf and the kinds that use them
+_MOMENTS = {
+    "tau_m": (0.3, ("adamw", "graft_adam")),
+    "tau_v": (30.0, ("adamw", "graft_adam", "rmsprop")),
+}
 
 
 @dataclass(kw_only=True)
@@ -39,9 +44,11 @@ class LearnerConf:
 @dataclass(kw_only=True)
 class OptimConf:
     """The optimizer of the nodes, a ``mujou.pc.optim`` one: ``"sgd"``,
-    ``"adamw"`` or ``"graft_adam"`` (the direction of Adam with the step size of
-    SGD, ``exp.lib.optim.Grafted(AdamDirection)``); or ``"adamw_step"``,
-    AdamW by steps (``exp.lib.optim.StepAdamW``, ``torch.optim.AdamW``).
+    ``"adamw"``, ``"graft_adam"`` (the direction of Adam with the step size of
+    SGD, ``exp.lib.optim.Grafted(AdamDirection)``) or ``"rmsprop"`` (Adam
+    without the first moment, ``exp.lib.optim.RMSPropDirection`` of ``tau_v``);
+    or ``"adamw_step"``, AdamW by steps (``exp.lib.optim.StepAdamW``,
+    ``torch.optim.AdamW``).
 
     ``lr`` is the learning rate per frame; the optimizer is built with the
     time constant ``tau = frame / lr`` of the parameters. For
@@ -54,6 +61,10 @@ class OptimConf:
     cosine to ``min_lr`` times ``lr`` at ``decay_steps``), and the clipping of
     the norm of a node's gradients at ``clip`` (0: none). Its ``warmup`` in
     seconds must be 0, and the other kinds take none of these step settings.
+
+    ``tau_m`` (the first moment) is of ``"adamw"`` and ``"graft_adam"`` only,
+    ``tau_v`` (the second moment) of those and ``"rmsprop"``: another kind
+    must leave them at their defaults, as a sweep of them would change nothing.
     """
 
     kind: str = "sgd"
@@ -85,6 +96,12 @@ class OptimConf:
             "weight_decay_end": (self.weight_decay_end, None),
             "clip": (self.clip, 0.0),
         }
+        for name, (default, kinds) in _MOMENTS.items():
+            if self.kind not in kinds and getattr(self, name) != default:
+                raise ValueError(
+                    f"optim.{name} is of the kinds {kinds}, not {self.kind!r}: "
+                    f"leave it at {default}"
+                )
         if self.kind == "adamw_step":
             if self.warmup != 0:
                 raise ValueError(
