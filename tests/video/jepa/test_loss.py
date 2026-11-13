@@ -558,6 +558,81 @@ class TestPastTokens:
             )
 
 
+class TestDataPoints:
+    """The SIGReg of the data points (sigreg_on 'datapoints'): one sample per
+    stack, its target tokens flattened, with the past data points stored as
+    representations (past, constants) or as inputs encoded anew (points, in
+    the graph)."""
+
+    def _dirs(self) -> torch.Tensor:
+        g = torch.Generator().manual_seed(4)
+        a = torch.randn(9, 6 * 5, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def _loss(self, tokens, y, keeps, valid, **kw):
+        return jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            self._dirs(),
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=0.3,
+            sg=False,
+            sigreg_on="datapoints",
+            pred_loss="l2",
+            **kw,
+        )
+
+    def test_the_statistic_is_sigreg_of_the_current_and_the_buffer_concatenated(
+        self,
+    ):
+        """S equals exp.lib.sigreg.sigreg of the valid streams' flattened
+        target tokens with the buffer, stored as sums or as points alike, and
+        L = (1 - lam) sum pred / B + lam |M| S / B."""
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        buffer = torch.randn(
+            11, 30, generator=torch.Generator().manual_seed(5), dtype=torch.float64
+        )
+        target = tokens[:, :6].flatten(1)  # (B, T D)
+        expect = sigreg(target[valid], buffer, self._dirs())
+        alone = self._loss(tokens, y, keeps, valid)
+        torch.testing.assert_close(
+            alone.sigreg, sigreg(target[valid], target[:0], self._dirs())
+        )
+        for kw in ({"past": _past(buffer, self._dirs())}, {"points": buffer}):
+            t = self._loss(tokens, y, keeps, valid, **kw)
+            torch.testing.assert_close(t.sigreg, expect)
+            torch.testing.assert_close(t.pred, alone.pred)
+            torch.testing.assert_close(
+                t.loss, ((1 - 0.3) * 2 * t.pred + 0.3 * 2 * expect) / 3
+            )
+
+    def test_the_stored_representations_get_no_gradient_the_encoded_inputs_do(
+        self,
+    ):
+        """With past (stored representations) only the current samples are
+        in the graph; with points the gradient reaches every stored sample,
+        and that of the current samples is the same."""
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.ones(3, dtype=torch.bool)
+        buffer = torch.randn(
+            11, 30, generator=torch.Generator().manual_seed(5), dtype=torch.float64
+        )
+        h = tokens.clone().requires_grad_()
+        points = buffer.clone().requires_grad_()
+        t = self._loss(h, y, keeps, valid, points=points)
+        g_h, g_p = torch.autograd.grad(t.loss, [h, points])
+        assert (g_p.norm(dim=1) > 0).all()  # every stored sample
+        h2 = tokens.clone().requires_grad_()
+        t2 = self._loss(h2, y, keeps, valid, past=_past(buffer, self._dirs()))
+        (g_h2,) = torch.autograd.grad(t2.loss, [h2])
+        torch.testing.assert_close(g_h2, g_h)
+
+
 class TestSpaceTimeCompletion:
     """The completion of the whole stack's embedding u_g from each context
     view's u_v (LeJEPA's form; module docstring)."""

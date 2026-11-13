@@ -64,6 +64,7 @@ __all__ = [
     "JEPAHead",
     "JEPAStats",
     "PackedJEPAHead",
+    "PastPoints",
     "PastTokens",
     "StackChunker",
     "draw_directions",
@@ -237,6 +238,108 @@ class PastTokens(Stateful):
         for name in names:
             setattr(self, name, state[name].to(getattr(self, name)).clone())
         self.count = int(state["count"])
+
+
+class PastPoints(Stateful):
+    r"""The past data points of the SIGReg of the data points
+    (``vision.datapoint_buffer``, ``loss.jepa_loss_packed`` with ``sigreg_on``
+    ``"datapoints"``), held by the node that computes the loss.
+
+    A data point is one row of ``width`` values of ``dtype``: the
+    representation of a stack (its target tokens flattened) or its input (the
+    target view's pixels, u8). Of ``streams`` streams it holds ``streams x
+    capacity`` rows. ``keep`` holds the data points of an update ``(B,
+    width)`` (detached) and the streams that have a stack ``(B,)``: the last
+    kept of a frame are those of its last update. ``next_frame``, in the
+    update that first sees frame $j$ (of this node, from 0), puts the data
+    points kept (of frame $j - 1$, of the streams that had a stack) into the
+    rows when $j$ is a multiple of ``every`` (``exp.lib.sigreg.insert_``: the
+    next empty rows, then distinct rows drawn uniformly by ``generator``),
+    and, given ``directions`` ``(M, width)``, sums the characteristic function
+    of the filled rows along them (``exp.lib.sigreg.ecf_sums``): ``sums``,
+    constants through the frame. Once full, an insertion of the $B$ streams
+    replaces $B$ of the $B N$ rows ($N$ = ``capacity``), so a row survives it
+    with probability $1 - 1/N$, and $s$ frames ($s$ a multiple of $k$ =
+    ``every``) with probability $(1 - 1/N)^{s/k}$: a row's age is geometric
+    of mean $N k$ frames, whatever $B$. Its state is all of these and the
+    frames seen.
+
+    Raises:
+        ValueError: ``capacity`` or ``every`` below 1; in
+            ``load_state_dict``, a state of other shapes.
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        every: int,
+        streams: int,
+        width: int,
+        dtype: torch.dtype,
+        directions: int,
+        device: Device,
+    ) -> None:
+        if capacity < 1 or every < 1:
+            raise ValueError(
+                f"the past data points need capacity >= 1 and every >= 1, not "
+                f"{capacity} and {every}"
+            )
+        self._every = every
+        self.rows = torch.zeros(streams * capacity, width, dtype=dtype, device=device)
+        self.count = 0
+        self.frames = 0  # the frames seen
+        self.kept = torch.zeros(streams, width, dtype=dtype, device=device)
+        self.kept_valid = torch.zeros(streams, dtype=torch.bool, device=device)
+        sums = torch.zeros(directions, len(T_POINTS), device=device)
+        self.cos, self.sin = sums, sums.clone()
+        self.n = torch.zeros((), device=device)
+
+    def keep(self, points: torch.Tensor, valid: torch.Tensor) -> None:
+        """Hold the data points ``(B, width)`` and the streams with a stack
+        ``(B,)`` of this update."""
+        self.kept, self.kept_valid = points.detach(), valid
+
+    def next_frame(
+        self, directions: torch.Tensor | None, generator: torch.Generator
+    ) -> None:
+        """Insert the data points kept when due, then sum the rows along
+        ``directions`` (None: no sums; class docstring)."""
+        if self.frames % self._every == 0:
+            self.count = insert_(
+                self.rows, self.count, self.kept[self.kept_valid], generator
+            )
+        self.frames += 1
+        self.kept_valid = torch.zeros_like(self.kept_valid)  # inserted once
+        if directions is not None:
+            self.cos, self.sin = ecf_sums(self.filled.float(), directions)
+            self.n = torch.tensor(float(self.count), device=self.rows.device)
+
+    @property
+    def filled(self) -> torch.Tensor:
+        """The filled rows ``(count, width)``."""
+        return self.rows[: self.count]
+
+    @property
+    def sums(self) -> PastSums:
+        """The ``PastSums`` of the filled rows along the frame's directions."""
+        return PastSums(self.cos, self.sin, self.n)
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        names = ("rows", "count", "frames", "kept", "kept_valid", "cos", "sin", "n")
+        return {name: getattr(self, name) for name in names}
+
+    @override
+    def load_state_dict(self, state: dict[str, Any], /) -> None:
+        names = ("rows", "kept", "kept_valid", "cos", "sin", "n")
+        for name in names:
+            have, got = getattr(self, name).shape, state[name].shape
+            if got != have:
+                raise ValueError(f"the past data points' {name} is {have}, not {got}")
+        for name in names:
+            setattr(self, name, state[name].to(getattr(self, name)).clone())
+        self.count, self.frames = int(state["count"]), int(state["frames"])
 
 
 # --- the frames ------------------------------------------------------------------
@@ -737,6 +840,16 @@ class PackedJEPAHead(Node):
     ``generator``) and sums them along the directions of the tokens. Nothing
     of another node goes into it.
 
+    With ``sigreg_on`` ``"datapoints"`` the directions of SIGReg are of the
+    flattened target tokens ($T D$), and with ``datapoint_buffer`` > 0 the
+    samples include the past data points of a ``PastPoints`` of that capacity
+    per stream (``points``; their representations, constants), the node's
+    own: it keeps the flattened target tokens it receives in every update,
+    and in the update that first sees a frame, after drawing the directions,
+    inserts those of the frame before once every ``datapoint_every`` frames
+    and sums them along the directions. (Stored inputs encoded anew need the
+    encoder, which the head does not hold: ``JEPABP`` only.)
+
     With ``target`` (I-JEPA's target encoder, ``vision.ema``) it receives
     ``(B, L + T, D)``: the packed tokens, then the $T$ tokens of the target
     encoder's path (``ema.TargetStage``), the prediction's targets. They are
@@ -769,6 +882,9 @@ class PackedJEPAHead(Node):
         token_buffer: The capacity of the past target tokens per stream (0:
             none).
         token_insert: The tokens of a frame inserted into them per stream.
+        datapoint_buffer: The capacity of the past data points per stream
+            (0: none).
+        datapoint_every: The frames between two insertions into them.
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.
@@ -799,6 +915,8 @@ class PackedJEPAHead(Node):
         target: bool = False,
         token_buffer: int = 0,
         token_insert: int = 64,
+        datapoint_buffer: int = 0,
+        datapoint_every: int = 1,
         device: Device = "cpu",
         cuda_graph: bool = False,
     ) -> None:
@@ -830,7 +948,10 @@ class PackedJEPAHead(Node):
         dev = self.device
         self._two = sigreg_on in ("tokens", "both", "views_tokens") and d_z != d
         self._views = sigreg_on in ("views", "views_tokens")
-        self.directions = torch.zeros(directions, d_z, device=dev)
+        self._t = act_spec.field("y", TensorSpec).shape[1] // len(self._keeps)  # T
+        # the directions of the representation SIGReg sees: z, or a data point
+        width = self._t * d if sigreg_on == "datapoints" else d_z
+        self.directions = torch.zeros(directions, width, device=dev)
         self.directions_t = torch.zeros(directions if self._two else 0, d, device=dev)
         self.directions_u = torch.zeros(
             directions if self._views else 0, d_u, device=dev
@@ -841,7 +962,6 @@ class PackedJEPAHead(Node):
         # loss, pred, sigreg, recon, n, zpred of g
         self.values = torch.zeros(6, device=dev)
         self.z = torch.zeros(self._b, d_z, device=dev)
-        self._t = act_spec.field("y", TensorSpec).shape[1] // len(self._keeps)  # T
         self.past: PastTokens | None = None  # the past target tokens (state)
         if token_buffer:
             self.past = PastTokens(
@@ -850,6 +970,17 @@ class PackedJEPAHead(Node):
                 streams=self._b,
                 tokens=self._t,
                 dim=d,
+                directions=directions,
+                device=dev,
+            )
+        self.points: PastPoints | None = None  # the past data points (state)
+        if datapoint_buffer:
+            self.points = PastPoints(
+                capacity=datapoint_buffer,
+                every=datapoint_every,
+                streams=self._b,
+                width=width,
+                dtype=torch.float32,
                 directions=directions,
                 device=dev,
             )
@@ -881,10 +1012,14 @@ class PackedJEPAHead(Node):
             if self.past is not None:
                 tokens = self.directions_t if self._two else self.directions
                 self.past.next_frame(tokens, self.generator)
+            if self.points is not None:
+                self.points.next_frame(self.directions, self.generator)
             self.cached = False
         valid = act["mask"]
         if self.past is not None:
             self.past.keep(act["h"][:, : self._t], valid)
+        if self.points is not None:
+            self.points.keep(act["h"][:, : self._t].flatten(1), valid)
         learn = tick.learn and bool(valid.any())
         g_theta: list[torch.Tensor] = []
         if learn or not (self.cached and torch.equal(act["h"], self.g_of)):
@@ -920,6 +1055,7 @@ class PackedJEPAHead(Node):
         self, act: Activity, valid: torch.Tensor, learn: bool
     ) -> list[torch.Tensor]:
         h = act["h"]
+        buffer = self.past if self.past is not None else self.points
         args = (
             h,
             act["y"],
@@ -927,7 +1063,7 @@ class PackedJEPAHead(Node):
             self.directions,
             self.directions_t,
             self.directions_u,
-            *(() if self.past is None else self.past.sums),
+            *(() if buffer is None else buffer.sums),
         )
         if self._replay is not None:
             g, z, values, *g_theta = self._replay(learn, *args)
@@ -950,7 +1086,7 @@ class PackedJEPAHead(Node):
     ) -> list[torch.Tensor]:
         """``[g, z, values, *g_theta]`` (``g_theta`` only when it learns), a
         function of tensors only: the one the CUDA graph replays (``past``:
-        the ``PastSums`` of the past tokens, or nothing)."""
+        the ``PastSums`` of the past tokens or data points, or nothing)."""
         params = self._params if learn else []
         token_weight, z_weight = self._weights
         with torch.enable_grad():

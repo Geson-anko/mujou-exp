@@ -66,7 +66,10 @@ window, in batches of ``PACKED_BATCH`` windows of a fixed shuffled order,
 one video, and its SIGReg is not that of a training batch, which mixes the
 nine videos; of a fixed size, not ``data.streams``: SIGReg grows with its
 sample, so the rows of runs of any streams are of the same sample; without
-the past tokens of ``vision.token_buffer``: the evaluation has no past;
+the past tokens of ``vision.token_buffer`` or the past data points of
+``vision.datapoint_buffer``: the evaluation has no past; with ``sigreg_on``
+``"datapoints"`` its ``sigreg`` is that of the batch's data points, its
+flattened target tokens;
 with ``vision.ema`` the targets of ``pred`` are the target encoder's tokens,
 as in training),
 ``rank``, ``z_std_min``, ``z_spread``, and the
@@ -512,6 +515,9 @@ class PackedMeasures:
         self._directions: dict[str, tuple[Tensor, Tensor | None]] = {}
         self._directions_u: dict[str, Tensor | None] = {}
         two = v.sigreg_on in ("tokens", "both", "views_tokens") and v.projected
+        # SIGReg of the data points sees the flattened target tokens
+        tokens = (v.frames // v.tubelet) * side * side
+        width = tokens * v.token_width if v.sigreg_on == "datapoints" else v.z_width
         for split in self.windows:
             g = torch.Generator().manual_seed(SPLIT_SEEDS[split])
             self.masks[split] = [
@@ -519,7 +525,7 @@ class PackedMeasures:
                 for m, k in zip(v.context_masks, self.keeps, strict=True)
             ]
             dz, dt = draw_packed_directions(
-                v.sigreg_directions, v.z_width, v.token_width, tokens=two, generator=g
+                v.sigreg_directions, width, v.token_width, tokens=two, generator=g
             )
             self._directions[split] = (
                 dz.to(self._dev),
