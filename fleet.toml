@@ -5,9 +5,10 @@ checkout = "/data/geson/mujou-exp"
 container = "mujou-exp-dev-1"
 user = "vscode"
 head = "std-00"                        # answers the state queries and composes the configs at submission
-hosts = ["std-00", "std-01", "std-02", "std-03"]
+hosts = ["std-00", "std-01", "std-02", "std-03", "mini-00"]
 
-# Per host. To be calibrated by a sweep of bench runs (design 4.9); these are the starting values.
+# Per host: [slots] is every host's, [slots.<host>] replaces its keys for that host.
+# To be calibrated by a sweep of bench runs (design 4.9); these are the starting values.
 [slots]
 cpu = 14     # physical cores given to runs (CPU and GPU runs alike); the 2 lowest are left to the worker
 smt = false  # true: the two threads of a core are two slots
@@ -16,3 +17,11 @@ gpus = [
   { index = 0, model = "4090", mem_gb = 22.0, jobs = 6 },
   { index = 1, model = "4060", mem_gb = 7.0, jobs = 2 },
 ]
+
+# mini-00: Ryzen 7 8700G (8 cores), 60.5 GiB, RTX 5070 Ti (15.9 GiB). Derived from the
+# std hosts: cores - 2, RAM x 0.84 (52 of std's 61.9 GiB), GPU memory - 2 GiB (the
+# 4090's headroom), jobs = round(mem_gb / 3.5) (the 4090's 6 and the 4060's 2).
+[slots.mini-00]
+cpu = 6
+ram_gb = 50
+gpus = [{ index = 0, model = "5070ti", mem_gb = 13.9, jobs = 4 }]

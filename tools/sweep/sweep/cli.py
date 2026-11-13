@@ -428,9 +428,9 @@ def _followup(conf: FleetConf, args: argparse.Namespace) -> int:
         # A GPU class for another keeps the study's GPU memory.
         gpu_mem = 0.0 if args.res == CPU else res["gpu_mem_gb"] or 2.0
         res = {**res, "class": args.res, "gpu_mem_gb": gpu_mem}
-    if res["class"] not in (CPU, GPU_ANY, *conf.slots.models):
+    if res["class"] not in (CPU, GPU_ANY, *conf.models):
         raise SystemExit(
-            f"--res must be cpu or one of {conf.slots.models}, not {res['class']}"
+            f"--res must be cpu or one of {conf.models}, not {res['class']}"
         )
     if args.ram is not None:
         res["ram_gb"] = args.ram

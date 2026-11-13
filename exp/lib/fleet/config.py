@@ -19,6 +19,11 @@ class Gpu:
     mem_gb: float
     jobs: int
 
+    def matches(self, name: str) -> bool:
+        """Whether ``name`` (nvidia-smi's, such as ``"NVIDIA GeForce RTX 5070
+        Ti"``) is of this model: ``model`` in it, without spaces or case."""
+        return self.model.lower() in name.replace(" ", "").lower()
+
 
 @dataclass(frozen=True, kw_only=True)
 class SlotsConf:
@@ -41,7 +46,9 @@ class SlotsConf:
 class FleetConf:
     """The fleet. ``root`` is host-local (bind-mounted at the same path in the
     container), ``nas`` is shared by all hosts; ``head`` answers the state
-    queries and composes the configs at submission."""
+    queries and composes the configs at submission. ``slots`` has every host:
+    the ``[slots]`` table, with the keys of ``[slots.<host>]`` replacing its own
+    for that host."""
 
     nas: Path
     root: Path
@@ -50,7 +57,13 @@ class FleetConf:
     user: str
     head: str
     hosts: tuple[str, ...]
-    slots: SlotsConf
+    slots: Mapping[str, SlotsConf]
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """The resource classes of the GPUs of all hosts, each once, in host
+        order."""
+        return tuple(dict.fromkeys(m for s in self.slots.values() for m in s.models))
 
     @classmethod
     def load(cls, path: Path) -> FleetConf:
@@ -62,24 +75,14 @@ class FleetConf:
     def from_dict(cls, d: Mapping[str, Any]) -> FleetConf:
         """The ``FleetConf`` of the parsed TOML ``d``; ``KeyError`` names a
         missing key."""
-        s = d["slots"]
-        slots = SlotsConf(
-            cpu=int(s["cpu"]),
-            smt=bool(s.get("smt", False)),
-            ram_gb=float(s["ram_gb"]),
-            gpus=tuple(
-                Gpu(
-                    index=int(g["index"]),
-                    model=str(g["model"]),
-                    mem_gb=float(g["mem_gb"]),
-                    jobs=int(g["jobs"]),
-                )
-                for g in s.get("gpus", [])
-            ),
-        )
         hosts = tuple(str(h) for h in d["hosts"])
         if d["head"] not in hosts:
             raise ValueError(f"head {d['head']!r} is not one of the hosts {hosts}")
+        table = dict(d["slots"])
+        own = {k: table.pop(k) for k, v in list(table.items()) if isinstance(v, dict)}
+        if unknown := sorted(set(own) - set(hosts)):
+            raise ValueError(f"[slots.<host>] of {unknown}: not hosts {hosts}")
+        slots = {h: _slots({**table, **own.get(h, {})}) for h in hosts}
         return cls(
             nas=Path(d["nas"]),
             root=Path(d["root"]),
@@ -90,6 +93,23 @@ class FleetConf:
             hosts=hosts,
             slots=slots,
         )
+
+
+def _slots(s: Mapping[str, Any]) -> SlotsConf:
+    return SlotsConf(
+        cpu=int(s["cpu"]),
+        smt=bool(s.get("smt", False)),
+        ram_gb=float(s["ram_gb"]),
+        gpus=tuple(
+            Gpu(
+                index=int(g["index"]),
+                model=str(g["model"]),
+                mem_gb=float(g["mem_gb"]),
+                jobs=int(g["jobs"]),
+            )
+            for g in s.get("gpus", [])
+        ),
+    )
 
 
 def default_path() -> Path:

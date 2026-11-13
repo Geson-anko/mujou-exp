@@ -1,5 +1,6 @@
 r"""Optimizers in time for the nodes, as ``pc.optim.Optimizer``: the direction
-of Adam with the step size of SGD (``Grafted(AdamDirection)``), a warm-up of
+of Adam with the step size of SGD (``Grafted(AdamDirection)``), RMSProp (the
+direction of Adam without the first moment, ``RMSPropDirection``), a warm-up of
 any optimizer (``Warmup``), and ``adam``, Adam of a learning rate per step as a
 ``pc.optim.AdamW`` (for fits by steps, such as the offline bound).
 
@@ -35,10 +36,17 @@ __all__ = [
     "DirectionOptimizer",
     "DECAYS",
     "Grafted",
+    "RMSPropDirection",
     "StepAdamW",
     "Warmup",
     "adam",
 ]
+
+
+def _check_positive(owner: str, name: str, value: float) -> None:
+    """As ``pc.optim.AdamW`` checks its time constants and ``eps``."""
+    if not 0 < value < math.inf:
+        raise ValueError(f"{owner}.{name} must be finite and > 0, got {value!r}")
 
 
 class BoundDirection(Stateful):
@@ -62,6 +70,9 @@ class DirectionOptimizer(Optimizer):
     """
 
     tau: float
+
+    def __post_init__(self) -> None:
+        _check_positive(type(self).__name__, "tau", self.tau)
 
     @abstractmethod
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
@@ -131,11 +142,21 @@ class _Stepped(BoundOptimizer):
 class AdamDirection(DirectionOptimizer):
     r"""The direction of ``pc.optim.AdamW``, $\hat m / (\sqrt{\hat v} + \varepsilon)$,
     with the moments and masses moved exactly in time as there. Stepped by
-    itself, it is ``pc.optim.AdamW`` without weight decay."""
+    itself, it is ``pc.optim.AdamW`` without weight decay.
+
+    Raises:
+        ValueError: ``tau``, ``tau_m``, ``tau_v`` or ``eps`` is not finite and
+            > 0 (as in ``pc.optim.AdamW``).
+    """
 
     tau_m: float
     tau_v: float
     eps: float = 1e-8
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name in ("tau_m", "tau_v", "eps"):
+            _check_positive("AdamDirection", name, getattr(self, name))
 
     @override
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
@@ -184,6 +205,69 @@ class _BoundAdamDirection(BoundDirection):
             for mine, saved in zip(self._v, state["v"], strict=True):
                 mine.copy_(saved)
         self._c_m = float(state["c_m"])
+        self._c_v = float(state["c_v"])
+
+
+@dataclass(frozen=True, kw_only=True)
+class RMSPropDirection(DirectionOptimizer):
+    r"""The direction of RMSProp, $g / (\sqrt{\hat v} + \varepsilon)$: that of
+    ``AdamDirection`` with no first moment (the current gradient $g$ in place
+    of $\hat m$), the second moment $v$ and its mass $c_v$ moved exactly in
+    time as there, $v \leftarrow v + a_v (g^2 - v)$, $c_v \leftarrow c_v +
+    a_v (1 - c_v)$, $a_v = 1 - e^{-\text{elapsed}/\tau_v}$, $\hat v = v /
+    c_v$. Stepped by itself with steps of ``elapsed`` $\delta$, it is Adam of
+    $\beta_1 = 0$, $\beta_2 = e^{-\delta/\tau_v}$ and the learning rate
+    $\delta / \tau$.
+
+    Raises:
+        ValueError: ``tau``, ``tau_v`` or ``eps`` is not finite and > 0 (as in
+            ``pc.optim.AdamW``).
+    """
+
+    tau_v: float
+    eps: float = 1e-8
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name in ("tau_v", "eps"):
+            _check_positive("RMSPropDirection", name, getattr(self, name))
+
+    @override
+    def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
+        return _BoundRMSPropDirection(params, self)
+
+
+class _BoundRMSPropDirection(BoundDirection):
+    def __init__(
+        self, params: Sequence[torch.Tensor], config: RMSPropDirection
+    ) -> None:
+        self._config = config
+        self._v = [torch.zeros_like(p) for p in params]
+        self._c_v = 0.0
+
+    @override
+    def direction(
+        self, grads: Sequence[torch.Tensor], elapsed: float
+    ) -> list[torch.Tensor]:
+        c = self._config
+        a_v = -math.expm1(-elapsed / c.tau_v)
+        self._c_v += a_v * (1 - self._c_v)
+        ds = []
+        for g, v in zip(grads, self._v, strict=True):
+            v.lerp_(g * g, a_v)
+            denom = (v.sqrt() / math.sqrt(self._c_v)).add_(c.eps)
+            ds.append(g / denom)
+        return ds
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"v": list(self._v), "c_v": self._c_v}
+
+    @override
+    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
+        with torch.no_grad():
+            for mine, saved in zip(self._v, state["v"], strict=True):
+                mine.copy_(saved)
         self._c_v = float(state["c_v"])
 
 

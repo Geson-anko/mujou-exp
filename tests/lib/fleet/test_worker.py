@@ -141,6 +141,49 @@ class TestEnds:
         assert rec["retried"]["oom"] == 1
 
 
+class TestPerHostSlots:
+    """h0 has the default slots (4090, 4060), h1 its own (one 5070ti): a worker
+    claims only what the GPUs of its own host can take."""
+
+    MORE = (
+        "\n[slots.h1]\ncpu = 1\nram_gb = 4\n"
+        'gpus = [{index = 0, model = "5070ti", mem_gb = 13.9, jobs = 4}]\n'
+    )
+
+    @pytest.fixture
+    def fleet(self, tmp_path: Path) -> Fleet:
+        return Fleet(tmp_path, more=self.MORE)
+
+    @pytest.mark.parametrize(
+        ("res", "never", "lands"), [("5070ti", "h0", "h1"), ("4090", "h1", "h0")]
+    )
+    def test_a_model_runs_only_on_the_host_that_has_it(self, fleet, res, never, lands):
+        job = fleet.submit(res=res, gpu_mem_gb=2.0)
+        idle = fleet.worker(never)
+        for _ in range(10):
+            idle.tick()
+        assert len(fleet.nas.entries()) == 1 and not idle.running
+        run_until([idle, fleet.worker(lands)], lambda: fleet.finished(job["run_id"]))
+        rec = fleet.done(job["run_id"])
+        assert (rec["status"], rec["host"]) == ("completed", lands)
+        assert (rec["slot"]["model"], rec["slot"]["gpu"]) == (res, 0)
+
+    def test_any_gpu_takes_the_5070ti(self, fleet: Fleet):
+        job = fleet.submit(res="any_gpu", gpu_mem_gb=2.0)
+        run_until([fleet.worker("h1")], lambda: fleet.finished(job["run_id"]))
+        rec = fleet.done(job["run_id"])
+        assert (rec["host"], rec["slot"]["model"]) == ("h1", "5070ti")
+
+    def test_h1_takes_no_more_runs_than_its_own_cores(self, fleet: Fleet):
+        jobs = [fleet.submit(seed=i, seconds=1.0) for i in range(2)]
+        h1 = fleet.worker("h1")
+        for _ in range(5):
+            h1.tick()
+        assert len(h1.running) == 1  # cpu = 1 on h1 (2 on h0)
+        assert len(fleet.nas.entries()) == len(jobs) - 1
+        run_until([h1], lambda: all(fleet.finished(j["run_id"]) for j in jobs))
+
+
 class TestStop:
     def test_pruned_ends_stopped_and_drain_resumes(self, fleet: Fleet):
         pruned = fleet.submit(name="pr", seconds=60, frames=600)

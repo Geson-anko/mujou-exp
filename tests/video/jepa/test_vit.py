@@ -373,3 +373,32 @@ def test_a_predictor_of_another_width_maps_to_it_and_back():
     assert pred(ctx, ids, torch.arange(5, 9).expand(2, 4)).shape == (2, 4, 16)
     plain = build_vision(packed_conf(), seed=0).predictor
     assert isinstance(plain, PackedPredictor) and plain.embed is None
+
+
+def test_the_predictors_map_of_the_context_is_lecun_and_sees_the_context():
+    """The map of the context's tokens (width d = 8) to the predictor's width
+    (32): weights of std 1 / sqrt(d) truncated at 2 std (std 0.880 / sqrt(d)),
+    zero bias, so a context token of unit scale per dimension adds a content
+    of about unit scale per dimension (0.880, the truncation's factor) to its
+    position, whose sines and cosines have the mean square 1/2 (with std 0.02
+    the content would be 0.05)."""
+    mods = build_vision(packed_conf(token_dim=8, pred_dim=32, pred_heads=4), seed=0)
+    pred = mods.predictor
+    assert isinstance(pred, PackedPredictor) and pred.embed is not None
+    w = pred.embed.weight.detach()  # (32, 8)
+    sigma = 1 / math.sqrt(8)
+    assert (pred.embed.bias == 0).all() and float(w.abs().max()) <= 2 * sigma
+    phi2 = math.exp(-2) / math.sqrt(2 * math.pi)
+    factor = math.sqrt(1 - 4 * phi2 / math.erf(2 / math.sqrt(2)))
+    tol = 4 * factor * sigma / math.sqrt(2 * w.numel())
+    assert abs(float(w.std()) - factor * sigma) < tol
+    g = torch.Generator().manual_seed(0)
+    ctx = torch.randn(4096, 8, generator=g)  # unit scale per dimension
+    with torch.no_grad():
+        content = float(pred.embed(ctx).pow(2).mean().sqrt())
+    position = float(pred.pos.pow(2).mean().sqrt())
+    assert position == pytest.approx(math.sqrt(0.5), rel=0.05)
+    # E (w_i . x)^2 = |w_i|^2 for unit x: the mean square is 8 mean(w^2).
+    want = math.sqrt(8 * float(w.pow(2).mean()))
+    assert content == pytest.approx(want, rel=0.05)
+    assert 0.5 * position < content < 2 * position

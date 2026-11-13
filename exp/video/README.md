@@ -89,6 +89,7 @@ python -m exp.video.diag.gkl_ar1 run --law gauss --tau 1000 --out ar1_gauss_tau1
 python -m exp.video.diag.gkl_ar1 run --law gauss --tau 10 --frozen --dim 64 --buffer 256 --seed 0 --out f.json
 python -m exp.video.diag.gkl_ar1 report ar1_*.json
 ```
+予測器の入力の写像（`PackedPredictor.embed`、トークンの幅 $d$ から予測器の幅への線形写像）の重みは、2026-11-13 から LeCun（std $1/\sqrt{d}$、2 std で切る）で初期化する（`jepa/vit.py` の `_init_`）。それまでは std 0.02 だった。std 0.02 では、単位の大きさのトークンから写した文脈の中身が、足される位置の 4〜10% しかない（$d$ = 2〜16）。そのため予測器は、文脈をほとんど見ない状態から始まっていた。この変更より前の run（`m17-ema-v1`・`m17-ssig-v1` まで）とは予測器の初期値がちがう。ほかの重みの初期値は変わらない。
 
 posthoc には、情報を持たない入力の変化に対する表現の感度を足した（`measure/sensitivity.py`）。`sens_dither` は量子化のディザ（画素ごとに $U(-\frac12, \frac12)/255$）、`sens_shift` は 1 画素の平行移動（端の列は複製）に対する感度で、どちらも $E\lVert f(x') - f(x) \rVert^2 / E_{i \ne j}\lVert f(x_i) - f(x_j) \rVert^2$ である。分母は `diag/stream_stats` の `drift` と同じ。`_pix` は同じ比を画素で測った値である。表現の値がこれを上回るなら、入力ではほとんど変わらない差を、表現が増幅している（判定の規則は results/m17.md の「ストリームの SIGReg（回す前に決めたこと）」）。最後の checkpoint の表現の、ラグごとの白色化した相関は、`diag/stream_stats` の `repr` で測る。
 

@@ -618,12 +618,22 @@ def _init_(module: nn.Module) -> None:
     same for every sample there). So are those of a stage's map of the tokens
     to ``vision.token_dim`` (``Stage.out``): the tokens of the representation
     keep the unit scale of the ``LayerNorm``'s output, as the projection of
-    $z$ does."""
+    $z$ does. And so is the predictor's map of the context's tokens to its
+    width (``PackedPredictor.embed``): with std 0.02 and a few (2 to 16)
+    inputs of unit scale, the context's content is a few hundredths of the
+    position added to it (the mask tokens are their positions), and the
+    predictor starts nearly blind to the context; with LeCun's it is of about
+    the position's scale."""
     lecun = {id(m.proj) for m in module.modules() if isinstance(m, Embed | PackedEmbed)}
     lecun |= {
         id(m.out)
         for m in module.modules()
         if isinstance(m, Stage) and m.out is not None
+    }
+    lecun |= {
+        id(m.embed)
+        for m in module.modules()
+        if isinstance(m, PackedPredictor) and m.embed is not None
     }
     for m in module.modules():
         if isinstance(m, nn.Linear):
