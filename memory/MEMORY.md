@@ -20,7 +20,7 @@
 - [夢は必須の評価](project_dream_required.md) — 2026-11-11 決定、同時の学習の run は posthoc が毎チェックポイントで 1 フレームと 16 フレームから 150 フレームの夢を計算する。報告の動画は PC-ALM だけでよい
 - [M17 は Walking Tours のエンコーダ](project_m17_wt_encoder.md) — 2026-11-11、再構成の項なしの JEPA。課題は時空間の補完、主な指標は held-out の補完の誤差と線形の動力学（画素の再構成は重視しすぎない）。PC-ALM で学ぶのはエンコーダだけ
 - [M17 の EMA は時間で追う](project_ema_following.md) — 2026-11-13、ターゲットエンコーダの momentum はフレームあたり、`elapsed` で動かす。`Following` は今は実験の中に置き、mujou に上げるかは未決定
-- [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子はユーザーが決めるまで回さない。z を貯めると k と古さが交絡する
+- [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子は各腕の学習前の相関で導き直した。z を貯めると k と古さが交絡する
 
 ## feedback
 
@@ -30,3 +30,4 @@
 - [実時間はやめ、学習が終わる速さを守る](feedback_realtime_speed.md) — 2026-11-05、実時間の最適化は諦めた（5 更新/フレームで PC-ALM が不安定）。確認の run が 4090 で数時間で終わること
 - [手法はシンプルで基礎的に](feedback_simple_fundamental.md) — 2026-11-12、理論の裏付けのないヒューリスティック（後付けの正規化・罰・拡張）は入れない。自明な解を目的の式から導出で確かめる
 - [ソースを tmp に置かない](feedback_no_sources_in_tmp.md) — 解析・較正のスクリプトは必ずリポジトリへ（tmp は消える）
+- [手法の前に学習の設定](feedback_learn_setting_first.md) — 2026-11-13、うまくいかないときは optimizer（SGD・RMSProp・Adam）と学習率を 10 倍刻みで掃引して損失が下がる条件を先に探す
