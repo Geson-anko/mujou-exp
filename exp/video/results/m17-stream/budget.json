@@ -1,0 +1,2228 @@
+{
+ "loop": 1438051,
+ "wall": 1800.0,
+ "speeds": [
+  {
+   "run": "m17-tok_n16-1e404c20-s100",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1215.1059308052063,
+   "steps_per_s": 44.44056985568013
+  },
+  {
+   "run": "m17-tok_n16-1e404c20-s101",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1240.5485820770264,
+   "steps_per_s": 43.52912959651193
+  },
+  {
+   "run": "m17-tok_n16-3d2a8819-s100",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 8764.761872291565,
+   "steps_per_s": 6.161034468114031
+  },
+  {
+   "run": "m17-tok_n16-3d2a8819-s101",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 8906.057993650436,
+   "steps_per_s": 6.063288610797194
+  },
+  {
+   "run": "m17-tok_n16-5f44fef3-s100",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 9033.493713140488,
+   "steps_per_s": 5.977753648231293
+  },
+  {
+   "run": "m17-tok_n16-5f44fef3-s101",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 8919.260147094727,
+   "steps_per_s": 6.054313823057335
+  },
+  {
+   "run": "m17-tok_n16-60f17821-s100",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1219.9315121173859,
+   "steps_per_s": 44.2647800008661
+  },
+  {
+   "run": "m17-tok_n16-60f17821-s101",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1240.5580759048462,
+   "steps_per_s": 43.52879647380727
+  },
+  {
+   "run": "m17-tok_n16-d27e47c7-s100",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1215.0208892822266,
+   "steps_per_s": 44.44368033203157
+  },
+  {
+   "run": "m17-tok_n16-d27e47c7-s101",
+   "batch": "m17-buf-v1",
+   "streams": 1,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 1235.77361369133,
+   "steps_per_s": 43.6973240096127
+  },
+  {
+   "run": "m17-tok_n16-fb043497-s100",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 8942.132088661194,
+   "steps_per_s": 6.038828264287563
+  },
+  {
+   "run": "m17-tok_n16-fb043497-s101",
+   "batch": "m17-buf-v1",
+   "streams": 32,
+   "advance": 3,
+   "fps": 30.0,
+   "steps": 54000,
+   "wall": 8952.12925028801,
+   "steps_per_s": 6.0320844896495105
+  }
+ ],
+ "rows": [
+  {
+   "curve": "pixels/g",
+   "n": 32,
+   "tau": 1638.4,
+   "loop_points": 29,
+   "runs": [
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    }
+   ]
+  },
+  {
+   "curve": "pixels/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pixels/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pixels/w",
+   "n": 32,
+   "tau": 650.2,
+   "loop_points": 73,
+   "runs": [
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 12,
+     "points_total": 8,
+     "points_distinct": 8,
+     "bytes_repr": {
+      "256": 8192,
+      "512": 16384,
+      "1024": 32768,
+      "2048": 65536
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    },
+    {
+     "tau": 650.2,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 8,
+     "points_per_stream_wall": 1,
+     "points_total": 256,
+     "points_distinct": 73,
+     "bytes_repr": {
+      "256": 262144,
+      "512": 524288,
+      "1024": 1048576,
+      "2048": 2097152
+     },
+     "bytes_raw": 201326592
+    }
+   ]
+  },
+  {
+   "curve": "pixels/w",
+   "n": 256,
+   "tau": 1300.4,
+   "loop_points": 36,
+   "runs": [
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 3145728
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 100663296
+    }
+   ]
+  },
+  {
+   "curve": "pixels/w",
+   "n": 1024,
+   "tau": 1638.4,
+   "loop_points": 29,
+   "runs": [
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 2359296
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 75497472
+    }
+   ]
+  },
+  {
+   "curve": "tok_init/tokens/g",
+   "n": 32,
+   "tau": 1638.4,
+   "loop_points": 29,
+   "runs": [
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    }
+   ]
+  },
+  {
+   "curve": "tok_init/tokens/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "tok_init/tokens/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "tok_init/z/g",
+   "n": 32,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "tok_init/z/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "tok_init/z/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_300/z/g",
+   "n": 32,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_300/z/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_300/z/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_1800/z/g",
+   "n": 32,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_1800/z/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "pilot_1800/z/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "buf32_1800/tokens/g",
+   "n": 32,
+   "tau": 20.3,
+   "loop_points": 2361,
+   "runs": [
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 394,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 385,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 54,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 53,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 53,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 53,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 392,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 385,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 394,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 387,
+     "points_total": 266,
+     "points_distinct": 266,
+     "bytes_repr": {
+      "256": 272384,
+      "512": 544768,
+      "1024": 1089536,
+      "2048": 2179072
+     },
+     "bytes_raw": 13074432
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 53,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    },
+    {
+     "tau": 20.3,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 266,
+     "points_per_stream_wall": 53,
+     "points_total": 8512,
+     "points_distinct": 2361,
+     "bytes_repr": {
+      "256": 8716288,
+      "512": 17432576,
+      "1024": 34865152,
+      "2048": 69730304
+     },
+     "bytes_raw": 418381824
+    }
+   ]
+  },
+  {
+   "curve": "buf32_1800/tokens/g",
+   "n": 256,
+   "tau": 1300.4,
+   "loop_points": 36,
+   "runs": [
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 6,
+     "points_total": 4,
+     "points_distinct": 4,
+     "bytes_repr": {
+      "256": 4096,
+      "512": 8192,
+      "1024": 16384,
+      "2048": 32768
+     },
+     "bytes_raw": 196608
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    },
+    {
+     "tau": 1300.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 4,
+     "points_per_stream_wall": 0,
+     "points_total": 128,
+     "points_distinct": 36,
+     "bytes_repr": {
+      "256": 131072,
+      "512": 262144,
+      "1024": 524288,
+      "2048": 1048576
+     },
+     "bytes_raw": 6291456
+    }
+   ]
+  },
+  {
+   "curve": "buf32_1800/tokens/g",
+   "n": 1024,
+   "tau": 3276.8,
+   "loop_points": 14,
+   "runs": [
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 2,
+     "points_total": 1,
+     "points_distinct": 1,
+     "bytes_repr": {
+      "256": 1024,
+      "512": 2048,
+      "1024": 4096,
+      "2048": 8192
+     },
+     "bytes_raw": 49152
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    },
+    {
+     "tau": 3276.8,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 1,
+     "points_per_stream_wall": 0,
+     "points_total": 32,
+     "points_distinct": 14,
+     "bytes_repr": {
+      "256": 32768,
+      "512": 65536,
+      "1024": 131072,
+      "2048": 262144
+     },
+     "bytes_raw": 1572864
+    }
+   ]
+  },
+  {
+   "curve": "buf32_1800/z/g",
+   "n": 32,
+   "tau": 1638.4,
+   "loop_points": 29,
+   "runs": [
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.302574022425,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.243327372147,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1108.9862042605257,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1091.3919499434949,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1075.995656681633,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1089.7764881503203,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7967.660400155897,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7835.183365285308,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7999.862459765682,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 7865.518321730287,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 4,
+     "points_total": 3,
+     "points_distinct": 3,
+     "bytes_repr": {
+      "256": 3072,
+      "512": 6144,
+      "1024": 12288,
+      "2048": 24576
+     },
+     "bytes_raw": 147456
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1086.9890875717615,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    },
+    {
+     "tau": 1638.4,
+     "video_per_stream": 5400.0,
+     "video_per_stream_wall": 1085.775208136912,
+     "points_per_stream": 3,
+     "points_per_stream_wall": 0,
+     "points_total": 96,
+     "points_distinct": 29,
+     "bytes_repr": {
+      "256": 98304,
+      "512": 196608,
+      "1024": 393216,
+      "2048": 786432
+     },
+     "bytes_raw": 4718592
+    }
+   ]
+  },
+  {
+   "curve": "buf32_1800/z/g",
+   "n": 256,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  },
+  {
+   "curve": "buf32_1800/z/g",
+   "n": 1024,
+   "tau": null,
+   "loop_points": null,
+   "runs": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+   ]
+  }
+ ]
+}
