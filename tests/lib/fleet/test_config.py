@@ -40,6 +40,18 @@ class TestConfig:
         with pytest.raises(ValueError, match="'c'"):
             FleetConf.from_dict(_toml("[slots.c]\ncpu = 6\n"))
 
+    @pytest.mark.parametrize(
+        ("model", "name", "want"),
+        [
+            ("4090", "NVIDIA GeForce RTX 4090", True),
+            ("4060", "NVIDIA GeForce RTX 4090", False),
+            ("5070ti", "NVIDIA GeForce RTX 5070 Ti", True),
+            ("5070ti", "NVIDIA GeForce RTX 5070", False),
+        ],
+    )
+    def test_a_gpu_matches_nvidia_smis_name(self, model, name, want):
+        assert Gpu(index=0, model=model, mem_gb=1.0, jobs=1).matches(name) is want
+
     def test_the_head_must_be_a_host(self):
         d = tomllib.loads((REPO / "fleet.toml").read_text())
         with pytest.raises(ValueError, match="head"):

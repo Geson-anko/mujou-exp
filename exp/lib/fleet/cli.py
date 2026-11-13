@@ -281,7 +281,7 @@ def _doctor(conf: FleetConf, t: Transport, args: argparse.Namespace) -> int:
         slots = conf.slots[host]
         want = [f"{g.index}: {g.model}" for g in slots.gpus]
         ok = len(gpus) == len(want) and all(
-            m.model in g for m, g in zip(slots.gpus, gpus, strict=False)
+            m.matches(g) for m, g in zip(slots.gpus, gpus, strict=False)
         )
         rows.append(("gpus", ok, f"{gpus} (want {want})"))
         rows.append(("nas write+rename", kv.get("nas") == "ok", str(conf.nas)))

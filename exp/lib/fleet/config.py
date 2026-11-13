@@ -19,6 +19,11 @@ class Gpu:
     mem_gb: float
     jobs: int
 
+    def matches(self, name: str) -> bool:
+        """Whether ``name`` (nvidia-smi's, such as ``"NVIDIA GeForce RTX 5070
+        Ti"``) is of this model: ``model`` in it, without spaces or case."""
+        return self.model.lower() in name.replace(" ", "").lower()
+
 
 @dataclass(frozen=True, kw_only=True)
 class SlotsConf:
