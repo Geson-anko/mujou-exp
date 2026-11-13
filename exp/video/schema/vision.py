@@ -134,15 +134,19 @@ class VisionConf:
     numbers. Its sample is the current stacks and a buffer of
     ``datapoint_buffer`` past data points per stream (0: none), into which
     the data point of each stream goes once every ``datapoint_every`` frames
-    of the stream (a frame: 0.1 s of it), at a uniformly drawn row once full
-    (``exp.lib.sigreg.insert_``; a row survives an insertion with probability
-    $1 - 1/N$, so its age is geometric of mean $N k$ frames whatever the
-    streams; ``jepa.nodes.PastPoints``). ``datapoint_store`` "z" keeps the
-    representations (detached: the gradient reaches the current samples
-    only), "input" the stacks' target views (u8), encoded anew by the current
-    encoder in every evaluation of the loss, so that the gradient reaches
-    every sample as in LeJEPA (``JEPABP`` only: in PC-ALM the head does not
-    hold the encoder).
+    that the head sees (a frame: 0.1 s of the stream; the runs step every
+    node through every frame, ``mujou.testing.run``, so these are the
+    stream's frames; a head that skipped frames would count only those it
+    saw, and the ages in the stream's time would be longer), at a uniformly
+    drawn row once full (``exp.lib.sigreg.insert_``; a row survives an
+    insertion with probability $1 - 1/N$, so its age is geometric of mean
+    $N k$ frames whatever the streams; ``jepa.nodes.PastPoints``).
+    ``datapoint_store`` "z" keeps the representations (detached: the gradient
+    reaches the current samples only; a row is of the encoder that made it, a
+    mean of $N k$ frames before), "input" the stacks' target views (u8),
+    encoded anew by the current encoder in every evaluation of the loss, so
+    that the gradient reaches every sample as in LeJEPA (``JEPABP`` only: in
+    PC-ALM the head does not hold the encoder).
 
     With ``ema`` $m$ (packed, M17 2026-11-13; I-JEPA, V-JEPA) the prediction's
     targets are the tokens of the target encoder on the whole stack: a copy of
@@ -226,7 +230,7 @@ class VisionConf:
     token_buffer: int = 0
     token_insert: int = 64
     # "packed", sigreg_on "datapoints" only: the past data points per stream
-    # (0: none), the frames of the stream between two insertions, and what is
+    # (0: none), the frames seen between two insertions, and what is
     # stored (DATAPOINT_STORES)
     datapoint_buffer: int = 0
     datapoint_every: int = 1

@@ -19,6 +19,12 @@
 # exp.video.diag.ssig_window; results/m17.md); above the lower bound at
 # which tokens constant within a stack stop being cheaper than iid tokens
 # (python -m exp.video.diag.ssig bound; tests/video/schema/test_presets.py).
+# Both lower ends rule out one code only, the d numbers per stack: a code of
+# a latent of more numbers that the context determines predicts as exactly
+# and costs less than the healthy solution at every lambda; only the learned
+# code's rank tells it. The grid is not yet the user's choice (results/m17.md).
+# With the store z a stored row is of the encoder that made it, a mean of
+# N k learning steps before: k changes that age with the span.
 defaults:
   - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
   - _self_
@@ -31,7 +37,7 @@ vision:
   tubelet: 4
   token_dim: 16
   sigreg_on: datapoints
-  sigreg: 0.271  # the middle of the grid (python -m exp.video.diag.ssig_window)
+  sigreg: 0.271  # the grid's middle, until the user decides
   token_buffer: 0
   datapoint_buffer: 256  # N, per stream
   datapoint_every: 1  # k
