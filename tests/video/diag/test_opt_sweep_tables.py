@@ -12,6 +12,7 @@ from exp.video.diag.opt_sweep_tables import (
     criteria,
     drift_table,
     load,
+    lr_table,
     run_criteria,
     summary,
     train_loss,
@@ -216,3 +217,29 @@ def test_the_drift_table_takes_the_pairs_300_s_apart(tmp_path: Path):
     path.write_text(json.dumps({"runs": [{"run": rid, "pairs": pairs}]}))
     line = next(x for x in drift_table(runs, [path]).splitlines() if "sgd" in x)
     assert line.split(" | ")[2] == "0.500" and "9.00" not in line
+
+
+def test_the_lr_table_divides_by_time_0_and_the_untrained_vit(tmp_path: Path):
+    """J(t)/J(0) and the posthoc over the untrained ViT; the untrained ViT's
+    own row is 1 by definition; the drift is that of the pair ending at t."""
+    _sweep(tmp_path)
+    runs = load(tmp_path)
+    rid = runs.groups[("sgd", 1e-2, 0.0)][0]
+    path = tmp_path / "drift.json"
+    pairs = [{"t": 1500.0, "t2": 1800.0, "delta": 300.0, "drift": 0.25}]
+    path.write_text(json.dumps({"runs": [{"run": rid, "pairs": pairs}]}))
+    lines = lr_table(runs, 1800.0, [path]).splitlines()
+    sgd = next(x for x in lines if "`sgd`" in x).strip("| ").split(" | ")
+    want_recon = HEALTHY_POST["recon_blur"] / INIT["recon_blur"]
+    want_dyn = HEALTHY_POST["dyn_1/copy_1"] / INIT["dyn_1/copy_1"]
+    assert sgd[1:] == [
+        "0.900",
+        f"{want_recon:.3f}",
+        f"{want_dyn:.3f}",
+        "–",  # no rank in the posthoc of the fixture
+        "0.300",
+        "0.250",
+    ]
+    at_start = next(x for x in lines if "`adamw` lr=0.0001 |" in x)
+    assert at_start.split(" | ")[1:4] == ["1.00", "1.00", "1.00"]
+    assert "| 学習前の ViT（t128、seed 100） | 1 | 1 | 1 |" in lines[-1]

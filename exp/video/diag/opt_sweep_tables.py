@@ -25,7 +25,9 @@ fails (a comparison with NaN is false). The loop writes a non-finite value as
 ``result.json``, at ``t_end``), so the $J$ of such a run that is missing or
 ``null`` at ``--t`` is taken as not finite: L and learns fail.
 
-Shown beside them and not judged: the curves of the held-out $J$, pred and $S$ at each checkpoint (time 0 from
+Shown beside them and not judged: per run, the ratios $J(t)/J(0)$ and of
+``U_KEYS`` to the untrained ViT with the posthoc ``rank``, ``z_spread`` and
+the last drift (``lr_table``, the curves over lr of each optimizer); the curves of the held-out $J$, pred and $S$ at each checkpoint (time 0 from
 ``baselines.json``), the training loss (``stream.jsonl``, the mean over the
 300 s before each checkpoint), the posthoc ``rank`` and ``z_spread``, and,
 given ``--drift`` (the outputs of ``python -m exp.video.diag.stream_stats
@@ -143,7 +145,11 @@ def untrained(runs: OptRuns, rid: str, split: str = "val") -> dict[str, Any]:
     """The ``init`` line (the untrained ViT) of the run's arm and seed on
     ``split`` ({} if there is none)."""
     r = runs.train[rid]
-    for line in runs.base.get((r["arm"], r["seed"]), []):
+    return _init_line(runs, r["arm"], r["seed"], split)
+
+
+def _init_line(runs: OptRuns, arm: str, seed: int, split: str) -> dict[str, Any]:
+    for line in runs.base.get((arm, seed), []):
         if line.get("split") == split and line.get("code") == "init":
             return line
     return {}
@@ -310,16 +316,61 @@ def _train_getter(runs: OptRuns, rid: str, t: float, key: str, split: str) -> An
     return train_loss(runs.train[rid]["stream"], t, key)
 
 
-def drift_table(runs: OptRuns, paths: Sequence[Path]) -> str:
-    """The drift of the code of each run between consecutive checkpoints
-    (``stream_stats drift``; the pairs 300 s apart), a column per later
-    checkpoint."""
+def drifts(paths: Sequence[Path]) -> dict[str, dict[float, float]]:
+    """Per run id, the drift of each pair of checkpoints 300 s apart by its
+    later time (the outputs of ``stream_stats drift``)."""
     by_run: dict[str, dict[float, float]] = {}
     for p in paths:
         for r in json.loads(p.read_text())["runs"]:
             by_run[r["run"]] = {
                 q["t2"]: q["drift"] for q in r["pairs"] if abs(q["delta"] - 300) < 1e-6
             }
+    return by_run
+
+
+def _ratio(a: Any, b: Any) -> Any:
+    return None if a is None or b is None else a / b
+
+
+def lr_table(
+    runs: OptRuns, t: float, paths: Sequence[Path] = (), split: str = "val"
+) -> str:
+    """Per run, sorted by optimizer then learning rate (the curves over lr):
+    $J(t)/J(0)$ (NaN for a run that diverged), ``U_KEYS`` of the posthoc
+    over those of the untrained ViT, the posthoc ``rank`` and ``z_spread``
+    with the untrained ViT's in a last row, and the drift of the pair
+    ending at ``t``. Ratios to show, not criteria: L and U are the
+    comparisons of these ratios with 1."""
+    by_run = drifts(paths)
+    head = ["run", f"J({t:g})/J(0)", *[f"`{k}` / 学習前" for k in U_KEYS]]
+    head += ["`rank`", "`z_spread`", f"drift {t - 300:g}→{t:g}"]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            init = untrained(runs, rid, split)
+            j0 = ev(runs, rid, 0.0, "loss", split)
+            rows.append(
+                [label(k), fmt(_ratio(objective(runs, rid, t, split), j0))]
+                + [fmt(_ratio(ph(runs, rid, t, u, split), init.get(u))) for u in U_KEYS]
+                + [fmt(ph(runs, rid, t, x, split)) for x in ("rank", "z_spread")]
+                + [fmt(by_run.get(rid, {}).get(t))]
+            )
+    seeds = {(r["arm"], r["seed"]) for r in runs.train.values()}
+    for arm, seed in sorted(seeds):
+        init = _init_line(runs, arm, seed, split)
+        rows.append(
+            [f"学習前の ViT（{arm}、seed {seed}）", "1", "1", "1"]
+            + [fmt(init.get(x)) for x in ("rank", "z_spread")]
+            + ["–"]
+        )
+    return "\n".join(_md(head, rows))
+
+
+def drift_table(runs: OptRuns, paths: Sequence[Path]) -> str:
+    """The drift of the code of each run between consecutive checkpoints
+    (``stream_stats drift``; the pairs 300 s apart), a column per later
+    checkpoint."""
+    by_run = drifts(paths)
     head = ["run", *[f"{t - 300:g}→{t:g}" for t in TIMES]]
     rows = []
     for k in sorted(runs.groups, key=_order):
@@ -373,6 +424,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if reasons:
         print("\n発散の理由（`result.json` の `reason`）:\n")
         print("\n".join(reasons))
+    print(f"\n### lr に対する曲線（val、{t:g} 秒）\n")
+    print(lr_table(runs, t, args.drift))
     print("\n### 時刻 0 の値（学習前）\n")
     print(base_table(runs))
     times = [0.0, *TIMES]
