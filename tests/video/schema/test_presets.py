@@ -1,13 +1,18 @@
 import json
 import math
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+import mujou.pc as pc
 import pytest
 import torch
 
 import exp.video.conf
+from exp.lib.optim import RMSPropDirection
 from exp.video.compose import compose, from_dict, to_dict
 from exp.video.diag.ssig import bound
+from exp.video.dyn.nets import make_optimizer
 from exp.video.jepa.loss import jepa_loss_packed
 from exp.video.jepa.masks import expected_keep
 from exp.video.jepa.nodes import draw_packed_directions
@@ -326,6 +331,36 @@ class TestM17:
         assert ssig.keys() == ema.keys()
         for key, value in ssig.items():
             assert torch.equal(value, ema[key]), key
+
+    @pytest.mark.parametrize(
+        ("kind", "want"),
+        [
+            ("sgd", lambda tau: pc.optim.SGD(tau=tau)),
+            ("rmsprop", lambda tau: RMSPropDirection(tau=tau, tau_v=30.0)),
+            (
+                "adamw",
+                lambda tau: pc.optim.AdamW(
+                    tau=tau, tau_m=0.3, tau_v=30.0, weight_decay=0.0
+                ),
+            ),
+        ],
+    )
+    def test_the_optimizer_sweep_overrides_only_the_optimizer(
+        self, kind: str, want: Callable[[float], object]
+    ) -> None:
+        """The sweep of the learning (results/m17.md, 2026-11-13): the kind and
+        the rate per frame of the encoder's optimizer at a constant rate (no
+        warm-up), the moments' time constants of the preset's adamw."""
+        sweep = [f"optim_vision.kind={kind}", "optim_vision.lr=1e-3"]
+        sweep += ["optim_vision.warmup=0"]
+        base = compose(["+experiment=m17/ssig_t128", "vision.datapoint_every=6"])
+        conf = compose(
+            ["+experiment=m17/ssig_t128", "vision.datapoint_every=6", *sweep]
+        )
+        assert conf.optim_vision is not None and base.optim_vision is not None
+        assert replace(conf, optim_vision=base.optim_vision) == base
+        frame = conf.time.frame
+        assert make_optimizer(conf.optim_vision, frame) == want(frame / 1e-3)
 
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])

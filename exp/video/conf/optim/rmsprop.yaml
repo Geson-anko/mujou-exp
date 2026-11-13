@@ -1,0 +1,6 @@
+# RMSProp in time (exp.lib.optim.RMSPropDirection): Adam without the first
+# moment, the second moment's time constant that of "adamw" (tau_v 30 s:
+# beta2 = exp(-frame / 30 s) per frame), and its lr per frame.
+kind: rmsprop
+lr: 1e-4
+tau_v: 30.0

@@ -18,7 +18,7 @@ __all__ = [
 ]
 
 LEARNERS = ("pc", "bp", "none")
-OPTIMIZERS = ("sgd", "adamw", "graft_adam", "adamw_step")
+OPTIMIZERS = ("sgd", "adamw", "graft_adam", "rmsprop", "adamw_step")
 DECAYS = ("constant", "cosine")  # exp.lib.optim.StepAdamW
 ORDERS = ("random", "stream")
 FEEDBACKS = ("grad", "detach", "teacher")
@@ -39,9 +39,11 @@ class LearnerConf:
 @dataclass(kw_only=True)
 class OptimConf:
     """The optimizer of the nodes, a ``mujou.pc.optim`` one: ``"sgd"``,
-    ``"adamw"`` or ``"graft_adam"`` (the direction of Adam with the step size of
-    SGD, ``exp.lib.optim.Grafted(AdamDirection)``); or ``"adamw_step"``,
-    AdamW by steps (``exp.lib.optim.StepAdamW``, ``torch.optim.AdamW``).
+    ``"adamw"``, ``"graft_adam"`` (the direction of Adam with the step size of
+    SGD, ``exp.lib.optim.Grafted(AdamDirection)``) or ``"rmsprop"`` (Adam
+    without the first moment, ``exp.lib.optim.RMSPropDirection`` of ``tau_v``);
+    or ``"adamw_step"``, AdamW by steps (``exp.lib.optim.StepAdamW``,
+    ``torch.optim.AdamW``).
 
     ``lr`` is the learning rate per frame; the optimizer is built with the
     time constant ``tau = frame / lr`` of the parameters. For

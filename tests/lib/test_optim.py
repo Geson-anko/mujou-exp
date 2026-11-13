@@ -7,7 +7,14 @@ import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
 
-from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup, adam
+from exp.lib.optim import (
+    AdamDirection,
+    Grafted,
+    RMSPropDirection,
+    StepAdamW,
+    Warmup,
+    adam,
+)
 from mujou import TensorSpec
 
 
@@ -47,6 +54,50 @@ class TestAdamDirection:
             strict=True,
         ):
             torch.testing.assert_close(a, b)
+
+
+class TestRMSPropDirection:
+    FRAME, LR, TAU_V, EPS = 1 / 30, 1e-3, 30.0, 1e-8
+
+    def _opt(self) -> RMSPropDirection:
+        return RMSPropDirection(tau=self.FRAME / self.LR, tau_v=self.TAU_V)
+
+    def test_steps_of_one_frame_are_those_of_adam_without_momentum(self):
+        """Adam of beta1 = 0 has no first moment and no bias of it; its beta2
+        per step of one frame is exp(-frame / tau_v)."""
+        params = _params(*SHAPES)
+        grads = _grads(params, 300)
+        got = _trajectory(self._opt(), params, grads, elapsed=self.FRAME)
+        want = [p.clone() for p in params]
+        beta2 = math.exp(-self.FRAME / self.TAU_V)
+        torch_opt = torch.optim.Adam(want, lr=self.LR, betas=(0.0, beta2), eps=self.EPS)
+        for gs in grads:
+            for p, g in zip(want, gs, strict=True):
+                p.grad = g.clone()
+            torch_opt.step()
+        for a, b in zip(got, want, strict=True):
+            torch.testing.assert_close(a, b, rtol=1e-12, atol=1e-12)
+
+    def test_state_round_trips_and_resuming_is_not_interrupting(self):
+        params = _params(*SHAPES)
+        grads = _grads(params, 12)
+        whole = _trajectory(self._opt(), params, grads, elapsed=self.FRAME)
+        first = [p.clone() for p in params]
+        bound = self._opt().bind(first)
+        for gs in grads[:5]:
+            bound.step_(gs, self.FRAME)
+        state = bound.state_dict()
+        second = [p.clone() for p in first]
+        resumed = self._opt().bind(second)
+        resumed.load_state_dict(state)
+        again = resumed.state_dict()
+        assert again["c_v"] == state["c_v"]
+        for x, y in zip(again["v"], state["v"], strict=True):
+            assert x is not y and torch.equal(x, y)
+        for gs in grads[5:]:
+            resumed.step_(gs, self.FRAME)
+        for x, y in zip(second, whole, strict=True):
+            torch.testing.assert_close(x, y, rtol=0, atol=0)
 
 
 class TestGrafted:

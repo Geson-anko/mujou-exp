@@ -10,7 +10,13 @@ import torch
 from mujou.pc.optim import Optimizer
 
 import mujou
-from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup
+from exp.lib.optim import (
+    AdamDirection,
+    Grafted,
+    RMSPropDirection,
+    StepAdamW,
+    Warmup,
+)
 from exp.video.dyn.bp import DynamicsBP
 from exp.video.dyn.modules import DynamicsModules, build_dynamics
 from exp.video.dyn.nodes import DynamicsBlock, DynamicsLayer, Source
@@ -33,14 +39,15 @@ __all__ = [
 def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
     r"""The optimizer of ``c``, with the time constant $\tau$ = ``frame / c.lr``
     of the parameters (a step of one frame moves SGD by ``lr`` times the
-    gradient): ``pc.optim.SGD``, ``pc.optim.AdamW`` or ``Grafted(AdamDirection)``,
-    in ``Warmup`` over ``c.warmup`` seconds unless it is 0; or, for
-    ``"adamw_step"``, ``StepAdamW`` of ``c.lr`` per step and its schedules
-    (``frame`` unused).
+    gradient): ``pc.optim.SGD``, ``pc.optim.AdamW``, ``Grafted(AdamDirection)``
+    or ``RMSPropDirection``, in ``Warmup`` over ``c.warmup`` seconds unless it
+    is 0; or, for ``"adamw_step"``, ``StepAdamW`` of ``c.lr`` per step and its
+    schedules (``frame`` unused).
 
     Raises:
         ValueError: ``c.lr`` is not > 0, or ``c.weight_decay`` is not 0 for a
-            kind without weight decay (``"sgd"``, ``"graft_adam"``).
+            kind without weight decay (``"sgd"``, ``"graft_adam"``,
+            ``"rmsprop"``).
     """
     if not c.lr > 0:
         raise ValueError(f"optim.lr must be > 0, got {c.lr}")
@@ -71,6 +78,8 @@ def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
         inner = pc.optim.AdamW(
             tau=tau, tau_m=c.tau_m, tau_v=c.tau_v, weight_decay=c.weight_decay
         )
+    elif c.kind == "rmsprop":
+        inner = RMSPropDirection(tau=tau, tau_v=c.tau_v)
     else:  # "graft_adam", as OptimConf checks
         inner = Grafted(inner=AdamDirection(tau=tau, tau_m=c.tau_m, tau_v=c.tau_v))
     return inner if c.warmup == 0 else Warmup(inner=inner, seconds=c.warmup)

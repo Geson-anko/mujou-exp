@@ -8,7 +8,13 @@ import pytest
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-from exp.lib.optim import AdamDirection, Grafted, StepAdamW, Warmup
+from exp.lib.optim import (
+    AdamDirection,
+    Grafted,
+    RMSPropDirection,
+    StepAdamW,
+    Warmup,
+)
 from exp.video.dyn.modules import Top, build_dynamics
 from exp.video.dyn.nets import (
     StateWorldBP,
@@ -123,6 +129,8 @@ class TestMakeOptimizer:
         assert make_optimizer(graft, frame) == Grafted(
             inner=AdamDirection(tau=tau, tau_m=0.2, tau_v=20.0)
         )
+        rmsprop = replace(c, kind="rmsprop")
+        assert make_optimizer(rmsprop, frame) == RMSPropDirection(tau=tau, tau_v=20.0)
         warm = replace(c, warmup=300.0)
         assert make_optimizer(warm, frame) == Warmup(
             inner=pc.optim.SGD(tau=tau), seconds=300.0
@@ -172,7 +180,7 @@ class TestMakeOptimizer:
         with pytest.raises(ValueError, match="lr must be > 0"):
             make_optimizer(OptimConf(lr=lr), 1 / 30)
 
-    @pytest.mark.parametrize("kind", ["sgd", "graft_adam"])
+    @pytest.mark.parametrize("kind", ["sgd", "graft_adam", "rmsprop"])
     def test_weight_decay_without_adamw_is_an_error(self, kind):
         """A sweep of ``weight_decay`` would otherwise change nothing."""
         with pytest.raises(ValueError, match="has no weight decay"):
