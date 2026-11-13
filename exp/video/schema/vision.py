@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from exp.video.schema._check import check_choice
 
 __all__ = [
+    "DATAPOINT_STORES",
     "LAYOUTS",
     "MAX_Z_DIM",
     "POOLS",
@@ -21,8 +22,13 @@ __all__ = [
 POOLS = ("cls", "mean", "registers")
 # What SIGReg sees of the target view: z, its patch tokens, or both; or
 # (packed) the embedding u of every view, each over the batch (LeJEPA), alone
-# or with the tokens.
-SIGREG_ON = ("z", "tokens", "both", "views", "views_tokens")
+# or with the tokens; or (packed) each data point (a stack) as one sample, its
+# target tokens flattened (M17, 2026-11-13), with a buffer of past data points.
+SIGREG_ON = ("z", "tokens", "both", "views", "views_tokens", "datapoints")
+# What the buffer of past data points holds: their representation (detached,
+# of the weights when it was put in) or their input, encoded anew at each step
+# by the current encoder (BP only).
+DATAPOINT_STORES = ("z", "input")
 # The decoder of the reconstruction: an MLP from z to all the pixels, or a
 # spatial broadcast decoder (one small MLP of z and the pixel's coordinates).
 RECON_DECODERS = ("mlp", "broadcast")
@@ -123,6 +129,25 @@ class VisionConf:
     ``token_sigreg`` "raw" only: the Epps-Pulley statistic of the current and
     the past tokens together).
 
+    With ``sigreg_on`` "datapoints" (packed, M17 2026-11-13) SIGReg takes one
+    sample per data point: the stack's $T$ target tokens flattened, $D = T d$
+    numbers. Its sample is the current stacks and a buffer of
+    ``datapoint_buffer`` past data points per stream (0: none), into which
+    the data point of each stream goes once every ``datapoint_every`` frames
+    that the head sees (a frame: 0.1 s of the stream; the runs step every
+    node through every frame, ``mujou.testing.run``, so these are the
+    stream's frames; a head that skipped frames would count only those it
+    saw, and the ages in the stream's time would be longer), at a uniformly
+    drawn row once full (``exp.lib.sigreg.insert_``; a row survives an
+    insertion with probability $1 - 1/N$, so its age is geometric of mean
+    $N k$ frames whatever the streams; ``jepa.nodes.PastPoints``).
+    ``datapoint_store`` "z" keeps the representations (detached: the gradient
+    reaches the current samples only; a row is of the encoder that made it, a
+    mean of $N k$ frames before), "input" the stacks' target views (u8),
+    encoded anew by the current encoder in every evaluation of the loss, so
+    that the gradient reaches every sample as in LeJEPA (``JEPABP`` only: in
+    PC-ALM the head does not hold the encoder).
+
     With ``ema`` $m$ (packed, M17 2026-11-13; I-JEPA, V-JEPA) the prediction's
     targets are the tokens of the target encoder on the whole stack: a copy of
     the encoder, without gradient, moved after each learning step by
@@ -204,10 +229,17 @@ class VisionConf:
     # none) and the tokens of a frame put into them, both per stream
     token_buffer: int = 0
     token_insert: int = 64
+    # "packed", sigreg_on "datapoints" only: the past data points per stream
+    # (0: none), the frames seen between two insertions, and what is
+    # stored (DATAPOINT_STORES)
+    datapoint_buffer: int = 0
+    datapoint_every: int = 1
+    datapoint_store: str = "z"
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
         check_choice("vision.sigreg_on", self.sigreg_on, SIGREG_ON)
+        check_choice("vision.datapoint_store", self.datapoint_store, DATAPOINT_STORES)
         check_choice("vision.recon_decoder", self.recon_decoder, RECON_DECODERS)
         if not self.pixel_std > 0:
             raise ValueError(f"vision.pixel_std must be > 0, not {self.pixel_std}")
@@ -244,7 +276,7 @@ class VisionConf:
         check_choice("vision.token_sigreg", self.token_sigreg, TOKEN_SIGREG)
         if self.layout != "packed" and (
             self.token_sigreg != "scaled"
-            or self.sigreg_on in ("views", "views_tokens")
+            or self.sigreg_on in ("views", "views_tokens", "datapoints")
             or self.token_weight != 1
             or self.z_weight != 0
             or self.projector
@@ -259,7 +291,8 @@ class VisionConf:
             raise ValueError(
                 "vision.token_sigreg, token_weight, z_weight, projector, "
                 "zpred_hidden, pred_dim, pred_heads, target_norm, ema, token_dim, "
-                "token_buffer and sigreg_on 'views' are of the packed layout only"
+                "token_buffer and sigreg_on 'views' and 'datapoints' are of the "
+                "packed layout only"
             )
         if self.layout == "packed":
             self._check_packed()
@@ -321,19 +354,19 @@ class VisionConf:
             raise ValueError(
                 "vision.ema is of the targets of the tokens: token_weight 0"
             )
-        if self.ema and (self.token_buffer or self.z_weight):
+        if self.ema and (self.token_buffer or self.z_weight or self.datapoint_buffer):
             # The prediction's targets would be the target encoder's tokens
             # while the past tokens of SIGReg and the centre of the completion
             # of z are the online encoder's: two meanings of the targets.
             raise ValueError(
                 "vision.ema takes the targets from the target encoder: "
-                "token_buffer and z_weight, of the online encoder's tokens, "
-                "must be 0"
+                "token_buffer, datapoint_buffer and z_weight, of the online "
+                "encoder's tokens, must be 0"
             )
-        if self.projected and self.sigreg_on == "tokens":
+        if self.projected and self.sigreg_on in ("tokens", "datapoints"):
             raise ValueError(
-                "sigreg_on 'tokens' with a projection (z_dim != dim) gives the "
-                "projection no gradient: use 'z' or 'both'"
+                f"sigreg_on {self.sigreg_on!r} with a projection (z_dim != dim) "
+                "gives the projection no gradient: use 'z' or 'both'"
             )
         self._check_tokens()
 
@@ -349,6 +382,16 @@ class VisionConf:
             raise ValueError(
                 f"vision.token_buffer must be >= 0 and token_insert >= 1, not "
                 f"{self.token_buffer} and {self.token_insert}"
+            )
+        if self.datapoint_buffer < 0 or self.datapoint_every < 1:
+            raise ValueError(
+                f"vision.datapoint_buffer must be >= 0 and datapoint_every >= 1, "
+                f"not {self.datapoint_buffer} and {self.datapoint_every}"
+            )
+        if self.datapoint_buffer and self.sigreg_on != "datapoints":
+            raise ValueError(
+                "vision.datapoint_buffer is of the SIGReg of the data points: it "
+                "needs sigreg_on 'datapoints'"
             )
         if self.token_buffer and (
             self.token_sigreg != "raw"

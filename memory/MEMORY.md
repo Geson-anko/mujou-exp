@@ -20,6 +20,7 @@
 - [夢は必須の評価](project_dream_required.md) — 2026-11-11 決定、同時の学習の run は posthoc が毎チェックポイントで 1 フレームと 16 フレームから 150 フレームの夢を計算する。報告の動画は PC-ALM だけでよい
 - [M17 は Walking Tours のエンコーダ](project_m17_wt_encoder.md) — 2026-11-11、再構成の項なしの JEPA。課題は時空間の補完、主な指標は held-out の補完の誤差と線形の動力学（画素の再構成は重視しすぎない）。PC-ALM で学ぶのはエンコーダだけ
 - [M17 の EMA は時間で追う](project_ema_following.md) — 2026-11-13、ターゲットエンコーダの momentum はフレームあたり、`elapsed` で動かす。`Following` は今は実験の中に置き、mujou に上げるかは未決定
+- [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子はユーザーが決めるまで回さない。z を貯めると k と古さが交絡する
 
 ## feedback
 

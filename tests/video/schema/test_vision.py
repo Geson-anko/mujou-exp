@@ -65,12 +65,50 @@ class TestPacked:
         assert _packed().ema == 0.0 and VisionConf().ema == 0.0  # 0: none
         assert [_packed(ema=m).ema for m in (0.0, 0.996, 1.0)] == [0.0, 0.996, 1.0]
 
-    @pytest.mark.parametrize("kw", [{"token_buffer": 8}, {"z_weight": 1.0}])
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"token_buffer": 8},
+            {"z_weight": 1.0},
+            {"sigreg_on": "datapoints", "datapoint_buffer": 8},
+        ],
+    )
     def test_the_target_encoder_takes_no_online_targets(self, kw):
-        """With ema the targets are the target encoder's; the past tokens and
-        the completion of z are the online encoder's."""
-        with pytest.raises(ValueError, match="token_buffer and z_weight"):
+        """With ema the targets are the target encoder's; the past tokens, the
+        past data points and the completion of z are the online encoder's."""
+        with pytest.raises(ValueError, match="datapoint_buffer and z_weight"):
             _packed(ema=0.9, **kw)
+
+    def test_the_data_points(self):
+        """Off by default (every older preset unchanged); the buffer needs
+        sigreg_on 'datapoints'."""
+        v = _packed()
+        assert (v.datapoint_buffer, v.datapoint_every, v.datapoint_store) == (
+            0,
+            1,
+            "z",
+        )
+        _packed(sigreg_on="datapoints")  # the current stacks alone
+        _packed(
+            sigreg_on="datapoints",
+            datapoint_buffer=256,
+            datapoint_every=6,
+            datapoint_store="input",
+        )
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            ({"datapoint_buffer": 8}, "sigreg_on 'datapoints'"),
+            ({"sigreg_on": "datapoints", "datapoint_buffer": -1}, "datapoint_buffer"),
+            ({"sigreg_on": "datapoints", "datapoint_every": 0}, "datapoint_every"),
+            ({"datapoint_store": "tokens"}, "datapoint_store"),
+            ({"sigreg_on": "datapoints", "z_dim": 64}, "projection"),
+        ],
+    )
+    def test_the_data_points_refused(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            _packed(**kw)
 
     def test_the_tokens_as_the_representation(self):
         v = _packed(token_dim=16, sigreg_on="tokens", token_sigreg="raw")
@@ -78,7 +116,9 @@ class TestPacked:
         assert _packed().token_width == 32
         _packed(token_buffer=64, sigreg_on="both", token_sigreg="raw")
 
-    @pytest.mark.parametrize("kw", [{"token_dim": 8}, {"token_buffer": 8}])
+    @pytest.mark.parametrize(
+        "kw", [{"token_dim": 8}, {"token_buffer": 8}, {"sigreg_on": "datapoints"}]
+    )
     def test_the_tokens_are_of_the_packed_layout_only(self, kw):
         with pytest.raises(ValueError, match="packed layout only"):
             VisionConf(**kw)

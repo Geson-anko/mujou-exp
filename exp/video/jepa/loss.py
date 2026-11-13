@@ -76,6 +76,17 @@ $O(T)$ even when the $c_b$ are $N(0, I)$, so this collapse costs about
 $\lambda T$ against what it gains of the prediction. Preventing the collapse
 of the latent space is the only role of $S_t$, and $\lambda$ its strength.
 
+The SIGReg of the data points (``sigreg_on`` ``"datapoints"``, M17
+2026-11-13) takes one sample per stack: its target tokens flattened,
+$x_b = \mathrm{vec}(s_b) \in \mathbb{R}^{T D}$, along directions of that
+width (``directions_z``), with the past data points of a buffer among the
+samples: $S = \mathrm{EP}(\{x_b\}_{b \in M} \cup \{p_j\}_j)$, the
+$p_j$ either constants (``past``, the ``PastSums`` of stored
+representations, no gradient) or representations in the graph (``points``,
+the stored inputs encoded by the current encoder, which the gradient
+reaches). One stream ($B = 1$) has a sample of its current stack and the
+buffer.
+
 The space-time completion of the packed layout (M17, 2026-11-12; LeJEPA's
 Eq. 6-9 with one global view) embeds every view: $u_{b,0} = h(z_b)$ of the
 target view (the whole stack) and $u_{b,v} = h(z_{b,v})$ of each context
@@ -409,6 +420,7 @@ def jepa_loss_packed(
     target_norm: bool = False,
     goal: Tensor | None = None,
     past: PastSums | None = None,
+    points: Tensor | None = None,
 ) -> JEPATerms:
     r"""$L$ of the packed layout (module docstring).
 
@@ -417,7 +429,9 @@ def jepa_loss_packed(
             the $K_v$ of each context view (``masks.pack_views``).
         y: The masks of the context views ``(B, (V - 1) T)``, 1 where masked.
         valid: The streams that have a stack, ``(B,)`` bool.
-        directions_z: The directions of SIGReg on $z$, ``(M, D_z)``.
+        directions_z: The directions of SIGReg on $z$, ``(M, D_z)`` (with
+            ``sigreg_on`` ``"datapoints"`` on the flattened target tokens,
+            ``(M, T D)``).
         directions_t: Those on the target tokens, ``(M, D)`` (with
             ``sigreg_on`` ``"tokens"`` or ``"both"``).
         predictor: ``(ctx (n, K, D), ctx_ids (n, K), tgt_ids (n, M)) -> (n, M,
@@ -442,7 +456,11 @@ def jepa_loss_packed(
         goal: The prediction's targets ``(B, T, D)``, constants (the tokens
             of an EMA of the encoder); None: the target tokens.
         past: The past target tokens among the samples of $S_t$, along its
-            directions (``token_sigreg`` ``"raw"``; None: none).
+            directions (``token_sigreg`` ``"raw"``), or with ``sigreg_on``
+            ``"datapoints"`` the past data points (stored representations)
+            among its samples; None: none.
+        points: With ``sigreg_on`` ``"datapoints"``, more samples ``(n, T
+            D)`` in the graph (the stored inputs encoded anew); None: none.
     """
     b, _, d = tokens.shape
     views = len(keeps)
@@ -485,6 +503,12 @@ def jepa_loss_packed(
     parts = []
     if sigreg_on in ("z", "both"):
         parts.append(weighted_sigreg(z, w, directions_z))
+    if sigreg_on == "datapoints":
+        x, wx = target.flatten(1), w
+        if points is not None:
+            x = torch.cat([x, points])
+            wx = torch.cat([w, w.new_ones(len(points))])
+        parts.append(weighted_sigreg(x, wx, directions_z, past))
     if sigreg_on in ("tokens", "both", "views_tokens"):
         parts.append(
             token_sigreg_of(

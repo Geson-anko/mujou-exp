@@ -3,7 +3,7 @@ learned by autograd inside one node, from the same ``Chunker`` (or
 ``StackChunker``, the packed layout) as the PC-ALM version."""
 
 import math
-from typing import override
+from typing import Any, override
 
 import mujou.pc as pc
 import torch
@@ -21,6 +21,7 @@ from exp.video.jepa.loss import (
 )
 from exp.video.jepa.nodes import (
     STATS,
+    PastPoints,
     PastTokens,
     draw_directions,
     draw_packed_directions,
@@ -72,6 +73,15 @@ class JEPABP(Node):
     With ``ema`` (I-JEPA's target encoder, ``jepa.ema``) the prediction's
     targets are the tokens of ``mods.target`` of the target view, computed
     without gradient, and the target encoder moves after each step.
+    With ``sigreg_on`` ``"datapoints"`` and ``datapoint_buffer`` > 0 the
+    samples of SIGReg include the past data points of a ``PastPoints``
+    (``points``) as ``PackedJEPAHead`` has them (the same draws from the same
+    seed). With ``datapoint_store`` ``"z"`` it holds their flattened target
+    tokens, constants, kept from the frame's first $L$ and from each step's
+    new $z$; with ``"input"`` the target view's pixels of their stacks (u8,
+    exactly those of the ``StackChunker``), which ``terms`` encodes anew with
+    the current encoder, in the graph of $L$: the gradient reaches every
+    sample (LeJEPA), at the cost of encoding the buffer in every $L$.
 
     Args:
         mods: The modules, on ``device``.
@@ -99,6 +109,10 @@ class JEPABP(Node):
         token_buffer: The capacity of the past target tokens per stream
             (packed; 0: none).
         token_insert: The tokens of a frame inserted into them per stream.
+        datapoint_buffer: The capacity of the past data points per stream
+            (packed, ``sigreg_on`` ``"datapoints"``; 0: none).
+        datapoint_every: The frames between two insertions into them.
+        datapoint_store: ``"z"`` or ``"input"`` (class docstring).
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -135,6 +149,9 @@ class JEPABP(Node):
         frame: float = 1 / 30,
         token_buffer: int = 0,
         token_insert: int = 64,
+        datapoint_buffer: int = 0,
+        datapoint_every: int = 1,
+        datapoint_store: str = "z",
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -186,7 +203,10 @@ class JEPABP(Node):
         self._two = self._packed and tokens and d_z != d
         self._views = self._packed and sigreg_on in ("views", "views_tokens")
         self._d_u = d_z if mods.projector is None else mods.projector.out_features
-        self.directions = torch.zeros(directions, d_z, device=self.device)
+        # the directions of the representation SIGReg sees: z, or a data point
+        t = mods.segments[0] if self._packed else 0
+        width = t * d if sigreg_on == "datapoints" else d_z
+        self.directions = torch.zeros(directions, width, device=self.device)
         self.directions_t: torch.Tensor | None = None
         self.directions_u: torch.Tensor | None = None
         self.past: PastTokens | None = None  # the past target tokens (state)
@@ -197,6 +217,19 @@ class JEPABP(Node):
                 streams=self._b,
                 tokens=mods.segments[0],
                 dim=d,
+                directions=directions,
+                device=self.device,
+            )
+        self._inputs = datapoint_store == "input"
+        self.points: PastPoints | None = None  # the past data points (state)
+        if datapoint_buffer:
+            pixels = h.shape[-1] - 1  # P of a tubelet, without its id
+            self.points = PastPoints(
+                capacity=datapoint_buffer,
+                every=datapoint_every,
+                streams=self._b,
+                width=t * pixels if self._inputs else width,
+                dtype=torch.uint8 if self._inputs else torch.float32,
                 directions=directions,
                 device=self.device,
             )
@@ -228,6 +261,9 @@ class JEPABP(Node):
                     on = self.directions_t  # those of the tokens, or of z
                     on = self.directions if on is None else on
                     self.past.next_frame(on, self.generator)
+                if self.points is not None:
+                    on = None if self._inputs else self.directions
+                    self.points.next_frame(on, self.generator)
             else:
                 self.directions = draw_directions(m, d, self.generator)
             with torch.set_grad_enabled(self._learns):
@@ -235,6 +271,10 @@ class JEPABP(Node):
             if self.past is not None:
                 assert terms.target is not None  # of the packed loss
                 self.past.keep(terms.target, valid)
+            if self.points is not None:
+                assert terms.target is not None  # of the packed loss
+                kept = self._pixels(act) if self._inputs else terms.target.flatten(1)
+                self.points.keep(kept, valid)
             self._pending = [terms.loss] if self._learns else []
             self.stats.send(stats_message(terms, act["time"]))
             self._send_z(act, terms.z)
@@ -258,6 +298,8 @@ class JEPABP(Node):
             tokens = self.encoder(act["h"][:, :t], (t,))
             if self.past is not None:
                 self.past.keep(tokens, act["mask"])
+            if self.points is not None and not self._inputs:
+                self.points.keep(tokens.flatten(1), act["mask"])
             return self.mods.z_of(tokens)
         h = act["h"][:: self._v]  # the target views
         return self.encoder.pool(self.encoder(h))
@@ -301,7 +343,7 @@ class JEPABP(Node):
                 directions_u=self.directions_u,
                 target_norm=self._target_norm,
                 goal=goal,
-                past=None if self.past is None else self.past.sums,
+                **self._buffer(),
             )
         b, v = self._b, self._v
         decoder = self.decoder
@@ -326,6 +368,30 @@ class JEPABP(Node):
             sigreg_on=self._sigreg_on,
             recon=recon,
         )
+
+    def _buffer(self) -> dict[str, Any]:
+        """The ``past`` and ``points`` of ``jepa_loss_packed``: the sums of
+        the past tokens or of the stored representations, or the stored
+        inputs encoded by the current encoder (in the graph)."""
+        if self.past is not None:
+            return {"past": self.past.sums}
+        if self.points is None:
+            return {}
+        if not self._inputs:
+            return {"past": self.points.sums}
+        t = self.mods.segments[0]
+        stored = self.points.filled  # (n, T P) u8
+        x = stored.view(len(stored), t, stored.shape[1] // t).float() / 255
+        ids = torch.arange(t, device=x.device, dtype=x.dtype).expand(len(x), t)
+        h = torch.cat([x, ids[..., None]], 2)  # as the StackChunker packs them
+        return {"points": self.encoder(h, (t,)).flatten(1)}
+
+    def _pixels(self, act: Activity) -> torch.Tensor:
+        """The target view's pixels of the stacks of ``act`` ``(B, T P)`` u8:
+        the u8 values the ``StackChunker`` divided by 255, exactly."""
+        t = self.mods.segments[0]
+        x = act["h"][:, :t, :-1]  # (B, T, P), without the ids
+        return (x * 255).round().to(torch.uint8).flatten(1)
 
     def _send_z(self, act: Activity, z: torch.Tensor) -> None:
         v = 1 if self._packed else self._v

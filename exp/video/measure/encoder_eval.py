@@ -67,6 +67,12 @@ the last time slot. On the windows of val and test (``PackedMeasures``,
   image). The views are ``short`` and ``long`` for two context views, else
   ``c0``, ``c1``, ...;
 - ``rank``, ``z_std_min``, ``z_spread`` of the first stacks' $z$;
+- ``sens_dither``, ``sens_shift`` and the same of the pixels
+  ``sens_dither_pix``, ``sens_shift_pix`` (``measure.sensitivity``): the
+  change of the code of the first stacks under the quantization's dither and
+  a translation by one pixel, over the spread of the codes of different
+  stacks (the dither drawn from the generator of ``seed + SENS_SEED``, the
+  same for every code of a split);
 - (ViT) the completion errors of the first stacks (``measure.completion``,
   ``PackedMeasures.completion_rows``): ``comp_<kind>``, ``comp_<kind>_vis``,
   ``comp_<kind>_mean``, ``comp_<kind>_pos`` (the reference's mean target
@@ -105,7 +111,7 @@ checkpoint's ``<t>``, ``init`` or ``pca``.
 import bisect
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, override
 
@@ -136,6 +142,7 @@ from exp.video.measure.restore import (
     picture_of,
     restore,
 )
+from exp.video.measure.sensitivity import sensitivities
 from exp.video.programs.vision import COLLAPSE, PackedMeasures, z_stats
 from exp.video.schema.run import RunConf
 
@@ -144,6 +151,7 @@ __all__ = [
     "DECODER_LR",
     "DYN_SHOWN",
     "PCA_SEED",
+    "SENS_SEED",
     "SHOWN",
     "STREAM_STEPS",
     "WINDOWS",
@@ -152,6 +160,7 @@ __all__ = [
 ]
 
 PCA_SEED = 4  # added to the run's seed (DECODER_SEED 3)
+SENS_SEED = 5  # added to the run's seed: the dither of measure.sensitivity
 # The rate of the decoder of z: at posthoc.LR (1e-3) its fit of 128 x 128
 # frames died to a constant image on some codes (recon_fit 1.07 on a learned
 # ViT, 2026-11-12); 3e-4 fit both that one (0.66) and the PCA-256 (0.15).
@@ -441,6 +450,18 @@ class EncoderEval:
         z = torch.cat(zs).unflatten(0, (w, k))
         return z, torch.cat(toks) if toks else None
 
+    def _code_of(self, code: _Code) -> Callable[[Tensor], Tensor]:
+        """The code ``(n, D)`` of stacks ``(n, N, C, H, W)`` as ``_encode``
+        codes them (u8, or floats in ``[0, 1]``)."""
+
+        def of(x: Tensor) -> Tensor:
+            if code.mods is None:
+                return code.z(x)
+            tokens = code.mods.target_tokens(x)
+            return tokens.flatten(1) if self._tokens else code.mods.z_of(tokens)
+
+        return of
+
     def _fit_error(self, dec: nn.Module, z: Tensor) -> float:
         """``recon_fit``: the decoded ``z`` of the training stacks against
         their last frames, over the mean image's error, a batch at a time."""
@@ -534,6 +555,13 @@ class EncoderEval:
             if code.mods is not None and tok_dec is not None:
                 restored = self._restore(code.mods, split, tok_dec, f0, line)
             line |= z_stats(zs[:, 0].float())
+            line |= sensitivities(
+                self._code_of(code),
+                windows[:, : v.frames],
+                gen=torch.Generator().manual_seed(conf.seed + SENS_SEED),
+                batch=BATCH,
+                device=self._dev,
+            )
             line |= comp.get(split, {})
             line["alpha"] = alpha
             lines.append(line)

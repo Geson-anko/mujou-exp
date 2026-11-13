@@ -7,6 +7,7 @@ import torch
 
 import exp.video.conf
 from exp.video.compose import compose, from_dict, to_dict
+from exp.video.diag.ssig import bound
 from exp.video.jepa.loss import jepa_loss_packed
 from exp.video.jepa.masks import expected_keep
 from exp.video.jepa.nodes import draw_packed_directions
@@ -161,6 +162,9 @@ class TestM17:
             "m17/ema_t128",
             "m17/ema_t512",
             "m17/ema_t64",
+            "m17/ssig_t128",
+            "m17/ssig_t512",
+            "m17/ssig_t64",
             "m17/st_n16",
             "m17/st_tok_n16",
             "m17/tok_n16",
@@ -261,6 +265,41 @@ class TestM17:
             if name not in changed:
                 assert getattr(v, name) == getattr(w, name), name
 
+    @pytest.mark.parametrize("arm", ["t512", "t128", "t64"])
+    def test_the_data_point_presets_are_the_ema_arms_with_sigreg_instead(
+        self, arm: str
+    ) -> None:
+        """SIGReg of the data points on one stream (2026-11-13): the
+        tokenization of the EMA arm, no target encoder, N = 256 past data
+        points stored as representations, one every frame; lambda (the
+        middle of the arm's grid, exp.video.diag.ssig_window) above the
+        lower bound at which tokens constant within a stack stop being
+        cheaper than iid tokens (exp.video.diag.ssig)."""
+        conf = compose([f"+experiment=m17/ssig_{arm}"])
+        ema = compose([f"+experiment=m17/ema_{arm}"])
+        v, w = conf.vision, ema.vision
+        assert v is not None and w is not None
+        assert v.ema == 0.0 and v.sigreg_on == "datapoints"
+        assert (v.datapoint_buffer, v.datapoint_every, v.datapoint_store) == (
+            256,
+            1,
+            "z",
+        )
+        assert conf.data == ema.data and conf.data.streams == 1
+        assert conf.seconds == ema.seconds and conf.ctl == ema.ctl
+        assert conf.measure == ema.measure and conf.time == ema.time
+        assert conf.optim_vision == ema.optim_vision
+        changed = {"ema", "sigreg_on", "sigreg"}
+        changed |= {"datapoint_buffer", "datapoint_every", "datapoint_store"}
+        for name in vars(w):
+            if name not in changed:
+                assert getattr(v, name) == getattr(w, name), name
+        tokens = (v.frames // v.tubelet) * (128 // v.patch) ** 2
+        b = bound(tokens, v.token_width, 1 + v.datapoint_buffer, draws=4000)
+        assert v.sigreg > b["lam_star"]
+        slow = compose([f"+experiment=m17/ssig_{arm}", "vision.datapoint_every=24"])
+        assert slow.vision is not None and slow.vision.datapoint_every == 24
+
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])
         assert conf.vision is not None
@@ -300,8 +339,13 @@ def _m17_loss(conf: RunConf, target: torch.Tensor, predictor) -> float:
         visible = order[:, :k].sort(1).values
         parts.append(target.gather(1, visible[..., None].expand(-1, -1, d)))
     sigreg_on = {"views_tokens": "tokens"}.get(v.sigreg_on, v.sigreg_on)
+    points = sigreg_on == "datapoints"  # the directions of the flattened tokens
     dz, dt = draw_packed_directions(
-        32, v.z_width, v.token_width, tokens=sigreg_on != "z", generator=g
+        v.sigreg_directions if points else 32,
+        t * d if points else v.z_width,
+        v.token_width,
+        tokens=sigreg_on not in ("z", "datapoints"),
+        generator=g,
     )
     terms = jepa_loss_packed(
         torch.cat(parts, 1),
@@ -349,6 +393,10 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
         return torch.nn.functional.layer_norm(x, x.shape[-1:]) if v.target_norm else x
 
     b, t = conf.data.streams, (v.frames // v.tubelet) * (128 // v.patch) ** 2
+    # SIGReg of the data points: its sample is the current stacks and the
+    # buffer, one statistic of them all (tests/video/jepa/test_loss.py), here
+    # all of the same law
+    b += v.datapoint_buffer if v.sigreg_on == "datapoints" else 0
     d = v.token_width
     g = torch.Generator().manual_seed(1)
     with torch.no_grad():

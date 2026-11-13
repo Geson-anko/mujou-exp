@@ -8,7 +8,7 @@ import mujou.testing
 import pytest
 import torch
 
-from exp.lib.sigreg import ecf_sums
+from exp.lib.sigreg import ecf_sums, sigreg
 from exp.video.jepa.loss import jepa_loss, jepa_loss_packed
 from exp.video.jepa.masks import block_masks, make_views, multiblock_masks, pack_views
 from exp.video.jepa.nets import CHUNKER_SEED, VisionBP, VisionPC, build_vision_net
@@ -17,6 +17,7 @@ from exp.video.jepa.nodes import (
     FrameRing,
     JEPAHead,
     PackedJEPAHead,
+    PastPoints,
     PastTokens,
     StackChunker,
     z_spec,
@@ -656,6 +657,240 @@ class TestPastTokens:
             _past().load_state_dict(state)
 
 
+DATAPOINTS = {
+    "token_dim": 8,
+    "sigreg_on": "datapoints",
+    "datapoint_buffer": 5,
+    "sigreg": 0.3,
+}  # SIGReg of the data points (2 slots x 16 tokens x 8 = 256 numbers each)
+# with 5 past data points per stream
+
+
+def _points(capacity: int = 4, every: int = 1, streams: int = 1) -> PastPoints:
+    return PastPoints(
+        capacity=capacity,
+        every=every,
+        streams=streams,
+        width=3,
+        dtype=torch.float32,
+        directions=5,
+        device="cpu",
+    )
+
+
+def _point_dirs() -> torch.Tensor:
+    a = torch.randn(5, 3, generator=torch.Generator().manual_seed(9))
+    return a / a.norm(dim=1, keepdim=True)
+
+
+class TestPastPoints:
+    def test_one_insertion_every_k_frames_of_the_frame_before(self):
+        """Frame j (from 0) inserts the data point kept in frame j - 1 when j
+        is a multiple of k: of 10 frames at k = 3, those of frames 2, 5, 8;
+        a stream without a stack inserts nothing."""
+        points, g = _points(capacity=100, every=3, streams=2), torch.Generator()
+        valid = torch.tensor([True, False])
+        for j in range(10):
+            points.next_frame(_point_dirs(), g)
+            points.keep(torch.full((2, 3), float(j)), valid)
+        assert points.count == 3 and points.frames == 10
+        assert points.filled[:, 0].tolist() == [2.0, 5.0, 8.0]
+
+    @pytest.mark.parametrize(("streams", "every"), [(1, 1), (1, 3), (4, 2)])
+    def test_a_row_survives_s_frames_with_probability_1_less_1_over_n_to_s_over_k(
+        self, streams, every
+    ):
+        """Once full, each insertion replaces B of the B N rows drawn
+        uniformly without replacement, independently of the ones before: a
+        row survives s frames (s a multiple of k) with probability (1 -
+        1/N)^(s/k), whatever B, so its age is geometric of mean N k frames.
+        Over 4096 x 8 rows the fraction is within 0.012 (4 sd) of it."""
+        n = 8
+        points, g = _points(capacity=n, every=every, streams=streams), torch.Generator()
+        g.manual_seed(0)
+        frames = 0
+        every_stream = torch.ones(streams, dtype=torch.bool)
+
+        def show() -> None:
+            nonlocal frames
+            points.next_frame(None, g)
+            frames += 1
+            x = torch.arange(streams, dtype=torch.float32)[:, None].expand(-1, 3)
+            points.keep(x + 1000 * frames, every_stream)
+
+        while points.count < len(points.rows) or points.frames % every != 1 % every:
+            show()
+        survived = torch.zeros(4)
+        for _ in range(4096 // streams):
+            first = points.rows.clone()
+            for s in range(4):
+                for _ in range(every):
+                    show()
+                survived[s] += float((points.rows == first).all(1).sum())
+        fraction = survived / (4096 * n)
+        expect = torch.tensor([(1 - 1 / n) ** s for s in range(1, 5)])
+        torch.testing.assert_close(fraction, expect, atol=0.012, rtol=0)
+
+    def test_the_sums_are_those_of_the_filled_rows(self):
+        points, g = _points(), torch.Generator().manual_seed(0)
+        points.next_frame(_point_dirs(), g)
+        points.keep(
+            torch.randn(1, 3, generator=g).requires_grad_(), torch.tensor([True])
+        )
+        points.next_frame(_point_dirs(), g)
+        cos, sin = ecf_sums(points.filled, _point_dirs())
+        torch.testing.assert_close(points.sums.cos, cos)
+        torch.testing.assert_close(points.sums.sin, sin)
+        assert float(points.sums.n) == 1 and not points.rows.requires_grad
+
+    def test_the_state_round_trips_and_other_shapes_are_refused(self):
+        points, g = _points(every=2), torch.Generator().manual_seed(0)
+        for j in range(6):
+            points.next_frame(_point_dirs(), g)
+            points.keep(torch.full((1, 3), float(j)), torch.tensor([True]))
+        other = _points(every=2)
+        other.load_state_dict(points.state_dict())
+        for p in (points, other):
+            p.next_frame(_point_dirs(), torch.Generator().manual_seed(1))
+        assert other.count == points.count == 3 and other.frames == points.frames
+        for name, x in points.state_dict().items():
+            if isinstance(x, torch.Tensor):
+                assert torch.equal(getattr(other, name), x), name
+        with pytest.raises(ValueError, match="rows"):
+            _points(capacity=3).load_state_dict(points.state_dict())
+
+    @pytest.mark.parametrize(("capacity", "every"), [(0, 1), (4, 0)])
+    def test_refused(self, capacity, every):
+        with pytest.raises(ValueError, match="capacity >= 1 and every >= 1"):
+            _points(capacity=capacity, every=every)
+
+
+def _point_loss(net, act, h: torch.Tensor, **kw) -> Any:
+    """The loss of the data points of ``net``'s head (PC-ALM) or JEPABP."""
+    node = net.head if isinstance(net, VisionPC) else net.vision
+    return jepa_loss_packed(
+        h,
+        act["y"],
+        act["mask"],
+        node.directions,
+        None,
+        net.mods.predictor,
+        keeps=list(net.mods.segments[1:]),
+        proj=None,
+        lam=DATAPOINTS["sigreg"],
+        sg=False,
+        sigreg_on="datapoints",
+        pred_loss="l2",
+        **kw,
+    )
+
+
+class TestDataPointSIGReg:
+    def test_the_head_credit_is_that_of_b_times_the_loss_with_its_points(self):
+        """After three frames the head's buffer holds the data points of the
+        first two (each stream's flattened target tokens); its credit is the
+        gradient of B L, whose S is that of exp.lib.sigreg.sigreg of the
+        current data points and the buffer."""
+        b = 2
+        net = build_vision_net(packed_conf(streams=b, **DATAPOINTS))
+        assert isinstance(net, VisionPC)
+        head = net.head
+        assert isinstance(head, PackedJEPAHead) and head.points is not None
+        t = net.mods.segments[0]
+        assert head.directions.shape == (16, t * 8)
+        with mujou.testing.run(net) as run:
+            for k in range(3):
+                _show(run, net.prev, _stack_sample(stacks(b, seed=k), k == 0))
+            act = run.read(net.enc2.next)
+            g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
+        assert head.points.count == 2 * b
+        h = act["h"].clone().requires_grad_()
+        terms = _point_loss(net, act, h, past=head.points.sums)
+        (expect,) = torch.autograd.grad(b * terms.loss, [h])
+        torch.testing.assert_close(g, expect)
+        current = act["h"][:, :t].flatten(1)
+        torch.testing.assert_close(
+            terms.sigreg, sigreg(current, head.points.filled, head.directions)
+        )
+
+    def test_pc_alm_refuses_the_stored_inputs(self):
+        conf = packed_conf(streams=1, **DATAPOINTS, datapoint_store="input")
+        with pytest.raises(ValueError, match="learner=bp only"):
+            build_vision_net(conf)
+
+    def test_bp_stores_the_inputs_exactly_and_encodes_them_in_its_loss(self):
+        """Mode (b): the buffer holds the u8 target view of each stack (the
+        StackChunker's pixels times 255, exactly), and L sees the buffer
+        encoded by the current encoder, in its graph: L and its gradient are
+        those of jepa_loss_packed with points = the stored stacks' flattened
+        tokens."""
+        conf = packed_conf("bp", streams=1, **DATAPOINTS, datapoint_store="input")
+        net = build_vision_net(conf)
+        assert isinstance(net, VisionBP)
+        bp = net.vision
+        xs = [stacks(1, seed=k) for k in range(3)]
+        with mujou.testing.run(net) as run:
+            for k, x in enumerate(xs):
+                _show(run, net.prev, _stack_sample(x, k == 0))
+            act = run.read(net.chunker.next)
+        assert bp.points is not None and bp.points.count == 2
+        assert bp.points.rows.dtype == torch.uint8
+        t = net.mods.segments[0]
+        for row, x in zip(bp.points.filled, xs[:2], strict=True):
+            pixels = row.view(t, -1).float() / 255
+            torch.testing.assert_close(
+                pixels, net.mods._whole(x)[0, :, :-1], rtol=0, atol=0
+            )
+        params = list(net.mods.encoder.parameters())
+        loss = bp.terms(act).loss
+        got = torch.autograd.grad(loss, params)
+        stored = torch.cat(xs[:2])  # the stacks of the buffer, in its order
+        points = net.mods.tokens(stored).flatten(1)
+        h = net.mods.encoder(act["h"], net.mods.segments)
+        expect = _point_loss(net, act, h, points=points).loss
+        torch.testing.assert_close(loss, expect)
+        for a, e in zip(got, torch.autograd.grad(expect, params), strict=True):
+            torch.testing.assert_close(a, e)
+
+    @pytest.mark.parametrize("store", ["z", "input"])
+    def test_a_resumed_bp_run_is_the_one_never_stopped(self, store):
+        """Stopped after 3 of 6 frames and restored from the run's state, the
+        node goes on as one never stopped: the weights and the buffer."""
+        vision = DATAPOINTS | {"datapoint_store": store, "datapoint_every": 2}
+
+        def net() -> VisionBP:
+            n = build_vision_net(
+                packed_conf("bp", streams=1, learn_interval=25e-3, **vision)
+            )
+            assert isinstance(n, VisionBP)
+            return n
+
+        def show(run, n: VisionBP, frames: range) -> None:
+            for k in frames:
+                _show(run, n.prev, _stack_sample(stacks(1, seed=k), k == 0))
+
+        whole = net()
+        with mujou.testing.run(whole) as run:
+            show(run, whole, range(6))
+        first = net()
+        with mujou.testing.run(first) as run:
+            show(run, first, range(3))
+            state = run.state_dict()
+        second = net()
+        with mujou.testing.run(second, state=state) as run:
+            show(run, second, range(3, 6))
+        a, b = whole.vision.points, second.vision.points
+        assert a is not None and b is not None and a.count == b.count == 2
+        assert a.frames == b.frames == 6
+        assert torch.equal(a.rows, b.rows)
+        for p, q in zip(
+            whole.mods.encoder.parameters(),
+            second.mods.encoder.parameters(),
+            strict=True,
+        ):
+            assert torch.equal(p, q)
+
+
 def _token_loss(net: VisionPC, act, h: torch.Tensor, past) -> Any:
     v = net.mods  # the head's loss of the packed layout, without a projection
     head = cast(PackedJEPAHead, net.head)
@@ -765,6 +1000,12 @@ def _packed_equilibrium(streams: int, **vision):
         act = r2.read(bp_net.chunker.next)
         assert torch.equal(act["h"], r1.read(pc_net.chunker.next)["h"])
     assert torch.equal(pc_net.head.directions, bp_net.vision.directions)
+    points = cast(PackedJEPAHead, pc_net.head).points
+    if points is not None:
+        # As the past tokens below: BP takes the head's data points.
+        assert bp_net.vision.points is not None and points.count > 0
+        assert bp_net.vision.points.count == points.count
+        bp_net.vision.points.load_state_dict(points.state_dict())
     past = cast(PackedJEPAHead, pc_net.head).past
     if past is not None:
         # The past tokens of each are of its own first frame (PC-ALM's carry
@@ -810,6 +1051,7 @@ class TestPackedEquilibrium:
             {"z_weight": 1.0, "token_weight": 0.0, "sigreg_on": "views"},
             {"pred_dim": 32, "pred_heads": 4, "target_norm": True},
             TOKENS,
+            DATAPOINTS,
         ],
         ids=[
             "n4",
@@ -822,6 +1064,7 @@ class TestPackedEquilibrium:
             "z-only",
             "wide-pred-norm",
             "tokens-past",
+            "datapoints-past",
         ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):
@@ -867,7 +1110,7 @@ def test_pc_and_bp_draw_the_same_packed_masks():
 def test_the_packed_nodes_hold_no_cross_node_backward_or_grad():
     """Locality (mujou/.claude/skills/locality-and-async): the PC-ALM nodes of
     the packed layout differentiate their own computation only."""
-    for obj in (StackChunker, PackedJEPAHead, PastTokens, Segmented):
+    for obj in (StackChunker, PackedJEPAHead, PastTokens, PastPoints, Segmented):
         src = inspect.getsource(obj)
         assert ".backward(" not in src
         assert re.search(r"\.grad\b(?!\()", src) is None, obj.__name__

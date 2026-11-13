@@ -103,6 +103,12 @@ class VisionPC(mujou.Network):
     Args:
         mods: The modules, on ``conf.device``.
         conf: The run: its vision, time, streams, seed and device.
+
+    Raises:
+        ValueError: The past data points are stored inputs
+            (``vision.datapoint_store`` ``"input"``): encoding them anew needs
+            the encoder, which no node of PC-ALM holds whole (``JEPABP``
+            only).
     """
 
     enc1: pc.Layer  # set by name: those of vision.nodes only
@@ -112,6 +118,12 @@ class VisionPC(mujou.Network):
         super().__init__()
         v, tau, b = _parts(conf)
         assert conf.optim_vision is not None  # _parts checks
+        if v.datapoint_buffer and v.datapoint_store == "input":
+            raise ValueError(
+                "vision.datapoint_store 'input' encodes the stored stacks anew "
+                "with the whole encoder, which the head of PC-ALM does not "
+                "hold: learner=bp only"
+            )
         optimizer = make_optimizer(conf.optim_vision, conf.time.frame)
         self.mods, self.tau = mods, tau
         packed = v.layout == "packed"
@@ -157,6 +169,8 @@ class VisionPC(mujou.Network):
                 target=mods.target is not None,
                 token_buffer=v.token_buffer,
                 token_insert=v.token_insert,
+                datapoint_buffer=v.datapoint_buffer,
+                datapoint_every=v.datapoint_every,
                 directions=v.sigreg_directions,
                 tau=tau,
                 optimizer=optimizer,
@@ -245,6 +259,9 @@ class VisionBP(mujou.Network):
             frame=conf.time.frame,
             token_buffer=v.token_buffer,
             token_insert=v.token_insert,
+            datapoint_buffer=v.datapoint_buffer,
+            datapoint_every=v.datapoint_every,
+            datapoint_store=v.datapoint_store,
             directions=v.sigreg_directions,
             tau=tau,
             optimizer=make_optimizer(conf.optim_vision, conf.time.frame),

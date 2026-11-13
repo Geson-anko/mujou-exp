@@ -159,10 +159,20 @@ class TestEncoderEval:
             "rank",
             "z_std_min",
             "z_spread",
+            "sens_dither",
+            "sens_shift",
+            "sens_dither_pix",
+            "sens_shift_pix",
             "alpha",
             "objective",
         ):
             assert k in vit, k
+        for ln in lines:  # every code of a split sees the same stacks and dither
+            assert (
+                ln["sens_dither_pix"]
+                == lines[1 if ln["split"] == "test" else 0]["sens_dither_pix"]
+            )
+            assert ln["sens_dither"] > 0 and ln["sens_shift"] > 0
         assert "objective" not in lines[-1]  # test
         comp = {
             f"{c}_{k}{s}"
