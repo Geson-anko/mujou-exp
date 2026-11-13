@@ -1,6 +1,6 @@
 # フリート（`exp/lib/fleet/`）
 
-4 台のホスト（std-00〜03）に多数の run を並べて回す仕組み。Mac は snapshot を配って job を投げ、あとで結果を読むだけでよい。job は NAS 上のキューに置かれ、各ホストの worker がそこから取っていく。Mac がスリープしていても run は止まらない。設計は `memory/agents/orchestrator/design-final.md` の 4 節（初版で省いたものは `design-decisions.md`）。
+5 台のホスト（std-00〜03 と mini-00）に多数の run を並べて回す仕組み。Mac は snapshot を配って job を投げ、あとで結果を読むだけでよい。job は NAS 上のキューに置かれ、各ホストの worker がそこから取っていく。Mac がスリープしていても run は止まらない。設計は `memory/agents/orchestrator/design-final.md` の 4 節（初版で省いたものは `design-decisions.md`）。
 
 標準ライブラリだけで書いてあり、torch・hydra・`exp.lib` の他のモジュールを import しない。Mac の素の Python 3.14 でも動く。
 
@@ -27,8 +27,8 @@ NAS   /nas/geson/mujou-exp/                             全ホストのコンテ
 ## 典型の 1 周
 
 ```bash
-just fleet doctor                     # 4 台の ssh・コンテナ・GPU・NAS・時計・道具・コアを確かめる
-just fleet push                       # snapshot を作って 4 台に配る（最後の行が snap）
+just fleet doctor                     # 各ホストの ssh・コンテナ・GPU・NAS・時計・道具・コアを確かめる
+just fleet push                       # snapshot を作って各ホストに配る（最後の行が snap）
 just fleet up                         # 止まっている worker を起動する（コードを替えたら --restart）
 just fleet submit --batch m14-s1-v1 +experiment=m14/s1 --sweep optim.lr=0.01,0.03 --seeds 0,1,2
 just fleet status                     # 状態ごとの数、ホストごとの枠、走っている run の進み
@@ -43,9 +43,9 @@ just fleet table --batch m14-s1-v1 --rows config.optim.lr --cols config.learner.
 | コマンド | どこで | 内容 |
 | -- | -- | -- |
 | `doctor` | Mac | 各ホストの ssh、コンテナ（running と `unless-stopped`）、user、GPU の並び、NAS への書き込みと rename、root、時計のずれ、道具、物理コアの数 |
-| `push` | Mac | snapshot → 4 台へ git push → 展開 → venv（無ければ `uv sync --frozen --no-editable`）→ 検証 → `code/latest` |
+| `push` | Mac | snapshot → 各ホストへ git push → 展開 → venv（無ければ `uv sync --frozen --no-editable`）→ 検証 → `code/latest` |
 | `up [--restart]` | Mac | 各ホストで `up-local`。worker が動いていれば何もしない。`--restart` は止めてから `code/latest` で起動し直す |
-| `submit --batch B [overrides...]` | head | `--sweep k=a,b`（直積）、`--seeds 0,1,2`、`--res cpu\|any_gpu\|4090\|4060`、`--ram G`、`--gpu-mem G`、`--prio P`（小さいほど先）、`--after RUN_ID`、`--host H`、`--avoid-host H`、`--tag T`、`--snap S`、`--dry` |
+| `submit --batch B [overrides...]` | head | `--sweep k=a,b`（直積）、`--seeds 0,1,2`、`--res cpu\|any_gpu\|4090\|4060\|5070ti`、`--ram G`、`--gpu-mem G`、`--prio P`（小さいほど先）、`--after RUN_ID`、`--host H`、`--avoid-host H`、`--tag T`、`--snap S`、`--dry` |
 | `status [--batch B] [--json]` | head | 数、ホストの心拍と枠、hold、走っている run の t/of・fps・ETA・最新の roll10/cv10 |
 | `ls [--batch B] [--state S]` | head | run の一覧 |
 | `logs RUN [--err] [--tail N]` | Mac | 走っていればそのホストのローカルから、終わっていれば NAS から |
@@ -63,7 +63,7 @@ just fleet table --batch m14-s1-v1 --rows config.optim.lr --cols config.learner.
 
 ## 資源と枠
 
-`fleet.toml` の `[slots]`。1 台で `cpu` 個の物理コアを run に与え、低い番号の残りは worker などに残す（既定は 16 のうち 14）。CPU の run も GPU の run も 1 本が CPU を 1 単位とる（`smt=false` なら物理コア 1 つ。論理 CPU の i と i+16 の両方に `taskset` で縛る）。GPU の run はさらに GPU を 1 枚とる。`any_gpu` は空きメモリの多い方。GPU ごとに本数（`jobs`）とメモリ（`mem_gb`）、ホストごとに RAM（`ram_gb`）の予算を超えない。
+`fleet.toml` の `[slots]` が全ホストの既定で、`[slots.<host>]` に書いたキーだけがそのホストで置き換わる（mini-00 は `cpu`・`ram_gb`・`gpus` を置き換え、`smt` は既定のまま）。1 台で `cpu` 個の物理コアを run に与え、低い番号の残りの 2 コアは worker などに残す（std は 16 のうち 14、mini-00 は 8 のうち 6）。CPU の run も GPU の run も 1 本が CPU を 1 単位とる（`smt=false` なら物理コア 1 つで、その 2 つの論理 CPU の両方に `taskset` で縛る。std では i と i+16、mini-00 では i と i+8）。GPU の run はさらに GPU を 1 枚とる。`any_gpu` はそのホストの GPU のうち空きメモリの多い方。GPU の型（`4090`・`4060`・`5070ti`）を指定した run は、その型を持つホストだけが取る。GPU ごとに本数（`jobs`）とメモリ（`mem_gb`）、ホストごとに RAM（`ram_gb`）の予算を超えない。
 
 run の環境: `OMP_NUM_THREADS=1` など、`CUDA_VISIBLE_DEVICES=<その GPU>`（CPU の run は空）、`PYTHONPYCACHEPREFIX=/tmp/pycache`、`CUBLAS_WORKSPACE_CONFIG=:4096:8`、`FLEET_HOST`。`PYTHON_GIL` は消す。`job.json` の `config.device` は GPU の run で `cuda`、CPU の run で `cpu` に書き換える。
 

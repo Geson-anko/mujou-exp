@@ -278,9 +278,10 @@ def _doctor(conf: FleetConf, t: Transport, args: argparse.Namespace) -> int:
         kv = dict(line.split("=", 1) for line in _text(r).splitlines() if "=" in line)
         rows.append(("user", kv.get("user") == conf.user, kv.get("user", "?")))
         gpus = [g for g in kv.get("gpus", "").split(";") if g]
-        want = [f"{g.index}: {g.model}" for g in conf.slots.gpus]
+        slots = conf.slots[host]
+        want = [f"{g.index}: {g.model}" for g in slots.gpus]
         ok = len(gpus) == len(want) and all(
-            m.model in g for m, g in zip(conf.slots.gpus, gpus, strict=False)
+            m.model in g for m, g in zip(slots.gpus, gpus, strict=False)
         )
         rows.append(("gpus", ok, f"{gpus} (want {want})"))
         rows.append(("nas write+rename", kv.get("nas") == "ok", str(conf.nas)))
@@ -296,8 +297,8 @@ def _doctor(conf: FleetConf, t: Transport, args: argparse.Namespace) -> int:
         rows.append(
             (
                 "cores",
-                cores >= conf.slots.cpu,
-                f"{cores} physical, {cpus} logical (slots.cpu={conf.slots.cpu})",
+                cores >= slots.cpu,
+                f"{cores} physical, {cpus} logical (slots.cpu={slots.cpu})",
             )
         )
         return rows
@@ -343,7 +344,7 @@ def _push(conf: FleetConf, t: Transport, args: argparse.Namespace) -> int:
         r = t.container(host, ["bash", "-c", EXTRACT_SH, "_", str(conf.root), *shas])
         if r.returncode != 0:
             return f"FAIL extract: {_text(r)}"
-        gpus = str(len(conf.slots.gpus))
+        gpus = str(len(conf.slots[host].gpus))
         r = t.container(
             host,
             ["bash", "-c", _PROVISION_SH, "_", tree, str(conf.root), info, gpus],
@@ -477,8 +478,8 @@ def _submit(conf: FleetConf, args: argparse.Namespace) -> int:
     nas.ensure()
     code_dir = _code_dir(conf, args.snap)
     info = read_json(code_dir / "CODE.json")
-    if args.res not in (CPU, GPU_ANY, *conf.slots.models):
-        raise SystemExit(f"--res must be cpu, any_gpu or one of {conf.slots.models}")
+    if args.res not in (CPU, GPU_ANY, *conf.models):
+        raise SystemExit(f"--res must be cpu, any_gpu or one of {conf.models}")
     lists = expand(args.overrides, args.sweep, args.seeds)
     if args.raw:
         configs = [

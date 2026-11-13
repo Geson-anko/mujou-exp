@@ -82,6 +82,15 @@ class TestSubmit:
         with pytest.raises(SystemExit, match="any_gpu"):
             _fleet(fleet, "submit", "--batch", "b", "--raw", "--res", "a100")
 
+    def test_a_model_of_one_host_is_a_class(self, tmp_path: Path):
+        fleet = Fleet(
+            tmp_path,
+            more='[slots.h1]\ngpus = [{index = 0, model = "5070ti", mem_gb = 13.9,'
+            " jobs = 4}]\n",
+        )
+        assert _fleet(fleet, "submit", "--batch", "b", "--raw", "--res", "5070ti") == 0
+        assert [j["res"]["class"] for j in _queued(fleet)] == ["5070ti"]
+
     def test_confirm_needs_a_clean_pushed_snapshot(self, fleet: Fleet):
         code = fleet.conf.root / "code" / "abababababab" / "CODE.json"
         write_json(code, {**read_json(code), "dirty": True})
