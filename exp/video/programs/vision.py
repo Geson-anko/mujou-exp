@@ -66,7 +66,9 @@ window, in batches of ``PACKED_BATCH`` windows of a fixed shuffled order,
 one video, and its SIGReg is not that of a training batch, which mixes the
 nine videos; of a fixed size, not ``data.streams``: SIGReg grows with its
 sample, so the rows of runs of any streams are of the same sample; without
-the past tokens of ``vision.token_buffer``: the evaluation has no past),
+the past tokens of ``vision.token_buffer``: the evaluation has no past;
+with ``vision.ema`` the targets of ``pred`` are the target encoder's tokens,
+as in training),
 ``rank``, ``z_std_min``, ``z_spread``, and the
 spread of the target tokens within the stacks against that between them (the
 collapse of the tokens within a stack, which ``z_spread`` does not see;
@@ -569,6 +571,9 @@ class PackedMeasures:
             )
             tokens = mods.encoder(h, mods.segments)
             spreads.append(token_spread(tokens[:, : mods.segments[0]], self._slots))
+            goal = None  # the prediction's targets: the target encoder's tokens
+            if mods.target is not None:
+                goal = mods.target(h[:, : mods.segments[0]], mods.segments[:1])
             t = jepa_loss_packed(
                 tokens,
                 y,
@@ -589,6 +594,7 @@ class PackedMeasures:
                 zpred=mods.zpred,
                 directions_u=self._directions_u[split],
                 target_norm=v.target_norm,
+                goal=goal,
             )
             assert t.zpred is not None  # of the packed loss
             terms.append(torch.stack([t.loss, t.pred, t.sigreg, t.zpred]))

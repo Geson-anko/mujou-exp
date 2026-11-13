@@ -737,6 +737,11 @@ class PackedJEPAHead(Node):
     ``generator``) and sums them along the directions of the tokens. Nothing
     of another node goes into it.
 
+    With ``target`` (I-JEPA's target encoder, ``vision.ema``) it receives
+    ``(B, L + T, D)``: the packed tokens, then the $T$ tokens of the target
+    encoder's path (``ema.TargetStage``), the prediction's targets. They are
+    constants of $L$: their credit is 0.
+
     Args:
         predictor: The predictor, on ``device``.
         proj: The projection to $z$, on ``device`` (None: $z$ is the mean).
@@ -759,6 +764,8 @@ class PackedJEPAHead(Node):
         zpred: $q$ of the completion (None: none), learned with them.
         target_norm: The prediction's targets through a LayerNorm without
             affine.
+        target: The last $T$ rows it receives are the target encoder's
+            tokens, the prediction's targets.
         token_buffer: The capacity of the past target tokens per stream (0:
             none).
         token_insert: The tokens of a frame inserted into them per stream.
@@ -789,6 +796,7 @@ class PackedJEPAHead(Node):
         projector: Projector | None = None,
         zpred: ZPredictor | None = None,
         target_norm: bool = False,
+        target: bool = False,
         token_buffer: int = 0,
         token_insert: int = 64,
         device: Device = "cpu",
@@ -796,6 +804,7 @@ class PackedJEPAHead(Node):
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
+        self._target = target
         self.proj = proj
         self.projector, self.zpred = projector, zpred  # in the state
         self._token_sigreg = token_sigreg
@@ -946,8 +955,11 @@ class PackedJEPAHead(Node):
         token_weight, z_weight = self._weights
         with torch.enable_grad():
             leaf = h.detach().requires_grad_()
+            tokens, goal = leaf, None
+            if self._target:  # the target encoder's tokens after the packed ones
+                tokens, goal = leaf[:, : -self._t], leaf[:, -self._t :]
             terms = jepa_loss_packed(
-                leaf,
+                tokens,
                 y,
                 valid,
                 directions,
@@ -966,6 +978,7 @@ class PackedJEPAHead(Node):
                 zpred=self.zpred,
                 directions_u=directions_u if self._views else None,
                 target_norm=self._target_norm,
+                goal=goal,
                 past=PastSums(*past) if past else None,
             )
             energy = self._b * terms.loss

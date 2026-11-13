@@ -2,17 +2,20 @@ r"""The visions of M15: ``Chunker -> Enc1 .. EncL -> JEPAHead`` (PC-ALM) or
 ``Chunker -> JEPABP`` (BP), made from a ``RunConf`` from the same initial
 weights (``vit.build_vision``) and the same masks (the ``Chunker`` of the same
 seed). The packed layout (M17): ``StackChunker -> Enc1 .. EncL ->
-PackedJEPAHead`` (each stage a ``vit.Segmented``) or ``StackChunker ->
+PackedJEPAHead`` (each stage a ``vit.Segmented``, or with the target
+encoder of ``vision.ema`` an ``ema.TargetStage``) or ``StackChunker ->
 JEPABP``."""
 
 from typing import cast
 
 import mujou.pc as pc
 import torch
+from mujou.pc.optim import Optimizer
 
 import mujou
 from exp.video.dyn.nets import make_optimizer
 from exp.video.jepa.bp import JEPABP
+from exp.video.jepa.ema import Following, TargetStage
 from exp.video.jepa.masks import spatial_keep
 from exp.video.jepa.nodes import Chunker, JEPAHead, PackedJEPAHead, StackChunker
 from exp.video.jepa.vit import (
@@ -109,23 +112,21 @@ class VisionPC(mujou.Network):
         super().__init__()
         v, tau, b = _parts(conf)
         assert conf.optim_vision is not None  # _parts checks
-        if v.ema:
-            raise ValueError(
-                "vision.ema is a control of BP only (learner=bp): an EMA of the "
-                "encoder is not a node of PC-ALM"
-            )
         optimizer = make_optimizer(conf.optim_vision, conf.time.frame)
         self.mods, self.tau = mods, tau
         packed = v.layout == "packed"
         self.chunker = _first(conf, v, tau, b, mods)
         spec, port = self.chunker.act_spec, self.chunker.next
         self.names = tuple(f"enc{i + 1}" for i in range(len(mods.encoder.stages)))
-        for name, stage in zip(self.names, mods.encoder.stages, strict=True):
+        for i, (name, stage) in enumerate(
+            zip(self.names, mods.encoder.stages, strict=True)
+        ):
+            module, moves = self._node_module(i, cast(Stage, stage), optimizer, v)
             node = pc.Layer(
-                Segmented(cast(Stage, stage), mods.segments) if packed else stage,
+                module,
                 act_spec=spec,
                 tau=tau,
-                optimizer=optimizer,
+                optimizer=moves,
                 learn_interval=conf.time.learn_interval,
                 device=conf.device,
                 cuda_graph=conf.ctl.cuda_graph and conf.device.startswith("cuda"),
@@ -151,6 +152,7 @@ class VisionPC(mujou.Network):
                 projector=mods.projector,
                 zpred=mods.zpred,
                 target_norm=v.target_norm,
+                target=mods.target is not None,
                 token_buffer=v.token_buffer,
                 token_insert=v.token_insert,
                 directions=v.sigreg_directions,
@@ -190,6 +192,23 @@ class VisionPC(mujou.Network):
             self.head.stats,
             self.head.z_out,
         )
+
+    def _node_module(
+        self, i: int, stage: Stage, optimizer: Optimizer, v: VisionConf
+    ) -> tuple[torch.nn.Module, Optimizer]:
+        """The module and the optimizer of encoder node ``i``: the stage
+        (``Segmented``, packed) and ``optimizer``; with the target encoder
+        (``vision.ema``) the stage and its copy (``ema.TargetStage``) and
+        ``optimizer`` followed by the copy's move (``ema.Following``)."""
+        mods = self.mods
+        if v.layout != "packed":
+            return stage, optimizer
+        if mods.target is None:
+            return Segmented(stage, mods.segments), optimizer
+        assert v.ema  # build_vision builds the target with it only
+        target = cast(Stage, mods.target.stages[i])
+        module = TargetStage(stage, target, mods.segments, first=i == 0)
+        return module, Following(optimizer, online=stage, target=target, momentum=v.ema)
 
 
 class VisionBP(mujou.Network):

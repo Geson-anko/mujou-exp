@@ -1,0 +1,30 @@
+# @package _global_
+# M17, I-JEPA's target encoder instead of SIGReg (MILESTONES.md, M17, decided
+# 2026-11-13): a single stream cannot give SIGReg the i.i.d. samples it needs
+# (results/m17.md, the measurements toward a per-data-point SIGReg). The
+# prediction's targets are the tokens of an EMA of the encoder on the whole
+# stack (jepa.ema), of momentum 0.996 per learning step: one step is 0.1 s of
+# the stream for any data.streams, so the time constant 1 / (1 - m) = 250 steps
+# is 25 s of the stream. I-JEPA ramps m to 1 over a fixed number of epochs; a
+# continual stream has none, so m stays constant. No SIGReg term
+# (vision.sigreg 0: the stats still report S of the tokens, of no weight) and
+# no past tokens. The representation is the T tokens of d each, D = T d = 1024:
+# this arm T = 512 tokens (patch 16, tubelet 2: 8 slots x 8 x 8) of d = 2. No
+# LayerNorm on the targets (vision.target_norm false): a token of d = 2 through
+# a LayerNorm without affine is +-1, nothing of its content left. One stream
+# (B = 1); everything else, the optimizer, 1800 s and the checkpoints every
+# 300 s included, that of m17/tok_n16.
+defaults:
+  - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
+  - _self_
+name: m17/ema_t512
+tags: [m17, wt, n16, tok, ema, t512]
+data:
+  streams: 1
+vision:
+  patch: 16
+  tubelet: 2
+  token_dim: 2
+  ema: 0.996
+  sigreg: 0.0
+  token_buffer: 0

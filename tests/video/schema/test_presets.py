@@ -147,13 +147,20 @@ class TestM17:
     reconstruction term (the user's rule)."""
 
     @pytest.mark.parametrize("experiment", M17)
-    def test_no_reconstruction_term_and_no_ema(self, experiment: str) -> None:
+    def test_no_reconstruction_term_and_the_target_encoder_of_ema_only(
+        self, experiment: str
+    ) -> None:
         conf = compose([f"+experiment={experiment}"])
         assert conf.vision is not None and conf.vision.recon == 0.0
-        assert conf.vision.layout == "packed" and conf.vision.ema == 0.0
+        assert conf.vision.layout == "packed"
+        ema = experiment.startswith("m17/ema_")
+        assert bool(conf.vision.ema) == ema
 
     def test_the_presets_are_n16_n8_and_n1_and_the_space_time_ones(self) -> None:
         assert M17 == [
+            "m17/ema_t128",
+            "m17/ema_t512",
+            "m17/ema_t64",
             "m17/st_n16",
             "m17/st_tok_n16",
             "m17/tok_n16",
@@ -219,6 +226,40 @@ class TestM17:
         assert wide is not None and wide.z_width == 32
         with pytest.raises(ValueError, match="posthoc_code"):
             compose(["+experiment=m17/tok_n16", "measure.posthoc_code=pooled"])
+
+    @pytest.mark.parametrize(
+        ("experiment", "patch", "tubelet", "d"),
+        [
+            ("m17/ema_t512", 16, 2, 2),
+            ("m17/ema_t128", 32, 2, 8),
+            ("m17/ema_t64", 32, 4, 16),
+        ],
+    )
+    def test_the_ema_presets_are_tok_n16_with_the_target_encoder(
+        self, experiment: str, patch: int, tubelet: int, d: int
+    ) -> None:
+        """I-JEPA's target encoder of m = 0.996 per step instead of SIGReg
+        (2026-11-13): no SIGReg term, no past tokens, no LayerNorm on the
+        targets, one stream; D = T d = 1024 in each arm (T of 128 x 128
+        frames, N = 16), and everything else that of tok_n16."""
+        conf = compose([f"+experiment={experiment}"])
+        base = compose(["+experiment=m17/tok_n16"])
+        v, w = conf.vision, base.vision
+        assert v is not None and w is not None
+        assert (v.patch, v.tubelet, v.token_dim) == (patch, tubelet, d)
+        tokens = (v.frames // v.tubelet) * (128 // v.patch) ** 2
+        assert tokens * d == 1024
+        assert v.ema == 0.996 and v.sigreg == 0.0 and v.token_buffer == 0
+        assert not v.target_norm
+        assert conf.data.streams == 1
+        assert conf.data.tours == base.data.tours
+        assert conf.seconds == 1800.0 and conf.ctl == base.ctl
+        assert conf.measure == base.measure and conf.time == base.time
+        assert conf.optim_vision == base.optim_vision
+        changed = {"patch", "tubelet", "token_dim", "ema", "sigreg", "token_buffer"}
+        for name in vars(w):
+            if name not in changed:
+                assert getattr(v, name) == getattr(w, name), name
 
     def test_an_entry_of_the_context_masks_takes_an_override(self) -> None:
         conf = compose(["+experiment=m17/wt_n16", "vision.context_masks.1.scale=0.5"])
@@ -296,6 +337,13 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
     assert v is not None
     if v.token_weight == 0:
         pytest.skip("no token is predicted")
+    if v.ema:
+        # lambda = 0: constant tokens are a minimum of the loss itself. What
+        # keeps the target encoder's tokens off it is the dynamics of the EMA
+        # and the predictor (I-JEPA, BYOL), not the loss (MILESTONES.md, M17,
+        # 2026-11-13: a method of the loss itself is future work).
+        assert v.sigreg == 0.0
+        pytest.skip("the target encoder: no term of the loss prevents collapse")
 
     def norm(x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.layer_norm(x, x.shape[-1:]) if v.target_norm else x

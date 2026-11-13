@@ -46,7 +46,8 @@ class TestPacked:
             ({"z_weight": 1.0, "projector": [0]}, "widths"),
             ({"pred_dim": 24}, "multiple of 16"),
             ({"pred_dim": 32, "pred_heads": 3}, "heads"),
-            ({"ema": 1.0}, "ema"),
+            ({"ema": 1.5}, "ema"),
+            ({"ema": -0.1}, "ema"),
             ({"ema": 0.9, "token_weight": 0.0, "z_weight": 1.0}, "token_weight 0"),
             ({"token_dim": 0}, "token_dim"),
             ({"token_dim": 16, "z_dim": 16}, "z_dim None"),
@@ -59,6 +60,10 @@ class TestPacked:
     def test_refused(self, kw, match):
         with pytest.raises(ValueError, match=match):
             _packed(**kw)
+
+    def test_the_target_encoder_is_off_by_default_and_m_in_0_1(self):
+        assert _packed().ema == 0.0 and VisionConf().ema == 0.0  # 0: none
+        assert [_packed(ema=m).ema for m in (0.0, 0.996, 1.0)] == [0.0, 0.996, 1.0]
 
     def test_the_tokens_as_the_representation(self):
         v = _packed(token_dim=16, sigreg_on="tokens", token_sigreg="raw")

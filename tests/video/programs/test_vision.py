@@ -607,6 +607,35 @@ class TestPacked:
         rows = _lines(tmp_path / "whole" / "stream.jsonl")
         assert all(math.isfinite(r["sigreg"]) for r in rows if r["sigreg"] is not None)
 
+    @pytest.mark.parametrize("learner", ["pc", "bp"])
+    def test_the_ema_preset_resumes_with_its_target_encoder(
+        self, tmp_path, tours, learner
+    ):
+        """m17/ema_t128 (I-JEPA's target encoder, here of m = 0.5 so that it
+        moves visibly in a second): the target encoder is resumable state
+        (BP: JEPABP's; PC-ALM: each encoder node's copy of its stage), so a
+        run stopped at frame 17 and resumed writes the bytes of one never
+        stopped (the losses' targets are its tokens), and the checkpoints hold
+        it for the evaluation."""
+        extra = [
+            f"learner={learner}",
+            "ctl.resume_every=0.3",
+            "ctl.log_every=0.2",
+            "vision.ema=0.5",
+        ]
+        kw = {"experiment": "m17/ema_t128", "tiny": tours}
+        assert _run(tmp_path / "whole", extra, **kw) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(17), **kw) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2, **kw) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        conf = from_dict(json.loads((cut / "job.json").read_text())["config"])
+        mods = rebuild(conf)
+        assert set(mods) == {"encoder", "predictor", "target"}
+        ckpt.load_eval(cut / "ckpt" / "00001.0.pt", mods)
+
     def test_advance_needs_the_packed_layout(self, tmp_path, monkeypatch):
         root = numbered(tmp_path / "data" / "d", {"A": 40, "H": 96}, size=8)
         monkeypatch.setenv(DATA_ENV, str(root.parent))

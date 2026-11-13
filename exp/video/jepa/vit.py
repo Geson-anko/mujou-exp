@@ -35,6 +35,7 @@ encoder sends are the representation, and the predictor maps them to its
 width and back (``PackedPredictor``).
 """
 
+import copy
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -509,7 +510,11 @@ class VisionModules:
     ``patch`` the side of a patch. The packed layout (``layout="packed"``) has
     tubelets of ``tubelet`` frames, the lengths ``segments`` of the views of
     a packed sequence (the target view's $T$ first) and, with ``vision.z_dim``
-    not the width, the projection ``proj`` of the pooled tokens to $z$.
+    not the width, the projection ``proj`` of the pooled tokens to $z$. With
+    ``vision.ema`` it has the ``target`` encoder (I-JEPA): a copy of
+    ``encoder`` whose parameters require no gradient, moved by the learner
+    after each step (``jepa.ema.ema_``), whose tokens are the prediction's
+    targets.
     """
 
     encoder: Encoder
@@ -524,6 +529,7 @@ class VisionModules:
     zpred: ZPredictor | None = None
     tubelet: int = 0
     segments: tuple[int, ...] = ()
+    target: Encoder | None = None  # the target encoder (packed, vision.ema)
 
     def named(self) -> dict[str, nn.Module]:
         """The modules by the names of the checkpoints (the decoder and the
@@ -540,6 +546,8 @@ class VisionModules:
             out["projector"] = self.projector
         if self.zpred is not None:
             out["zpred"] = self.zpred
+        if self.target is not None:
+            out["target"] = self.target
         return out
 
     @property
@@ -563,12 +571,22 @@ class VisionModules:
         """The target view's tokens ``(n, T, D)`` of the stacks ``chunks``
         ``(n, N, C, H, W)`` (u8, or float in ``[0, 1]``) of the packed
         layout, at the weights as they are now."""
+        return self.encoder(self._whole(chunks), (self.tokens_per_view,))
+
+    def target_tokens(self, chunks: Tensor) -> Tensor:
+        """The prediction's targets ``(n, T, D)`` of the stacks ``chunks``:
+        the tokens of the ``target`` encoder, or ``tokens`` without one."""
+        if self.target is None:
+            return self.tokens(chunks)
+        return self.target(self._whole(chunks), (self.tokens_per_view,))
+
+    def _whole(self, chunks: Tensor) -> Tensor:
+        """The packed sequence ``(n, T, P + 1)`` of the stacks' target view."""
         x = chunks.float() / 255 if chunks.dtype == torch.uint8 else chunks.float()
         t = self.tokens_per_view
         pixels = patchify_tubelets(x, self.patch, self.tubelet)
         ids = torch.arange(t, device=x.device, dtype=x.dtype).expand(len(x), t)
-        h = torch.cat([pixels, ids[..., None]], 2)
-        return self.encoder(h, (t,))
+        return torch.cat([pixels, ids[..., None]], 2)
 
     @property
     def grid(self) -> tuple[int, int]:
@@ -627,7 +645,8 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
     encoder's stages, the predictor, (packed, ``z_dim`` not the width) the
     projection, and (``vision.projector``, ``zpred_hidden``) the projector and
     the predictor of $u$, built and initialized in this order on the CPU (so that the initial weights do not depend on the
-    device), then moved to ``conf.device``. The CPU's global RNG is restored
+    device), then (``vision.ema``) the target encoder as a copy of the
+    encoder, all moved to ``conf.device``. The CPU's global RNG is restored
     afterwards. The one place that draws the vision's initial weights, for
     PC, BP and the decoder fit afterwards.
 
@@ -706,6 +725,9 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
             else:
                 decoder = PixelDecoder(v.dim, v.decoder_hidden, shape)
     encoder = Encoder(stages, extra=extra, z_pool=v.z_pool)
+    target = None  # a copy: the other weights do not depend on it
+    if v.ema:  # 0: none (and none in the checkpoints of the runs before)
+        target = copy.deepcopy(encoder).requires_grad_(False).to(conf.device)
     mods = VisionModules(
         encoder=encoder.to(conf.device),
         predictor=predictor.to(conf.device),
@@ -717,6 +739,7 @@ def build_vision(conf: RunConf, *, seed: int) -> VisionModules:
         tubelet=v.tubelet,
         projector=None if projector is None else projector.to(conf.device),
         zpred=None if zpred is None else zpred.to(conf.device),
+        target=target,
     )
     if packed:  # imported here: masks imports this module
         from exp.video.jepa.masks import token_keep

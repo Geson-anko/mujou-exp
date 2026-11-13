@@ -302,3 +302,46 @@ class TestSpaceTimeViews:
         m = multiblock_masks(5, GRID, mask, keep=spatial_keep(GRID, mask), generator=g)
         assert not bool(m.any()) and torch.equal(g.get_state(), state)
         assert token_keep(GRID, 4, mask) == 2 * GRID[0] * GRID[1]
+
+
+class TestTheFourByFourGrid:
+    """V-JEPA's two context views (8 blocks of 0.15, 2 of 0.7) on the 4 x 4
+    grid of 128 x 128 frames in patches of 32 (M17's arms of T = 128 and 64),
+    against the 8 x 8 grid of patches of 16."""
+
+    SHORT, LONG = MaskConf(blocks=8, scale=0.15), MaskConf(blocks=2, scale=0.7)
+
+    def test_the_sides_of_the_blocks(self):
+        """Short: area 0.15 x 16 = 2.4, sides round(sqrt(2.4 s)) and
+        round(sqrt(2.4 / s)) for s in [0.75, 1.5]: 1 or 2. Long: area 11.2,
+        sides 3 or 4, so one block covers at least 9 of the 16 patches and a
+        union leaves at most 7 visible."""
+        grid = (4, 4)
+        for mask, sides in ((self.SHORT, {1, 2}), (self.LONG, {3, 4})):
+            s = torch.exp(
+                torch.linspace(math.log(mask.aspect[0]), math.log(mask.aspect[1]), 101)
+            )
+            h, w = block_sides(
+                s, grid, ratio=mask.scale * mask.blocks, blocks=mask.blocks
+            )
+            assert set(h.tolist()) == sides and set(w.tolist()) == sides
+        g = torch.Generator().manual_seed(0)
+        visible = (~_union(4096, grid, self.LONG, g)).flatten(1).sum(1)
+        assert int(visible.max()) <= 7
+
+    def test_the_masks_are_valid_and_their_masked_fractions(self):
+        """The visible patches of a slot (expected_keep): 4 and 1 of 16 on 4 x
+        4 (0.75 and 0.9375 masked), 18 and 8 of 64 on 8 x 8 (0.72 and 0.875);
+        between 1 and T_s - 1 (a valid view), and every drawn mask keeps
+        exactly that many. A union leaves fewer with probability at most
+        KEEP_QUANTILE (the lower quartile), so masked patches are shown at most
+        with KEEP_QUANTILE ** CANDIDATES."""
+        for grid, keeps in (((4, 4), (4, 1)), ((8, 8), (18, 8))):
+            t = grid[0] * grid[1]
+            for mask, keep in zip((self.SHORT, self.LONG), keeps, strict=True):
+                assert expected_keep(grid, mask) == spatial_keep(grid, mask) == keep
+                assert 1 <= keep <= t - 1
+                g = torch.Generator().manual_seed(1)
+                drawn = multiblock_masks(256, grid, mask, keep=keep, generator=g)
+                assert ((~drawn).flatten(1).sum(1) == keep).all()
+        assert KEEP_QUANTILE**CANDIDATES < 2e-5

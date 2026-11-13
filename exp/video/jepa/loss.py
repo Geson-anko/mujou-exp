@@ -34,7 +34,9 @@ streams valid it is $(1 - \lambda) \bar L^{\mathrm{pred}} + \lambda S$
 SIGReg with more streams (as ``exp.lib.sigreg.SIGReg``). With ``sg`` the
 target tokens are constants of $L^{\mathrm{pred}}$ (the SIGReg term still
 reaches the target view, and so does the reconstruction: through $z$). There
-is no target encoder: the target view goes through the same weights.
+is no target encoder: the target view goes through the same weights (but in
+the packed layout with ``vision.ema``, whose targets ``goal`` are the tokens
+of I-JEPA's target encoder, ``jepa.ema``: constants of $L$).
 
 The loss is computed for every stream, valid or not, and the invalid ones are
 weighted out (no shape depends on ``valid``, so nothing reads the device

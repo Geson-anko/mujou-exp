@@ -122,6 +122,20 @@ class VisionConf:
     the streams;
     ``token_sigreg`` "raw" only: the Epps-Pulley statistic of the current and
     the past tokens together).
+
+    With ``ema`` $m$ (packed, M17 2026-11-13; I-JEPA, V-JEPA) the prediction's
+    targets are the tokens of the target encoder on the whole stack: a copy of
+    the encoder, without gradient, moved after each learning step by
+    $\bar\theta \leftarrow m \bar\theta + (1 - m) \theta$
+    (``jepa.vit.VisionModules.target``). $m$ is a constant per learning step;
+    one step is 0.1 s of the stream whatever ``data.streams``, so its time
+    constant $1 / (1 - m)$ steps is the same stretch of the stream for any
+    $B$ (0.996: 250 steps, 25 s). I-JEPA ramps $m$ to 1 over a fixed number
+    of epochs, which a continual stream does not have: M17 holds it constant.
+    $m = 1$ keeps the target encoder at the initial weights. ``ema`` 0 builds
+    no target encoder (the targets are the encoder's own tokens, as before
+    2026-11-13; with ``sg`` they are its limit $m \to 0$, the encoder itself
+    without gradient).
     """
 
     patch: int = 4  # pixels per side of a patch
@@ -176,9 +190,10 @@ class VisionConf:
     # "packed" only: the prediction's targets are the target tokens through a
     # LayerNorm without affine (the official I-JEPA / V-JEPA code)
     target_norm: bool = False
-    # "packed", BP only, a diagnostic control (M17's rule is no EMA): the
-    # targets of the prediction are the tokens of an EMA of the encoder of
-    # this momentum per learning step (0: none, the encoder itself)
+    # "packed" only: the momentum m per learning step of the target encoder
+    # (I-JEPA), an EMA of the encoder whose tokens are the prediction's
+    # targets (0: no target encoder, the encoder itself; the runs before
+    # 2026-11-13 hold 0 and build no target module)
     ema: float = 0.0
     # "packed" only: the width of the encoder's output tokens (None: dim, no map)
     token_dim: int | None = None
@@ -297,8 +312,8 @@ class VisionConf:
                 f"the predictor's width {width} must be a multiple of 16 (the 3-D "
                 f"positions) and of its heads {heads}"
             )
-        if not 0 <= self.ema < 1:
-            raise ValueError(f"vision.ema must be in [0, 1), not {self.ema}")
+        if not 0 <= self.ema <= 1:
+            raise ValueError(f"vision.ema must be in [0, 1], not {self.ema}")
         if self.ema and self.token_weight == 0:
             raise ValueError(
                 "vision.ema is of the targets of the tokens: token_weight 0"

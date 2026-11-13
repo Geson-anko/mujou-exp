@@ -8,7 +8,9 @@ blocks, as in training) and ``future`` (``future_tokens``: every token of
 the last ``future_slots`` time slots, the future of the stack). As in
 training, the context (the visible tokens only) goes through the encoder and
 the predictor, and the target tokens $s$ are those of the whole stack through
-the same weights (``VisionModules.tokens``). For a predictor $\hat s$,
+the same weights (``VisionModules.tokens``), or through the target encoder
+with ``vision.ema`` (``VisionModules.target_tokens``). For a predictor
+$\hat s$,
 
 $$
 E = \frac{\sum_{(i,t) \in \Omega} \lVert \hat s_{i,t} - s_{i,t} \rVert^2}
@@ -162,7 +164,7 @@ def complete(
     Args:
         mods: The modules of the packed layout.
         chunks: The stacks.
-        target: Their target tokens ``(n, T, D)`` (``mods.tokens``).
+        target: Their target tokens ``(n, T, D)`` (``targets``).
         masked: The mask.
         keep: The visible tokens of a row.
 
@@ -184,10 +186,11 @@ def complete(
 
 @torch.no_grad()
 def targets(mods: VisionModules, x: Tensor, *, normalize: bool) -> Tensor:
-    """The target tokens ``(n, T, D)`` of the stacks ``x`` (``mods.tokens``),
+    """The target tokens ``(n, T, D)`` of the stacks ``x``
+    (``mods.target_tokens``: the target encoder's with ``vision.ema``),
     through a LayerNorm without affine with ``normalize`` (those the
     prediction of ``vision.target_norm`` learns)."""
-    target = mods.tokens(x)
+    target = mods.target_tokens(x)
     return nn.functional.layer_norm(target, target.shape[-1:]) if normalize else target
 
 
