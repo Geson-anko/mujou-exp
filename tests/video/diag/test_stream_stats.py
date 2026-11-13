@@ -1,24 +1,29 @@
 """The stream's statistics (diagnosis code, M17): the sums against brute
 force, the autocovariance of an AR(1) video against its closed form, the
-reference of two videos against all their pairs, and the arithmetic of the
-budget and the drift."""
+jackknife against leaving each video out, the reference of two videos against
+all their pairs, Student's t against its closed forms, the effective sample
+size, the drift against all pairs, and the arithmetic of the budget."""
 
 import json
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from exp.video.diag.stream_stats import (
-    between_reference,
     budget,
+    crossing,
     curve,
     drift,
-    first_reach,
     lag_sums,
     log_lags,
+    n_eff,
+    reference,
     run_speed,
+    stack_codes,
     stack_products,
+    t_quantile,
 )
 
 
@@ -29,48 +34,39 @@ def test_log_lags_are_a_third_of_an_octave_apart():
     assert lags == sorted(set(lags))
 
 
-def test_stack_products_are_the_dot_of_the_flattened_stacks():
-    g = torch.Generator().manual_seed(0)
-    y = torch.randn(60, 5, generator=g, dtype=torch.float64)
-    stride, n, lag = 3, 4, 7
-    grid = torch.arange(0, 60, stride)
-    anchors = grid[grid + lag < 60]
-    p = (y[anchors] * y[anchors + lag]).sum(1)
-    got = stack_products(p, n)
-    want = [
-        float(
-            (
-                y[int(t) - stride * (n - 1) : int(t) + 1 : stride].flatten()
-                * y[
-                    int(t) + lag - stride * (n - 1) : int(t) + lag + 1 : stride
-                ].flatten()
-            ).sum()
-        )
-        for t in anchors[n - 1 :]
-    ]
-    torch.testing.assert_close(got, torch.tensor(want, dtype=torch.float64))
+def test_stack_products_are_the_sums_of_consecutive_values():
+    p = torch.arange(10, dtype=torch.float64)
+    torch.testing.assert_close(
+        stack_products(p, 3),
+        torch.tensor(
+            [float(j + j - 1 + j - 2) for j in range(2, 10)], dtype=torch.float64
+        ),
+    )
 
 
-def test_lag_sums_are_the_sums_of_the_products_by_brute_force():
+def test_lag_sums_are_the_sums_over_the_stacks_by_brute_force():
     g = torch.Generator().manual_seed(1)
-    x = torch.rand(50, 6, generator=g, dtype=torch.float64)
+    x = torch.rand(40, 6, generator=g, dtype=torch.float64)
+    own = x.mean(0)
     m = torch.rand(6, generator=g, dtype=torch.float64)
-    s = lag_sums(x, m, [1, 5], stride=2, frames=3, blocks=2)
-    y, u = x - m, x - x.mean(0)
-    for c, z in (("g", y), ("w", u)):
-        for i, lag in enumerate([1, 5]):
-            t = torch.arange(0, 50, 2)
-            t = t[t + lag < 50]
-            p = (z[t] * z[t + lag]).sum(1)
-            assert sum(s[f"frame_{c}"][i]) == pytest.approx(float(p.sum()), rel=1e-5)
-            stacks = sum(
-                float((z[t[j - 2 : j + 1]] * z[t[j - 2 : j + 1] + lag]).sum())
-                for j in range(2, len(t))
+    n, lags = 3, [1, 5]
+    s = lag_sums(x, own, m, lags, frames=n)
+    for c, y in (("g", x - m), ("w", x - own)):
+        stacks = [y[j - n + 1 : j + 1].flatten() for j in range(n - 1, 40)]
+        assert s[f"sq_{c}"] == pytest.approx(sum(float(v @ v) for v in stacks))
+        for i, k in enumerate(lags):
+            pairs = [(stacks[j], stacks[j + k]) for j in range(len(stacks) - k)]
+            assert s["anchors"][i] == len(pairs)
+            assert s[f"num_{c}"][i] == pytest.approx(
+                sum(float(a @ b) for a, b in pairs)
             )
-            assert sum(s[f"stack_{c}"][i]) == pytest.approx(stacks, rel=1e-5)
-            assert sum(s["frame_n"][i]) == len(t)
-        grid = torch.arange(0, 50, 2)
-        assert s[f"v_frame_{c}"] == pytest.approx(float((z[grid] ** 2).sum()), rel=1e-5)
+            assert s[f"den0_{c}"][i] == pytest.approx(
+                sum(float(a @ a) for a, _ in pairs)
+            )
+            assert s[f"den1_{c}"][i] == pytest.approx(
+                sum(float(b @ b) for _, b in pairs)
+            )
+    assert s["points"] == 40 - n + 1
 
 
 def _ar1_video(n: int, dim: int, phi: float, offset: float, seed: int) -> torch.Tensor:
@@ -88,36 +84,61 @@ def _ar1_video(n: int, dim: int, phi: float, offset: float, seed: int) -> torch.
 def test_the_curves_of_two_ar1_videos_are_their_closed_forms():
     # Within a video rho_w = phi^lag; centred by the pooled mean, video a has
     # rho_g = (phi^lag + delta^2) / (1 + delta^2) for offsets +-delta, and two
-    # frames of the two videos -delta^2 / (1 + delta^2).
-    phi, delta, dim, n = 0.9, 1.0, 1024, 3000
+    # data points of the two videos -delta^2 / (1 + delta^2). A stack's curve
+    # is the frame's.
+    phi, delta, dim, n = 0.9, 1.0, 1024, 1000
     xs = [_ar1_video(n, dim, phi, s * delta, seed) for s, seed in ((1, 2), (-1, 3))]
+    own = [x.mean(0) for x in xs]
     m = torch.cat(xs).mean(0)
-    lags = [1, 3, 10, 30, 100]
-    per = [lag_sums(x, m, lags, stride=3, frames=4, blocks=5) for x in xs]
+    lags = [1, 3, 10, 30]
     phis = torch.tensor([phi**lag for lag in lags], dtype=torch.float64)
     want_g = (phis + delta**2) / (1 + delta**2)
-    for kind in ("frame", "stack"):  # the stack's curve is the frame's
-        w = curve(per, kind, "w")
+    for frames in (1, 4):
+        per = [
+            lag_sums(x, o, m, lags, frames=frames) for x, o in zip(xs, own, strict=True)
+        ]
+        w = torch.tensor(curve(per, "w")["rho"], dtype=torch.float64)
+        torch.testing.assert_close(w, phis, atol=0.03, rtol=0)
+        g = curve(per, "g")
         torch.testing.assert_close(
-            torch.tensor(w["rho"], dtype=torch.float64), phis, atol=0.03, rtol=0
-        )
-        g = curve(per, kind, "g")
-        torch.testing.assert_close(
-            torch.tensor(g["rho"], dtype=torch.float64), want_g, atol=0.03, rtol=0
+            torch.tensor(g["rho"]).double(), want_g, atol=0.03, rtol=0
         )
         for v in g["videos"]:
             torch.testing.assert_close(
-                torch.tensor(v["rho"], dtype=torch.float64), want_g, atol=0.03, rtol=0
+                torch.tensor(v).double(), want_g, atol=0.03, rtol=0
             )
-        assert all(s > 0 for s in w["se"])
-    d = torch.stack([x.mean(0) for x in xs]) - m
-    g = curve(per, "frame", "g")
-    v = torch.tensor([x["v"] for x in g["videos"]])
-    ref = between_reference(d @ d.T, torch.tensor([n, n]), v, g["v"])
+    d = torch.stack(own) - m
+    sq = torch.tensor([s["sq_g"] for s in per], dtype=torch.float64)
+    pts = torch.tensor([s["points"] for s in per], dtype=torch.float64)
+    ref = reference(d @ d.T, pts, sq, 4.0)
     assert ref["ref"] == pytest.approx(-(delta**2) / (1 + delta**2), abs=0.03)
     assert ref["share_pooled"] == pytest.approx(delta**2 / (1 + delta**2), abs=0.03)
-    w = curve(per, "frame", "w")
-    assert first_reach(lags, w["rho"], w["se"], 0.0) == 100  # 0.9^30 = 0.04
+
+
+def test_the_error_is_the_jackknife_over_the_videos():
+    g = torch.Generator().manual_seed(6)
+    xs = [
+        torch.randn(30 + 5 * a, 4, generator=g, dtype=torch.float64) + a
+        for a in range(4)
+    ]
+    own = [x.mean(0) for x in xs]
+    m = torch.cat(xs).mean(0)
+    per = [lag_sums(x, o, m, [1, 2], frames=2) for x, o in zip(xs, own, strict=True)]
+    cur = curve(per, "g")
+
+    def pooled(keep: list[int], i: int) -> float:
+        num = sum(per[a]["num_g"][i] for a in keep)
+        d0 = sum(per[a]["den0_g"][i] for a in keep)
+        d1 = sum(per[a]["den1_g"][i] for a in keep)
+        return num / math.sqrt(d0 * d1)
+
+    for i in range(2):
+        assert cur["rho"][i] == pytest.approx(pooled([0, 1, 2, 3], i))
+        loo = torch.tensor(
+            [pooled([b for b in range(4) if b != a], i) for a in range(4)]
+        )
+        want = math.sqrt(3 / 4 * float(((loo - loo.mean()) ** 2).sum()))
+        assert cur["se"][i] == pytest.approx(want)
 
 
 def test_the_reference_is_the_mean_over_all_pairs_of_two_videos():
@@ -125,7 +146,7 @@ def test_the_reference_is_the_mean_over_all_pairs_of_two_videos():
     vids = [torch.randn(k, 3, generator=g, dtype=torch.float64) + k for k in (4, 5, 6)]
     allx = torch.cat(vids)
     m = allx.mean(0)
-    v_pool = float(((allx - m) ** 2).sum(1).mean())
+    sq = torch.tensor([float(((x - m) ** 2).sum()) for x in vids])
     pairs = torch.cat(
         [
             ((a - m) @ (b - m).T).flatten()
@@ -136,29 +157,54 @@ def test_the_reference_is_the_mean_over_all_pairs_of_two_videos():
     )
     d = torch.stack([x.mean(0) for x in vids]) - m
     n = torch.tensor([4.0, 5.0, 6.0])
-    ref = between_reference(d @ d.T, n, torch.ones(3), v_pool)
-    assert ref["ref"] == pytest.approx(float(pairs.mean()) / v_pool)
+    ref = reference(d @ d.T, n, sq)
+    v = float(sq.sum() / n.sum())
+    assert ref["ref"] == pytest.approx(float(pairs.mean()) / v)
     closed = -float((n**2 * (d**2).sum(1)).sum()) / float(n.sum() ** 2 - (n**2).sum())
-    assert ref["ref"] == pytest.approx(closed / v_pool)
+    assert ref["ref"] == pytest.approx(closed / v)
     assert ref["ref"] < 0
+    assert ref["se"] > 0
 
 
-def test_first_reach_is_the_first_lag_within_the_interval():
-    lags = [1, 2, 4, 8]
-    rho = [0.9, 0.5, 0.1, 0.0]
-    assert first_reach(lags, rho, [0.01] * 4, 0.0) == 8
-    assert first_reach(lags, rho, [0.06] * 4, 0.0) == 4  # 0.1 <= 1.96 * 0.06
-    assert first_reach(lags, rho, [0.0] * 4, 0.2) == 4
-    assert first_reach(lags, rho, [0.0] * 4, -0.1) is None
+def test_t_quantile_has_the_closed_forms_of_one_and_two_degrees():
+    p = 0.975
+    assert t_quantile(p, 1) == pytest.approx(math.tan(math.pi * (p - 0.5)), rel=1e-4)
+    assert t_quantile(p, 2) == pytest.approx(
+        (2 * p - 1) / math.sqrt(2 * p * (1 - p)), rel=1e-6
+    )
+    assert t_quantile(p, 10**6) == pytest.approx(1.959964, rel=1e-5)  # the normal's
 
 
-def test_drift_is_the_change_over_the_spread():
+def test_crossing_and_the_effective_sample_size():
+    assert crossing([1, 2, 4, 8], [0.9, 0.5, 0.1, 0.0], 0.1) == 4
+    assert crossing([1, 2], [0.9, 0.5], 0.1) is None
+    assert n_eff(0.0, 256) == 256
+    assert n_eff(1.0, 256) == pytest.approx(1.0)
+    assert n_eff(1 / 255, 256) == pytest.approx(128.0)  # the bias f'(0) at N/2
+    assert n_eff(-1 / 255, 256) is None
+
+
+def test_drift_averaged_over_every_shift_of_the_stacks_is_one():
     g = torch.Generator().manual_seed(5)
-    a = torch.randn(100, 4, generator=g, dtype=torch.float64)
-    a = a - a.mean(0)
-    assert drift(a, a) == 0.0
-    assert drift(a, 2 * a) == pytest.approx(0.25)  # |a|^2 / |2a|^2
-    assert drift(a, a + 3.0) == pytest.approx(36 / float((a**2).sum(1).mean()))
+    b = torch.randn(7, 4, generator=g, dtype=torch.float64)
+    assert drift(b, b) == 0.0
+    # every shift s = 1..n-1 pairs each stack with another: all ordered pairs
+    mean = sum(drift(b.roll(s, 0), b) for s in range(1, 7)) / 6
+    assert mean == pytest.approx(1.0)
+
+
+def test_stack_codes_code_consecutive_frames():
+    grid = torch.arange(10 * 2, dtype=torch.uint8).reshape(10, 2, 1, 1)
+    mods = SimpleNamespace(
+        tokens=lambda x: x.float().flatten(2),  # (n, N, C) as the tokens
+        z_of=lambda t: t.mean(1),
+    )
+    out = stack_codes(mods, grid, 3, ["tokens", "z"], batch=4)  # type: ignore[arg-type]
+    assert out["tokens"].shape == (8, 6)
+    for i in range(8):
+        want = grid[i : i + 3].float().flatten(1)
+        torch.testing.assert_close(out["tokens"][i], want.flatten())
+        torch.testing.assert_close(out["z"][i], want.mean(0))
 
 
 def test_budget_of_a_run(tmp_path):
