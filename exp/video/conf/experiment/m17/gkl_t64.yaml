@@ -1,0 +1,37 @@
+# @package _global_
+# M17, the Gaussian moment matching of the data points on one stream (the
+# user's decision, 2026-11-13; exp.lib.gauss_kl, results/m17.md): the term
+# of the data points is F / D, F = KL(N(mu, Sigma) || N(0, I)) of the law of
+# the flattened target tokens, D = T d = 1024; this arm the tokenization of
+# m17/ssig_t64 and m17/ema_t64, 64 tokens (patch 32, tubelet 4: 4 slots x 4 x 4) of d = 16.
+# Its gradient at the current stack is z - P (z - m), from the mean m and
+# the precision P = (n - D - 2) S^-1 of a buffer of N = 4096 past data
+# points (decided; N >= D + 3 for P to exist), stored as representations
+# (detached), one every vision.datapoint_every frames (k = 1; a row's age is
+# geometric of mean N k frames, 6.8 min at k = 1) at a uniformly drawn row
+# once full. The term is off until the buffer holds D + 3 rows (from where
+# P exists). No target encoder and no past tokens; one stream (B = 1); the
+# rest, the optimizer, 1800 s and the checkpoints every 300 s included,
+# that of m17/tok_n16, as m17/ssig_t64.
+# lambda (vision.sigreg) is a PLACEHOLDER, not calibrated: any lambda > 0
+# rules out the collapses (F = +inf there), so lambda is a temperature, to
+# be swept by decades before any run; 0.5 weighs the two means per
+# coordinate (the prediction error and F / D) equally.
+defaults:
+  - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
+  - _self_
+name: m17/gkl_t64
+tags: [m17, wt, n16, tok, gkl, t64]
+data:
+  streams: 1
+vision:
+  patch: 32
+  tubelet: 4
+  token_dim: 16
+  sigreg_on: datapoints
+  sigreg: 0.5  # PLACEHOLDER: to be swept by decades
+  token_buffer: 0
+  datapoint_buffer: 4096  # N, per stream
+  datapoint_every: 1  # k
+  datapoint_store: z
+  datapoint_law: gauss

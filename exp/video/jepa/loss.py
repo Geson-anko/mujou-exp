@@ -87,6 +87,19 @@ the stored inputs encoded by the current encoder, which the gradient
 reaches). One stream ($B = 1$) has a sample of its current stack and the
 buffer.
 
+With ``datapoint_law`` ``"gauss"`` (M17 2026-11-13, ``exp.lib.gauss_kl``)
+the term of the data points is the Gaussian moment matching instead of
+SIGReg: $S = F / D$, $F = \mathrm{KL}(N(\mu, \Sigma) \,\|\, N(0, I))$ of
+the law of $x_b$, whose gradient at $x_b$ is estimated from the moments of
+the buffer (``moments``, ``exp.lib.gauss_kl.GaussMoments``; the stored
+representations, constants): $\lambda n S$ has the value $\lambda n \hat F
+/ D$ ($\hat F$ the closed form of the buffer's sample moments) and the
+gradient $\lambda w_b \hat g_b / D$ at each $x_b$, $\hat g_b = x_b - \hat P
+(x_b - \hat\mu)$, so that the step's expected gradient is that of $F$
+(``exp.lib.gauss_kl``). Without moments (the evaluation, which has no
+buffer, or a buffer of fewer than $D + 3$ rows) $S = 0$: $F$ needs at least
+$D + 3$ samples.
+
 The space-time completion of the packed layout (M17, 2026-11-12; LeJEPA's
 Eq. 6-9 with one global view) embeds every view: $u_{b,0} = h(z_b)$ of the
 target view (the whole stack) and $u_{b,v} = h(z_{b,v})$ of each context
@@ -123,12 +136,14 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
+from exp.lib.gauss_kl import GaussMoments, gauss_kl_grad
 from exp.lib.sigreg import T_POINTS
-from exp.video.schema.vision import TOKEN_SIGREG
+from exp.video.schema.vision import DATAPOINT_LAWS, TOKEN_SIGREG
 
 __all__ = [
     "TOKEN_SIGREG",
     "JEPATerms",
+    "gauss_part",
     "PastSums",
     "Reconstruction",
     "jepa_loss",
@@ -245,6 +260,21 @@ def weighted_sigreg(
     phi = torch.exp(-(t**2) / 2)
     err = ((re - phi) ** 2 + im**2) * phi
     return (n * torch.trapezoid(err, t, dim=-1)).mean()
+
+
+def gauss_part(x: Tensor, weights: Tensor, moments: GaussMoments | None) -> Tensor:
+    r"""$S$ of the data points ``x`` ``(B, D)`` with the law ``"gauss"``
+    (module docstring) for 0/1 ``weights`` ``(B,)``: the value $\hat F / D$
+    (times ``moments.on``), and $n_w S$ ($n_w = \sum_b w_b$) of the gradient
+    $w_b \hat g_b / D$ at each $x_b$. 0 without ``moments``."""
+    d = x.shape[1]
+    if moments is None:
+        return x.new_zeros(())
+    g = gauss_kl_grad(x, moments)  # (B, D), constants
+    n = weights.sum().clamp(min=1)
+    # of value 0: only its gradient w_b g_b / n_w counts
+    linear = (weights[:, None] * g * (x - x.detach())).sum() / n
+    return (moments.on * moments.kl + linear) / d
 
 
 class Reconstruction(NamedTuple):
@@ -421,6 +451,8 @@ def jepa_loss_packed(
     goal: Tensor | None = None,
     past: PastSums | None = None,
     points: Tensor | None = None,
+    datapoint_law: str = "sigreg",
+    moments: GaussMoments | None = None,
 ) -> JEPATerms:
     r"""$L$ of the packed layout (module docstring).
 
@@ -461,7 +493,24 @@ def jepa_loss_packed(
             among its samples; None: none.
         points: With ``sigreg_on`` ``"datapoints"``, more samples ``(n, T
             D)`` in the graph (the stored inputs encoded anew); None: none.
+        datapoint_law: With ``sigreg_on`` ``"datapoints"``, the term of the
+            data points (``schema.vision.DATAPOINT_LAWS``): ``"sigreg"`` or
+            ``"gauss"`` (module docstring).
+        moments: With ``datapoint_law`` ``"gauss"``, the moments of the
+            buffer; None: none (the term is 0).
+
+    Raises:
+        ValueError: ``datapoint_law`` is not of ``DATAPOINT_LAWS``, or it is
+            ``"gauss"`` with ``points`` (the gradient of the moments is of
+            the current samples only).
     """
+    if datapoint_law not in DATAPOINT_LAWS:
+        raise ValueError(
+            f"datapoint_law must be one of {DATAPOINT_LAWS}, not {datapoint_law!r}"
+        )
+    gauss = datapoint_law == "gauss"
+    if gauss and points is not None:
+        raise ValueError("datapoint_law 'gauss' takes no points in the graph")
     b, _, d = tokens.shape
     views = len(keeps)
     t = y.shape[1] // views
@@ -503,7 +552,9 @@ def jepa_loss_packed(
     parts = []
     if sigreg_on in ("z", "both"):
         parts.append(weighted_sigreg(z, w, directions_z))
-    if sigreg_on == "datapoints":
+    if sigreg_on == "datapoints" and gauss:
+        parts.append(gauss_part(target.flatten(1), w, moments))
+    elif sigreg_on == "datapoints":
         x, wx = target.flatten(1), w
         if points is not None:
             x = torch.cat([x, points])

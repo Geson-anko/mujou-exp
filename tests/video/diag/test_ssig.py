@@ -97,3 +97,16 @@ def test_the_bench_runs_both_stores_with_the_buffer_full():
         out = bench(over, store=store, frames=2, warmup=1)
         assert out["store"] == store and out["buffer"] == 4
         assert out["steps_per_s"] > 0
+
+
+def test_the_bench_runs_the_gauss_preset_with_its_moments():
+    """m17/gkl_t128 (the stored representations only): the full buffer makes
+    its moments at each step's insertion."""
+    over = tiny("none") + [
+        "+experiment=m17/gkl_t128",
+        "vision.token_dim=1",
+        "vision.datapoint_buffer=40",
+    ]
+    over = [o for o in over if not o.startswith("+experiment=m17/wt_n16")]
+    out = bench(over, store="z", frames=2, warmup=1)
+    assert out["buffer"] == 40 and out["steps_per_s"] > 0

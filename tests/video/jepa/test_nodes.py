@@ -8,6 +8,7 @@ import mujou.testing
 import pytest
 import torch
 
+from exp.lib.gauss_kl import buffer_moments
 from exp.lib.sigreg import ecf_sums, sigreg
 from exp.video.jepa.loss import jepa_loss, jepa_loss_packed
 from exp.video.jepa.masks import block_masks, make_views, multiblock_masks, pack_views
@@ -665,6 +666,23 @@ DATAPOINTS = {
 }  # SIGReg of the data points (2 slots x 16 tokens x 8 = 256 numbers each)
 # with 5 past data points per stream
 
+GAUSS = {
+    "token_dim": 1,
+    "sigreg_on": "datapoints",
+    "datapoint_buffer": 20,
+    "datapoint_law": "gauss",
+    "sigreg": 0.3,
+}  # the Gaussian moment matching of the data points (32 numbers each) with
+# 20 past data points per stream (of 2 streams 40 rows, at least D + 3 = 35)
+
+
+def _fill(points: PastPoints, seed: int = 0) -> None:
+    """Fill every row of ``points`` with N(0, 1) values (as a full buffer):
+    the moments are made at the next insertion."""
+    g = torch.Generator().manual_seed(seed)
+    points.rows.copy_(torch.randn(points.rows.shape, generator=g))
+    points.count = len(points.rows)
+
 
 def _points(capacity: int = 4, every: int = 1, streams: int = 1) -> PastPoints:
     return PastPoints(
@@ -763,6 +781,58 @@ class TestPastPoints:
     def test_refused(self, capacity, every):
         with pytest.raises(ValueError, match="capacity >= 1 and every >= 1"):
             _points(capacity=capacity, every=every)
+
+    def test_the_moments_are_made_at_each_insertion_from_d_plus_3_rows(self):
+        """With moments the buffer makes buffer_moments of its filled rows at
+        each insertion (off until width + 3 = 6 rows), none in a frame
+        without one; they are in the state and round-trip."""
+        points = PastPoints(
+            capacity=8,
+            every=2,
+            streams=1,
+            width=3,
+            dtype=torch.float32,
+            directions=5,
+            device="cpu",
+            moments=True,
+        )
+        g = torch.Generator().manual_seed(0)
+        for j in range(18):
+            points.next_frame(None, g)
+            if points.count < 6:
+                assert float(points.on) == 0
+            else:
+                expect = buffer_moments(points.filled)
+                for got, want in zip(points.moments, expect, strict=True):
+                    torch.testing.assert_close(got, want)
+            points.keep(torch.randn(1, 3, generator=g), torch.tensor([True]))
+        assert points.count == 8 and float(points.on) == 1
+        other = PastPoints(
+            capacity=8,
+            every=2,
+            streams=1,
+            width=3,
+            dtype=torch.float32,
+            directions=5,
+            device="cpu",
+            moments=True,
+        )
+        other.load_state_dict(points.state_dict())
+        for got, want in zip(other.moments, points.moments, strict=True):
+            assert torch.equal(got, want)
+
+    def test_the_moments_need_d_plus_3_rows_in_all(self):
+        with pytest.raises(ValueError, match="at least 6 rows"):
+            PastPoints(
+                capacity=2,
+                every=1,
+                streams=2,
+                width=3,
+                dtype=torch.float32,
+                directions=5,
+                device="cpu",
+                moments=True,
+            )
 
 
 def _point_loss(net, act, h: torch.Tensor, **kw) -> Any:
@@ -891,6 +961,75 @@ class TestDataPointSIGReg:
             assert torch.equal(p, q)
 
 
+class TestDataPointGauss:
+    def test_the_head_credit_is_that_of_b_times_the_loss_with_its_moments(self):
+        """With a full buffer, after three frames the head's moments are those
+        of its rows (made at the last insertion), and its credit is the
+        gradient of B L with them: lam w_b g^_b / D at the target tokens."""
+        b = 2
+        net = build_vision_net(packed_conf(streams=b, **GAUSS))
+        assert isinstance(net, VisionPC)
+        head = net.head
+        assert isinstance(head, PackedJEPAHead) and head.points is not None
+        _fill(head.points)
+        with mujou.testing.run(net) as run:
+            for k in range(3):
+                _show(run, net.prev, _stack_sample(stacks(b, seed=k), k == 0))
+            act = run.read(net.enc2.next)
+            g = run.state_dict()["nodes"]["head"]["ports"]["prev"]["out"]["value"]
+        m = head.points.moments
+        assert float(m.on) == 1
+        for got, want in zip(m, buffer_moments(head.points.filled), strict=True):
+            torch.testing.assert_close(got, want)
+        h = act["h"].clone().requires_grad_()
+        terms = _point_loss(net, act, h, datapoint_law="gauss", moments=m)
+        (expect,) = torch.autograd.grad(b * terms.loss, [h])
+        torch.testing.assert_close(g, expect)
+        torch.testing.assert_close(terms.sigreg, m.kl / 32)
+
+    def test_the_stored_inputs_are_refused(self):
+        with pytest.raises(ValueError, match="datapoint_store 'z'"):
+            packed_conf("bp", streams=2, **GAUSS, datapoint_store="input")
+
+    def test_a_resumed_bp_run_is_the_one_never_stopped(self):
+        """Stopped after 3 of 6 frames and restored, the node goes on as one
+        never stopped: the weights, the buffer and its moments."""
+
+        def net() -> VisionBP:
+            n = build_vision_net(
+                packed_conf("bp", streams=2, learn_interval=25e-3, **GAUSS)
+            )
+            assert isinstance(n, VisionBP) and n.vision.points is not None
+            _fill(n.vision.points)
+            return n
+
+        def show(run, n: VisionBP, frames: range) -> None:
+            for k in frames:
+                _show(run, n.prev, _stack_sample(stacks(2, seed=k), k == 0))
+
+        whole = net()
+        with mujou.testing.run(whole) as run:
+            show(run, whole, range(6))
+        first = net()
+        with mujou.testing.run(first) as run:
+            show(run, first, range(3))
+            state = run.state_dict()
+        second = net()
+        with mujou.testing.run(second, state=state) as run:
+            show(run, second, range(3, 6))
+        a, b = whole.vision.points, second.vision.points
+        assert a is not None and b is not None and float(a.on) == 1
+        assert torch.equal(a.rows, b.rows)
+        for x, y in zip(a.moments, b.moments, strict=True):
+            assert torch.equal(x, y)
+        for p, q in zip(
+            whole.mods.encoder.parameters(),
+            second.mods.encoder.parameters(),
+            strict=True,
+        ):
+            assert torch.equal(p, q)
+
+
 def _token_loss(net: VisionPC, act, h: torch.Tensor, past) -> Any:
     v = net.mods  # the head's loss of the packed layout, without a projection
     head = cast(PackedJEPAHead, net.head)
@@ -983,6 +1122,11 @@ def _packed_equilibrium(streams: int, **vision):
     ]
     pc_net, bp_net = nets
     assert isinstance(pc_net, VisionPC) and isinstance(bp_net, VisionBP)
+    if vision.get("datapoint_law") == "gauss":
+        # full buffers: the moments exist from the first insertion
+        for points in (cast(PackedJEPAHead, pc_net.head).points, bp_net.vision.points):
+            assert points is not None
+            _fill(points)
     with mujou.testing.run(pc_net) as r1, mujou.testing.run(bp_net) as r2:
         for k in range(2):
             ready = [True] * (streams - 1) + [k == 1]
@@ -1052,6 +1196,7 @@ class TestPackedEquilibrium:
             {"pred_dim": 32, "pred_heads": 4, "target_norm": True},
             TOKENS,
             DATAPOINTS,
+            GAUSS,
         ],
         ids=[
             "n4",
@@ -1065,6 +1210,7 @@ class TestPackedEquilibrium:
             "wide-pred-norm",
             "tokens-past",
             "datapoints-past",
+            "datapoints-gauss",
         ],
     )
     def test_lam_of_each_encoder_node_is_the_credit_of_bp(self, vision):

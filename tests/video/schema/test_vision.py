@@ -88,6 +88,8 @@ class TestPacked:
             1,
             "z",
         )
+        assert v.datapoint_law == "sigreg"
+        _packed(sigreg_on="datapoints", datapoint_buffer=4096, datapoint_law="gauss")
         _packed(sigreg_on="datapoints")  # the current stacks alone
         _packed(
             sigreg_on="datapoints",
@@ -104,6 +106,21 @@ class TestPacked:
             ({"sigreg_on": "datapoints", "datapoint_every": 0}, "datapoint_every"),
             ({"datapoint_store": "tokens"}, "datapoint_store"),
             ({"sigreg_on": "datapoints", "z_dim": 64}, "projection"),
+            ({"datapoint_law": "normal"}, "datapoint_law"),
+            ({"datapoint_law": "gauss"}, "sigreg_on 'datapoints'"),
+            (
+                {"sigreg_on": "datapoints", "datapoint_law": "gauss"},
+                "datapoint_buffer > 0",
+            ),
+            (
+                {
+                    "sigreg_on": "datapoints",
+                    "datapoint_buffer": 8,
+                    "datapoint_store": "input",
+                    "datapoint_law": "gauss",
+                },
+                "datapoint_store 'z'",
+            ),
         ],
     )
     def test_the_data_points_refused(self, kw, match):

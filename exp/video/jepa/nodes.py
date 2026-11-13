@@ -35,6 +35,7 @@ from mujou.time import Timestamp
 from mujou.types import Device
 
 from exp.lib.cuda_graph import Replayed
+from exp.lib.gauss_kl import GaussMoments, buffer_moments, off
 from exp.lib.sigreg import T_POINTS, ecf_sums, insert_
 from exp.video.jepa.loss import (
     JEPATerms,
@@ -264,9 +265,17 @@ class PastPoints(Stateful):
     of mean $N k$ frames, whatever $B$. Its state is all of these and the
     frames seen.
 
+    With ``moments`` (``vision.datapoint_law`` "gauss") an insertion of at
+    least one row also makes the ``exp.lib.gauss_kl.buffer_moments`` of the
+    filled rows (``moments``, constants until the next insertion; off while
+    fewer than ``width + 3`` rows are filled), and they are in the state.
+
     Raises:
-        ValueError: ``capacity`` or ``every`` below 1; in
-            ``load_state_dict``, a state of other shapes.
+        ValueError: ``capacity`` or ``every`` below 1, or with ``moments``
+            fewer than ``width + 3`` rows in all (the precision would never
+            exist); in ``load_state_dict``, a state of other shapes; in
+            ``next_frame``, filled rows of a singular scatter
+            (``buffer_moments``).
     """
 
     def __init__(
@@ -279,13 +288,20 @@ class PastPoints(Stateful):
         dtype: torch.dtype,
         directions: int,
         device: Device,
+        moments: bool = False,
     ) -> None:
         if capacity < 1 or every < 1:
             raise ValueError(
                 f"the past data points need capacity >= 1 and every >= 1, not "
                 f"{capacity} and {every}"
             )
+        if moments and streams * capacity < width + 3:
+            raise ValueError(
+                f"the moments of data points of {width} numbers need at least "
+                f"{width + 3} rows, not {streams} x {capacity}"
+            )
         self._every = every
+        self._moments = moments
         self.rows = torch.zeros(streams * capacity, width, dtype=dtype, device=device)
         self.count = 0
         self.frames = 0  # the frames seen
@@ -294,6 +310,10 @@ class PastPoints(Stateful):
         sums = torch.zeros(directions, len(T_POINTS), device=device)
         self.cos, self.sin = sums, sums.clone()
         self.n = torch.zeros((), device=device)
+        # the moments (with moments; of width 0 without)
+        self.mean, self.precision, self.kl, self.on = (
+            off(width, device, dtype) if moments else off(0, device)
+        )
 
     def keep(self, points: torch.Tensor, valid: torch.Tensor) -> None:
         """Hold the data points ``(B, width)`` and the streams with a stack
@@ -303,12 +323,15 @@ class PastPoints(Stateful):
     def next_frame(
         self, directions: torch.Tensor | None, generator: torch.Generator
     ) -> None:
-        """Insert the data points kept when due, then sum the rows along
-        ``directions`` (None: no sums; class docstring)."""
+        """Insert the data points kept when due (and, with ``moments``,
+        make their moments), then sum the rows along ``directions`` (None: no
+        sums; class docstring)."""
         if self.frames % self._every == 0:
-            self.count = insert_(
-                self.rows, self.count, self.kept[self.kept_valid], generator
-            )
+            new = self.kept[self.kept_valid]
+            self.count = insert_(self.rows, self.count, new, generator)
+            if self._moments and len(new):
+                m = buffer_moments(self.filled)
+                self.mean, self.precision, self.kl, self.on = m
         self.frames += 1
         self.kept_valid = torch.zeros_like(self.kept_valid)  # inserted once
         if directions is not None:
@@ -321,18 +344,28 @@ class PastPoints(Stateful):
         return self.rows[: self.count]
 
     @property
+    def moments(self) -> GaussMoments:
+        """The ``GaussMoments`` of the filled rows at the last insertion."""
+        return GaussMoments(self.mean, self.precision, self.kl, self.on)
+
+    def _names(self) -> tuple[str, ...]:
+        """The tensors of the state."""
+        names = ("rows", "kept", "kept_valid", "cos", "sin", "n")
+        return names + (("mean", "precision", "kl", "on") if self._moments else ())
+
+    @property
     def sums(self) -> PastSums:
         """The ``PastSums`` of the filled rows along the frame's directions."""
         return PastSums(self.cos, self.sin, self.n)
 
     @override
     def state_dict(self) -> dict[str, Any]:
-        names = ("rows", "count", "frames", "kept", "kept_valid", "cos", "sin", "n")
+        names = ("count", "frames", *self._names())
         return {name: getattr(self, name) for name in names}
 
     @override
     def load_state_dict(self, state: dict[str, Any], /) -> None:
-        names = ("rows", "kept", "kept_valid", "cos", "sin", "n")
+        names = self._names()
         for name in names:
             have, got = getattr(self, name).shape, state[name].shape
             if got != have:
@@ -848,7 +881,13 @@ class PackedJEPAHead(Node):
     and in the update that first sees a frame, after drawing the directions,
     inserts those of the frame before once every ``datapoint_every`` frames
     and sums them along the directions. (Stored inputs encoded anew need the
-    encoder, which the head does not hold: ``JEPABP`` only.)
+    encoder, which the head does not hold: ``JEPABP`` only.) With
+    ``datapoint_law`` ``"gauss"`` the term of the data points is the
+    Gaussian moment matching (``loss.jepa_loss_packed``): the buffer makes
+    the moments of its rows at each insertion (``PastPoints.moments``)
+    instead of the sums, and the credit of the current data points is their
+    $\lambda \hat g_b / D$ (``exp.lib.gauss_kl``), the head's own: the
+    regularizer stays within the node, as SIGReg does.
 
     With ``target`` (I-JEPA's target encoder, ``vision.ema``) it receives
     ``(B, L + T, D)``: the packed tokens, then the $T$ tokens of the target
@@ -885,6 +924,8 @@ class PackedJEPAHead(Node):
         datapoint_buffer: The capacity of the past data points per stream
             (0: none).
         datapoint_every: The frames between two insertions into them.
+        datapoint_law: The term of the data points, ``"sigreg"`` or
+            ``"gauss"``.
         device: Where the node computes.
         cuda_graph: Replay the credit and the gradients from CUDA graphs (on
             CUDA only), the same bit for bit.
@@ -917,12 +958,14 @@ class PackedJEPAHead(Node):
         token_insert: int = 64,
         datapoint_buffer: int = 0,
         datapoint_every: int = 1,
+        datapoint_law: str = "sigreg",
         device: Device = "cpu",
         cuda_graph: bool = False,
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
         self.module = predictor
         self._target = target
+        self._law = datapoint_law
         self.proj = proj
         self.projector, self.zpred = projector, zpred  # in the state
         self._token_sigreg = token_sigreg
@@ -983,6 +1026,7 @@ class PackedJEPAHead(Node):
                 dtype=torch.float32,
                 directions=directions,
                 device=dev,
+                moments=datapoint_law == "gauss",
             )
         self.prev = Port(send=h, recv=act_spec)
         self.z_out = Port(send=z_spec(self._b, d_z))
@@ -1013,7 +1057,10 @@ class PackedJEPAHead(Node):
                 tokens = self.directions_t if self._two else self.directions
                 self.past.next_frame(tokens, self.generator)
             if self.points is not None:
-                self.points.next_frame(self.directions, self.generator)
+                gauss = self._law == "gauss"  # the moments, not the sums
+                self.points.next_frame(
+                    None if gauss else self.directions, self.generator
+                )
             self.cached = False
         valid = act["mask"]
         if self.past is not None:
@@ -1055,7 +1102,12 @@ class PackedJEPAHead(Node):
         self, act: Activity, valid: torch.Tensor, learn: bool
     ) -> list[torch.Tensor]:
         h = act["h"]
-        buffer = self.past if self.past is not None else self.points
+        past: tuple[torch.Tensor, ...] = ()
+        if self.past is not None:
+            past = self.past.sums
+        elif self.points is not None:
+            gauss = self._law == "gauss"
+            past = self.points.moments if gauss else self.points.sums
         args = (
             h,
             act["y"],
@@ -1063,7 +1115,7 @@ class PackedJEPAHead(Node):
             self.directions,
             self.directions_t,
             self.directions_u,
-            *(() if buffer is None else buffer.sums),
+            *past,
         )
         if self._replay is not None:
             g, z, values, *g_theta = self._replay(learn, *args)
@@ -1086,7 +1138,9 @@ class PackedJEPAHead(Node):
     ) -> list[torch.Tensor]:
         """``[g, z, values, *g_theta]`` (``g_theta`` only when it learns), a
         function of tensors only: the one the CUDA graph replays (``past``:
-        the ``PastSums`` of the past tokens or data points, or nothing)."""
+        the ``PastSums`` of the past tokens or data points, the
+        ``GaussMoments`` of the data points, or nothing)."""
+        gauss = self._law == "gauss"
         params = self._params if learn else []
         token_weight, z_weight = self._weights
         with torch.enable_grad():
@@ -1115,7 +1169,9 @@ class PackedJEPAHead(Node):
                 directions_u=directions_u if self._views else None,
                 target_norm=self._target_norm,
                 goal=goal,
-                past=PastSums(*past) if past else None,
+                past=PastSums(*past) if past and not gauss else None,
+                datapoint_law=self._law,
+                moments=GaussMoments(*past) if past and gauss else None,
             )
             energy = self._b * terms.loss
             # The gradient of this node's own energy, from a detached leaf.

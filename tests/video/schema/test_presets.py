@@ -164,6 +164,9 @@ class TestM17:
             "m17/ema_t128",
             "m17/ema_t512",
             "m17/ema_t64",
+            "m17/gkl_t128",
+            "m17/gkl_t512",
+            "m17/gkl_t64",
             "m17/ssig_t128",
             "m17/ssig_t512",
             "m17/ssig_t64",
@@ -309,6 +312,29 @@ class TestM17:
         assert v.sigreg == float(f"{grid[1]:.3g}")
         slow = compose([f"+experiment=m17/ssig_{arm}", "vision.datapoint_every=24"])
         assert slow.vision is not None and slow.vision.datapoint_every == 24
+
+    @pytest.mark.parametrize("arm", ["t512", "t128", "t64"])
+    def test_the_gauss_presets_are_the_data_point_arms_with_the_moments(
+        self, arm: str
+    ) -> None:
+        """The Gaussian moment matching of the data points (2026-11-13):
+        m17/ssig_<arm> with datapoint_law 'gauss' and N = 4096 (decided; at
+        least D + 3 = 1027 for the precision to exist), and lambda the
+        placeholder 0.5 (to be swept by decades)."""
+        conf = compose([f"+experiment=m17/gkl_{arm}"])
+        ssig = compose([f"+experiment=m17/ssig_{arm}"])
+        v, w = conf.vision, ssig.vision
+        assert v is not None and w is not None
+        assert (v.datapoint_law, v.datapoint_buffer, v.sigreg) == ("gauss", 4096, 0.5)
+        tokens = (v.frames // v.tubelet) * (128 // v.patch) ** 2
+        assert tokens * v.token_width == 1024 <= v.datapoint_buffer - 3
+        assert conf.data == ssig.data and conf.seconds == ssig.seconds
+        assert conf.ctl == ssig.ctl and conf.measure == ssig.measure
+        assert conf.time == ssig.time and conf.optim_vision == ssig.optim_vision
+        changed = {"datapoint_law", "datapoint_buffer", "sigreg"}
+        for name in vars(w):
+            if name not in changed:
+                assert getattr(v, name) == getattr(w, name), name
 
     @pytest.mark.parametrize("arm", ["t512", "t128", "t64"])
     def test_the_data_point_arm_starts_from_the_ema_arms_untrained_encoder(

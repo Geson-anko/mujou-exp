@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from exp.video.schema._check import check_choice
 
 __all__ = [
+    "DATAPOINT_LAWS",
     "DATAPOINT_STORES",
     "LAYOUTS",
     "MAX_Z_DIM",
@@ -29,6 +30,10 @@ SIGREG_ON = ("z", "tokens", "both", "views", "views_tokens", "datapoints")
 # of the weights when it was put in) or their input, encoded anew at each step
 # by the current encoder (BP only).
 DATAPOINT_STORES = ("z", "input")
+# The term of the data points: SIGReg, or the Gaussian moment matching
+# KL(N(mu, Sigma) || N(0, I)) of their law, estimated from the buffer
+# (exp.lib.gauss_kl; M17, 2026-11-13).
+DATAPOINT_LAWS = ("sigreg", "gauss")
 # The decoder of the reconstruction: an MLP from z to all the pixels, or a
 # spatial broadcast decoder (one small MLP of z and the pixel's coordinates).
 RECON_DECODERS = ("mlp", "broadcast")
@@ -147,6 +152,14 @@ class VisionConf:
     encoded anew by the current encoder in every evaluation of the loss, so
     that the gradient reaches every sample as in LeJEPA (``JEPABP`` only: in
     PC-ALM the head does not hold the encoder).
+    ``datapoint_law`` "gauss" (2026-11-13) makes the term of the data points
+    the Gaussian moment matching $F / D$, $F = \mathrm{KL}(N(\mu, \Sigma)
+    \,\|\, N(0, I))$ of their law, instead of SIGReg, its gradient at the
+    current data points estimated from the mean and the precision of the
+    buffer (``exp.lib.gauss_kl``; ``datapoint_store`` "z" only, and the
+    buffer's ``data.streams`` x ``datapoint_buffer`` rows at least $D + 3$:
+    the term is off until the buffer holds $D + 3$, from where the estimate
+    exists; ``sigreg_directions`` are unused).
 
     With ``ema`` $m$ (packed, M17 2026-11-13; I-JEPA, V-JEPA) the prediction's
     targets are the tokens of the target encoder on the whole stack: a copy of
@@ -235,11 +248,23 @@ class VisionConf:
     datapoint_buffer: int = 0
     datapoint_every: int = 1
     datapoint_store: str = "z"
+    datapoint_law: str = "sigreg"  # DATAPOINT_LAWS
 
     def __post_init__(self) -> None:
         check_choice("vision.z_pool", self.z_pool, POOLS)
         check_choice("vision.sigreg_on", self.sigreg_on, SIGREG_ON)
         check_choice("vision.datapoint_store", self.datapoint_store, DATAPOINT_STORES)
+        check_choice("vision.datapoint_law", self.datapoint_law, DATAPOINT_LAWS)
+        if self.datapoint_law == "gauss" and (
+            self.sigreg_on != "datapoints"
+            or not self.datapoint_buffer
+            or self.datapoint_store != "z"
+        ):
+            raise ValueError(
+                "vision.datapoint_law 'gauss' estimates the moments of the data "
+                "points from their buffer: it needs sigreg_on 'datapoints', "
+                "datapoint_buffer > 0 and datapoint_store 'z'"
+            )
         check_choice("vision.recon_decoder", self.recon_decoder, RECON_DECODERS)
         if not self.pixel_std > 0:
             raise ValueError(f"vision.pixel_std must be > 0, not {self.pixel_std}")

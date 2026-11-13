@@ -3,6 +3,7 @@ from typing import override
 import pytest
 import torch
 
+from exp.lib.gauss_kl import buffer_moments, gauss_kl_grad
 from exp.lib.sigreg import T_POINTS, ecf_sums, sigreg
 from exp.video.jepa.loss import (
     PastSums,
@@ -631,6 +632,52 @@ class TestDataPoints:
         t2 = self._loss(h2, y, keeps, valid, past=_past(buffer, self._dirs()))
         (g_h2,) = torch.autograd.grad(t2.loss, [h2])
         torch.testing.assert_close(g_h2, g_h)
+
+
+class TestGaussDataPoints:
+    """The Gaussian moment matching of the data points (datapoint_law
+    'gauss', exp.lib.gauss_kl): lam |M| S / B of the value lam |M| F^ / (D B)
+    and of the gradient lam w_b g^_b / (D B) at each flattened stack."""
+
+    def _loss(self, tokens, y, keeps, valid, **kw):
+        return TestDataPoints()._loss(tokens, y, keeps, valid, **kw)
+
+    def _moments(self):
+        rows = torch.randn(
+            40, 30, generator=torch.Generator().manual_seed(6), dtype=torch.float64
+        )
+        return buffer_moments(rows)
+
+    def test_the_value_is_f_over_d_and_the_gradient_g_over_d(self):
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        m = self._moments()
+        h = tokens.clone().requires_grad_()
+        t = self._loss(h, y, keeps, valid, datapoint_law="gauss", moments=m)
+        torch.testing.assert_close(t.sigreg, m.kl / 30)
+        alone = self._loss(h, y, keeps, valid, datapoint_law="gauss")
+        assert float(alone.sigreg) == 0  # no moments: no term
+        torch.testing.assert_close(t.loss, alone.loss + 0.3 * 2 * m.kl / 30 / 3)
+        (g,) = torch.autograd.grad(t.loss - alone.loss, [h])
+        x = tokens[:, :6].flatten(1)
+        expect = 0.3 * gauss_kl_grad(x, m) / 30 / 3 * valid[:, None]
+        torch.testing.assert_close(g[:, :6].flatten(1), expect)
+        assert g[:, 6:].abs().max() == 0  # the context tokens: none
+
+    def test_refused_with_points_or_another_law(self):
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.ones(3, dtype=torch.bool)
+        with pytest.raises(ValueError, match="no points"):
+            self._loss(
+                tokens,
+                y,
+                keeps,
+                valid,
+                datapoint_law="gauss",
+                points=torch.zeros(2, 30, dtype=torch.float64),
+            )
+        with pytest.raises(ValueError, match="datapoint_law"):
+            self._loss(tokens, y, keeps, valid, datapoint_law="other")
 
 
 class TestSpaceTimeCompletion:

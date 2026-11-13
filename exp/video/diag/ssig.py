@@ -60,11 +60,15 @@ tokens, and the speed of the two ways of storing the buffer.
   than a frame, learns once in it (``mujou.pc.clock.LearnClock`` learns 25
   ms after the input's write and starts again at the next frame), so a step
   is also one learning step; with ``input`` each one encodes the whole buffer
-  anew. A run of 1800 s is 54000 frames, whatever its speed.
+  anew. A run of 1800 s is 54000 frames, whatever its speed. With ``--preset
+  gkl`` (``m17/gkl_*``, the Gaussian moment matching of the data points,
+  ``exp.lib.gauss_kl``) it measures the stored representations only (the
+  law refuses the stored inputs); each step's insertion then makes the
+  buffer's moments anew (its scatter, Cholesky factor and precision).
 
 Run: ``python -m exp.video.diag.ssig bound`` and ``python -m
-exp.video.diag.ssig bench --arm t128 --device cpu`` (``cpu`` or
-``cuda[:i]``, as ``RunConf.device``).
+exp.video.diag.ssig bench --arm t128 --device cpu [--preset gkl]`` (``cpu``
+or ``cuda[:i]``, as ``RunConf.device``).
 """
 
 import argparse
@@ -210,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     b.add_argument("--n", type=int, default=257)
     c = sub.add_parser("bench")
     c.add_argument("--arm", choices=sorted(ARMS), default="t128")
+    c.add_argument("--preset", choices=["ssig", "gkl"], default="ssig")
     c.add_argument("--device", default="cpu")
     c.add_argument("--frames", type=int, default=20)
     c.add_argument("--warmup", type=int, default=3)
@@ -218,13 +223,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.cmd == "bound":
         out: Any = [bound(t, d, args.n) for t, d in ARMS.values()]
     else:
-        over = [f"+experiment=m17/ssig_{args.arm}", f"device={args.device}"]
+        over = [f"+experiment=m17/{args.preset}_{args.arm}", f"device={args.device}"]
         over += args.overrides
+        stores = ("z", "input") if args.preset == "ssig" else ("z",)
         out = [
-            bench(over, store=s, frames=args.frames, warmup=args.warmup)
-            for s in ("z", "input")
+            bench(over, store=s, frames=args.frames, warmup=args.warmup) for s in stores
         ]
-        out.append({"ratio": out[1]["steps_per_s"] / out[0]["steps_per_s"]})
+        if len(out) == 2:
+            out.append({"ratio": out[1]["steps_per_s"] / out[0]["steps_per_s"]})
     print(json.dumps(out, indent=1))
 
 

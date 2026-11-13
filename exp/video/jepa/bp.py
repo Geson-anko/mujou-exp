@@ -81,7 +81,11 @@ class JEPABP(Node):
     new $z$; with ``"input"`` the target view's pixels of their stacks (u8,
     exactly those of the ``StackChunker``), which ``terms`` encodes anew with
     the current encoder, in the graph of $L$: the gradient reaches every
-    sample (LeJEPA), at the cost of encoding the buffer in every $L$.
+    sample (LeJEPA), at the cost of encoding the buffer in every $L$. With
+    ``datapoint_law`` ``"gauss"`` (store ``"z"``) the term of the data points
+    is the Gaussian moment matching of ``loss.jepa_loss_packed``, from the
+    moments the ``PastPoints`` makes at each insertion, as
+    ``PackedJEPAHead`` has it.
 
     Args:
         mods: The modules, on ``device``.
@@ -113,6 +117,8 @@ class JEPABP(Node):
             (packed, ``sigreg_on`` ``"datapoints"``; 0: none).
         datapoint_every: The frames between two insertions into them.
         datapoint_store: ``"z"`` or ``"input"`` (class docstring).
+        datapoint_law: The term of the data points, ``"sigreg"`` or
+            ``"gauss"``.
         recon: $\mu$, the weight of the reconstruction (needs ``mods.decoder``).
         pixel_mean: The data's mean pixel (the standardization of the target).
         pixel_std: The data's pixel std.
@@ -152,6 +158,7 @@ class JEPABP(Node):
         datapoint_buffer: int = 0,
         datapoint_every: int = 1,
         datapoint_store: str = "z",
+        datapoint_law: str = "sigreg",
         device: Device = "cpu",
     ) -> None:
         super().__init__(device=device, period=tau.period, seed=seed)
@@ -221,6 +228,7 @@ class JEPABP(Node):
                 device=self.device,
             )
         self._inputs = datapoint_store == "input"
+        self._law = datapoint_law
         self.points: PastPoints | None = None  # the past data points (state)
         if datapoint_buffer:
             pixels = h.shape[-1] - 1  # P of a tubelet, without its id
@@ -232,6 +240,7 @@ class JEPABP(Node):
                 dtype=torch.uint8 if self._inputs else torch.float32,
                 directions=directions,
                 device=self.device,
+                moments=datapoint_law == "gauss",
             )
         self.prev = Port(send=h, recv=act_spec)  # sends nothing
         self.z_out = Port(send=z_spec(self._b, d_z))
@@ -262,7 +271,8 @@ class JEPABP(Node):
                     on = self.directions if on is None else on
                     self.past.next_frame(on, self.generator)
                 if self.points is not None:
-                    on = None if self._inputs else self.directions
+                    sums = not (self._inputs or self._law == "gauss")
+                    on = self.directions if sums else None
                     self.points.next_frame(on, self.generator)
             else:
                 self.directions = draw_directions(m, d, self.generator)
@@ -343,6 +353,7 @@ class JEPABP(Node):
                 directions_u=self.directions_u,
                 target_norm=self._target_norm,
                 goal=goal,
+                datapoint_law=self._law,
                 **self._buffer(),
             )
         b, v = self._b, self._v
@@ -370,13 +381,16 @@ class JEPABP(Node):
         )
 
     def _buffer(self) -> dict[str, Any]:
-        """The ``past`` and ``points`` of ``jepa_loss_packed``: the sums of
-        the past tokens or of the stored representations, or the stored
-        inputs encoded by the current encoder (in the graph)."""
+        """The ``past``, ``points`` or ``moments`` of ``jepa_loss_packed``:
+        the sums of the past tokens or of the stored representations, the
+        stored inputs encoded by the current encoder (in the graph), or the
+        moments of the stored representations."""
         if self.past is not None:
             return {"past": self.past.sums}
         if self.points is None:
             return {}
+        if self._law == "gauss":
+            return {"moments": self.points.moments}
         if not self._inputs:
             return {"past": self.points.sums}
         t = self.mods.segments[0]
