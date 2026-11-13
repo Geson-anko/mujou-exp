@@ -21,6 +21,7 @@
 - [M17 は Walking Tours のエンコーダ](project_m17_wt_encoder.md) — 2026-11-11、再構成の項なしの JEPA。課題は時空間の補完、主な指標は held-out の補完の誤差と線形の動力学（画素の再構成は重視しすぎない）。PC-ALM で学ぶのはエンコーダだけ
 - [M17 の EMA は時間で追う](project_ema_following.md) — 2026-11-13、ターゲットエンコーダの momentum はフレームあたり、`elapsed` で動かす。`Following` は今は実験の中に置き、mujou に上げるかは未決定
 - [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子はユーザーが決めるまで回さない。z を貯めると k と古さが交絡する
+- [M17 のガウスのモーメント合わせ](project_m17_gauss_kl.md) — 2026-11-13、ユーザーの決定。EMA も負例も使わない。N = 4096、λ は 10 倍刻みで掃引してから回す
 
 ## feedback
 
