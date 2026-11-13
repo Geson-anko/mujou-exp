@@ -16,3 +16,4 @@ metadata:
 **Why:** 導出のない λ で回すと、結果が仮説の検証にならない（[[feedback-simple-fundamental]]）。
 
 **How to apply:** EMA の run が終わったら、データのあるホストで各腕の学習前の `stream_stats repr` を測り、`ssig_window` に通して格子を直してから `m17/ssig_*` を submit する。背景は [[project-m17-wt-encoder]]。
+- 2026-11-13（ユーザー）: `m17-ssig-v1`（Adam、古い予測器の初期化）の残り 37 本は hold したまま走らせない。完了した 13 本（主に t512）は記録として残す。学習の設定は optimizer の掃引（`m17-opt-v1`）で探る。

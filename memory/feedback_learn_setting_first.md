@@ -15,3 +15,5 @@ metadata:
 **Why:** M17 では、トークンの SIGReg、データポイントの SIGReg、EMA のどれも、Adam（学習率 1e-4/フレーム、warmup 300 秒）1 点のまま比べていた。手法の良し悪しと学習の設定の良し悪しを分けていなかった。
 
 **How to apply:** 新しい手法を判定する前に、optimizer（SGD・RMSProp・Adam）× 学習率の 10 倍刻みの掃引で、held-out の損失が学習前より下がる設定があるかを見る。EMA は採らない。関連: [[feedback-simple-fundamental]]、[[project-m17-wt-encoder]]
+
+- warmup は導出のない経験則で、終わりのないストリームの学習には「始まり」という特別な時刻を持ち込む。既定は一定の学習率（`optim_vision.warmup=0`）にする。Adam 系の始めの v̂ の粗さが問題なら、それは学習率の掃引で見る（ユーザーが同意、2026-11-13）。
