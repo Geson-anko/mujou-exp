@@ -13,16 +13,18 @@
 # target encoder and no past tokens. One stream (B = 1); everything else, the
 # optimizer, 1800 s and the checkpoints every 300 s included, that of
 # m17/tok_n16. lambda (vision.sigreg) is the middle of this arm's grid
-# 0.201, 0.271 and 0.364: the window where the healthy solution beats the
+# 0.207, 0.233 and 0.263: the window where the healthy solution beats the
 # collapses and iid data points for every span with a window, with the
-# stream correlation of the untrained ViT's whitened tokens (python -m
-# exp.video.diag.ssig_window; results/m17.md); above the lower bound at
+# stream correlation of the whitened tokens of this arm's own untrained ViT
+# (stream_stats repr of the m17-ema-v1 run's init; python -m
+# exp.video.diag.ssig_window --own; results/m17.md); above the lower bound at
 # which tokens constant within a stack stop being cheaper than iid tokens
 # (python -m exp.video.diag.ssig bound; tests/video/schema/test_presets.py).
 # Both lower ends rule out one code only, the d numbers per stack: a code of
 # a latent of more numbers that the context determines predicts as exactly
 # and costs less than the healthy solution at every lambda; only the learned
-# code's rank tells it. The grid is not yet the user's choice (results/m17.md).
+# code's rank tells it. The grid re-derived as the user decided (2026-11-13)
+# replaces one from a stand-in curve (another model's tokens, D = 8192).
 # With the store z a stored row is of the encoder that made it, a mean of
 # N k learning steps before: k changes that age with the span.
 defaults:
@@ -37,7 +39,7 @@ vision:
   tubelet: 4
   token_dim: 16
   sigreg_on: datapoints
-  sigreg: 0.271  # the grid's middle, until the user decides
+  sigreg: 0.233  # the grid's middle
   token_buffer: 0
   datapoint_buffer: 256  # N, per stream
   datapoint_every: 1  # k

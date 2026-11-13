@@ -73,18 +73,22 @@ done
 - `z`（既定）: 表現を detach して貯める。勾配はいまの標本にだけ届く。PC-ALM では、ヘッドのノードが自分のバッファを持つ。貯めた行は、それを作ったときのエンコーダのもので、平均 $Nk$ フレーム（学習ステップ）前の重みで作られている。$k$ を変えると、バッファが覆う時間とこの古さが一緒に変わる
 - `input`: 積みのターゲットの view の画素（u8）を貯め、損失を計算するたびに今のエンコーダで符号化し直す。勾配はすべての標本に届く（LeJEPA と同じ）。BP だけで使える。PC-ALM のヘッドはエンコーダを持たないので、`learner=pc` では設定のエラーになる
 
-$\lambda$（`vision.sigreg`）の下限は次のように導いた。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。i.i.d. なトークンの尺度もエンコーダが選べるとすると、0.030・0.109・0.206 になる（`lam_star_scaled`）。この下限が除くのは、積み 1 つにつき $d$ 個の数の符号（$m = d$）だけである。文脈から決まる $m > d$ 個の数の潜在から作るトークンも、予測の誤差は 0 になる。$m$ が大きいほど、その統計量は $S_0$ に近づく。そのため、どの $\lambda < 1$ でも、この解は健全な解より安い。この解が崩壊かどうかは $m$ による。それは学んだ符号の rank でしか分からない。preset の $\lambda$（t512 0.0542、t128 0.182、t64 0.271）は、腕ごとの格子の真ん中である。格子は、健全な解が崩壊と i.i.d. なデータポイントの両方に勝つ窓から決めた。窓には、バッファの標本どうしのストリームの相関を入れた（`python -m exp.video.diag.ssig_window`、results/m17.md の「$\lambda$ の格子の導出（ストリームの相関を入れる）」）。格子の両端は `vision.sigreg` で上書きする（t512 0.0338・0.087、t128 0.107・0.31、t64 0.201・0.364）。窓の下端も、$m = d$ の符号を除くだけである。回す前に、各腕の学習前の相関を測って格子を導き直す（results/m17.md の「ストリームの SIGReg（回す前に決めたこと）」）。
+$\lambda$（`vision.sigreg`）の下限は次のように導いた。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。i.i.d. なトークンの尺度もエンコーダが選べるとすると、0.030・0.109・0.206 になる（`lam_star_scaled`）。この下限が除くのは、積み 1 つにつき $d$ 個の数の符号（$m = d$）だけである。文脈から決まる $m > d$ 個の数の潜在から作るトークンも、予測の誤差は 0 になる。$m$ が大きいほど、その統計量は $S_0$ に近づく。そのため、どの $\lambda < 1$ でも、この解は健全な解より安い。この解が崩壊かどうかは $m$ による。それは学んだ符号の rank でしか分からない。preset の $\lambda$（t512 0.0442、t128 0.134、t64 0.233）は、腕ごとの格子の真ん中である。格子は、健全な解が崩壊と i.i.d. なデータポイントの両方に勝つ窓から決めた。窓には、バッファの標本どうしのストリームの相関を入れた。相関は、各腕の学習前の ViT（同じトークン化の EMA の run の `init`）の、白色化したトークン列で測った（`python -m exp.video.diag.ssig_window --own`、results/m17.md の「各腕の学習前の相関で導き直した格子」）。格子の両端は `vision.sigreg` で上書きする（t512 0.0348・0.056、t128 0.112・0.162、t64 0.207・0.263）。窓の下端も、$m = d$ の符号を除くだけである。前の格子（真ん中が 0.0542・0.182・0.271）は、別のトークン化の曲線（$D$ = 8192）を代わりに使って導いたもので、この格子で置き換えた。
 
 posthoc には、情報を持たない入力の変化に対する表現の感度を足した（`measure/sensitivity.py`）。`sens_dither` は量子化のディザ（画素ごとに $U(-\frac12, \frac12)/255$）、`sens_shift` は 1 画素の平行移動（端の列は複製）に対する感度で、どちらも $E\lVert f(x') - f(x) \rVert^2 / E_{i \ne j}\lVert f(x_i) - f(x_j) \rVert^2$ である。分母は `diag/stream_stats` の `drift` と同じ。`_pix` は同じ比を画素で測った値である。表現の値がこれを上回るなら、入力ではほとんど変わらない差を、表現が増幅している（判定の規則は results/m17.md の「ストリームの SIGReg（回す前に決めたこと）」）。最後の checkpoint の表現の、ラグごとの白色化した相関は、`diag/stream_stats` の `repr` で測る。
 
 ```bash
-# 各腕の学習前の相関から λ の格子を導き直してから回す
+# λ は preset の格子の真ん中（両端は vision.sigreg で上書きする）
 # BP、seed 100、k = 1（k = 6・24 は vision.datapoint_every=6 / 24 で上書きする）
 for arm in t512 t128 t64; do
   just fleet submit --batch m17-ssig-v1 +experiment=m17/ssig_$arm learner=bp --seeds 100 --res 4090 --gpu-mem 20
 done
 # 入力を貯める腕（BP だけ）は vision.datapoint_store=input
 # 速さ（random な積み、バッファは満杯）: python -m exp.video.diag.ssig bench --arm t128 --device cpu
+# 各腕の学習前の相関（格子の導出。EMA の run の init、t128・t64 も同じ形）と窓
+python -m exp.video.diag.stream_stats repr --root DATA --runs /nas/geson/mujou-exp/runs \
+    --model t512=m17-ema-v1:m17-ema_t512-35d806f3-s100:init:tokens --out repr-t512.json
+python -m exp.video.diag.ssig_window --own --curves t512/tokens/white t128/tokens/white t64/tokens/white
 # 最後の checkpoint の表現の相関（NAS の run から）
 python -m exp.video.diag.stream_stats repr --root DATA --runs /nas/geson/mujou-exp/runs \
     --model ssig=m17-ssig-v1:<RUN_ID>:01800.0:tokens --spectrum tokens --out repr-ssig.json

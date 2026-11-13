@@ -15,6 +15,7 @@ from exp.video.jepa.vit import build_vision
 from exp.video.schema import RunConf
 
 CONF = Path(exp.video.conf.__file__).parent
+STREAM = CONF.parent / "results" / "m17-stream"  # exp.video.diag outputs
 EXPERIMENTS = sorted(
     p.relative_to(CONF / "experiment").with_suffix("").as_posix()
     for p in CONF.glob("experiment/**/*.yaml")
@@ -298,6 +299,14 @@ class TestM17:
         tokens = (v.frames // v.tubelet) * (128 // v.patch) ** 2
         b = bound(tokens, v.token_width, 1 + v.datapoint_buffer, draws=4000)
         assert v.sigreg > b["lam_star"]
+        # the middle of the grid of the arm's own untrained curve, rho 0.122
+        out = json.loads((STREAM / "ssig_window_own.json").read_text())
+        (grid,) = (
+            g["grid"]
+            for g in out["common"]
+            if g["arm"] == arm and g["rho"] == 0.122 and g["curve"].startswith(arm)
+        )
+        assert v.sigreg == float(f"{grid[1]:.3g}")
         slow = compose([f"+experiment=m17/ssig_{arm}", "vision.datapoint_every=24"])
         assert slow.vision is not None and slow.vision.datapoint_every == 24
 
