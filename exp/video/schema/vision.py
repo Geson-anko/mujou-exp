@@ -321,6 +321,15 @@ class VisionConf:
             raise ValueError(
                 "vision.ema is of the targets of the tokens: token_weight 0"
             )
+        if self.ema and (self.token_buffer or self.z_weight):
+            # The prediction's targets would be the target encoder's tokens
+            # while the past tokens of SIGReg and the centre of the completion
+            # of z are the online encoder's: two meanings of the targets.
+            raise ValueError(
+                "vision.ema takes the targets from the target encoder: "
+                "token_buffer and z_weight, of the online encoder's tokens, "
+                "must be 0"
+            )
         if self.projected and self.sigreg_on == "tokens":
             raise ValueError(
                 "sigreg_on 'tokens' with a projection (z_dim != dim) gives the "

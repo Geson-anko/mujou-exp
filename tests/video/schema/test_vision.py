@@ -65,6 +65,13 @@ class TestPacked:
         assert _packed().ema == 0.0 and VisionConf().ema == 0.0  # 0: none
         assert [_packed(ema=m).ema for m in (0.0, 0.996, 1.0)] == [0.0, 0.996, 1.0]
 
+    @pytest.mark.parametrize("kw", [{"token_buffer": 8}, {"z_weight": 1.0}])
+    def test_the_target_encoder_takes_no_online_targets(self, kw):
+        """With ema the targets are the target encoder's; the past tokens and
+        the completion of z are the online encoder's."""
+        with pytest.raises(ValueError, match="token_buffer and z_weight"):
+            _packed(ema=0.9, **kw)
+
     def test_the_tokens_as_the_representation(self):
         v = _packed(token_dim=16, sigreg_on="tokens", token_sigreg="raw")
         assert v.token_width == v.z_width == 16 and not v.projected
