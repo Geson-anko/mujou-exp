@@ -68,6 +68,27 @@ done
 # posthoc は下と同じく task=posthoc で親の run を指す
 ```
 
+単一ストリームのデータポイントの SIGReg の preset は `m17/ssig_t512`・`ssig_t128`・`ssig_t64`（2026-11-13、ユーザーの仮説）。トークン化は同じ名前の EMA の腕と同じで、ターゲットエンコーダはない（`vision.ema` = 0）。SIGReg は、積み 1 つを 1 標本としてかける（`vision.sigreg_on=datapoints`）。標本は、ターゲットのトークンを平らにした列（$D = Td$ = 1024）である。SIGReg が見る標本は、いまの積みと、過去のデータポイントのバッファ $N$ = 256 個（`vision.datapoint_buffer`、ストリーム 1 本あたり）を合わせたもの。バッファには、ストリームの $k$ フレームに 1 つ（`vision.datapoint_every`）を入れる。1 フレームはストリームの 0.1 秒である。満ちたあとは、ランダムに選んだ行と入れ替える（`jepa/nodes.py` の `PastPoints`）。行が 1 回の挿入を生き残る確率は $1 - 1/N$ で、行の年齢は平均 $Nk$ フレームの幾何分布になる（$k$ = 1・6・24 で 25.6 秒・2.6 分・10.2 分）。バッファに貯めるものは 2 通りある（`vision.datapoint_store`）。
+
+- `z`（既定）: 表現を detach して貯める。勾配はいまの標本にだけ届く。PC-ALM では、ヘッドのノードが自分のバッファを持つ
+- `input`: 積みのターゲットの view の画素（u8）を貯め、損失を計算するたびに今のエンコーダで符号化し直す。勾配はすべての標本に届く（LeJEPA と同じ）。BP だけで使える。PC-ALM のヘッドはエンコーダを持たないので、`learner=pc` では設定のエラーになる
+
+$\lambda$（`vision.sigreg`）の 0.25 は仮の値で、較正していない。下限だけは導出した。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。
+
+posthoc には、情報を持たない入力の変化に対する表現の感度を足した（`measure/sensitivity.py`）。`sens_dither` は量子化のディザ（画素ごとに $U(-\frac12, \frac12)/255$）、`sens_shift` は 1 画素の平行移動（端の列は複製）に対する感度で、どちらも $E\lVert f(x') - f(x) \rVert^2 / E_{i \ne j}\lVert f(x_i) - f(x_j) \rVert^2$ である。分母は `diag/stream_stats` の `drift` と同じ。`_pix` は同じ比を画素で測った値である。表現の値がこれを大きく上回るなら、入力がほとんど変わらない差を、表現が増幅している。最後の checkpoint の表現の、ラグごとの白色化した相関は、`diag/stream_stats` の `repr` で測る。
+
+```bash
+# BP、seed 100、k = 1（k = 6・24 は vision.datapoint_every=6 / 24 で上書きする）
+for arm in t512 t128 t64; do
+  just fleet submit --batch m17-ssig-v1 +experiment=m17/ssig_$arm learner=bp --seeds 100 --res 4090 --gpu-mem 20
+done
+# 入力を貯める腕（BP だけ）は vision.datapoint_store=input
+# 速さ（random な積み、バッファは満杯）: python -m exp.video.diag.ssig bench --arm t128 --device cpu
+# 最後の checkpoint の表現の相関（NAS の run から）
+python -m exp.video.diag.stream_stats repr --root DATA --runs /nas/geson/mujou-exp/runs \
+    --model ssig=m17-ssig-v1:<RUN_ID>:01800.0:tokens --spectrum tokens --out repr-ssig.json
+```
+
 補完の誤差（`measure/completion.py`）には、自明な予測の物差しとして `comp_<kind>_pos`（と `ncomp_<kind>_pos`）もある。学ぶ 9 本の held-in の積みのターゲットのトークンを、位置（time slot と空間の位置）ごと・次元ごとに平均し、それで当てる。文脈を見ずに位置だけを知る予測である。どの積みでも同じ位置を隠す `future` では、参照の集合で二乗誤差を最小にするので、参照の上では `_mean` 以下になる。積みごとにマスクを引く `short`・`long` では、この大小は保証されない。読み方は 2 つある。`comp_<kind>` が `comp_<kind>_pos` を下回れば、予測器は位置より多くを文脈から得ている。トークンが位置だけの関数 $g(p)$ に近い解（P）では、`comp_<kind>_pos` が 0 に近くなり、`ncomp_<kind>_pos` も 0 に近くなる。`comp_<kind>` と `comp_<kind>_pos` が同じ程度だというだけでは、予測器が文脈から位置以上のものを得ていないことしか言えない。両方が 1 に近ければ、トークンは互いに独立か位置による構造を持たない解で、P ではない。
 
 予測器を通した復元（`measure/encoder_eval.py`）には、上限として `restore_target_<view>_mask` も載せる。隠さないトークン（エンコーダに積み全体を通したもの）を同じトークンのデコーダで描き戻し、`restore_<view>_mask` と同じ隠した画素で測る。復元の鍵はすべて、誤差をぼかしてから測った `_blur` 版も持つ（σ = 2 px）。隠した画素の鍵では、ぼかした誤差の画像を隠した画素で平均し、平均の画像の同じ値で割る（`exp/lib/blur_error.py` の `blur_recon_masked`）。復元の画像（`<name>-restore.png`）は val の 10 窓で、行は上から順に、真の最後のフレーム、隠さないトークンから描き戻した上限、各 context view の隠した入力とその予測器を通した復元。
