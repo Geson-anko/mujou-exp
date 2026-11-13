@@ -35,6 +35,13 @@ drift`` of the runs), the drift between consecutive checkpoints of the
 current encoder's code of fixed held-in stacks: a stand-in for the staleness
 of the stored $z$, which it does not read.
 
+Also shown, read after the runs and not criteria: the course of the held-out
+$J$ over all the evals (``course_table``), ``pred`` beside the spread of the
+tokens within a stack ``tok_within`` at time 0, the first eval and ``--t``
+(``collapse_table``), the values behind C (``comp_table``, ``sens_table``),
+the same L, U and C at each checkpoint (``times_table``) and the two parts of
+the last drift (``drift_parts_table``).
+
 Run from the repository root: ``python -m exp.video.diag.opt_sweep_tables
 [--runs runs] [--t 1800] [--drift drift.json]``.
 """
@@ -56,6 +63,7 @@ BASE_BATCH = "m17-opt-base-v1"
 KINDS = ("sgd", "rmsprop", "adamw")
 TIMES = [300.0, 600.0, 900.0, 1200.0, 1500.0, 1800.0]
 U_KEYS = ("recon_blur", "dyn_1/copy_1")
+VIEWS = ("short", "long")
 CRITERIA = ("L", "U", "C", "learns")
 MARK = {True: "○", False: "×", None: "?"}
 
@@ -316,14 +324,15 @@ def _train_getter(runs: OptRuns, rid: str, t: float, key: str, split: str) -> An
     return train_loss(runs.train[rid]["stream"], t, key)
 
 
-def drifts(paths: Sequence[Path]) -> dict[str, dict[float, float]]:
-    """Per run id, the drift of each pair of checkpoints 300 s apart by its
+def drifts(paths: Sequence[Path], key: str = "drift") -> dict[str, dict[float, float]]:
+    """Per run id, ``key`` (``drift``, or its numerator ``change`` and
+    denominator ``apart``) of each pair of checkpoints 300 s apart by its
     later time (the outputs of ``stream_stats drift``)."""
     by_run: dict[str, dict[float, float]] = {}
     for p in paths:
         for r in json.loads(p.read_text())["runs"]:
             by_run[r["run"]] = {
-                q["t2"]: q["drift"] for q in r["pairs"] if abs(q["delta"] - 300) < 1e-6
+                q["t2"]: q[key] for q in r["pairs"] if abs(q["delta"] - 300) < 1e-6
             }
     return by_run
 
@@ -377,6 +386,178 @@ def drift_table(runs: OptRuns, paths: Sequence[Path]) -> str:
         for rid in runs.groups[k]:
             d = by_run.get(rid, {})
             rows.append([label(k)] + [fmt(d.get(t)) for t in TIMES])
+    return "\n".join(_md(head, rows))
+
+
+def course(
+    runs: OptRuns, rid: str, split: str = "val", after: float = 300.0
+) -> dict[str, Any] | None:
+    """Over the held-out evals of the run with a value of $J$ (time 0 not
+    among them; None if there is none): the least and the greatest $J$ with
+    their times, the number of evals below $J(0)$, the number of consecutive
+    pairs of evals in which $J$ rises and of all the pairs, and the greatest
+    over the least $J$ of the evals at or after ``after``."""
+    js = sorted(
+        (r["t"], r["loss"])
+        for r in runs.train[rid]["ev"]
+        if r.get("split") == split and r.get("loss") is not None
+    )
+    if not js:
+        return None
+    j0 = ev(runs, rid, 0.0, "loss", split)
+    late = [j for t, j in js if t >= after]
+    return dict(
+        least=min(js, key=lambda x: x[1]),
+        greatest=max(js, key=lambda x: x[1]),
+        below=None if j0 is None else sum(j < j0 for _, j in js),
+        rises=sum(b[1] > a[1] for a, b in zip(js, js[1:])),
+        pairs=len(js) - 1,
+        late_ratio=max(late) / min(late) if late else None,
+    )
+
+
+def course_table(runs: OptRuns, split: str = "val", after: float = 300.0) -> str:
+    """``course`` of each run."""
+    head = [
+        "run",
+        "評価の数",
+        "最小の J（秒）",
+        "最大の J（秒）",
+        "J(0) を下回った評価",
+    ]
+    head += ["J が上がった区間", f"{after:g} 秒以降の最大 / 最小"]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            c = course(runs, rid, split, after)
+            if c is None:
+                rows.append([label(k), "0", "–", "–", "–", "–", "–"])
+                continue
+            (t1, j1), (t2, j2) = c["least"], c["greatest"]
+            rows.append(
+                [
+                    label(k),
+                    str(c["pairs"] + 1),
+                    f"{fmt(j1)}（{t1:g}）",
+                    f"{fmt(j2)}（{t2:g}）",
+                    "–" if c["below"] is None else str(c["below"]),
+                    f"{c['rises']} / {c['pairs']}",
+                    fmt(c["late_ratio"]),
+                ]
+            )
+    return "\n".join(_md(head, rows))
+
+
+def collapse_table(
+    runs: OptRuns, t: float, first: float = 60.0, split: str = "val"
+) -> str:
+    """Per run, ``pred`` and ``tok_within`` (the mean squared deviation of a
+    token from its stack's mean token) at time 0, ``first`` and ``t``."""
+    times = (0.0, first, t)
+    head = ["run"] + [f"`{x}` {u:g}" for x in ("pred", "tok_within") for u in times]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            rows.append(
+                [label(k)]
+                + [
+                    fmt(ev(runs, rid, u, x, split))
+                    for x in ("pred", "tok_within")
+                    for u in times
+                ]
+            )
+    return "\n".join(_md(head, rows))
+
+
+def comp_table(runs: OptRuns, t: float, split: str = "val") -> str:
+    """The values behind context, ncomp and target at ``t``: per view,
+    ``comp_<v>`` with its position-only and copy-the-visible predictions
+    (``_pos``, ``_vis``), ``ncomp_<v>`` with ``_pos``, ``_vis`` and
+    ``_mean``, and the posthoc ``restore_target_<v>_mask``."""
+    head = ["run"]
+    for v in VIEWS:
+        head += [
+            f"`comp_{v}`（run / pos / vis）",
+            f"`ncomp_{v}`（run / pos / vis / mean）",
+            f"`restore_target_{v}_mask`",
+        ]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            cells = [label(k)]
+            for v in VIEWS:
+                cells.append(
+                    " / ".join(
+                        fmt(ev(runs, rid, t, f"comp_{v}{s}", split))
+                        for s in ("", "_pos", "_vis")
+                    )
+                )
+                cells.append(
+                    " / ".join(
+                        fmt(ev(runs, rid, t, f"ncomp_{v}{s}", split))
+                        for s in ("", "_pos", "_vis", "_mean")
+                    )
+                )
+                cells.append(fmt(ph(runs, rid, t, f"restore_target_{v}_mask", split)))
+            rows.append(cells)
+    return "\n".join(_md(head, rows))
+
+
+def sens_table(runs: OptRuns, t: float, split: str = "val") -> str:
+    """Per run at ``t``, ``sens_dither`` and ``sens_shift`` of the run, of the
+    untrained ViT (the yardstick of sens) and of the pixels (``_pix``)."""
+    kinds = ("dither", "shift")
+    head = ["run", *[f"`sens_{s}`（run / 学習前 / 画素）" for s in kinds]]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            init = untrained(runs, rid, split)
+            rows.append(
+                [label(k)]
+                + [
+                    " / ".join(
+                        [
+                            fmt(ph(runs, rid, t, f"sens_{s}", split)),
+                            fmt(init.get(f"sens_{s}")),
+                            fmt(ph(runs, rid, t, f"sens_{s}_pix", split)),
+                        ]
+                    )
+                    for s in kinds
+                ]
+            )
+    return "\n".join(_md(head, rows))
+
+
+def times_table(
+    runs: OptRuns, times: Sequence[float] = TIMES, split: str = "val"
+) -> str:
+    """``run_criteria`` at each of ``times``, a cell the marks of L, U and C
+    in that order (learns is all three)."""
+    head = ["run", *[f"{t:g}" for t in times]]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            cells = [label(k)]
+            for t in times:
+                c = run_criteria(runs, rid, t, split)
+                cells.append("".join(MARK[c[n]] for n in ("L", "U", "C")))
+            rows.append(cells)
+    return "\n".join(_md(head, rows))
+
+
+def drift_parts_table(runs: OptRuns, paths: Sequence[Path], t: float) -> str:
+    """Per run, the pair of checkpoints ending at ``t``: ``change`` (the
+    numerator: the code of the same stacks by the two encoders), ``apart``
+    (the denominator: different stacks by one encoder) and ``drift``."""
+    parts = ("change", "apart", "drift")
+    by_key = {x: drifts(paths, x) for x in parts}
+    head = ["run", *[f"`{x}` {t - 300:g}→{t:g}" for x in parts]]
+    rows = []
+    for k in sorted(runs.groups, key=_order):
+        for rid in runs.groups[k]:
+            rows.append(
+                [label(k)] + [fmt(by_key[x].get(rid, {}).get(t)) for x in parts]
+            )
     return "\n".join(_md(head, rows))
 
 
@@ -440,6 +621,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.drift:
         print("\n### 符号の drift（固定した積み、300 秒あいた checkpoint の対）\n")
         print(drift_table(runs, args.drift))
+        print(f"\n### drift の分子と分母（{t - 300:g}→{t:g} 秒）\n")
+        print(drift_parts_table(runs, args.drift, t))
+    print("\n### held-out の J の経過（val、全部の評価）\n")
+    print(course_table(runs))
+    print("\n### pred と積みの中のトークンの広がり（val）\n")
+    print(collapse_table(runs, t))
+    print(f"\n### C の値（val、{t:g} 秒）\n")
+    print(comp_table(runs, t))
+    print(f"\n### sens の値（val、{t:g} 秒）\n")
+    print(sens_table(runs, t))
+    print("\n### 各 checkpoint の L・U・C（val）\n")
+    print(times_table(runs))
 
 
 if __name__ == "__main__":

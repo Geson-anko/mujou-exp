@@ -9,12 +9,19 @@ from pathlib import Path
 from typing import Any
 
 from exp.video.diag.opt_sweep_tables import (
+    collapse_table,
+    comp_table,
+    course,
+    course_table,
     criteria,
+    drift_parts_table,
     drift_table,
     load,
     lr_table,
     run_criteria,
+    sens_table,
     summary,
+    times_table,
     train_loss,
 )
 
@@ -243,3 +250,101 @@ def test_the_lr_table_divides_by_time_0_and_the_untrained_vit(tmp_path: Path):
     at_start = next(x for x in lines if "`adamw` lr=0.0001 |" in x)
     assert at_start.split(" | ")[1:4] == ["1.00", "1.00", "1.00"]
     assert "| 学習前の ViT（t128、seed 100） | 1 | 1 | 1 |" in lines[-1]
+
+
+def _cells(table: str, needle: str) -> list[str]:
+    line = next(x for x in table.splitlines() if needle in x)
+    return line.strip("| ").split(" | ")
+
+
+def _course_run(root: Path) -> str:
+    """One sgd run whose held-out J, with J(0) = 1, is 0.5, 0.7, 0.6 and 1.2
+    at 60, 120, 300 and 360 s; a run with no eval has no course."""
+    _sweep(root)
+    rid = "m17-ssig_t128-00000005-s100"
+    js = [(60.0, 0.5), (120.0, 0.7), (300.0, 0.6), (360.0, 1.2)]
+    _write(
+        root / "m17-opt-v1" / rid,
+        {
+            "run_id": rid,
+            "seed": 100,
+            "name": "m17/ssig_t128",
+            "config": {"optim_vision": {"kind": "sgd", "lr": 1e-3, "warmup": 0.0}},
+        },
+        **{
+            "evals.jsonl": [
+                {"split": "val", "t": t, "loss": j, "pred": j / 2, "tok_within": j}
+                for t, j in js
+            ]
+            + [{"split": "train", "t": 60.0, "loss": 0.01}],
+            "baselines.json": {
+                "val": {"init_loss": 1.0, "init_pred": 0.8, "init_tok_within": 0.4}
+            },
+        },
+    )
+    return rid
+
+
+def test_the_course_counts_the_evals_below_j0_and_the_rises(tmp_path: Path):
+    """By hand: least 0.5 at 60 s, greatest 1.2 at 360 s, three evals below
+    J(0) = 1, two rises in three pairs, 1.2 / 0.6 = 2 from 300 s; the train
+    split is not read."""
+    rid = _course_run(tmp_path)
+    runs = load(tmp_path)
+    c = course(runs, rid)
+    assert c is not None
+    assert c["least"] == (60.0, 0.5) and c["greatest"] == (360.0, 1.2)
+    assert c["below"] == 3 and (c["rises"], c["pairs"]) == (2, 3)
+    assert c["late_ratio"] == 2.0
+    assert _cells(course_table(runs), "`sgd` lr=0.001")[1:] == [
+        "4",
+        "0.500（60）",
+        "1.20（360）",
+        "3",
+        "2 / 3",
+        "2.00",
+    ]
+    assert _cells(course_table(runs), "`sgd` lr=0.01")[1] == "1"
+
+
+def test_the_collapse_table_reads_time_0_from_the_baselines(tmp_path: Path):
+    rid = _course_run(tmp_path)
+    runs = load(tmp_path)
+    got = _cells(collapse_table(runs, 360.0), "`sgd` lr=0.001")
+    assert got[1:] == ["0.800", "0.250", "0.600", "0.400", "0.500", "1.20"]
+    assert rid in runs.train
+
+
+def test_the_values_behind_c_are_those_the_verdict_compares(tmp_path: Path):
+    """comp and ncomp from the eval row, restore_target from the posthoc;
+    sens of the run beside the untrained ViT's (the yardstick of sens)."""
+    _sweep(tmp_path)
+    runs = load(tmp_path)
+    comp = _cells(comp_table(runs, 1800.0), "`sgd` lr=0.01")
+    assert comp[1] == "0.300 / 0.900 / –"  # no comp_short_vis in the fixture
+    assert comp[2] == "0.600 / – / 1.10 / 1.20"
+    assert comp[3] == "0.400" and comp[6] == "0.500"
+    sens = _cells(sens_table(runs, 1800.0), "`sgd` lr=0.01")
+    assert sens[1:] == ["0.010 / 0.020 / –", "0.200 / 0.300 / –"]
+
+
+def test_the_times_table_is_the_verdict_at_each_checkpoint(tmp_path: Path):
+    """The fixture has rows at 1800 s only: L, U and C hold there for the
+    healthy sgd run; elsewhere J is missing (L unknown) and so is the
+    posthoc."""
+    _sweep(tmp_path)
+    runs = load(tmp_path)
+    got = _cells(times_table(runs, [300.0, 1800.0]), "`sgd` lr=0.01")
+    assert got[1:] == ["???", "○○○"]
+
+
+def test_the_drift_parts_are_the_numerator_and_denominator(tmp_path: Path):
+    _sweep(tmp_path)
+    runs = load(tmp_path)
+    rid = runs.groups[("sgd", 1e-2, 0.0)][0]
+    pair = {"t": 1500.0, "t2": 1800.0, "delta": 300.0}
+    pair |= {"change": 0.5, "apart": 2.0, "drift": 0.25}
+    path = tmp_path / "drift.json"
+    path.write_text(json.dumps({"runs": [{"run": rid, "pairs": [pair]}]}))
+    got = _cells(drift_parts_table(runs, [path], 1800.0), "`sgd`")
+    assert got[1:] == ["0.500", "2.00", "0.250"]
