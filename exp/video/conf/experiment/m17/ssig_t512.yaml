@@ -1,0 +1,35 @@
+# @package _global_
+# M17, SIGReg of the data points on one stream (the user's hypothesis,
+# 2026-11-13; results/m17.md): one sample per stack, its target tokens
+# flattened, D = T d = 1024; this arm the tokenization of m17/ema_t512,
+# 512 tokens (patch 16, tubelet 2: 8 slots x 8 x 8) of d = 2.
+# The sample is the current stack and a buffer of N = 256 past data points
+# (LeJEPA's batch scale), one inserted every vision.datapoint_every frames of
+# the stream (a frame: 0.1 s of it) at a uniformly drawn row once full: a
+# row's age is geometric of mean N k frames (k = 1: 25.6 s; the arms k = 6
+# and 24, 2.6 and 10.2 min, are overrides). The buffer holds the
+# representations (detached, vision.datapoint_store z); store input encodes
+# the stored stacks anew with the current encoder (learner=bp only). No
+# target encoder and no past tokens. One stream (B = 1); everything else, the
+# optimizer, 1800 s and the checkpoints every 300 s included, that of
+# m17/tok_n16. lambda (vision.sigreg) is a placeholder to be calibrated,
+# above the lower bound at which tokens constant within a stack stop being
+# cheaper than iid tokens (python -m exp.video.diag.ssig bound;
+# tests/video/schema/test_presets.py).
+defaults:
+  - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
+  - _self_
+name: m17/ssig_t512
+tags: [m17, wt, n16, tok, ssig, t512]
+data:
+  streams: 1
+vision:
+  patch: 16
+  tubelet: 2
+  token_dim: 2
+  sigreg_on: datapoints
+  sigreg: 0.25  # a placeholder, to be calibrated
+  token_buffer: 0
+  datapoint_buffer: 256  # N, per stream
+  datapoint_every: 1  # k
+  datapoint_store: z

@@ -607,6 +607,38 @@ class TestPacked:
         rows = _lines(tmp_path / "whole" / "stream.jsonl")
         assert all(math.isfinite(r["sigreg"]) for r in rows if r["sigreg"] is not None)
 
+    @pytest.mark.parametrize(
+        ("learner", "store"), [("pc", "z"), ("bp", "z"), ("bp", "input")]
+    )
+    def test_the_data_point_preset_resumes_with_its_buffer(
+        self, tmp_path, tours, learner, store
+    ):
+        """m17/ssig_t128 (SIGReg of the data points, one stream): the buffer
+        of 8 data points, one inserted every 2 frames, stored as
+        representations or (BP) as inputs, is resumable state: a run stopped
+        at frame 17 and resumed writes the bytes of one never stopped, and
+        the rows of the evaluation have SIGReg of the batch's data points."""
+        extra = [
+            f"learner={learner}",
+            "ctl.resume_every=0.3",
+            "ctl.log_every=0.2",
+            "vision.token_dim=4",
+            "vision.datapoint_buffer=8",
+            "vision.datapoint_every=2",
+            f"vision.datapoint_store={store}",
+        ]
+        kw = {"experiment": "m17/ssig_t128", "tiny": tours}
+        assert _run(tmp_path / "whole", extra, **kw) == Exit.OK
+        cut = tmp_path / "cut"
+        assert _run(cut, extra, _Stopping(17), **kw) == Exit.STOPPED
+        (cut / "stop.request").unlink()
+        assert _run(cut, extra, attempt=2, **kw) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (cut / name).read_bytes() == (tmp_path / "whole" / name).read_bytes()
+        rows = _lines(tmp_path / "whole" / "stream.jsonl")
+        assert all(math.isfinite(r["sigreg"]) for r in rows if r["sigreg"] is not None)
+        assert all(math.isfinite(r["sigreg"]) for r in _lines(cut / "evals.jsonl"))
+
     @pytest.mark.parametrize("learner", ["pc", "bp"])
     def test_the_ema_preset_resumes_with_its_target_encoder(
         self, tmp_path, tours, learner
