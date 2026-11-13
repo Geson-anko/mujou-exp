@@ -12,10 +12,13 @@
 # the stored stacks anew with the current encoder (learner=bp only). No
 # target encoder and no past tokens. One stream (B = 1); everything else, the
 # optimizer, 1800 s and the checkpoints every 300 s included, that of
-# m17/tok_n16. lambda (vision.sigreg) is a placeholder to be calibrated,
-# above the lower bound at which tokens constant within a stack stop being
-# cheaper than iid tokens (python -m exp.video.diag.ssig bound;
-# tests/video/schema/test_presets.py).
+# m17/tok_n16. lambda (vision.sigreg) is the middle of this arm's grid
+# 0.0338, 0.0542 and 0.087: the window where the healthy solution beats the
+# collapses and iid data points for every span with a window, with the
+# stream correlation of the untrained ViT's whitened tokens (python -m
+# exp.video.diag.ssig_window; results/m17.md); above the lower bound at
+# which tokens constant within a stack stop being cheaper than iid tokens
+# (python -m exp.video.diag.ssig bound; tests/video/schema/test_presets.py).
 defaults:
   - /experiment@_here_: m17/tok_n16  # from the root: its m17/wt_n16 resolves
   - _self_
@@ -28,7 +31,7 @@ vision:
   tubelet: 2
   token_dim: 2
   sigreg_on: datapoints
-  sigreg: 0.25  # a placeholder, to be calibrated
+  sigreg: 0.0542  # the middle of the grid (python -m exp.video.diag.ssig_window)
   token_buffer: 0
   datapoint_buffer: 256  # N, per stream
   datapoint_every: 1  # k

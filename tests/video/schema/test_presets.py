@@ -271,7 +271,8 @@ class TestM17:
     ) -> None:
         """SIGReg of the data points on one stream (2026-11-13): the
         tokenization of the EMA arm, no target encoder, N = 256 past data
-        points stored as representations, one every frame; lambda above the
+        points stored as representations, one every frame; lambda (the
+        middle of the arm's grid, exp.video.diag.ssig_window) above the
         lower bound at which tokens constant within a stack stop being
         cheaper than iid tokens (exp.video.diag.ssig)."""
         conf = compose([f"+experiment=m17/ssig_{arm}"])

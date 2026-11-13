@@ -73,7 +73,7 @@ done
 - `z`（既定）: 表現を detach して貯める。勾配はいまの標本にだけ届く。PC-ALM では、ヘッドのノードが自分のバッファを持つ
 - `input`: 積みのターゲットの view の画素（u8）を貯め、損失を計算するたびに今のエンコーダで符号化し直す。勾配はすべての標本に届く（LeJEPA と同じ）。BP だけで使える。PC-ALM のヘッドはエンコーダを持たないので、`learner=pc` では設定のエラーになる
 
-$\lambda$（`vision.sigreg`）の 0.25 は仮の値で、較正していない。下限だけは導出した。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。
+$\lambda$（`vision.sigreg`）の下限は次のように導いた。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。preset の $\lambda$（t512 0.0542、t128 0.182、t64 0.271）は、腕ごとの格子の真ん中である。格子は、健全な解が崩壊と i.i.d. なデータポイントの両方に勝つ窓から決めた。窓には、バッファの標本どうしのストリームの相関を入れた（`python -m exp.video.diag.ssig_window`、results/m17.md の「$\lambda$ の格子の導出（ストリームの相関を入れる）」）。格子の両端は `vision.sigreg` で上書きする（t512 0.0338・0.087、t128 0.107・0.31、t64 0.201・0.364）。
 
 posthoc には、情報を持たない入力の変化に対する表現の感度を足した（`measure/sensitivity.py`）。`sens_dither` は量子化のディザ（画素ごとに $U(-\frac12, \frac12)/255$）、`sens_shift` は 1 画素の平行移動（端の列は複製）に対する感度で、どちらも $E\lVert f(x') - f(x) \rVert^2 / E_{i \ne j}\lVert f(x_i) - f(x_j) \rVert^2$ である。分母は `diag/stream_stats` の `drift` と同じ。`_pix` は同じ比を画素で測った値である。表現の値がこれを大きく上回るなら、入力がほとんど変わらない差を、表現が増幅している。最後の checkpoint の表現の、ラグごとの白色化した相関は、`diag/stream_stats` の `repr` で測る。
 
