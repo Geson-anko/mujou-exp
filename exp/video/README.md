@@ -75,13 +75,18 @@ done
 
 $\lambda$（`vision.sigreg`）の下限は次のように導いた。積みの中でトークンが一定の解では、予測の誤差が 0 になる。ところが、平らにした列を乱数の向きに射影すると、この解は $d$ が大きいほど $N(0, 1)$ に近く見える。そのため、この解が i.i.d. なトークンより高くつくのは、$\lambda > \lambda^*$ のときだけである。$n$ = 257 標本では、$\lambda^*$ は $d$ = 2・8・16 で 0.037・0.116・0.213 になる（`python -m exp.video.diag.ssig bound`。テストは `tests/video/schema/test_presets.py`）。i.i.d. なトークンの尺度もエンコーダが選べるとすると、0.030・0.109・0.206 になる（`lam_star_scaled`）。この下限が除くのは、積み 1 つにつき $d$ 個の数の符号（$m = d$）だけである。文脈から決まる $m > d$ 個の数の潜在から作るトークンも、予測の誤差は 0 になる。$m$ が大きいほど、その統計量は $S_0$ に近づく。そのため、どの $\lambda < 1$ でも、この解は健全な解より安い。この解が崩壊かどうかは $m$ による。それは学んだ符号の rank でしか分からない。preset の $\lambda$（t512 0.0442、t128 0.134、t64 0.233）は、腕ごとの格子の真ん中である。格子は、健全な解が崩壊と i.i.d. なデータポイントの両方に勝つ窓から決めた。窓には、バッファの標本どうしのストリームの相関を入れた。相関は、各腕の学習前の ViT（同じトークン化の EMA の run の `init`）の、白色化したトークン列で測った（`python -m exp.video.diag.ssig_window --own`、results/m17.md の「各腕の学習前の相関で導き直した格子」）。格子の両端は `vision.sigreg` で上書きする（t512 0.0348・0.056、t128 0.112・0.162、t64 0.207・0.263）。窓の下端も、$m = d$ の符号を除くだけである。前の格子（真ん中が 0.0542・0.182・0.271）は、別のトークン化の曲線（$D$ = 8192）を代わりに使って導いたもので、この格子で置き換えた。
 
-ガウスのモーメント合わせの preset は `m17/gkl_t512`・`gkl_t128`・`gkl_t64`（2026-11-13、ユーザーの決定。EMA のターゲットも対照の負例も使わない）。`m17/ssig_*` の SIGReg の代わりに、データポイントの項を $F/D$、$F = \mathrm{KL}(N(\mu, \Sigma) \,\|\, N(0, I))$ にする（`vision.datapoint_law=gauss`、`exp/lib/gauss_kl.py`）。いまのデータポイントでの勾配は $z - \hat P(z - \hat\mu)$ で、$\hat\mu$ と $\hat P = (n - D - 2)S^{-1}$ は $N$ = 4096 行のバッファ（`z` を貯める）から作る。行が i.i.d. なら、この形でステップの勾配の期待値が $\nabla F$ に一致する。項はバッファが $D + 3$ 行を持つまで切れている。ほかの設定は同じ腕の `m17/ssig_*` と同じである。$\lambda$（`vision.sigreg`）の 0.5 は仮の値で、回す前に 10 倍刻みで掃引する。導出、速さ、AR(1) のストリームでの診断は results/m17.md の「ガウスのモーメント合わせ」にある。
+ガウスのモーメント合わせの preset は `m17/gkl_t512`・`gkl_t128`・`gkl_t64`（2026-11-13、ユーザーの決定。EMA のターゲットも対照の負例も使わない）。`m17/ssig_*` の SIGReg の代わりに、データポイントの項を $F/D$、$F = \mathrm{KL}(N(\mu, \Sigma) \,\|\, N(0, I))$ にする（`vision.datapoint_law=gauss`、`exp/lib/gauss_kl.py`）。いまのデータポイントでの勾配は $z - \hat P(z - \hat\mu)$ で、$\hat\mu$ と $\hat P = (n - D - 2)S^{-1}$ は $N$ = 4096 行のバッファ（`z` を貯める）から作る。行が i.i.d. なガウスなら、この形でステップの勾配の期待値が $\nabla F$ に一致する。項は、バッファが $D + 5$ 行を持つまで切れている。$\hat P$ の平均と分散がともに有限になる最初の行数である。ほかの設定は同じ腕の `m17/ssig_*` と同じである。$\lambda$（`vision.sigreg`）は preset では `.nan` で、schema が拒む。run ごとに `vision.sigreg=<λ>` で指定する。散布行列が特異になると（$F = +\infty$）、記録する `sigreg`（$\tilde F/D$）が $+\infty$ になり、run は発散として終わる。導出と診断は results/m17.md の「ガウスのモーメント合わせ（実装と AR(1) の診断）」、回す前に決めたことは「ガウスのモーメント整合（回す前に決めたこと）」にある。
 
 ```bash
-# 速さ（Mac の CPU、バッファは満杯）
-python -m exp.video.diag.ssig bench --arm t128 --device cpu --preset gkl
-# AR(1) のストリームでの固定点（gauss・sigreg、凍結した c*）
+# 速さ（Mac の CPU、バッファは満杯。λ は必須だが速さには効かない）
+python -m exp.video.diag.ssig bench --arm t128 --device cpu --preset gkl vision.sigreg=0.1
+# モーメントの計算 1 回の時間、非ガウスの行での偏り、plug-in の底
+python -m exp.video.diag.gkl_check bench --dim 1024 --rows 4096 --device cpu
+python -m exp.video.diag.gkl_check nongauss --dim 1024 --rows 4096 --reps 100
+python -m exp.video.diag.gkl_check floor --dim 1024 --rows 4096
+# AR(1) のストリームでの固定点（gauss・sigreg、凍結した c* は seed ごと）
 python -m exp.video.diag.gkl_ar1 run --law gauss --tau 1000 --out ar1_gauss_tau1000.json
+python -m exp.video.diag.gkl_ar1 run --law gauss --tau 10 --frozen --dim 64 --buffer 256 --seed 0 --out f.json
 python -m exp.video.diag.gkl_ar1 report ar1_*.json
 ```
 
