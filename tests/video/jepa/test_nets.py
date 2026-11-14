@@ -79,7 +79,10 @@ def test_the_fan_ins_of_the_m17_ssig_t128_modules():
             full = f"{key}.{name}"
             got[full] = n[p]
             rule = (f for pattern, f in M17_FAN_INS if re.fullmatch(pattern, full))
-            want[full] = next(rule, 1)
+            want[full] = next(rule, None)
+            if want[full] is None:  # a vector: a bias, a gain or a token
+                assert p.dim() == 1, full
+                want[full] = 1
     assert got == want
     assert sum(f == 6144 for f in got.values()) == 1
     assert sum(f == 1024 for f in got.values()) == 10  # 8 encoder + 2 predictor blocks

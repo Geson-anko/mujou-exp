@@ -15,6 +15,7 @@ from exp.video.diag.early_shrink import (
     owners,
     params_of,
     same_value,
+    step_bound,
     swapped,
     weight_change,
 )
@@ -197,3 +198,50 @@ def test_linear_inputs_are_what_each_map_saw():
     assert list(got) == ["m.0", "m.1"]
     torch.testing.assert_close(got["m.0"], x.flatten(0, 1))
     torch.testing.assert_close(got["m.1"], first(x).flatten(0, 1).detach())
+
+
+def _map(m: int, n_in: int, seed: int) -> tuple[nn.Linear, dict[str, nn.Module]]:
+    torch.manual_seed(seed)
+    lin = nn.Linear(n_in, m).double()
+    with torch.no_grad():
+        lin.bias.normal_(0, 0.1)
+    return lin, {"e": lin}
+
+
+def test_step_bound_is_reached_by_the_sign_step_on_one_input():
+    """One input x, Delta W = (a / n) s sign(x)^T, Delta b = a s: every output
+    moves by a (|x|_1 / n + 1), so output_change = a step_bound exactly, for
+    the fan-in n and for n = 1."""
+    m, n_in, a = 5, 40, 1e-3
+    for n in (n_in, 1):
+        lin, mods = _map(m, n_in, 8)
+        init = {k: v.detach().clone() for k, v in params_of(mods).items()}
+        x = torch.randn(1, n_in, dtype=torch.float64)
+        s = torch.randn(m, dtype=torch.float64).sign()
+        with torch.no_grad():
+            lin.weight.add_((a / n) * torch.outer(s, x[0].sign()))
+            lin.bias.add_(a * s)
+        got = output_change(mods, init, lambda x=x, lin=lin: lin(x))["e"]
+        bound = step_bound(x, init["e.weight"], init["e.bias"], n)
+        assert math.isclose(got, a * bound, rel_tol=1e-12)
+
+
+def test_step_bound_bounds_any_change_within_the_element_limits():
+    """|Delta W| <= a / n and |Delta b| <= a element-wise on many inputs:
+    output_change <= a step_bound."""
+    m, n_in, a = 6, 30, 2e-3
+    g = torch.Generator().manual_seed(9)
+    lin, mods = _map(m, n_in, 9)
+    init = {k: v.detach().clone() for k, v in params_of(mods).items()}
+    x = torch.randn(50, n_in, generator=g, dtype=torch.float64)
+    bound = step_bound(x, init["e.weight"], init["e.bias"], n_in)
+    for _ in range(20):
+        with torch.no_grad():
+            lin.weight.copy_(init["e.weight"])
+            lin.bias.copy_(init["e.bias"])
+            lin.weight.add_(
+                (a / n_in) * (2 * torch.rand(m, n_in, generator=g).double() - 1)
+            )
+            lin.bias.add_(a * (2 * torch.rand(m, generator=g).double() - 1))
+        got = output_change(mods, init, lambda: lin(x))["e"]
+        assert got <= a * bound

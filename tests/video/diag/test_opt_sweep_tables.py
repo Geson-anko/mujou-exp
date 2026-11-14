@@ -16,6 +16,7 @@ from exp.video.diag.opt_sweep_tables import (
     criteria,
     drift_parts_table,
     drift_table,
+    label,
     load,
     lr_table,
     run_criteria,
@@ -161,15 +162,15 @@ def test_load_groups_the_runs_and_reads_the_untrained_vit_of_the_seed(
     _sweep(tmp_path)
     runs = load(tmp_path)
     assert set(runs.groups) == {
-        ("sgd", 1e-2, 0.0),
-        ("adamw", 1e-4, 0.0),
-        ("adamw", 1e-4, 300.0),
+        ("sgd", 1e-2, 0.0, "none"),
+        ("adamw", 1e-4, 0.0, "none"),
+        ("adamw", 1e-4, 300.0, "none"),
     }
     got = {k: run_criteria(runs, r[0], 1800.0) for k, r in runs.groups.items()}
-    assert got[("sgd", 1e-2, 0.0)]["learns"] is True
-    assert got[("adamw", 1e-4, 0.0)]["learns"] is False
-    assert got[("adamw", 1e-4, 300.0)]["L"] is True
-    assert got[("adamw", 1e-4, 300.0)]["learns"] is None  # no posthoc
+    assert got[("sgd", 1e-2, 0.0, "none")]["learns"] is True
+    assert got[("adamw", 1e-4, 0.0, "none")]["learns"] is False
+    assert got[("adamw", 1e-4, 300.0, "none")]["L"] is True
+    assert got[("adamw", 1e-4, 300.0, "none")]["learns"] is None  # no posthoc
     shown = summary(runs, 1800.0)
     assert "| `sgd` | 0.01 | – | – |" in shown
     assert "| `adamw` | なし | 0.0001（warmup 300 秒） | – |" in shown
@@ -215,7 +216,7 @@ def test_a_run_that_diverged_fails_l_and_learns_and_is_listed(tmp_path: Path):
 def test_the_drift_table_takes_the_pairs_300_s_apart(tmp_path: Path):
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0)][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
     pairs = [
         {"t": 300.0, "t2": 600.0, "delta": 300.0, "drift": 0.5},
         {"t": 300.0, "t2": 900.0, "delta": 600.0, "drift": 9.0},
@@ -231,7 +232,7 @@ def test_the_lr_table_divides_by_time_0_and_the_untrained_vit(tmp_path: Path):
     own row is 1 by definition; the drift is that of the pair ending at t."""
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0)][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
     path = tmp_path / "drift.json"
     pairs = [{"t": 1500.0, "t2": 1800.0, "delta": 300.0, "drift": 0.25}]
     path.write_text(json.dumps({"runs": [{"run": rid, "pairs": pairs}]}))
@@ -341,10 +342,39 @@ def test_the_times_table_is_the_verdict_at_each_checkpoint(tmp_path: Path):
 def test_the_drift_parts_are_the_numerator_and_denominator(tmp_path: Path):
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0)][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
     pair = {"t": 1500.0, "t2": 1800.0, "delta": 300.0}
     pair |= {"change": 0.5, "apart": 2.0, "drift": 0.25}
     path = tmp_path / "drift.json"
     path.write_text(json.dumps({"runs": [{"run": rid, "pairs": [pair]}]}))
     got = _cells(drift_parts_table(runs, [path], 1800.0), "`sgd`")
     assert got[1:] == ["0.500", "2.00", "0.250"]
+
+
+def test_a_fan_in_run_is_its_own_group_labelled_eta(tmp_path: Path):
+    """``scale`` ``fan_in`` keys a run apart from the same lr without it, and
+    its label names the rate eta."""
+    for i, scale in enumerate((None, "fan_in")):
+        optim = {"kind": "adamw", "lr": 1e-4, "warmup": 0.0}
+        if scale is not None:
+            optim["scale"] = scale
+        rid = f"m17-ssig_t128-0000000{i}-s100"
+        _write(
+            tmp_path / "m17-opt-v1" / rid,
+            {
+                "run_id": rid,
+                "seed": 100,
+                "name": "m17/ssig_t128",
+                "config": {"optim_vision": optim},
+            },
+            **{"evals.jsonl": [], "baselines.json": {"val": {"init_loss": 1.0}}},
+        )
+    runs = load(tmp_path)
+    assert set(runs.groups) == {
+        ("adamw", 1e-4, 0.0, "none"),
+        ("adamw", 1e-4, 0.0, "fan_in"),
+    }
+    assert label(("adamw", 1e-4, 0.0, "fan_in")) == "`adamw` η=0.0001"
+    assert label(("adamw", 1e-4, 300.0, "none")) == "`adamw` lr=0.0001 warmup 300 秒"
+    # no evals: unknown, the fan_in run named by its eta
+    assert "| `adamw` | なし | η=0.0001、0.0001 | – |" in summary(runs, 1800.0)

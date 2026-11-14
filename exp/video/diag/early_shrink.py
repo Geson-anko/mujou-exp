@@ -42,6 +42,14 @@ the ratio is $\eta n$, large for the patch embedding's $n = \tau C p^2$.
 stacks): the most the ratio of ``output_change`` to ``rel`` can be, and the
 inputs' effective dimension (``gain_bound``'s docstring).
 
+``step_bound`` (at time 0, ``live`` only): each linear map's
+``output_change`` per unit of a step of every weight element by $a / n$ and
+every bias element by $a$ (``step_bound``'s docstring), with $n$ the map's
+fan-in under ``optim_vision.scale`` ``fan_in`` and 1 otherwise: Adam's
+steps of about $\eta$ an element a frame give $a \approx \eta F$ after $F$
+frames, so ``output_change`` $/ (\eta F)$ is at most about ``step_bound``,
+with equality for coherent signs on inputs on one line.
+
 ``attribution``: for each module that holds parameters, the row with that
 module's tensors back at $\theta_0$ and every other at the checkpoint
 (``revert``), and the row with only that module at the checkpoint
@@ -176,6 +184,21 @@ def gain_bound(x: Tensor) -> dict[str, float]:
     }
 
 
+def step_bound(x: Tensor, w0: Tensor, b0: Tensor, n: int) -> float:
+    r"""The ``output_change`` on the inputs ``x`` ``(k, n_in)`` of a map
+    $W_0 x + b_0$ ($W_0$ ``(m, n_in)``) per unit $a$ of a change with
+    $|\Delta W_{ij}| \le a / n$ and $|\Delta b_i| \le a$: $|(\Delta W x_t +
+    \Delta b)_i| \le a (\lVert x_t\rVert_1 / n + 1)$, so ``output_change``
+    $\le a\,\sqrt{m \sum_t (\lVert x_t\rVert_1 / n + 1)^2} / \lVert x
+    W_0^\top + b_0\rVert_F$, the value returned. Equality for one input and
+    the sign step $\Delta W = (a / n)\,s\,\mathrm{sign}(x)^\top$, $\Delta b =
+    a\,s$ ($s = \pm 1$)."""
+    x = x.double()
+    per = x.abs().sum(1) / n + 1
+    base = float((x @ w0.double().T + b0.double()).norm())
+    return math.sqrt(w0.shape[0]) * float(per.norm()) / base
+
+
 def owners(names: Sequence[str]) -> dict[str, list[str]]:
     """The tensors ``names`` grouped by the module that holds them (the name
     without its last part), in order."""
@@ -236,7 +259,7 @@ def run_conf(run_dir: Path) -> RunConf:
 def _write(out: Path, row: Mapping[str, Any]) -> None:
     with (out / "rows.jsonl").open("a") as f:
         f.write(json.dumps(row) + "\n")
-    big = ("weight_change", "output_change", "gain_bound", "attribution")
+    big = ("weight_change", "output_change", "gain_bound", "step_bound", "attribution")
     print(json.dumps({k: v for k, v in row.items() if k not in big}))
 
 
@@ -260,6 +283,7 @@ def live(args: argparse.Namespace) -> None:
         stacks = stacks.to(conf.device)
         row0 = built.evaluate("val")
         inputs = linear_inputs(built.modules(), lambda: online.mods.tokens(stacks))
+        fan_in = conf.optim_vision is not None and conf.optim_vision.scale == "fan_in"
         _write(
             args.out,
             {
@@ -268,6 +292,15 @@ def live(args: argparse.Namespace) -> None:
                 "learn": args.learn,
                 **pick(row0),
                 "gain_bound": {k: gain_bound(x) for k, x in inputs.items()},
+                "step_bound": {
+                    k: step_bound(
+                        x,
+                        init[f"{k}.weight"],
+                        init[f"{k}.bias"],
+                        x.shape[1] if fan_in else 1,
+                    )
+                    for k, x in inputs.items()
+                },
             },
         )
         for u in range(1, s.units + 1):

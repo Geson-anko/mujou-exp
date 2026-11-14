@@ -6,7 +6,10 @@ directories pulled into ``./runs`` (``just fleet pull --batch m17-opt-v1
 --batch m17-opt-post-v1 --batch m17-opt-base-v1``; other batch names by the
 options). Reads only; prints markdown.
 
-A run is the (kind, lr, warmup) of its ``optim_vision``. Its criteria, fixed
+A run is the (kind, lr, warmup, scale) of its ``optim_vision`` (``scale``
+``"none"`` when the job predates it); under ``scale`` ``fan_in`` the lr is
+$\eta$ (the rate of the vectors, $\eta / n$ of a matrix of fan-in $n$) and the
+labels say so. Its criteria, fixed
 before the runs, at ``--t`` (1800 s) on val:
 
 - ``L``: the held-out objective $J = (1 - \lambda)\,\mathrm{pred} + \lambda S$
@@ -67,7 +70,7 @@ VIEWS = ("short", "long")
 CRITERIA = ("L", "U", "C", "learns")
 MARK = {True: "○", False: "×", None: "?"}
 
-Key = tuple[str, float, float]  # (kind, lr, warmup)
+Key = tuple[str, float, float, str]  # (kind, lr, warmup, scale)
 
 
 class OptRuns(NamedTuple):
@@ -90,9 +93,9 @@ def _jobs(root: Path, batch: str) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def key_of(job: dict[str, Any]) -> Key:
-    """(kind, lr, warmup) of the job's ``optim_vision``."""
+    """(kind, lr, warmup, scale) of the job's ``optim_vision``."""
     o = job["config"]["optim_vision"]
-    return (o["kind"], float(o["lr"]), float(o["warmup"]))
+    return (o["kind"], float(o["lr"]), float(o["warmup"]), o.get("scale", "none"))
 
 
 def _arm(job: dict[str, Any]) -> str:
@@ -133,8 +136,8 @@ def load(
     return OptRuns(train, dict(post), base, dict(groups))
 
 
-def _order(k: Key) -> tuple[int, float, float]:
-    return (KINDS.index(k[0]) if k[0] in KINDS else len(KINDS), k[1], k[2])
+def _order(k: Key) -> tuple[int, float, float, str]:
+    return (KINDS.index(k[0]) if k[0] in KINDS else len(KINDS), k[1], k[2], k[3])
 
 
 def ev(runs: OptRuns, rid: str, t: float, key: str, split: str = "val") -> Any:
@@ -228,10 +231,15 @@ def run_criteria(
     )
 
 
+def rate(k: Key) -> str:
+    """``lr=<lr>``, or ``η=<lr>`` under ``scale`` ``fan_in``."""
+    return f"{'η' if k[3] == 'fan_in' else 'lr'}={k[1]:g}"
+
+
 def label(k: Key) -> str:
-    """``kind`` lr=``lr`` (and the warm-up when there is one)."""
+    """``kind`` and ``rate`` (and the warm-up when there is one)."""
     w = f" warmup {k[2]:g} 秒" if k[2] else ""
-    return f"`{k[0]}` lr={k[1]:g}{w}"
+    return f"`{k[0]}` {rate(k)}{w}"
 
 
 def _md(head: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
@@ -278,13 +286,17 @@ def summary(runs: OptRuns, t: float, split: str = "val") -> str:
     """Per optimizer: the learning rates whose runs learn, those whose
     criteria are unknown, and those whose runs diverged."""
     rows = []
-    for kind in sorted({k[0] for k in runs.groups}, key=lambda x: _order((x, 0, 0))):
+    for kind in sorted(
+        {k[0] for k in runs.groups}, key=lambda x: _order((x, 0, 0, ""))
+    ):
         learn, unknown, div = [], [], []
         for k in sorted(runs.groups, key=_order):
             if k[0] != kind:
                 continue
             got = [run_criteria(runs, r, t, split)["learns"] for r in runs.groups[k]]
-            name = f"{k[1]:g}" + (f"（warmup {k[2]:g} 秒）" if k[2] else "")
+            name = (f"η={k[1]:g}" if k[3] == "fan_in" else f"{k[1]:g}") + (
+                f"（warmup {k[2]:g} 秒）" if k[2] else ""
+            )
             if got and all(g is True for g in got):
                 learn.append(name)
             elif any(g is None for g in got) and not any(g is False for g in got):
