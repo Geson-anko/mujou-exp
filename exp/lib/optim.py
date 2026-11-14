@@ -16,17 +16,21 @@ A direction optimizer computes a direction $D$ from the gradients
 (``DirectionOptimizer``), which a node steps along as SGD does,
 $\Delta W = -\frac{\text{elapsed}}{\tau} D$, or with the step size of SGD
 (``Grafted``), $\Delta W = -\frac{\text{elapsed}}{\tau} \lVert G \rVert_F
-\frac{D}{\lVert D \rVert_F}$, tensor by tensor.
+\frac{D}{\lVert D \rVert_F}$, tensor by tensor. With ``fan_in`` (of
+``fan_ins``) each tensor's step is divided by its fan-in $n$: the learning rate
+$\eta / n$ of a matrix and $\eta$ of a vector, the per-layer rate of Adam under
+the spectral condition (muP; Yang, Simon & Bernstein 2023).
 """
 
 import math
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, override
 
 import torch
 from mujou.pc.optim import AdamW, BoundOptimizer, Optimizer
+from torch import nn
 
 from mujou import Stateful
 
@@ -40,6 +44,7 @@ __all__ = [
     "StepAdamW",
     "Warmup",
     "adam",
+    "fan_ins",
 ]
 
 
@@ -60,16 +65,68 @@ class BoundDirection(Stateful):
         direction of each parameter (of its shape)."""
 
 
+def fan_ins(*modules: nn.Module) -> dict[torch.Tensor, int]:
+    r"""The fan-in $n$ of each parameter of ``modules``, by its role in the
+    module that holds it (not by its shape):
+
+    - the weight of an ``nn.Linear``: ``in_features``, the inputs its sum runs
+      over. A fused map is one ``nn.Linear`` and keeps it: the attention's
+      ``qkv`` of width $d$ to $3d$ has $n = d$;
+    - the bias of an ``nn.Linear``, the gain and the bias of an
+      ``nn.LayerNorm``: 1 (vectors, added or multiplied element by element: no
+      sum over inputs);
+    - a parameter a module of the model holds itself, not through a torch
+      layer (a learned token: the mask token, the extra tokens): 1 (added to
+      the tokens: no input).
+
+    The keys are the parameters themselves (as the state of
+    ``torch.optim``), for ``DirectionOptimizer.fan_in``.
+
+    Raises:
+        ValueError: A parameter of another torch layer (``nn.Conv2d``,
+            ``nn.Embedding``, ``nn.MultiheadAttention``, ...), whose role
+            this rule does not state, or a parameter shared by two modules
+            with two fan-ins.
+    """
+    out: dict[torch.Tensor, int] = {}
+    for module in modules:
+        for m in module.modules():
+            for name, p in m.named_parameters(recurse=False):
+                n = _fan_in(m, name)
+                if out.setdefault(p, n) != n:
+                    raise ValueError(f"the parameter {name!r} has two fan-ins")
+    return out
+
+
+def _fan_in(m: nn.Module, name: str) -> int:
+    """The fan-in of the parameter ``name`` held by ``m`` itself (``fan_ins``)."""
+    if isinstance(m, nn.Linear):
+        return m.in_features if name == "weight" else 1
+    if isinstance(m, nn.LayerNorm):
+        return 1
+    if type(m).__module__.startswith("torch."):
+        raise ValueError(
+            f"no fan-in rule for the parameter {name!r} of {type(m).__name__}"
+        )
+    return 1
+
+
 @dataclass(frozen=True, kw_only=True)
 class DirectionOptimizer(Optimizer):
-    """A direction, stepped along with the learning rate ``elapsed / tau``.
+    r"""A direction, stepped along with the learning rate ``elapsed / tau``,
+    divided per tensor by its fan-in with ``fan_in``.
 
     Args:
         tau: The time constant of the parameters, in seconds, as in
             ``pc.optim.SGD``.
+        fan_in: The fan-in $n$ of each parameter (``fan_ins``); a step of a
+            tensor is then $-\frac{\text{elapsed}}{\tau n} D$. ``None``: 1
+            for every one (the step without it, bit for bit). Binding a
+            parameter it does not hold raises ``ValueError``.
     """
 
     tau: float
+    fan_in: Mapping[torch.Tensor, int] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _check_positive(type(self).__name__, "tau", self.tau)
@@ -78,10 +135,29 @@ class DirectionOptimizer(Optimizer):
     def bind_direction(self, params: Sequence[torch.Tensor]) -> BoundDirection:
         """Return the direction bound to ``params``, with a fresh state."""
 
+    def fan_in_of(self, params: Sequence[torch.Tensor]) -> list[int]:
+        """$n$ of each of ``params`` (1 for all without ``fan_in``).
+
+        Raises:
+            ValueError: ``fan_in`` does not hold one of ``params``.
+        """
+        if self.fan_in is None:
+            return [1] * len(params)
+        missing = [tuple(p.shape) for p in params if p not in self.fan_in]
+        if missing:
+            raise ValueError(f"no fan-in for the parameters of shapes {missing}")
+        return [self.fan_in[p] for p in params]
+
     @override
     def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
         params = list(params)
-        return _Stepped(params, self.bind_direction(params), self.tau, graft=False)
+        return _Stepped(
+            params,
+            self.bind_direction(params),
+            self.tau,
+            self.fan_in_of(params),
+            graft=False,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,7 +171,13 @@ class Grafted(Optimizer):
     def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
         params = list(params)
         inner = self.inner
-        return _Stepped(params, inner.bind_direction(params), inner.tau, graft=True)
+        return _Stepped(
+            params,
+            inner.bind_direction(params),
+            inner.tau,
+            inner.fan_in_of(params),
+            graft=True,
+        )
 
 
 class _Stepped(BoundOptimizer):
@@ -104,12 +186,14 @@ class _Stepped(BoundOptimizer):
         params: list[torch.Tensor],
         direction: BoundDirection,
         tau: float,
+        fan_in: list[int],
         *,
         graft: bool,
     ) -> None:
         self._params = params
         self._direction = direction
         self._tau = tau
+        self._fan_in = fan_in
         self._graft = graft
 
     @override
@@ -121,13 +205,13 @@ class _Stepped(BoundOptimizer):
         eta = elapsed / self._tau
         with torch.no_grad():
             ds = self._direction.direction(grads, elapsed)
-            for p, g, d in zip(self._params, grads, ds, strict=True):
+            for p, g, d, n in zip(self._params, grads, ds, self._fan_in, strict=True):
                 if self._graft:
                     norm = torch.linalg.vector_norm(d)
                     if norm == 0:
                         continue
                     d = d * (torch.linalg.vector_norm(g) / norm)
-                p.sub_(d, alpha=eta)
+                p.sub_(d, alpha=eta / n)
 
     @override
     def state_dict(self) -> Any:
