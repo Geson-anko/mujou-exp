@@ -11,6 +11,7 @@ from typing import Any
 from exp.video.diag.plr_attribution import (
     EMBED,
     add_fleet,
+    additivity,
     embed_below_others,
     parse_tag,
     revert_summary,
@@ -71,6 +72,27 @@ def test_embed_below_others_and_revert_summary():
     assert revert_summary(_att(0.3, 0.2))["p2"] is False
 
 
+def test_additivity_is_one_when_the_moves_add_up():
+    """tok_within = t0 + sum of the moved modules' deltas: reverting i gives
+    moved - delta_i, moving i alone t0 + delta_i, so every encoder module's
+    (revert + only) / (moved + t0) is 1; the predictor is left out."""
+    t0, deltas = 0.5, {EMBED: -0.2, OTHER: -0.1}
+    moved = t0 + sum(deltas.values())
+    att = {
+        m: {"revert": {"tok_within": moved - d}, "only": {"tok_within": t0 + d}}
+        for m, d in deltas.items()
+    }
+    att["predictor"] = {"revert": {"tok_within": 9.0}, "only": {"tok_within": 9.0}}
+    a = additivity(att, moved, t0)
+    assert math.isclose(a["add_min"], 1.0) and math.isclose(a["add_max"], 1.0)
+    assert math.isclose(a["add_embed"], 1.0)
+    att[EMBED]["only"]["tok_within"] = 1.0  # above moved + t0: not additive
+    a = additivity(att, moved, t0)
+    assert a["add_max_module"] == EMBED
+    assert math.isclose(a["add_max"], (moved + 0.2 + 1.0) / (moved + t0))
+    assert a["add_min_module"] == OTHER
+
+
 def test_summarize_computes_q_p1_p2_p3(tmp_path: Path):
     """plr at lr 1e-4: output_change c t at frame 30 t, so q = c / (30 lr);
     the embedding's c is below qkv's (P1 holds); revert 0.1 against 0.2
@@ -101,6 +123,7 @@ def test_summarize_computes_q_p1_p2_p3(tmp_path: Path):
     assert plr["p3"] is True and plr["p3_values"] == {"plr": 0.05, "opt": 0.01}
     assert "p3" not in opt
     assert plr["values"]["0"]["tok_within"] == 0.47
+    assert math.isclose(plr["att"]["60"]["add_embed"], (0.1 + 0.3) / (0.03 + 0.47))
     shown = tables(s)
     assert (
         "| `adamw` | 0.0001 | 0.4 / 0.2 / 0.05 / 0.03 | 0.3 / 0.1 / 0.01 / 0.005 | ○ |"

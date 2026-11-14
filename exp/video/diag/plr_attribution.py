@@ -15,6 +15,12 @@ the sweep ``m17-opt-v1`` at the same numbers; ``lr`` the run's
   at most the largest with any one other module back
 - P3 (600 steps, 15 s): ``tok_within`` of ``plr`` above that of ``opt`` at the
   same kind, number and time
+- additivity of the one-module attribution (a reading after the runs, not a
+  prediction): if ``tok_within`` were $f_0 + \sum_{i \in S} \delta_i$ over
+  the set $S$ of moved modules, every encoder module $i$ would have
+  $(\text{revert}_i + \text{only}_i) / (f_{\text{all}} + f_0) = 1$; the
+  minimum and maximum of this ratio over the encoder's modules and the
+  embedding's (the predictor does not act on ``tok_within``)
 
 With ``--runs`` (the pulled run tree), each entry also gets the held-out
 values of the fleet's run of the same arm (``m17-plr-v1`` or ``m17-opt-v1``,
@@ -83,6 +89,27 @@ def revert_summary(att: Mapping[str, Mapping[str, Mapping[str, float]]]) -> dict
     }
 
 
+def additivity(
+    att: Mapping[str, Mapping[str, Mapping[str, float]]], moved: float, t0: float
+) -> dict[str, Any]:
+    """``(revert + only) / (moved + t0)`` of ``tok_within`` per encoder
+    module, 1 for all when the attribution is additive: its minimum and
+    maximum with their modules, and the embedding's."""
+    r = {
+        m: (a["revert"]["tok_within"] + a["only"]["tok_within"]) / (moved + t0)
+        for m, a in att.items()
+        if m.startswith("encoder.")
+    }
+    lo, hi = min(r, key=lambda m: r[m]), max(r, key=lambda m: r[m])
+    return {
+        "add_min": r[lo],
+        "add_min_module": lo,
+        "add_max": r[hi],
+        "add_max_module": hi,
+        "add_embed": r[EMBED],
+    }
+
+
 def summarize(root: Path) -> dict[str, dict[str, Any]]:
     """Per ``<arm>-<kind>-<lr>`` the held-out values at ``TIMES`` and time 0,
     ``q`` and ``q / step_bound`` at 1, 10 and 60 s with P1 at 1 s, and the
@@ -98,10 +125,14 @@ def summarize(root: Path) -> dict[str, dict[str, Any]]:
         bound = next((r["step_bound"] for r in rows if "step_bound" in r), None)
         if bound is not None:
             e["step_bound"] = bound
+        tw = {float(r["t"]): r["tok_within"] for r in rows if "frame" in r}
         for r in rows:
             if "frame" not in r:  # the attribution at the end: modules by name
                 att = {k: v for k, v in r.items() if k != "t"}
-                e["att"][f"{r['t']:g}"] = revert_summary(att)
+                e["att"][f"{r['t']:g}"] = {
+                    **revert_summary(att),
+                    **additivity(att, tw[float(r["t"])], tw[0.0]),
+                }
                 continue
             t = float(r["t"])
             if t == 0.0 or t in TIMES:
@@ -269,6 +300,31 @@ def tables(s: Mapping[str, Mapping[str, Any]]) -> str:
                 f"{_f(a['only_embed'])}"
             )
         md.append(f"| `{kind}` | {lr:g} | " + " | ".join(cells) + " |")
+    md += [
+        "",
+        "**加法性**: エンコーダのモジュールごとの "
+        "(戻す + それだけ動かす) / (すべて動かす + 時刻 0)（`tok_within`）。"
+        "加法的ならどれも 1。最小（モジュール）/ 最大（モジュール）/ 埋め込み",
+        "",
+        "| optimizer | η / lr | 層ごと 1 秒 | 層ごと 10 秒 | 層ごと 60 秒 | 掃引 60 秒 |",
+        "|" + " -- |" * 6,
+    ]
+
+    def add(e: Mapping[str, Any] | None, t: str) -> str:
+        a = None if e is None else e["att"].get(t)
+        if a is None or "add_min" not in a:
+            return "–"
+        return (
+            f"{_f(a['add_min'])}（`{_short(a['add_min_module'])}`）/ "
+            f"{_f(a['add_max'])}（`{_short(a['add_max_module'])}`）/ "
+            f"{_f(a['add_embed'])}"
+        )
+
+    for kind, lr, p, o in pairs:
+        md.append(
+            f"| `{kind}` | {lr:g} | {add(p, '1')} | {add(p, '10')} | "
+            f"{add(p, '60')} | {add(o, '60')} |"
+        )
     if any("fleet_60" in e for e in s.values()):
         md += [
             "",

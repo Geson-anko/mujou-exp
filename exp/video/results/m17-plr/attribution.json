@@ -263,7 +263,12 @@
     "revert_other_max": 0.0042863404378294945,
     "revert_other_module": "encoder.stages.3.out",
     "only_embed": 9.89266586303711,
-    "p2": true
+    "p2": true,
+    "add_min": 0.262272945493391,
+    "add_min_module": "encoder.stages.1.blocks.0.qkv",
+    "add_max": 20.873947254389495,
+    "add_max_module": "encoder.stages.0.embed.proj",
+    "add_embed": 20.873947254389495
    }
   },
   "step_bound": {
@@ -571,7 +576,12 @@
     "revert_other_max": 0.004811981227248907,
     "revert_other_module": "encoder.stages.0.blocks.0.fc2",
     "only_embed": 1.5753463506698608,
-    "p2": true
+    "p2": true,
+    "add_min": 0.7580830082121113,
+    "add_min_module": "encoder.stages.3.blocks.1.fc2",
+    "add_max": 3.322285849573441,
+    "add_max_module": "encoder.stages.0.embed.proj",
+    "add_embed": 3.322285849573441
    }
   },
   "step_bound": {
@@ -879,7 +889,12 @@
     "revert_other_max": 0.0004968023858964443,
     "revert_other_module": "encoder.stages.0.blocks.0.fc1",
     "only_embed": 0.12263421714305878,
-    "p2": false
+    "p2": false,
+    "add_min": 0.2678488881538925,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9998796767911688,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.2678488881538925
    }
   },
   "step_bound": {
@@ -1187,7 +1202,12 @@
     "revert_other_max": 0.0026539366226643324,
     "revert_other_module": "encoder.stages.0.blocks.0.fc1",
     "only_embed": 0.21710416674613953,
-    "p2": false
+    "p2": false,
+    "add_min": 0.5377824338672532,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999434854128854,
+    "add_max_module": "encoder.stages.2.blocks.0.norm1",
+    "add_embed": 0.5377824338672532
    }
   },
   "step_bound": {
@@ -1495,7 +1515,12 @@
     "revert_other_max": 0.20407722890377045,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 2.989790916442871,
-    "p2": true
+    "p2": true,
+    "add_min": 0.19568369269241911,
+    "add_min_module": "encoder.stages.3.blocks.0.proj",
+    "add_max": 6.308682349623921,
+    "add_max_module": "encoder.stages.0.embed.proj",
+    "add_embed": 6.308682349623921
    }
   },
   "step_bound": {
@@ -1803,7 +1828,12 @@
     "revert_other_max": 0.5166018009185791,
     "revert_other_module": "encoder.stages.3.out",
     "only_embed": 0.4516221582889557,
-    "p2": true
+    "p2": true,
+    "add_min": 0.6421096827165583,
+    "add_min_module": "encoder.stages.3.blocks.1.fc1",
+    "add_max": 1.7223144489847988,
+    "add_max_module": "encoder.stages.3.out",
+    "add_embed": 0.9502222891593013
    }
   },
   "step_bound": {
@@ -2111,7 +2141,12 @@
     "revert_other_max": 0.003256584517657757,
     "revert_other_module": "encoder.stages.0.blocks.0.qkv",
     "only_embed": 0.24561980366706848,
-    "p2": false
+    "p2": false,
+    "add_min": 0.5250821504390433,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9998942971745688,
+    "add_max_module": "encoder.stages.2.blocks.1.norm2",
+    "add_embed": 0.5250821504390433
    }
   },
   "step_bound": {
@@ -2419,7 +2454,12 @@
     "revert_other_max": 0.0036876192316412926,
     "revert_other_module": "encoder.stages.0.blocks.0.fc1",
     "only_embed": 0.1828368604183197,
-    "p2": false
+    "p2": false,
+    "add_min": 0.499940153762931,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999335656992486,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.499940153762931
    }
   },
   "step_bound": {
@@ -2727,21 +2767,36 @@
     "revert_other_max": 0.10235382616519928,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.3809029459953308,
-    "p2": false
+    "p2": false,
+    "add_min": 0.8557759997266375,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9989422497581449,
+    "add_max_module": "encoder.stages.3.blocks.1.norm1",
+    "add_embed": 0.8557759997266375
    },
    "10": {
     "revert_embed": 0.006721886806190014,
     "revert_other_max": 0.009118428453803062,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.28109729290008545,
-    "p2": true
+    "p2": true,
+    "add_min": 0.4898207995544647,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9940356704011879,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.6011939619230371
    },
    "60": {
     "revert_embed": 0.0008236356661655009,
     "revert_other_max": 0.0019728983752429485,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.23273834586143494,
-    "p2": true
+    "p2": true,
+    "add_min": 0.25366156611333845,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9892720155584107,
+    "add_max_module": "encoder.stages.3.blocks.1.norm1",
+    "add_embed": 0.4925252130670318
    }
   },
   "step_bound": {
@@ -3054,21 +3109,36 @@
     "revert_other_max": 0.34107905626296997,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4509718418121338,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9892624479291134,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.999955136194963,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.9892624479291134
    },
    "10": {
     "revert_embed": 0.04647539556026459,
     "revert_other_max": 0.04571233317255974,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.36193767189979553,
-    "p2": false
+    "p2": false,
+    "add_min": 0.8011690438428638,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.998634828862599,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.8011690438428638
    },
    "60": {
     "revert_embed": 0.005074973218142986,
     "revert_other_max": 0.006656731478869915,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.2971037030220032,
-    "p2": true
+    "p2": true,
+    "add_min": 0.5495285046936751,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9917108652712612,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.6332678670175176
    }
   },
   "step_bound": {
@@ -3381,21 +3451,36 @@
     "revert_other_max": 0.4735603332519531,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4717634320259094,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9999186409061046,
+    "add_min_module": "encoder.stages.0.blocks.0.fc1",
+    "add_max": 0.9999941391202694,
+    "add_max_module": "encoder.stages.3.blocks.0.norm1",
+    "add_embed": 0.9999741932231215
    },
    "10": {
     "revert_embed": 0.25853824615478516,
     "revert_other_max": 0.2541695237159729,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4346849024295807,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9719708205369085,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999013642652992,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.9719708205369085
    },
    "60": {
     "revert_embed": 0.06167012080550194,
     "revert_other_max": 0.0608806312084198,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.3746577501296997,
-    "p2": false
+    "p2": false,
+    "add_min": 0.832736494108098,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9987393476375532,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.832736494108098
    }
   },
   "step_bound": {
@@ -3708,21 +3793,36 @@
     "revert_other_max": 0.47383904457092285,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4735391139984131,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9999990248805195,
+    "add_min_module": "encoder.stages.0.blocks.0.fc1",
+    "add_max": 0.9999999370890658,
+    "add_max_module": "encoder.stages.3.blocks.1.norm1",
+    "add_embed": 0.9999998427226644
    },
    "10": {
     "revert_embed": 0.44770556688308716,
     "revert_other_max": 0.4462832808494568,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4687822163105011,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9995903439089375,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999940841538861,
+    "add_max_module": "encoder.stages.1.blocks.0.norm1",
+    "add_embed": 0.9995903439089375
    },
    "60": {
     "revert_embed": 0.31225162744522095,
     "revert_other_max": 0.3076119124889374,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.44514572620391846,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9858545943067389,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999606263902957,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.9858545943067389
    }
   },
   "step_bound": {
@@ -4035,21 +4135,36 @@
     "revert_other_max": 0.1603344976902008,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4067927598953247,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9234732892577936,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9995083003571084,
+    "add_max_module": "encoder.stages.3.blocks.1.norm1",
+    "add_embed": 0.9234732892577936
    },
    "10": {
     "revert_embed": 0.014614498242735863,
     "revert_other_max": 0.016720272600650787,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.2845709025859833,
-    "p2": true
+    "p2": true,
+    "add_min": 0.5758464129922952,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9944635936884204,
+    "add_max_module": "encoder.stages.1.blocks.1.norm1",
+    "add_embed": 0.6184452204094993
    },
    "60": {
     "revert_embed": 0.0013616761425510049,
     "revert_other_max": 0.003231787122786045,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.22010105848312378,
-    "p2": true
+    "p2": true,
+    "add_min": 0.2340504060582298,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9909932383206714,
+    "add_max_module": "encoder.stages.2.blocks.0.norm1",
+    "add_embed": 0.4668410674026717
    }
   },
   "step_bound": {
@@ -4362,21 +4477,36 @@
     "revert_other_max": 0.35626959800720215,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.4546666443347931,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9927289152088624,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999720694922655,
+    "add_max_module": "encoder.stages.2.blocks.0.norm1",
+    "add_embed": 0.9927289152088624
    },
    "10": {
     "revert_embed": 0.046144749969244,
     "revert_other_max": 0.047997646033763885,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.3644927144050598,
-    "p2": true
+    "p2": true,
+    "add_min": 0.8015163678436619,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9976002060928043,
+    "add_max_module": "encoder.stages.2.blocks.0.norm1",
+    "add_embed": 0.8015163678436619
    },
    "60": {
     "revert_embed": 0.006071578711271286,
     "revert_other_max": 0.007432065904140472,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.30050843954086304,
-    "p2": true
+    "p2": true,
+    "add_min": 0.5817671533872912,
+    "add_min_module": "encoder.stages.3.norm",
+    "add_max": 0.9916735236321457,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.6415058742145795
    }
   },
   "step_bound": {
@@ -4689,21 +4819,36 @@
     "revert_other_max": 0.4705342650413513,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.47179871797561646,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9999317218056814,
+    "add_min_module": "encoder.stages.0.blocks.0.fc1",
+    "add_max": 0.9999957326128551,
+    "add_max_module": "encoder.stages.3.blocks.0.norm1",
+    "add_embed": 0.9999572312977254
    },
    "10": {
     "revert_embed": 0.2542497515678406,
     "revert_other_max": 0.25008371472358704,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.43490612506866455,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9718932607718656,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.999901966870308,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.9718932607718656
    },
    "60": {
     "revert_embed": 0.057925306260585785,
     "revert_other_max": 0.05677130073308945,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.37510591745376587,
-    "p2": false
+    "p2": false,
+    "add_min": 0.8319433475752864,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9989627916971662,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.8319433475752864
    }
   },
   "step_bound": {
@@ -5016,21 +5161,36 @@
     "revert_other_max": 0.4737367630004883,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.47355133295059204,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9999990247801783,
+    "add_min_module": "encoder.stages.0.blocks.0.fc1",
+    "add_max": 0.9999999370825922,
+    "add_max_module": "encoder.stages.0.blocks.1.norm1",
+    "add_embed": 0.9999996539542568
    },
    "10": {
     "revert_embed": 0.446603000164032,
     "revert_other_max": 0.445213258266449,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.46873727440834045,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9995684900000917,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999942395904681,
+    "add_max_module": "encoder.stages.1.blocks.0.norm1",
+    "add_embed": 0.9995684900000917
    },
    "60": {
     "revert_embed": 0.31024426221847534,
     "revert_other_max": 0.30570757389068604,
     "revert_other_module": "encoder.stages.3.norm",
     "only_embed": 0.44515854120254517,
-    "p2": false
+    "p2": false,
+    "add_min": 0.9857177145916688,
+    "add_min_module": "encoder.stages.0.embed.proj",
+    "add_max": 0.9999589723598927,
+    "add_max_module": "encoder.stages.2.blocks.1.norm1",
+    "add_embed": 0.9857177145916688
    }
   },
   "step_bound": {
