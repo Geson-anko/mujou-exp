@@ -20,6 +20,7 @@ from exp.video.diag.opt_sweep_tables import (
     label,
     load,
     lr_table,
+    main,
     run_criteria,
     sens_table,
     summary,
@@ -414,3 +415,26 @@ def test_lambda_keys_a_run_apart_and_batches_join_under_one_rate(tmp_path: Path)
     shown = summary(runs, 1800.0)
     assert "| `adamw` | なし | η=1e-05（λ=0.134）、η=1e-05（λ=0.373） | – |" in shown
     assert len(load(tmp_path, ["m17-lam-v1", "m17-plr-v1"], []).train) == 3
+
+
+def _section(out: str, title: str) -> str:
+    return out.split(f"### {title}", 1)[1].split("###", 1)[0]
+
+
+def test_the_checkpoint_curves_divide_by_time_0_and_the_untrained_vit(
+    tmp_path: Path, capsys: Any
+):
+    """At each checkpoint: J(t)/J(0) (0.9 / 1 for the sgd run of the fixture),
+    the posthoc recon_blur and dyn_1/copy_1 over the untrained ViT's (unknown
+    without a posthoc) and tok_within from time 0 (the course run)."""
+    _course_run(tmp_path)
+    main(["--runs", str(tmp_path)])
+    out = capsys.readouterr().out
+    j = _section(out, "held-out の J(t)/J(0)")
+    assert _cells(j, "`sgd` lr=0.01")[-1] == "0.900"
+    for key in ("recon_blur", "dyn_1/copy_1"):
+        u = _section(out, f"posthoc の `{key}` / 学習前の ViT")
+        assert _cells(u, "`sgd` lr=0.01")[-1] == f"{HEALTHY_POST[key] / INIT[key]:.3f}"
+        assert _cells(u, "`adamw` lr=0.0001 |")[-1] == "1.00"
+    tok = _section(out, "held-out の `tok_within`")
+    assert _cells(tok, "`sgd` lr=0.001")[1:3] == ["0.400", "0.600"]

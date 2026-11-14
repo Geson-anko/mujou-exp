@@ -38,7 +38,9 @@ the last drift (``lr_table``, the curves over lr of each optimizer); the curves 
 given ``--drift`` (the outputs of ``python -m exp.video.diag.stream_stats
 drift`` of the runs), the drift between consecutive checkpoints of the
 current encoder's code of fixed held-in stacks: a stand-in for the staleness
-of the stored $z$, which it does not read.
+of the stored $z$, which it does not read. Also at each checkpoint: the
+held-out ``tok_within`` (time 0 from ``baselines.json``), $J(t)/J(0)$ and
+``U_KEYS`` of the posthoc over those of the untrained ViT.
 
 Also shown, read after the runs and not criteria: the course of the held-out
 $J$ over all the evals (``course_table``), ``pred`` beside the spread of the
@@ -358,6 +360,18 @@ def _train_getter(runs: OptRuns, rid: str, t: float, key: str, split: str) -> An
     return train_loss(runs.train[rid]["stream"], t, key)
 
 
+def _j_ratio_getter(runs: OptRuns, rid: str, t: float, key: str, split: str) -> Any:
+    """$J(t)/J(0)$ of the held-out evals (NaN for a run that diverged)."""
+    del key  # always the objective
+    return _ratio(objective(runs, rid, t, split), ev(runs, rid, 0.0, "loss", split))
+
+
+def _u_ratio_getter(runs: OptRuns, rid: str, t: float, key: str, split: str) -> Any:
+    """The posthoc ``key`` at ``t`` over that of the untrained ViT of the run's
+    arm and seed (U holds for ``key`` when it is below 1)."""
+    return _ratio(ph(runs, rid, t, key, split), untrained(runs, rid, split).get(key))
+
+
 def drifts(paths: Sequence[Path], key: str = "drift") -> dict[str, dict[float, float]]:
     """Per run id, ``key`` (``drift``, or its numerator ``change`` and
     denominator ``apart``) of each pair of checkpoints 300 s apart by its
@@ -645,14 +659,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     print("\n### 時刻 0 の値（学習前）\n")
     print(base_table(runs))
     times = [0.0, *TIMES]
-    for key in ("loss", "pred", "sigreg"):
+    for key in ("loss", "pred", "sigreg", "tok_within"):
         print(f"\n### held-out の `{key}`（val）\n")
         print(curve_table(runs, ev, key, times))
+    print("\n### held-out の J(t)/J(0)（val）\n")
+    print(curve_table(runs, _j_ratio_getter, "loss", TIMES))
     print("\n### 学習の損失（stream.jsonl、各時刻の前 300 秒の平均）\n")
     print(curve_table(runs, _train_getter, "loss", TIMES))
     for key in ("rank", "z_spread"):
         print(f"\n### posthoc の `{key}`（val）\n")
         print(curve_table(runs, ph, key, TIMES))
+    for key in U_KEYS:
+        print(f"\n### posthoc の `{key}` / 学習前の ViT（val）\n")
+        print(curve_table(runs, _u_ratio_getter, key, TIMES))
     if args.drift:
         print("\n### 符号の drift（固定した積み、300 秒あいた checkpoint の対）\n")
         print(drift_table(runs, args.drift))
