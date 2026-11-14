@@ -266,7 +266,9 @@ class VisionBP(mujou.Network):
             datapoint_law=v.datapoint_law,
             directions=v.sigreg_directions,
             tau=tau,
-            optimizer=make_optimizer(conf.optim_vision, conf.time.frame),
+            optimizer=make_optimizer(
+                conf.optim_vision, conf.time.frame, list(mods.named().values())
+            ),
             learn_interval=conf.time.learn_interval,
             seed=conf.seed + HEAD_SEED,
             device=conf.device,

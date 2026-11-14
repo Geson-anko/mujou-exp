@@ -14,6 +14,7 @@ from exp.lib.optim import (
     RMSPropDirection,
     StepAdamW,
     Warmup,
+    fan_ins,
 )
 from exp.video.dyn.modules import Top, build_dynamics
 from exp.video.dyn.nets import (
@@ -207,6 +208,41 @@ class TestMakeOptimizer:
     def test_a_rate_not_above_zero_is_an_error(self, lr):
         with pytest.raises(ValueError, match="lr must be > 0"):
             make_optimizer(OptimConf(lr=lr), 1 / 30)
+
+    def test_the_scale_fan_in_divides_by_the_modules_fan_ins(self):
+        """``"adamw"`` goes through ``AdamDirection`` (``pc.optim.AdamW``
+        without weight decay, ``tests/lib/test_optim.py``); ``"none"`` keeps
+        the optimizers without it."""
+        frame, tau = 1 / 30, (1 / 30) / 0.01
+        mods = [torch.nn.Linear(6, 4), torch.nn.LayerNorm(4)]
+        n = fan_ins(*mods)
+        c = OptimConf(kind="adamw", lr=0.01, warmup=0.0, scale="fan_in")
+        assert make_optimizer(c, frame, mods) == AdamDirection(
+            tau=tau, tau_m=0.3, tau_v=30.0, fan_in=n
+        )
+        rms = replace(c, kind="rmsprop")
+        assert make_optimizer(rms, frame, mods) == RMSPropDirection(
+            tau=tau, tau_v=30.0, fan_in=n
+        )
+        none = replace(c, scale="none")
+        assert make_optimizer(none, frame, mods) == pc.optim.AdamW(
+            tau=tau, tau_m=0.3, tau_v=30.0, weight_decay=0.0
+        )
+        with pytest.raises(ValueError, match="needs the modules"):
+            make_optimizer(c, frame)
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            ({"kind": "sgd"}, "adamw and rmsprop"),
+            ({"kind": "graft_adam"}, "adamw and rmsprop"),
+            ({"kind": "adamw", "weight_decay": 0.05}, "weight_decay 0"),
+            ({"kind": "adamw", "scale": "fan_out"}, "optim.scale"),
+        ],
+    )
+    def test_the_scale_belongs_to_adamw_and_rmsprop(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            OptimConf(**({"scale": "fan_in"} | kw))
 
     @pytest.mark.parametrize("kind", ["sgd", "graft_adam", "rmsprop"])
     def test_weight_decay_without_adamw_is_an_error(self, kind):

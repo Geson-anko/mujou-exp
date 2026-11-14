@@ -3,6 +3,7 @@ r"""The world models of M14 on the state of the balls: ``Source -> DynamicsBlock
 same initial weights, and the optimizer of a ``OptimConf``."""
 
 import math
+from collections.abc import Sequence
 from typing import cast
 
 import mujou.pc as pc
@@ -16,6 +17,7 @@ from exp.lib.optim import (
     RMSPropDirection,
     StepAdamW,
     Warmup,
+    fan_ins,
 )
 from exp.video.dyn.bp import DynamicsBP
 from exp.video.dyn.modules import DynamicsModules, build_dynamics
@@ -36,7 +38,9 @@ __all__ = [
 ]
 
 
-def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
+def make_optimizer(
+    c: OptimConf, frame: float, modules: Sequence[torch.nn.Module] = ()
+) -> Optimizer:
     r"""The optimizer of ``c``, with the time constant $\tau$ = ``frame / c.lr``
     of the parameters (a step of one frame moves SGD by ``lr`` times the
     gradient): ``pc.optim.SGD``, ``pc.optim.AdamW``, ``Grafted(AdamDirection)``
@@ -44,13 +48,25 @@ def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
     is 0; or, for ``"adamw_step"``, ``StepAdamW`` of ``c.lr`` per step and its
     schedules (``frame`` unused).
 
+    With ``c.scale`` ``"fan_in"`` the direction's step of each parameter of
+    ``modules`` is divided by its fan-in (``DirectionOptimizer.fan_in`` of
+    ``fan_ins(*modules)``): ``"rmsprop"`` is then ``RMSPropDirection`` of it,
+    ``"adamw"`` (weight decay 0) ``AdamDirection`` of it, which stepped by
+    itself is ``pc.optim.AdamW`` without weight decay.
+
     Raises:
-        ValueError: ``c.lr`` is not > 0, or ``c.weight_decay`` is not 0 for a
+        ValueError: ``c.lr`` is not > 0, ``c.weight_decay`` is not 0 for a
             kind without weight decay (``"sgd"``, ``"graft_adam"``,
-            ``"rmsprop"``).
+            ``"rmsprop"``), or ``c.scale`` is ``"fan_in"`` without
+            ``modules``.
     """
     if not c.lr > 0:
         raise ValueError(f"optim.lr must be > 0, got {c.lr}")
+    if c.scale == "fan_in" and not modules:
+        raise ValueError(
+            "optim.scale 'fan_in' needs the modules of the parameters "
+            "(the vision of learner=bp)"
+        )
     if c.kind not in ("adamw", "adamw_step") and c.weight_decay != 0:
         raise ValueError(
             f"optim.kind {c.kind!r} has no weight decay; "
@@ -71,15 +87,18 @@ def make_optimizer(c: OptimConf, frame: float) -> Optimizer:
             clip=c.clip,
         )
     tau = frame / c.lr
+    fan_in = fan_ins(*modules) if c.scale == "fan_in" else None
     inner: Optimizer
     if c.kind == "sgd":
         inner = pc.optim.SGD(tau=tau)
+    elif c.kind == "adamw" and fan_in is not None:
+        inner = AdamDirection(tau=tau, tau_m=c.tau_m, tau_v=c.tau_v, fan_in=fan_in)
     elif c.kind == "adamw":
         inner = pc.optim.AdamW(
             tau=tau, tau_m=c.tau_m, tau_v=c.tau_v, weight_decay=c.weight_decay
         )
     elif c.kind == "rmsprop":
-        inner = RMSPropDirection(tau=tau, tau_v=c.tau_v)
+        inner = RMSPropDirection(tau=tau, tau_v=c.tau_v, fan_in=fan_in)
     else:  # "graft_adam", as OptimConf checks
         inner = Grafted(inner=AdamDirection(tau=tau, tau_m=c.tau_m, tau_v=c.tau_v))
     return inner if c.warmup == 0 else Warmup(inner=inner, seconds=c.warmup)
