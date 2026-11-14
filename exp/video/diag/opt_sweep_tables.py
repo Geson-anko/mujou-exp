@@ -4,13 +4,15 @@ learning rate per frame for the SIGReg of the data points on one stream
 (``m17/ssig_t128``, ``vision.datapoint_every=6``, seed 100), from the run
 directories pulled into ``./runs`` (``just fleet pull --batch m17-opt-v1
 --batch m17-opt-post-v1 --batch m17-opt-base-v1``; other batch names by the
-options). Reads only; prints markdown.
+options; ``--train`` and ``--post`` take several, and ``--lr`` keeps the
+runs of one rate only). Reads only; prints markdown.
 
 A run is the (kind, lr, warmup, scale) of its ``optim_vision`` (``scale``
-``"none"`` when the job predates it); under ``scale`` ``fan_in`` the lr is
+``"none"`` when the job predates it) and its $\lambda$ (``vision.sigreg``;
+``None`` when the config has none); under ``scale`` ``fan_in`` the lr is
 $\eta$ (the rate of the vectors, $\eta / n$ of a matrix of fan-in $n$) and the
-labels say so. Its criteria, fixed
-before the runs, at ``--t`` (1800 s) on val:
+labels say so, and a label names $\lambda$ when there is one. Its criteria,
+fixed before the runs, at ``--t`` (1800 s) on val:
 
 - ``L``: the held-out objective $J = (1 - \lambda)\,\mathrm{pred} + \lambda S$
   (``loss`` of ``evals.jsonl``) is below its value at time 0, the untrained
@@ -70,13 +72,12 @@ VIEWS = ("short", "long")
 CRITERIA = ("L", "U", "C", "learns")
 MARK = {True: "○", False: "×", None: "?"}
 
-Key = tuple[str, float, float, str]  # (kind, lr, warmup, scale)
+Key = tuple[str, float, float, str, float | None]  # (kind, lr, warmup, scale, λ)
 
 
 class OptRuns(NamedTuple):
     """The training runs by id, the posthoc lines by the parent's id, the
-    yardstick lines by (arm, seed), and the run ids of each (kind, lr,
-    warmup)."""
+    yardstick lines by (arm, seed), and the run ids of each ``Key``."""
 
     train: dict[str, dict[str, Any]]
     post: dict[str, list[dict[str, Any]]]
@@ -93,25 +94,42 @@ def _jobs(root: Path, batch: str) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def key_of(job: dict[str, Any]) -> Key:
-    """(kind, lr, warmup, scale) of the job's ``optim_vision``."""
+    r"""(kind, lr, warmup, scale) of the job's ``optim_vision`` and its
+    $\lambda$ (``vision.sigreg``, ``None`` without one)."""
     o = job["config"]["optim_vision"]
-    return (o["kind"], float(o["lr"]), float(o["warmup"]), o.get("scale", "none"))
+    lam = job["config"].get("vision", {}).get("sigreg")
+    return (
+        o["kind"],
+        float(o["lr"]),
+        float(o["warmup"]),
+        o.get("scale", "none"),
+        None if lam is None else float(lam),
+    )
 
 
 def _arm(job: dict[str, Any]) -> str:
     return job["name"].rsplit("_", 1)[-1]
 
 
+def _batches(b: str | Sequence[str]) -> list[str]:
+    return [b] if isinstance(b, str) else list(b)
+
+
 def load(
     root: Path,
-    train_batch: str = TRAIN_BATCH,
-    post_batch: str = POST_BATCH,
+    train_batch: str | Sequence[str] = TRAIN_BATCH,
+    post_batch: str | Sequence[str] = POST_BATCH,
     base_batch: str = BASE_BATCH,
+    lr: float | None = None,
 ) -> OptRuns:
-    """The runs of the three batches under ``root``."""
+    """The runs of the batches under ``root`` (each of ``train_batch`` and
+    ``post_batch`` one or several); with ``lr``, only the training runs of
+    that rate."""
     train: dict[str, dict[str, Any]] = {}
     groups: dict[Key, list[str]] = defaultdict(list)
-    for run, j in _jobs(root, train_batch):
+    for run, j in [x for b in _batches(train_batch) for x in _jobs(root, b)]:
+        if lr is not None and key_of(j)[1] != lr:
+            continue
         base_p, res_p = run / "baselines.json", run / "result.json"
         train[j["run_id"]] = dict(
             key=key_of(j),
@@ -124,7 +142,7 @@ def load(
         )
         groups[key_of(j)].append(j["run_id"])
     post: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for run, j in _jobs(root, post_batch):
+    for run, j in [x for b in _batches(post_batch) for x in _jobs(root, b)]:
         post[Path(j["parent"]).name] += jl(run / "post/decode/metrics.jsonl")
     base = {
         (_arm(j), j["seed"]): jl(run / "post/decode/baselines.jsonl")
@@ -136,8 +154,9 @@ def load(
     return OptRuns(train, dict(post), base, dict(groups))
 
 
-def _order(k: Key) -> tuple[int, float, float, str]:
-    return (KINDS.index(k[0]) if k[0] in KINDS else len(KINDS), k[1], k[2], k[3])
+def _order(k: Key) -> tuple[int, float, float, str, float]:
+    kind = KINDS.index(k[0]) if k[0] in KINDS else len(KINDS)
+    return (kind, k[1], k[2], k[3], -math.inf if k[4] is None else k[4])
 
 
 def ev(runs: OptRuns, rid: str, t: float, key: str, split: str = "val") -> Any:
@@ -232,8 +251,10 @@ def run_criteria(
 
 
 def rate(k: Key) -> str:
-    """``lr=<lr>``, or ``η=<lr>`` under ``scale`` ``fan_in``."""
-    return f"{'η' if k[3] == 'fan_in' else 'lr'}={k[1]:g}"
+    """``lr=<lr>``, or ``η=<lr>`` under ``scale`` ``fan_in``, then
+    ``λ=<λ>`` when there is one."""
+    lam = "" if k[4] is None else f" λ={k[4]:g}"
+    return f"{'η' if k[3] == 'fan_in' else 'lr'}={k[1]:g}{lam}"
 
 
 def label(k: Key) -> str:
@@ -287,7 +308,7 @@ def summary(runs: OptRuns, t: float, split: str = "val") -> str:
     criteria are unknown, and those whose runs diverged."""
     rows = []
     for kind in sorted(
-        {k[0] for k in runs.groups}, key=lambda x: _order((x, 0, 0, ""))
+        {k[0] for k in runs.groups}, key=lambda x: _order((x, 0, 0, "", None))
     ):
         learn, unknown, div = [], [], []
         for k in sorted(runs.groups, key=_order):
@@ -297,6 +318,7 @@ def summary(runs: OptRuns, t: float, split: str = "val") -> str:
             name = (f"η={k[1]:g}" if k[3] == "fan_in" else f"{k[1]:g}") + (
                 f"（warmup {k[2]:g} 秒）" if k[2] else ""
             )
+            name += "" if k[4] is None else f"（λ={k[4]:g}）"
             if got and all(g is True for g in got):
                 learn.append(name)
             elif any(g is None for g in got) and not any(g is False for g in got):
@@ -596,13 +618,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Every table of the module docstring."""
     p = argparse.ArgumentParser(description="The tables of the M17 optimizer sweep.")
     p.add_argument("--runs", type=Path, default=Path("runs"))
-    p.add_argument("--train", default=TRAIN_BATCH)
-    p.add_argument("--post", default=POST_BATCH)
+    p.add_argument("--train", nargs="+", default=[TRAIN_BATCH])
+    p.add_argument("--post", nargs="+", default=[POST_BATCH])
     p.add_argument("--base", default=BASE_BATCH)
+    p.add_argument("--lr", type=float, help="keep the runs of this rate only")
     p.add_argument("--t", type=float, default=1800.0, help="the verdict's time")
     p.add_argument("--drift", type=Path, nargs="*", default=[])
     args = p.parse_args(argv)
-    runs = load(args.runs, args.train, args.post, args.base)
+    runs = load(args.runs, args.train, args.post, args.base, args.lr)
     t = args.t
     print(f"### summary（val、{t:g} 秒）\n")
     print(summary(runs, t))

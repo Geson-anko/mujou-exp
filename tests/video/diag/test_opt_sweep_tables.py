@@ -1,7 +1,8 @@
 """The tables of the optimizer sweep of M17 (diagnosis): the criteria L, U and
 C on rows whose verdict follows from the definitions (the untrained network
 does not learn; a non-finite objective fails), and the grouping of a run tree
-by (kind, lr, warmup) beside the untrained ViT of the same arm and seed."""
+by (kind, lr, warmup, scale, lambda) beside the untrained ViT of the same arm
+and seed."""
 
 import json
 import math
@@ -162,15 +163,15 @@ def test_load_groups_the_runs_and_reads_the_untrained_vit_of_the_seed(
     _sweep(tmp_path)
     runs = load(tmp_path)
     assert set(runs.groups) == {
-        ("sgd", 1e-2, 0.0, "none"),
-        ("adamw", 1e-4, 0.0, "none"),
-        ("adamw", 1e-4, 300.0, "none"),
+        ("sgd", 1e-2, 0.0, "none", None),
+        ("adamw", 1e-4, 0.0, "none", None),
+        ("adamw", 1e-4, 300.0, "none", None),
     }
     got = {k: run_criteria(runs, r[0], 1800.0) for k, r in runs.groups.items()}
-    assert got[("sgd", 1e-2, 0.0, "none")]["learns"] is True
-    assert got[("adamw", 1e-4, 0.0, "none")]["learns"] is False
-    assert got[("adamw", 1e-4, 300.0, "none")]["L"] is True
-    assert got[("adamw", 1e-4, 300.0, "none")]["learns"] is None  # no posthoc
+    assert got[("sgd", 1e-2, 0.0, "none", None)]["learns"] is True
+    assert got[("adamw", 1e-4, 0.0, "none", None)]["learns"] is False
+    assert got[("adamw", 1e-4, 300.0, "none", None)]["L"] is True
+    assert got[("adamw", 1e-4, 300.0, "none", None)]["learns"] is None  # no posthoc
     shown = summary(runs, 1800.0)
     assert "| `sgd` | 0.01 | – | – |" in shown
     assert "| `adamw` | なし | 0.0001（warmup 300 秒） | – |" in shown
@@ -216,7 +217,7 @@ def test_a_run_that_diverged_fails_l_and_learns_and_is_listed(tmp_path: Path):
 def test_the_drift_table_takes_the_pairs_300_s_apart(tmp_path: Path):
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none", None)][0]
     pairs = [
         {"t": 300.0, "t2": 600.0, "delta": 300.0, "drift": 0.5},
         {"t": 300.0, "t2": 900.0, "delta": 600.0, "drift": 9.0},
@@ -232,7 +233,7 @@ def test_the_lr_table_divides_by_time_0_and_the_untrained_vit(tmp_path: Path):
     own row is 1 by definition; the drift is that of the pair ending at t."""
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none", None)][0]
     path = tmp_path / "drift.json"
     pairs = [{"t": 1500.0, "t2": 1800.0, "delta": 300.0, "drift": 0.25}]
     path.write_text(json.dumps({"runs": [{"run": rid, "pairs": pairs}]}))
@@ -342,7 +343,7 @@ def test_the_times_table_is_the_verdict_at_each_checkpoint(tmp_path: Path):
 def test_the_drift_parts_are_the_numerator_and_denominator(tmp_path: Path):
     _sweep(tmp_path)
     runs = load(tmp_path)
-    rid = runs.groups[("sgd", 1e-2, 0.0, "none")][0]
+    rid = runs.groups[("sgd", 1e-2, 0.0, "none", None)][0]
     pair = {"t": 1500.0, "t2": 1800.0, "delta": 300.0}
     pair |= {"change": 0.5, "apart": 2.0, "drift": 0.25}
     path = tmp_path / "drift.json"
@@ -354,7 +355,7 @@ def test_the_drift_parts_are_the_numerator_and_denominator(tmp_path: Path):
 def test_a_fan_in_run_is_its_own_group_labelled_eta(tmp_path: Path):
     """``scale`` ``fan_in`` keys a run apart from the same lr without it, and
     its label names the rate eta."""
-    for i, scale in enumerate((None, "fan_in")):
+    for i, scale in enumerate((None, "fan_in", None)):
         optim = {"kind": "adamw", "lr": 1e-4, "warmup": 0.0}
         if scale is not None:
             optim["scale"] = scale
@@ -371,10 +372,45 @@ def test_a_fan_in_run_is_its_own_group_labelled_eta(tmp_path: Path):
         )
     runs = load(tmp_path)
     assert set(runs.groups) == {
-        ("adamw", 1e-4, 0.0, "none"),
-        ("adamw", 1e-4, 0.0, "fan_in"),
+        ("adamw", 1e-4, 0.0, "none", None),
+        ("adamw", 1e-4, 0.0, "fan_in", None),
     }
-    assert label(("adamw", 1e-4, 0.0, "fan_in")) == "`adamw` η=0.0001"
-    assert label(("adamw", 1e-4, 300.0, "none")) == "`adamw` lr=0.0001 warmup 300 秒"
+    assert label(("adamw", 1e-4, 0.0, "fan_in", None)) == "`adamw` η=0.0001"
+    assert (
+        label(("adamw", 1e-4, 300.0, "none", None)) == "`adamw` lr=0.0001 warmup 300 秒"
+    )
     # no evals: unknown, the fan_in run named by its eta
     assert "| `adamw` | なし | η=0.0001、0.0001 | – |" in summary(runs, 1800.0)
+
+
+def test_lambda_keys_a_run_apart_and_batches_join_under_one_rate(tmp_path: Path):
+    """``vision.sigreg`` keys a run apart from the same optimizer at another
+    lambda, and its label names it; two training batches load together, and
+    ``lr`` keeps the runs of that rate only."""
+    cases = [
+        ("m17-plr-v1", 1e-5, 0.134),
+        ("m17-plr-v1", 1e-4, 0.134),
+        ("m17-lam-v1", 1e-5, 0.373),
+    ]
+    for i, (batch, lr, lam) in enumerate(cases):
+        optim = {"kind": "adamw", "lr": lr, "warmup": 0.0, "scale": "fan_in"}
+        rid = f"m17-ssig_t128-0000000{i}-s100"
+        _write(
+            tmp_path / batch / rid,
+            {
+                "run_id": rid,
+                "seed": 100,
+                "name": "m17/ssig_t128",
+                "config": {"optim_vision": optim, "vision": {"sigreg": lam}},
+            },
+            **{"evals.jsonl": [], "baselines.json": {"val": {"init_loss": 1.0}}},
+        )
+    runs = load(tmp_path, ["m17-lam-v1", "m17-plr-v1"], [], lr=1e-5)
+    assert set(runs.groups) == {
+        ("adamw", 1e-5, 0.0, "fan_in", 0.134),
+        ("adamw", 1e-5, 0.0, "fan_in", 0.373),
+    }
+    assert label(("adamw", 1e-5, 0.0, "fan_in", 0.373)) == "`adamw` η=1e-05 λ=0.373"
+    shown = summary(runs, 1800.0)
+    assert "| `adamw` | なし | η=1e-05（λ=0.134）、η=1e-05（λ=0.373） | – |" in shown
+    assert len(load(tmp_path, ["m17-lam-v1", "m17-plr-v1"], []).train) == 3
