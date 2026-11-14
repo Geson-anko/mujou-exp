@@ -22,6 +22,7 @@
 - [M17 の EMA は時間で追う](project_ema_following.md) — 2026-11-13、ターゲットエンコーダの momentum はフレームあたり、`elapsed` で動かす。`Following` は今は実験の中に置き、mujou に上げるかは未決定
 - [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子は各腕の学習前の相関で導き直した。z を貯めると k と古さが交絡する
 - [M17 のガウスのモーメント合わせ](project_m17_gauss_kl.md) — 2026-11-13、ユーザーの決定。EMA も負例も使わない。N = 4096、λ は 10 倍刻み、optimizer は m17-opt-v1 から。回す前の決定は登録済みで、未決が 4 点
+- [次は VAE でストリーム](project_vae_stream_next.md) — 2026-11-14、M17 の JEPA は λ の実験と評価の確認で締めくくり、次は Walking Tours のストリームから VAE を学ぶ計画を立てる
 
 ## feedback
 
