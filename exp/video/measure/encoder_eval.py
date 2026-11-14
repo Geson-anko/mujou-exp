@@ -391,6 +391,22 @@ class EncoderEval:
             out.setdefault(line["split"], {})[line["code"]] = line
         return out
 
+    def evaluate_code(
+        self,
+        name: str,
+        z: Callable[[Tensor], Tensor],
+        *,
+        linear: tuple[Tensor, Tensor] | None = None,
+    ) -> list[dict[str, Any]]:
+        """The lines of val and test of the code ``z`` of stacks ``(n, N, C,
+        H, W)`` u8 to ``(n, D)``, a code of no ViT (no restoration, no
+        completion), as unit 0 evaluates the PCA, and its pictures
+        ``<name>*.png``; with ``linear`` $(b, W)$, ``(C H W,)`` and ``(D, C H
+        W)``, also its linear decoder $z W + b$ (``recon_lin``,
+        ``recon_lin_blur``). Written to no lines file: for diagnoses
+        (``diag.mean_color_ref``)."""
+        return self._evaluate(_Code(name, z, linear=linear), name)
+
     def final(self) -> dict[str, Any]:
         """``result.json``'s ``final``: the last ``vit`` line of each split
         (``decode``; empty without checkpoints) and the yardsticks

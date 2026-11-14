@@ -384,6 +384,28 @@ class TestTheTargetEncoder:
         torch.testing.assert_close(rows[0], want)
 
 
+def test_a_code_of_the_last_frame_decoded_by_the_identity_is_exact(parent, tmp_path):
+    """``evaluate_code``: the code of a stack its last frame, flattened, with
+    the linear decoder $z I + 0$, draws every frame back: ``recon_lin`` and
+    ``recon_lin_blur`` are 0; a line of val and of test of the code's name,
+    with the dynamics and no restoration nor completion."""
+    e = _eval(parent, tmp_path / "o")
+    lines = e.evaluate_code(
+        "last",
+        lambda s: as_float(s[:, -1]).flatten(1),
+        linear=(torch.zeros(e._mean.numel()), torch.eye(e._mean.numel())),
+    )
+    assert [(ln["code"], ln["split"]) for ln in lines] == [
+        ("last", "val"),
+        ("last", "test"),
+    ]
+    for ln in lines:
+        assert ln["recon_lin"] == 0 and ln["recon_lin_blur"] == 0
+        assert {"recon_blur", "dyn_1/copy_1"} <= set(ln)
+        assert "restore_target_all" not in ln and "comp_short" not in ln
+    assert {"last.png", "last-dyn.png"} <= set(_files(tmp_path / "o"))
+
+
 def test_the_decoder_sees_z_centred_at_an_rms_std_of_one():
     """Components of std 10 and 0.1 about means 5 and -1, and a constant one,
     reach the decoder at mean 0, divided by one scale: the RMS of the stds,
