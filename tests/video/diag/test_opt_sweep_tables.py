@@ -438,3 +438,33 @@ def test_the_checkpoint_curves_divide_by_time_0_and_the_untrained_vit(
         assert _cells(u, "`adamw` lr=0.0001 |")[-1] == "1.00"
     tok = _section(out, "held-out の `tok_within`")
     assert _cells(tok, "`sgd` lr=0.001")[1:3] == ["0.400", "0.600"]
+
+
+def test_the_training_s_is_the_mean_sigreg_of_the_300_s_before(
+    tmp_path: Path, capsys: Any
+):
+    """The training S of main: sigreg of stream.jsonl, the mean over (t - 300,
+    t]; with sigreg 2 up to 300 s and 6 after it, 2 at 300 s and 6 at 600 s
+    (the row at 300 s belongs to the first window only)."""
+    _sweep(tmp_path)
+    rid = "m17-ssig_t128-00000006-s100"
+    _write(
+        tmp_path / "m17-opt-v1" / rid,
+        {
+            "run_id": rid,
+            "seed": 100,
+            "name": "m17/ssig_t128",
+            "config": {"optim_vision": {"kind": "rmsprop", "lr": 1e-3, "warmup": 0.0}},
+        },
+        **{
+            "evals.jsonl": [{"split": "val", "t": 1800.0, "loss": 1.0}],
+            "baselines.json": {"val": {"init_loss": 1.0}},
+            "stream.jsonl": [
+                {"t": float(t), "loss": 0.0, "sigreg": 2.0 if t <= 300 else 6.0}
+                for t in range(1, 601)
+            ],
+        },
+    )
+    main(["--runs", str(tmp_path)])
+    s = _section(capsys.readouterr().out, "学習側の $S$")
+    assert _cells(s, "`rmsprop` lr=0.001")[1:3] == ["2.00", "6.00"]

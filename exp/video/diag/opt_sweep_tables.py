@@ -33,8 +33,10 @@ fails (a comparison with NaN is false). The loop writes a non-finite value as
 Shown beside them and not judged: per run, the ratios $J(t)/J(0)$ and of
 ``U_KEYS`` to the untrained ViT with the posthoc ``rank``, ``z_spread`` and
 the last drift (``lr_table``, the curves over lr of each optimizer); the curves of the held-out $J$, pred and $S$ at each checkpoint (time 0 from
-``baselines.json``), the training loss (``stream.jsonl``, the mean over the
-300 s before each checkpoint), the posthoc ``rank`` and ``z_spread``, and,
+``baselines.json``), the training loss and the training $S$ (``loss`` and
+``sigreg`` of ``stream.jsonl``, the mean over the 300 s before each
+checkpoint; with ``vision.datapoint_store`` z the training $S$ is of the
+current stack among the buffer's detached rows, not the held-out estimate), the posthoc ``rank`` and ``z_spread``, and,
 given ``--drift`` (the outputs of ``python -m exp.video.diag.stream_stats
 drift`` of the runs), the drift between consecutive checkpoints of the
 current encoder's code of fixed held-in stacks: a stand-in for the staleness
@@ -666,6 +668,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(curve_table(runs, _j_ratio_getter, "loss", TIMES))
     print("\n### 学習の損失（stream.jsonl、各時刻の前 300 秒の平均）\n")
     print(curve_table(runs, _train_getter, "loss", TIMES))
+    print("\n### 学習側の $S$（stream.jsonl の `sigreg`、各時刻の前 300 秒の平均）\n")
+    print(curve_table(runs, _train_getter, "sigreg", TIMES))
     for key in ("rank", "z_spread"):
         print(f"\n### posthoc の `{key}`（val）\n")
         print(curve_table(runs, ph, key, TIMES))
