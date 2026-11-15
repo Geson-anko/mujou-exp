@@ -8,7 +8,7 @@ import zlib
 from pathlib import Path
 
 import pytest
-from tb.export import export, png_size
+from tb.export import _hparams, export, png_size
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 
@@ -148,6 +148,47 @@ class TestExport:
         export([runs / "b" / "r1"], out)
         export([runs / "b" / "r1"], out)
         assert len(list((out / "b" / "r1").glob("events.out.tfevents.*"))) == 1
+
+    def test_a_label_names_the_run_and_its_posthoc_joins_it(self, runs, tmp_path):
+        job_path = runs / "b" / "r1" / "job.json"
+        job = json.loads(job_path.read_text())
+        job_path.write_text(json.dumps(job | {"label": "lr1e-3 samplingpool"}))
+        out = tmp_path / "tb"
+        targets = export([runs / "b", runs / "b-post"], out)
+        assert targets == [out / "b" / "r1 lr1e-3 samplingpool"] * 2
+
+    def test_a_posthoc_naming_its_parent_by_the_nas_path_joins_it(self, runs, tmp_path):
+        job_path = runs / "b" / "r1" / "job.json"
+        job = json.loads(job_path.read_text())
+        job_path.write_text(json.dumps(job | {"label": "streams1"}))
+        post_path = runs / "b-post" / "p1" / "job.json"
+        post = json.loads(post_path.read_text())
+        post_path.write_text(json.dumps(post | {"parent": "/nas/x/runs/b/r1"}))
+        out = tmp_path / "tb"
+        targets = export([runs / "b", runs / "b-post"], out)
+        assert targets == [out / "b" / "r1 streams1"] * 2
+
+    def test_the_hparams_of_an_m18_config(self):
+        config = {
+            "program": "vae",
+            "seed": 100,
+            "ae": {"decoder_depth": 4},
+            "data": {
+                "streams": 32,
+                "tours": {"sampling": "pool", "data_version": "3c3e6805fdaa"},
+            },
+            "optim_vision": {"kind": "rmsprop", "lr": 1e-3},
+            "ctl": {"cuda_graph": True},
+        }
+        assert _hparams(config) == {
+            "program": "vae",
+            "seed": 100,
+            "ae.decoder_depth": 4,
+            "data.streams": 32,
+            "data.tours.sampling": "pool",
+            "optim_vision.kind": "rmsprop",
+            "optim_vision.lr": 1e-3,
+        }
 
     def test_png_size(self):
         assert png_size(_png(7, 5)) == (7, 5)
