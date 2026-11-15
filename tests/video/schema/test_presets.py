@@ -12,6 +12,7 @@ import exp.video.conf
 from exp.lib.gauss_kl import min_rows
 from exp.lib.optim import RMSPropDirection
 from exp.video.compose import compose, from_dict, to_dict
+from exp.video.diag.m18_sweep_tables import DEPTHS, GRID, LR_REF, SGD_TOP
 from exp.video.diag.ssig import bound
 from exp.video.dyn.nets import make_optimizer
 from exp.video.jepa.loss import jepa_loss_packed
@@ -570,3 +571,69 @@ class TestM18:
         assert o.lr == float(f"{1 / (1.02 * rho):.3g}")
         # the batch of the B = 32 streams: below its stacks' mean, so below rho
         assert h["batch"]["rho"] <= h["batch_members_mean_rho"] <= rho
+
+
+# The overrides of the sweep and of the decoder axis as the submit commands of
+# results/m18.md write them (「η の掃引（前倒し、回す前に決めたこと）」).
+M18_SWEEP = {
+    "rmsprop": (["+experiment=m18/ae_t128"], ("1e-5", "1e-4", "1e-3", "1e-2")),
+    "adamw": (
+        ["+experiment=m18/ae_t128", "optim_vision.kind=adamw"],
+        ("1e-5", "1e-4", "1e-3", "1e-2"),
+    ),
+    "sgd": (
+        ["+experiment=m18/ae_t128_sgd"],
+        ("4.09e-10", "4.09e-9", "4.09e-8", "4.09e-7"),
+    ),
+}
+
+
+class TestM18Sweep:
+    """The grid of the eta sweep and the decoder axis of M18 (results/m18.md):
+    overrides of the stage 1 presets, at the values derived before running."""
+
+    def test_the_sgd_grid_is_the_boundary_and_decades_below(self) -> None:
+        """SGD's top is 2 / (1.02 rho_max) of stage 0's Hessian, rounded down
+        to three digits (inside the boundary: no measured stack's top
+        direction expands), and the others are a decade apart below it."""
+        h = json.loads((M18_STAGE0 / "hessian.json").read_text())
+        bound = 2 / (1.02 * h["max_stack_rho"])
+        assert SGD_TOP == math.floor(bound * 1e9) / 1e9 and SGD_TOP <= bound
+        top = GRID["sgd"][-1]
+        assert top == SGD_TOP
+        for k, lr in enumerate(reversed(GRID["sgd"])):
+            assert lr == pytest.approx(SGD_TOP * 10.0**-k, rel=1e-12)
+        # stage 1's rate is half the boundary: between the two top points
+        assert GRID["sgd"][-2] < LR_REF["sgd"] < SGD_TOP
+
+    def test_the_reference_rates_are_the_stage_1_presets(self) -> None:
+        for opt, (base, _) in M18_SWEEP.items():
+            o = compose(base).optim_vision
+            assert o is not None and o.kind == opt
+            assert o.lr == LR_REF[opt]
+
+    @pytest.mark.parametrize("opt", sorted(M18_SWEEP))
+    def test_the_overrides_give_the_grid(self, opt: str) -> None:
+        """Each override sets the rate alone: the optimizer, its scale, no
+        warm-up and no weight decay stay those of the stage 1 preset."""
+        base, args = M18_SWEEP[opt]
+        ref = compose(base)
+        got = []
+        for a in args:
+            conf = compose([*base, f"optim_vision.lr={a}"])
+            o, r = conf.optim_vision, ref.optim_vision
+            assert o is not None and r is not None
+            assert o == replace(r, lr=o.lr)
+            assert (o.warmup, o.weight_decay) == (0.0, 0.0)
+            got.append(o.lr)
+        assert tuple(got) == GRID[opt]
+
+    @pytest.mark.parametrize("depth", DEPTHS)
+    def test_the_decoder_depth_is_an_override(self, depth: int) -> None:
+        conf = compose(["+experiment=m18/ae_t128", f"ae.decoder_depth={depth}"])
+        base = compose(["+experiment=m18/ae_t128"])
+        assert conf.ae is not None and conf.ae.decoder_depth == depth
+        assert conf.vision is not None and conf.vision.depth == DEPTHS[-1]
+        for name in vars(conf):
+            if name != "ae":
+                assert getattr(conf, name) == getattr(base, name), name

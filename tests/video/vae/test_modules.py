@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 
 import pytest
 import torch
@@ -84,8 +85,34 @@ class TestBuildAE:
         assert len(blocks) == 8
         assert dec < 0.5 * enc
 
-    def test_the_fan_ins_of_the_decoder(self):
-        ae = build_ae(_m18(), seed=100)
+    @pytest.mark.parametrize("depth", [4, 8])
+    def test_a_deeper_decoder_leaves_the_encoder_as_it_is(self, depth):
+        """The decoder axis (results/m18.md): the encoder's initial weights do
+        not depend on the decoder's depth (the decoder is drawn after it from
+        its own seed), so the untrained ViT's yardstick of U is one for every
+        depth; the decoder has ``depth`` blocks, and 8 is the encoder's."""
+        conf = _m18()
+        assert conf.ae is not None
+        deep = replace(conf, ae=replace(conf.ae, decoder_depth=depth))
+        a, b = build_ae(conf, seed=100), build_ae(deep, seed=100)
+        for (n, p), (m, q) in zip(
+            a.vision.encoder.named_parameters(),
+            b.vision.encoder.named_parameters(),
+            strict=True,
+        ):
+            assert n == m and torch.equal(p, q)
+        assert len(b.decoder.stage.blocks) == depth
+        blocks = [m for m in b.vision.encoder.modules() if isinstance(m, Block)]
+        assert depth <= len(blocks)
+
+    @pytest.mark.parametrize("depth", [2, 4, 8])
+    def test_the_fan_ins_of_the_decoder(self, depth):
+        """The same per-layer rate at every depth: each block's maps have the
+        fan-ins of the table, so a deeper decoder adds blocks of the same
+        rate and the meaning of eta does not change with the depth."""
+        conf = _m18()
+        assert conf.ae is not None
+        ae = build_ae(replace(conf, ae=replace(conf.ae, decoder_depth=depth)), seed=100)
         n = fan_ins(ae.decoder)
         got, want = {}, {}
         for name, p in ae.decoder.named_parameters():
