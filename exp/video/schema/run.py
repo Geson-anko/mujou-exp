@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from omegaconf import MISSING
 
 from exp.video.schema._check import check_choice
+from exp.video.schema.ae import AEConf
 from exp.video.schema.data import DataConf
 from exp.video.schema.dyn import DynamicsConf
 from exp.video.schema.learn import LearnerConf, OfflineConf, OptimConf
@@ -14,7 +15,7 @@ from exp.video.schema.vision import VisionConf
 
 __all__ = ["PHASES", "PROGRAMS", "TASKS", "CtlConf", "RunConf", "TimeConf"]
 
-PROGRAMS = ("dynamics", "vision", "joint")
+PROGRAMS = ("dynamics", "vision", "joint", "ae")
 TASKS = ("online", "offline", "baselines", "bench", "posthoc", "prep")
 PHASES = ("explore", "confirm")
 _DEVICE = re.compile(r"cpu|cuda(:\d+)?")
@@ -49,12 +50,14 @@ class CtlConf:
 
 @dataclass(kw_only=True)
 class RunConf:
-    """One run: ``program`` (the dynamics of M14, the vision of M15, or both of
-    M16) doing ``task`` on the stream ``data`` for ``seconds`` of virtual time.
+    """One run: ``program`` (the dynamics of M14, the vision of M15, both of
+    M16, or the autoencoder of M18) doing ``task`` on the stream ``data`` for
+    ``seconds`` of virtual time.
 
     A program needs its subtrees: ``dynamics`` for ``"dynamics"`` and
-    ``"joint"``; ``vision`` and ``optim_vision`` for ``"vision"`` and
-    ``"joint"``; ``offline`` for ``task="offline"``. ``optim`` is the
+    ``"joint"``; ``vision`` and ``optim_vision`` for ``"vision"``,
+    ``"joint"`` and ``"ae"`` (the encoder of the autoencoder is the vision's);
+    ``ae`` for ``"ae"``; ``offline`` for ``task="offline"``. ``optim`` is the
     optimizer of the dynamics, ``optim_vision`` that of the encoder.
     """
 
@@ -74,6 +77,7 @@ class RunConf:
     optim: OptimConf = field(default_factory=OptimConf)
     optim_vision: OptimConf | None = None
     offline: OfflineConf | None = None
+    ae: AEConf | None = None
     measure: MeasureConf = field(default_factory=MeasureConf)
     ctl: CtlConf = field(default_factory=CtlConf)
 
@@ -85,8 +89,9 @@ class RunConf:
             raise ValueError(f"device must be 'cpu' or 'cuda[:i]', not {self.device!r}")
         needs = {
             "dynamics": self.program in ("dynamics", "joint"),
-            "vision": self.program in ("vision", "joint"),
-            "optim_vision": self.program in ("vision", "joint"),
+            "vision": self.program in ("vision", "joint", "ae"),
+            "optim_vision": self.program in ("vision", "joint", "ae"),
+            "ae": self.program == "ae",
             "offline": self.task == "offline",
         }
         for name, needed in needs.items():

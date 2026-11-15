@@ -168,6 +168,7 @@ __all__ = [
     "PACKED_BATCH",
     "PROGRAM",
     "STRIDE",
+    "TOURS_SEED",
     "Measures",
     "PackedMeasures",
     "VisionProgram",
@@ -187,7 +188,7 @@ EVAL_BATCH = 256  # chunks encoded at once for the probes' calibration
 PACKED_BATCH = 32
 COLLAPSE = 1e-3  # the least z_spread of a representation that did not collapse
 _SPLITS = ("val", "test")
-_TOURS_SEED = 4242  # the chunks of the held-out video
+TOURS_SEED = 4242  # the chunks of the held-out video
 HELD_IN_SEED = 2718  # the context masks of the held-in stacks (packed)
 IID_SEED = 3  # added to the run's seed: the draws of the i.i.d. stacks
 _REPO = Path(__file__).resolve().parents[3]
@@ -288,7 +289,7 @@ class Measures:
                 held_out=t.held_out,
                 clips=3 * n,
                 length=v.frames,
-                seed=_TOURS_SEED,
+                seed=TOURS_SEED,
             )
             if u8.shape[-1] != t.size:
                 raise ValueError(f"the data is of {u8.shape[-1]} pixels, not {t.size}")
@@ -497,7 +498,7 @@ class PackedMeasures:
             frames=v.frames,
             stride=v.stride,
             steps=conf.measure.steps,
-            seed=_TOURS_SEED,
+            seed=TOURS_SEED,
         )
         if u8.shape[-1] != t.size:
             raise ValueError(f"the data is of {u8.shape[-1]} pixels, not {t.size}")
@@ -512,7 +513,7 @@ class PackedMeasures:
         # that a batch mixes the split's minutes as a training batch mixes
         # the nine videos (in time order a batch is a few minutes of one
         # video, and SIGReg of z reads high however z is spread).
-        g = torch.Generator().manual_seed(_TOURS_SEED)
+        g = torch.Generator().manual_seed(TOURS_SEED)
         self.order = {s: torch.randperm(n, generator=g) for s in self.windows}
         self.masks: dict[str, list[Tensor]] = {}
         self._directions: dict[str, tuple[Tensor, Tensor | None]] = {}
@@ -742,6 +743,11 @@ def _frames(conf: RunConf) -> FrameStreams | StackStreams:
         return BallFrames.of(conf.data.balls, b, frame=frame, seed=conf.seed)
     assert conf.data.tours is not None
     t = conf.data.tours
+    if t.sampling in ("shuffle", "pool"):
+        raise ValueError(
+            f"data.tours.sampling {t.sampling!r} is of the autoencoder "
+            "(program 'ae') only"
+        )
     if v.layout == "packed" and t.sampling == "iid":
         return IIDStackedTourFrames(
             tours_root(t),

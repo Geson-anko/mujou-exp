@@ -6,6 +6,10 @@ prepared Walking Tours frames (``walking_tours.prepare``) from a local copy.
 ``StackedTourFrames`` (M17) gives a stack of frames per stream instead
 (``StackStreams``), and ``IIDStackedTourFrames`` stacks that end at
 independent uniform frames of the videos (the i.i.d. control of the streams).
+For the autoencoder of M18, ``ShuffledStackedTourFrames`` gives the stacks the
+streams give over a whole run in a random order (the control of the order),
+and ``PooledStackedTourFrames`` stacks drawn with replacement from a fixed
+pool (the overfit control).
 """
 
 from collections.abc import Sequence
@@ -24,6 +28,8 @@ __all__ = [
     "BallFrames",
     "FrameStreams",
     "IIDStackedTourFrames",
+    "PooledStackedTourFrames",
+    "ShuffledStackedTourFrames",
     "StackStreams",
     "StackedTourFrames",
     "TourFrames",
@@ -221,10 +227,20 @@ class StackedTourFrames(StackStreams):
 
     @override
     def next(self) -> tuple[Tensor, Tensor, Tensor]:
-        g = (self._offsets + self._k * self._advance) % self._total  # (n,)
-        v = torch.searchsorted(self._firsts, g, right=True) - 1  # (n,) videos
+        k = torch.full_like(self._offsets, self._k)
+        stacks, ready, local = self._at(torch.arange(len(self._offsets)), k)
+        reset = (local < self._advance) | (self._k == 0)
+        self._k += 1
+        return stacks, ready, reset
+
+    def _at(self, streams: Tensor, k: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """The stacks u8 ``(m, N, C, H, W)`` of the streams ``streams``
+        ``(m,)`` at their ``k`` ``(m,)``-th ``next()``, whether each is
+        ``ready``, and the frame of its video it ends at ``(m,)``."""
+        g = (self._offsets[streams] + k * self._advance) % self._total  # (m,)
+        v = torch.searchsorted(self._firsts, g, right=True) - 1  # (m,) videos
         local = g - self._firsts[v]
-        idx = local[:, None] - self._back  # (n, N), oldest first
+        idx = local[:, None] - self._back  # (m, N), oldest first
         ready = idx[:, 0] >= 0
         stacks = torch.stack(
             [
@@ -232,9 +248,7 @@ class StackedTourFrames(StackStreams):
                 for a, i in zip(v.tolist(), idx, strict=True)
             ]
         )
-        reset = (local < self._advance) | (self._k == 0)
-        self._k += 1
-        return stacks, ready, reset
+        return stacks, ready, local
 
     @override
     def state_dict(self) -> dict[str, Any]:
@@ -294,3 +308,97 @@ class IIDStackedTourFrames(StackedTourFrames):
         self._k += 1
         ones = torch.ones(self._n, dtype=torch.bool)
         return stacks, ones, ones.clone()
+
+
+class ShuffledStackedTourFrames(StackedTourFrames):
+    r"""The stacks the ``n`` streams of ``StackedTourFrames`` (the same
+    arguments) give over their first ``units`` calls, all $n \cdot
+    \mathrm{units}$ of them, in a random order, ``n`` per ``next()``: the
+    same stacks (with the same ``ready``) as the streams, only in another
+    order. The order is a permutation drawn once from a generator of the seed
+    ``seed``; ``reset`` is true everywhere (no stack follows another), and
+    the state is ``{"k"}``.
+
+    Raises:
+        ValueError: as ``StackedTourFrames``, or ``units`` is not positive;
+            and (``next``) a call after the ``units``-th.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        n: int,
+        held_out: str,
+        frames: int,
+        stride: int,
+        advance: int,
+        units: int,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            root,
+            n=n,
+            held_out=held_out,
+            frames=frames,
+            stride=stride,
+            advance=advance,
+        )
+        if units < 1:
+            raise ValueError(f"units must be positive, not {units}")
+        self._n, self._units = n, units
+        g = torch.Generator().manual_seed(seed)
+        self._order = torch.randperm(n * units, generator=g)  # i units + k
+
+    @override
+    def next(self) -> tuple[Tensor, Tensor, Tensor]:
+        if self._k >= self._units:
+            raise ValueError(f"the {self._units} calls of the shuffle are spent")
+        drawn = self._order[self._k * self._n : (self._k + 1) * self._n]
+        stacks, ready, _ = self._at(drawn // self._units, drawn % self._units)
+        self._k += 1
+        return stacks, ready, torch.ones(self._n, dtype=torch.bool)
+
+
+class PooledStackedTourFrames(IIDStackedTourFrames):
+    r"""``pool`` stacks of ``IIDStackedTourFrames`` (the same videos,
+    ``frames`` and ``stride``), drawn once from the seed ``seed`` (its first
+    ``next()`` of ``n = pool``), then at each ``next()`` ``n`` of them drawn
+    independently and uniformly with replacement, the $k$-th call from a
+    generator of the seed ``seed * 1000003 + k + 1``: the overfit control,
+    which learns and is evaluated on the same ``pool`` stacks
+    (``stacks``, u8 ``(pool, N, C, H, W)``). Every stack is ``ready``,
+    ``reset`` true everywhere, and the state ``{"k"}``.
+
+    Raises:
+        ValueError: as ``IIDStackedTourFrames``, or ``pool`` is not positive.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        n: int,
+        held_out: str,
+        frames: int,
+        stride: int,
+        pool: int,
+        seed: int,
+    ) -> None:
+        if pool < 1:
+            raise ValueError(f"pool must be positive, not {pool}")
+        drawer = IIDStackedTourFrames(
+            root, n=pool, held_out=held_out, frames=frames, stride=stride, seed=seed
+        )
+        self.stacks, _, _ = drawer.next()  # the draws of k = 0
+        super().__init__(
+            root, n=n, held_out=held_out, frames=frames, stride=stride, seed=seed
+        )
+
+    @override
+    def next(self) -> tuple[Tensor, Tensor, Tensor]:
+        g = torch.Generator().manual_seed(self._seed * 1000003 + self._k + 1)
+        drawn = torch.randint(len(self.stacks), (self._n,), generator=g)
+        self._k += 1
+        ones = torch.ones(self._n, dtype=torch.bool)
+        return self.stacks[drawn], ones, ones.clone()

@@ -10,6 +10,7 @@ entry of the defaults of ``conf/run.yaml``.
 
 from hydra.core.config_store import ConfigStore
 
+from exp.video.schema.ae import AEConf
 from exp.video.schema.data import BallsConf, DataConf, PhysicsConf, ToursConf
 from exp.video.schema.dyn import DynamicsConf, WindowConf
 from exp.video.schema.learn import LearnerConf, OfflineConf, OptimConf
@@ -18,6 +19,7 @@ from exp.video.schema.run import CtlConf, RunConf, TimeConf
 from exp.video.schema.vision import VisionConf
 
 __all__ = [
+    "AEConf",
     "BallsConf",
     "CtlConf",
     "DataConf",

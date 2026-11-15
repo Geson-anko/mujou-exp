@@ -22,7 +22,9 @@ directory, which the worker copies to the NAS with the rest; the job's
 ``code``. ``result.json``'s ``final`` has ``"decode"``: the last line of each
 split. There is no objective.
 
-For a parent of the packed layout (M17) the job runs ``measure.encoder_eval``
+For a parent of the program ``"ae"`` (M18) it runs ``vae.eval.AEEval``
+(the same units, with the autoencoder's own decoder). For a parent of the
+packed layout (M17) the job runs ``measure.encoder_eval``
 instead: unit 0 the yardsticks (the pixel PCA and the ViT before learning,
 ``baselines.jsonl``), then each checkpoint (``"decode": {"ckpts": "last"}``
 evaluates the last one only; ``"windows"`` replaces ``WINDOWS``), and
@@ -54,6 +56,7 @@ from exp.video.measure.joint import DREAM, ball_windows
 from exp.video.measure.posthoc import FRAMES, STEPS, Decoding, Parent
 from exp.video.programs.vision import STRIDE, Measures, tours_root
 from exp.video.schema.run import RunConf
+from exp.video.vae.eval import AEEval
 
 __all__ = ["SPLITS", "Posthoc", "decoding", "main", "parent_dir"]
 
@@ -139,13 +142,26 @@ class Posthoc:
         done = 0 if resume is None else int(resume["frame"])
         out = run_dir / "post" / "decode"
         steps = int(settings.get("steps", STEPS))
-        self._decoding: Decoding | EncoderEval
+        self._decoding: Decoding | EncoderEval | AEEval
         parent = None
         if conf.task != "baselines":
             parent = Parent.read(parent_dir(job, run_dir), device=conf.device)
-        packed = (parent.conf if parent else conf).vision
-        if parent is None or (packed is not None and packed.layout == "packed"):
-            base = conf if parent is None else parent.conf
+        base = conf if parent is None else parent.conf
+        packed = base.vision
+        if base.program == "ae":
+            t = base.data.tours
+            assert t is not None  # the ae program streams Walking Tours
+            self._decoding = AEEval(
+                parent,
+                base,
+                out,
+                root=tours_root(t),
+                windows=int(settings.get("windows", WINDOWS)),
+                steps=steps,
+                ckpts=str(settings.get("ckpts", "all")),
+                done=done,
+            )
+        elif parent is None or (packed is not None and packed.layout == "packed"):
             t = base.data.tours
             if t is None:
                 raise ValueError(f"the run {base.name!r} does not stream Walking Tours")
@@ -201,7 +217,7 @@ class Posthoc:
         return {}, {}  # the loop's frame is the checkpoints done
 
     def final(self) -> dict[str, dict[str, Any]]:
-        if isinstance(self._decoding, EncoderEval):
+        if not isinstance(self._decoding, Decoding):
             return self._decoding.final()
         if not self._last:  # resumed after the last checkpoint
             lines = (
