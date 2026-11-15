@@ -5,7 +5,9 @@ turned around (``TokenDecoder``).
 A stack $x$ (u8 ``(n, N, C, H, W)``) is coded by its $T$ tokens of $d$
 dimensions (``VisionModules.tokens``: the encoder's last stage maps each token
 to ``vision.token_dim``), $D = T d$ numbers; $g$ maps them back to the stack,
-in the units of the target $y = x / 256$ (``loss``).
+the target $y = x / 256$ (``loss``). $g$'s constants $\mu$, $\sigma$ are the
+encoder's, of $x / 255$: 0.4 % off the target's units at the start, which its
+last map learns away.
 """
 
 import math

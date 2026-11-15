@@ -99,16 +99,35 @@ class TestBuildAE:
         assert ae.decoder.stage.out is not None
         assert ae.decoder.stage.out.out_features == 6144
 
-    def test_the_initial_output_is_standardized_pixels_around_the_mean(self):
-        """LeCun's last map of the unit LayerNorm: each output about N(0, 1)
-        before the data's std and mean, so g(f(x)) starts with the mean pixel
-        (0.46) and a spread of about the pixel std (0.28)."""
+    def test_the_initial_output_is_the_mean_pixel_and_a_spread_of_the_last_map(
+        self,
+    ):
+        """At the start the unit LayerNorm gives tokens h of mean 0 and ||h||^2
+        = dim s^2 / (s^2 + eps) <= dim (s^2 a token's variance before it),
+        and the last map W (rows = 6144 of dim, zero bias) makes z = (y - mu)
+        / sigma = W h. So the mean square of z lies between s_min(W)^2 and
+        s_max(W)^2 times dim / rows (W's extreme singular values; the lower
+        one less eps / s^2, below 1e-3 for s^2 above 1e-2), and |mean z| =
+        |mean row of W . mean h| <= ||mean row of W|| sqrt(dim). With
+        LeCun's truncated normal W these are about 0.77 (1 +- 0.2)^2 and
+        0.18: g(f(x)) starts near the mean pixel with about the pixel std."""
         conf = _m18()
+        v = conf.vision
+        assert v is not None
         ae = build_ae(conf, seed=100)
         g = torch.Generator().manual_seed(0)
         x = torch.randint(0, 256, (2, 16, 3, 128, 128), generator=g, dtype=torch.uint8)
         with torch.no_grad():
-            y = ae(x)
+            y = ae(x).double()
         assert y.shape == x.shape
-        assert abs(float(y.mean()) - 0.46) < 0.02
-        assert 0.8 * 0.28 < float(y.std()) < 1.2 * 0.28
+        last = ae.decoder.stage.out
+        assert last is not None and not last.bias.any()
+        w = last.weight.detach().double()
+        rows, dim = w.shape
+        s = torch.linalg.svdvals(w)
+        z = (y - v.pixel_mean) / v.pixel_std
+        ms = float((z**2).mean())
+        lo, hi = float(s[-1]) ** 2 * dim / rows, float(s[0]) ** 2 * dim / rows
+        assert lo * (1 - 1e-3) <= ms <= hi * (1 + 1e-5)
+        bound = float(w.mean(0).norm()) * dim**0.5
+        assert abs(float(z.mean())) <= bound * (1 + 1e-5)
