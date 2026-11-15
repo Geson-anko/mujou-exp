@@ -15,10 +15,14 @@
 # no warm-up, no weight decay. 1800 s, checkpoints every 300 s, the held-out
 # stack_mse every 60 s. The sources (data.tours.sampling stream, shuffle, pool),
 # the optimizers (optim_vision.kind) and B (data.streams) are overrides.
+# The seed is 100: the values of stage 0 (results/m18.md) belong to it (the
+# overfit control's 256 stacks are drawn from seed + 6, and the PCA-1024 bar
+# 0.196 is of those; SGD's rate is of the initial weights of seed 100).
 defaults:
   - m17/ssig_t128
   - _self_
 program: ae
+seed: 100
 name: m18/ae_t128
 tags: [m18, wt, t128, ae]
 data:

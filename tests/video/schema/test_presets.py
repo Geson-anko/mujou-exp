@@ -518,3 +518,55 @@ def test_m17_tokens_constant_within_a_stack_are_not_an_optimum(experiment):
             lambda ctx, ctx_ids, tgt_ids: ctx.new_zeros(*tgt_ids.shape, ctx.shape[2]),
         )
     assert collapsed > spread
+
+
+M18_STAGE0 = CONF.parent / "results" / "m18-stage0"  # exp.video.diag.m18_stage0
+# The longest correlation time of the training stream in its frames (0.1 s),
+# results/m17.md 「読み方の目安」: 36 min and more.
+M18_K = 2.2e4
+
+
+class TestM18:
+    """M18's stage 1 presets (plans/m18-vae-stream.md): the autoencoder of
+    M17's t128 encoder and a decoder of 2 blocks, at the values derived
+    before running."""
+
+    def test_the_autoencoder_preset(self) -> None:
+        """RMSProp of the per-layer rate at the geometric mean of the window
+        1 / F .. 1 / K (F the run's frames), to two digits; the encoder of
+        m17/ssig_t128; seed 100, of the values of stage 0."""
+        conf = compose(["+experiment=m18/ae_t128"])
+        ssig = compose(["+experiment=m17/ssig_t128"])
+        o = conf.optim_vision
+        assert o is not None
+        assert conf.program == "ae" and conf.seed == 100
+        assert conf.data.streams == 1 and conf.ae is not None
+        assert conf.ae.decoder_depth == 2
+        assert conf.vision == ssig.vision and conf.time == ssig.time
+        assert (o.kind, o.scale, o.warmup) == ("rmsprop", "fan_in", 0.0)
+        frames = conf.seconds / conf.time.frame
+        assert frames == pytest.approx(54000)
+        assert o.lr == float(f"{math.sqrt(1 / frames * 1 / M18_K):.2g}")
+
+    def test_the_sgd_preset_is_the_autoencoder_at_the_hessians_rate(self) -> None:
+        """m18/ae_t128 but for plain SGD at lr = 1 / (1.02 rho), rho the
+        largest spectral radius of the untrained loss's Hessian over the
+        measured stacks (stage 0, all converged but a few far below it) and
+        1.02 the largest elapsed of a step in frames (test_bp), to three
+        digits."""
+        conf = compose(["+experiment=m18/ae_t128_sgd"])
+        base = compose(["+experiment=m18/ae_t128"])
+        o = conf.optim_vision
+        assert o is not None and base.optim_vision is not None
+        assert (o.kind, o.scale, o.warmup) == ("sgd", "none", 0.0)
+        same = {"optim_vision", "name", "tags"}
+        for name in vars(conf):
+            if name not in same:
+                assert getattr(conf, name) == getattr(base, name), name
+        h = json.loads((M18_STAGE0 / "hessian.json").read_text())
+        assert h["seed"] == conf.seed and len(h["stacks"]) == 2048
+        rho = max(s["rho"] for s in h["stacks"])
+        assert rho == h["max_stack_rho"]
+        assert o.lr == float(f"{1 / (1.02 * rho):.3g}")
+        # the batch of the B = 32 streams: below its stacks' mean, so below rho
+        assert h["batch"]["rho"] <= h["batch_members_mean_rho"] <= rho
