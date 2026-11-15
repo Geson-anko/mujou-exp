@@ -35,9 +35,41 @@ batch's $\rho$ is at most the mean of its stacks' (the triangle inequality of
 the spectral norm): SGD's rate is derived from the largest $\rho$ of the
 stacks (plans/m18-vae-stream.md).
 
+``ppca`` (stage 2's yardsticks, ``ppca_bpd``): from the output of ``pca``
+alone, in closed form, the held-out bits per value of the ML pPCA of $k$ =
+1024 components (the linear optimum of the VAE: Lucas et al. 2019) and of
+$k$ = 0 (the Gaussian of the mean stack and $\sigma_0^2$: the best of a VAE
+whose decoder ignores $z$), both fitted to the dequantized training stacks
+and measured on the dequantized held-out ones, $y = (x + u) / 256$ as the
+VAE sees them (``exp.lib.elbo``). The noise $u / 256$ is independent of the
+data, of variance $v = 1 / (12 \cdot 256^2)$ in every value and of mean
+$1/512$: it adds $v$ to every eigenvalue of the training covariance
+(``ppca_fit``'s ``floor``), shifts the mean by $1/512$ and adds, to a held-out
+stack's distance from the fitted mean, zero-mean noise of variance $v$ along
+every direction, so that the expected mean squares are ``coord_ms`` $+ v$ and
+``residual_ms`` $+ (P - k) v$ of the stacks $y = x / 256$ measured by
+``pca``. The value is $E_u[-\log p(y)]$, the same upper bound of $-\log_2
+P(x)$ as the VAE's (whose ELBO bounds it once more).
+
+``adam`` (plan 「回す前に測るもの」 5, ``run_adam``): at the untrained VAE of the
+preset (``modules.build_vae``), the size of the denominator of RMSProp and
+Adam, $\sqrt{\hat v} + \varepsilon$ with $\varepsilon$ = ``EPS``. A step
+of an element is $\eta\, g / (\sqrt{\hat v} + \varepsilon)$: of the size
+$\eta\, r / (r + 1)$ for $|g| \approx \sqrt{\hat v}$, $r = \sqrt{\hat
+v} / \varepsilon$, so $\varepsilon$ halves the step where $r = 1$ and leaves
+it where $r \gg 1$. $\hat v$ is estimated by the mean of $g^2$ of
+$-\mathcal L$ (``elbo.elbo_terms``, the loss of a step of $B$ = 1) over the
+first stacks of ``--stacks`` training windows spread over the loop (the
+starts of as many streams), each with its own noise. The loss divided by $P$
+has the gradient $g / P$, so its $r$ is the same divided by $P$: both are
+reported, element by element (the quantiles, the elements with $r < 1$ and
+those whose gradient is exactly 0) and parameter by parameter. Of the same
+stacks it also reports $\sigma^{*2}$ (of $z$ and of $\mu$), the KL and
+$-\mathcal L$ at the start.
+
 Run as ``python -m exp.video.diag.m18_stage0 pca --out F +experiment=m18/ae_t128
 seed=100 device=cuda`` (and ``hessian``), with ``$MUJOU_EXP_DATA`` the data's
-parent.
+parent; ``ppca --pca F --out G`` needs neither.
 """
 
 import argparse
@@ -52,28 +84,37 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from exp.lib.elbo import bits_per_dim, dequant_var, ppca_fit, ppca_nll
 from exp.lib.png import tile, write_png
 from exp.video.compose import compose
 from exp.video.data.frames import PooledStackedTourFrames
 from exp.video.measure.encoder_eval import WINDOWS, iter_stream_windows
 from exp.video.programs.vision import tours_root
 from exp.video.schema.run import RunConf
+from exp.video.vae.elbo import elbo_terms
 from exp.video.vae.loss import LEVELS, ae_loss, target
 from exp.video.vae.measures import held_out_stacks, training_moments
-from exp.video.vae.modules import build_ae
+from exp.video.vae.modules import build_ae, build_vae
 from exp.video.vae.program import ae_streams
 
 __all__ = [
+    "EPS",
+    "PPCA_K",
     "gram",
     "lambda_max",
     "main",
     "pca_basis",
+    "ppca_bpd",
     "projection_sums",
+    "run_adam",
 ]
 
 POWER_SEED = 0  # the start of the power iteration
+EPS = 1e-8  # the eps of RMSPropDirection and AdamDirection (exp.lib.optim)
+ADAM_NOISE_SEED = 1  # the noise u and eps of run_adam's stacks
 TOL = 1e-4  # the relative error lambda_max leaves in rho, far below the 2 of 2 / rho
 STREAMS_B32 = 32  # the streams of stage 1's B = 32 runs
+PPCA_K = (0, 1024)  # the mean stack's Gaussian, and the pPCA of the code's D
 
 
 def _centred(
@@ -376,6 +417,128 @@ def run_hessian(
     return result
 
 
+def _ratios(r: Tensor) -> dict[str, Any]:
+    """The quantiles of ``r`` (flat, float64), its minimum, and the elements
+    below 1 (the step at most halved) and exactly 0."""
+    q = (0.0, 0.001, 0.01, 0.1, 0.5)
+    srt = r.sort().values
+    at = [srt[min(int(x * len(srt)), len(srt) - 1)] for x in q]
+    return {
+        "quantiles": {str(x): float(a) for x, a in zip(q, at, strict=True)},
+        "min": float(srt[0]),
+        "below_1": int((r < 1).sum()),
+        "zero": int((r == 0).sum()),
+        "count": len(r),
+    }
+
+
+def run_adam(conf: RunConf, out: Path, *, stacks: int) -> dict[str, Any]:
+    """The ``adam`` measurement (module docstring) into ``out``."""
+    t, v = conf.data.tours, conf.vision
+    assert t is not None and v is not None
+    dev = torch.device(conf.device)
+    root = tours_root(t)
+    mods = build_vae(conf, seed=conf.seed)
+    names = [
+        f"{m}.{n}" for m, mod in mods.named().items() for n, _ in mod.named_parameters()
+    ]
+    params = mods.parameters()
+    assert len(names) == len(params)
+    xs = [
+        w[: v.frames] for w in iter_stream_windows(conf, root, windows=stacks, steps=0)
+    ]
+    gen = torch.Generator(device=dev).manual_seed(ADAM_NOISE_SEED)
+    acc = [torch.zeros_like(q, dtype=torch.float64) for q in params]
+    p_values = math.prod(xs[0].shape)
+    sums = {"loss": 0.0, "kl": 0.0, "sq": 0.0, "sq_mu": 0.0}
+    t0 = time.monotonic()
+    for x8 in xs:
+        x = x8[None].to(dev)
+        u = torch.rand(x.shape, generator=gen, device=dev)
+        eps = torch.randn(1, *mods.code_shape, generator=gen, device=dev)
+        terms = elbo_terms(mods, x, u, eps)
+        grads = torch.autograd.grad(terms.loss.sum(), params)
+        for a, g in zip(acc, grads, strict=True):
+            a += g.double().square()
+        with torch.no_grad():
+            y = (x.float() + u) / LEVELS
+            sums["sq_mu"] += float((y - mods.decoder(terms.mu)).square().sum())
+        sums["loss"] += float(terms.loss.sum())
+        sums["kl"] += float(terms.kl.sum())
+        sums["sq"] += float(terms.sq.sum())
+    k = len(xs)
+    rms = [(a / k).sqrt() for a in acc]  # sqrt(v hat) of each element
+    flat = torch.cat([r.flatten() for r in rms]).cpu()
+    per = {
+        name: {
+            "numel": r.numel(),
+            "min_r": float(r.min()) / EPS,
+            "median_r": float(r.flatten().median()) / EPS,
+            "below_1": int((r < EPS).sum()),
+            "below_1_over_P": int((r < EPS * p_values).sum()),
+        }
+        for name, r in zip(names, rms, strict=True)
+    }
+    result = {
+        "seed": conf.seed,
+        "stacks": k,
+        "P": p_values,
+        "eps": EPS,
+        "r": _ratios(flat / EPS),
+        "r_over_P": _ratios(flat / (EPS * p_values)),
+        "params": per,
+        "log_sigma_r": float(rms[-1]) / EPS,
+        "start": {
+            "sigma0_sq": math.exp(2 * float(mods.log_sigma)),
+            "sigma_star_sq": sums["sq"] / (k * p_values),
+            "sigma_star_sq_mu": sums["sq_mu"] / (k * p_values),
+            "loss": sums["loss"] / k,
+            "kl": sums["kl"] / k,
+        },
+        "seconds": time.monotonic() - t0,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result) + "\n")
+    return result
+
+
+def ppca_bpd(pca: dict[str, Any], k: int) -> dict[str, Any]:
+    """Of the output ``pca`` of ``run_pca`` (its eigenvalues, $P$, and the
+    mean squares of each split; ``k`` 0 or its ``k``), the ML pPCA of
+    ``k`` components of the dequantized stacks (module docstring): its
+    $\\sigma^2$, the training eigenvalues above it, and the bits per value
+    and the nats a stack of each split and, in sample, of the training
+    stacks (``train``).
+
+    Raises:
+        ValueError: ``k`` is neither 0 nor the ``k`` of ``pca`` (its
+            residuals are of that ``k``).
+    """
+    if k not in (0, pca["k"]):
+        raise ValueError(f"the residuals of pca are of k = {pca['k']}, not {k}")
+    p, levels = int(pca["P"]), int(pca["levels"])
+    v = dequant_var(levels)
+    evals = torch.tensor(pca["eigenvalues"], dtype=torch.float64)
+    top, sigma_sq = ppca_fit(evals, k, p, floor=v)
+    rows = {}
+    for split, d in pca["splits"].items():
+        coord = torch.tensor(d["coord_ms"][:k], dtype=torch.float64) + v
+        residual = d["residual_ms"] if k else d["base_ms"]
+        nll = ppca_nll(top, sigma_sq, p, coord, residual + (p - k) * v)
+        rows[split] = {"nll": nll, "bpd": float(bits_per_dim(nll, p, levels))}
+    # in sample: the mean squares are the eigenvalues (plus v) themselves
+    rest = float(evals[k:].sum()) + (p - k) * v
+    nll = ppca_nll(top, sigma_sq, p, top, rest)
+    rows["train"] = {"nll": nll, "bpd": float(bits_per_dim(nll, p, levels))}
+    return {
+        "k": k,
+        "sigma_sq": sigma_sq,
+        "above_sigma_sq": int((evals + v > sigma_sq).sum()),
+        "dequant_var": v,
+        "splits": rows,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="python -m exp.video.diag.m18_stage0")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -390,10 +553,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     h.add_argument("--batch", type=int, default=STREAMS_B32)
     h.add_argument("--iters", type=int, default=200)
     h.add_argument("overrides", nargs="*")
+    a = sub.add_parser("adam", help="sqrt(v) of RMSProp against eps, untrained VAE")
+    a.add_argument("--out", type=Path, required=True)
+    a.add_argument("--stacks", type=int, default=STREAMS_B32)
+    a.add_argument("overrides", nargs="*")
+    q = sub.add_parser("ppca", help="stage 2's bits per value of pPCA, from pca")
+    q.add_argument("--pca", type=Path, required=True)
+    q.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
+    if args.cmd == "ppca":
+        pca = json.loads(args.pca.read_text())
+        res = {str(k): ppca_bpd(pca, k) for k in PPCA_K}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(res, indent=1) + "\n")
+        print(json.dumps(res, indent=1))
+        return
     conf = compose(args.overrides)
     torch.backends.cuda.matmul.allow_tf32 = False
-    if args.cmd == "pca":
+    if args.cmd == "adam":
+        r = run_adam(conf, args.out, stacks=args.stacks)
+        shown = {k: x for k, x in r.items() if k != "params"}
+    elif args.cmd == "pca":
         r = run_pca(conf, args.out, k=args.k, block=args.block)
         shown = {k: x for k, x in r.items() if k not in ("eigenvalues", "splits")}
         shown |= {s: d["stack_mse"] for s, d in r["splits"].items()}

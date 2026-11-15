@@ -1,3 +1,4 @@
+import math
 from typing import cast
 
 import pytest
@@ -6,10 +7,16 @@ import torch
 from exp.video.compose import compose
 from exp.video.measure.encoder_eval import stream_windows
 from exp.video.programs.vision import DATA_ENV, PackedMeasures
-from exp.video.vae.measures import held_out_stacks, stack_errors, training_moments
-from exp.video.vae.modules import AEModules
+from exp.video.vae.measures import (
+    KL_QUANTILES,
+    elbo_errors,
+    held_out_stacks,
+    stack_errors,
+    training_moments,
+)
+from exp.video.vae.modules import AEModules, build_vae
 from tests.video.packed import smooth_tours
-from tests.video.vae.test_program import tiny_ae
+from tests.video.vae.test_program import tiny_ae, tiny_vae
 
 
 @pytest.fixture
@@ -72,3 +79,49 @@ class TestHeldOutStacks:
         n = conf.vision.frames
         for s in ("val", "test"):
             assert torch.equal(got[s], m.windows[s][:, :n])
+
+
+class TestELBOErrors:
+    @pytest.fixture
+    def vae(self, tmp_path):
+        root = smooth_tours(tmp_path / "d", {"A": 120, "B": 80, "H": 200})
+        conf = compose(tiny_vae(root.name))
+        mods = build_vae(conf, seed=conf.seed)
+        d = mods.code_shape[1]
+        with torch.no_grad():  # a posterior variance off the prior's
+            mods.head.bias[d:] = -0.5
+        x = held_out_stacks(conf, root)["val"]
+        return mods, x, x.double().mean(0) / 256
+
+    def test_the_bits_the_rate_and_the_mean_stacks_error(self, vae):
+        """bpd = -L / (P ln 2) + 8 and the rate kl / (P ln 2); stack_mse is
+        that of g(mu), the autoencoder's yardstick; the quantiles of the
+        latents' mean KL bracket their mean; the same seed draws the same
+        noise (with the same batch)."""
+        mods, x, mean = vae
+        got = elbo_errors(mods, x, mean, seed=7, batch=3)
+        p = mean.numel()
+        assert got["bpd"] == pytest.approx(got["loss"] / (p * math.log(2)) + 8)
+        assert got["rate_bpd"] == pytest.approx(got["kl"] / (p * math.log(2)))
+        mse, _ = stack_errors(mods, x, mean)
+        assert got["stack_mse"] == pytest.approx(mse, rel=1e-6)
+        q = [got[f"kl_q{c}"] for c in KL_QUANTILES]
+        assert q == sorted(q)
+        dims = math.prod(mods.code_shape)
+        assert q[0] <= got["kl"] / dims <= q[-1]
+        assert elbo_errors(mods, x, mean, seed=7, batch=3) == got
+        assert elbo_errors(mods, x, mean, seed=8, batch=3)["bpd"] != got["bpd"]
+
+    def test_the_sigma_gap_is_what_sigma_star_would_save(self, vae):
+        """Of the same samples, -L at log sigma = ln sigma* is -L less
+        sigma_gap (the loss is quadratic-logarithmic in sigma), and sigma*
+        is then sigma."""
+        mods, x, mean = vae
+        got = elbo_errors(mods, x, mean, seed=7)
+        assert got["sigma_gap"] > 0
+        with torch.no_grad():
+            mods.likelihood.log_sigma.fill_(math.log(got["sigma_star"]))
+        best = elbo_errors(mods, x, mean, seed=7)
+        assert best["loss"] == pytest.approx(got["loss"] - got["sigma_gap"], rel=1e-6)
+        assert best["sigma_gap"] == pytest.approx(0.0, abs=1e-6 * got["sigma_gap"])
+        assert best["sigma_star"] == pytest.approx(got["sigma_star"], rel=1e-6)

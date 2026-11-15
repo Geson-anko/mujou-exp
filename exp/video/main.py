@@ -43,6 +43,7 @@ PROGRAMS = {
     "vision": "exp.video.programs.vision",
     "joint": "exp.video.programs.joint",
     "ae": "exp.video.vae.program",
+    "vae": "exp.video.vae.program",
 }
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_RES = {"cpu": {"class": "cpu", "ram_gb": 2.0, "gpu_mem_gb": 0.0}}

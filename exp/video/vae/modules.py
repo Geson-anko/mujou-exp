@@ -1,6 +1,8 @@
 r"""The modules of the autoencoder of M18: the encoder $f$ of M17 (the ViT of
 ``vit.build_vision``, its tokens the code) and the decoder $g$, the encoder
-turned around (``TokenDecoder``).
+turned around (``TokenDecoder``); and of the VAE (stage 2, ``VAEModules``):
+the same with the encoder's last map widened to the posterior's mean and log
+variance, and the likelihood's $\ln \sigma$ (``LogSigma``).
 
 A stack $x$ (u8 ``(n, N, C, H, W)``) is coded by its $T$ tokens of $d$
 dimensions (``VisionModules.tokens``: the encoder's last stage maps each token
@@ -31,8 +33,12 @@ from exp.video.schema.run import RunConf
 __all__ = [
     "DECODER_SEED",
     "AEModules",
+    "LogSigma",
     "TokenDecoder",
+    "VAEModules",
     "build_ae",
+    "build_modules",
+    "build_vae",
     "unpatchify_tubelets",
 ]
 
@@ -170,3 +176,124 @@ def build_ae(conf: RunConf, *, seed: int) -> AEModules:
             std=v.pixel_std,
         )
     return AEModules(vision, decoder.to(conf.device))
+
+
+class LogSigma(nn.Module):
+    r"""The likelihood's one learned $\ln \sigma$ (``log_sigma``, 0-d), held
+    by this module itself: its fan-in is 1 (``exp.lib.optim.fan_ins``), so
+    that ``scale="fan_in"`` steps it by $\eta$ as a vector."""
+
+    def __init__(self, sigma_sq: float) -> None:
+        super().__init__()
+        self.log_sigma = nn.Parameter(torch.tensor(0.5 * math.log(sigma_sq)))
+
+
+@dataclass
+class VAEModules:
+    r"""The VAE of stage 2: the encoder (``vision``, its last map to $2d$ a
+    token: ``build_vae``), the decoder and the likelihood's $\ln \sigma$.
+
+    A stack's $T$ tokens of $2d$ are the posterior $q(z \mid x) =
+    N(\mu, \mathrm{diag}\, s^2)$ of its code of $D = T d$: the first $d$ of
+    each token $\mu$, the last $d$ $\ln s^2$. The code of the evaluations is
+    $\mu$ (``code``), and ``__call__`` is the decoder at it, $g(\mu)$, as
+    ``AEModules`` (``eval.AEEval``, ``measures.stack_errors``)."""
+
+    vision: VisionModules
+    decoder: TokenDecoder
+    likelihood: LogSigma
+
+    def named(self) -> dict[str, nn.Module]:
+        """The learned modules by the names of the checkpoints."""
+        return {
+            "encoder": self.vision.encoder,
+            "decoder": self.decoder,
+            "likelihood": self.likelihood,
+        }
+
+    def parameters(self) -> list[nn.Parameter]:
+        r"""The parameters the VAE learns: the encoder's, the decoder's, then
+        $\ln \sigma$."""
+        return [
+            *self.vision.encoder.parameters(),
+            *self.decoder.parameters(),
+            *self.likelihood.parameters(),
+        ]
+
+    @property
+    def log_sigma(self) -> Tensor:
+        r"""$\ln \sigma$ (0-d)."""
+        return self.likelihood.log_sigma
+
+    @property
+    def head(self) -> nn.Linear:
+        r"""The encoder's last map, to $\mu$ and $\ln s^2$ (``build_vae``)."""
+        stage = self.vision.encoder.stages[-1]
+        assert isinstance(stage, Stage) and stage.out is not None
+        return stage.out
+
+    @property
+    def code_shape(self) -> tuple[int, int]:
+        r"""$(T, d)$ of a stack's code (and of its noise $\varepsilon$)."""
+        return self.vision.tokens_per_view, self.head.out_features // 2
+
+    def posterior(self, stacks: Tensor) -> tuple[Tensor, Tensor]:
+        r"""$\mu$ and $\ln s^2$ ``(n, T, d)`` of the stacks ``(n, N, C, H,
+        W)`` (u8, or floats in ``[0, 1]``) at the weights as they are now."""
+        tokens = self.vision.tokens(stacks)
+        d = tokens.shape[-1] // 2
+        return tokens[..., :d], tokens[..., d:]
+
+    def code(self, stacks: Tensor) -> Tensor:
+        r"""$\mu$ ``(n, T, d)`` of the stacks."""
+        return self.posterior(stacks)[0]
+
+    def __call__(self, stacks: Tensor) -> Tensor:
+        r"""$g(\mu)$ ``(n, N, C, H, W)`` of the stacks."""
+        return self.decoder(self.code(stacks))
+
+
+def build_vae(conf: RunConf, *, seed: int) -> VAEModules:
+    r"""The VAE of ``conf``: the modules of ``build_ae`` (the same initial
+    weights), with the encoder's last map (``Stage.out``, LeCun, $d$ outputs)
+    widened to $2d$: its rows of $\mu$ are those it had, those of $\ln s^2$
+    are 0 (weights and bias), and $\ln \sigma$ starts at $\frac12 \ln$
+    ``ae.sigma0_sq``.
+
+    So the untrained VAE's $\mu$ is the untrained autoencoder's code of the
+    same seed and depth (the yardstick of U, ``EncoderEval``'s ViT before it
+    learns, is the same) and its decoder the same, and its posterior variance
+    $s^2 = 1$ is the prior's for every stack: the one scale the generative
+    model gives before $g$ learns (the plan's LeCun would draw a log variance
+    of unit spread around it, a scale the model does not state). The rows of
+    $\ln s^2$ learn from 0 (the gradient of a weight is the output's times
+    the input's, not 0).
+
+    Raises:
+        ValueError: ``conf`` has no ``ae.sigma0_sq`` or ``build_ae``
+            raises.
+    """
+    if conf.ae is None or conf.ae.sigma0_sq is None:
+        raise ValueError(f"the run {conf.name!r} needs ae.sigma0_sq")
+    ae = build_ae(conf, seed=seed)
+    stage = ae.vision.encoder.stages[-1]
+    assert isinstance(stage, Stage) and stage.out is not None  # build_ae checks
+    old = stage.out
+    d, width = old.out_features, old.in_features
+    # built empty (no draw of any RNG), every value then set
+    head = nn.Linear(width, 2 * d, device="meta").to_empty(device=old.weight.device)
+    with torch.no_grad():
+        head.weight.zero_()
+        head.bias.zero_()
+        head.weight[:d] = old.weight
+        head.bias[:d] = old.bias
+    stage.out = head
+    sigma = LogSigma(conf.ae.sigma0_sq).to(conf.device)
+    return VAEModules(ae.vision, ae.decoder, sigma)
+
+
+def build_modules(conf: RunConf, *, seed: int) -> AEModules | VAEModules:
+    """``build_vae`` for the program ``"vae"``, else ``build_ae``."""
+    if conf.program == "vae":
+        return build_vae(conf, seed=seed)
+    return build_ae(conf, seed=seed)

@@ -14,26 +14,48 @@ reconstruction. The held-out stacks are the first stack of each window of
 first third calib, the second val, the last test); for the overfit control
 (``data.tours.sampling`` ``"pool"``) the row of val also has the same of the
 pool's stacks (``pool_stack_mse``), on which it learns.
+
+The VAE's row (``VAEMeasures``, plans/m18-vae-stream.md 「段 2 の評価と判定」)
+has, of the same stacks, its negative ELBO with a fixed noise (``u`` and
+$\varepsilon$ drawn from ``EVAL_NOISE_SEED`` the same way at every
+evaluation): ``bpd`` ($-\mathcal L / (P \ln 2) + 8$, the objective),
+``loss`` ($-\mathcal L$ in nats a stack), the rate ``kl`` (nats a stack) and
+``rate_bpd`` (bits a value: ``bpd`` less the distortion), $\sigma$, the
+held-out optimum $\sigma^* = (\sum_i \lVert y_i - g(z_i) \rVert^2 /
+(n P))^{1/2}$ of the same samples and the nats a stack lost to $\sigma \ne
+\sigma^*$ (``sigma_gap``, ``exp.lib.elbo``), the quantiles over the $D$
+latents of their mean KL (``kl_q<percent>``; no threshold), and
+``stack_mse`` of $g(\mu)$ (the decoder at the posterior mean, against $y = x
+/ 256$ as the autoencoder's). The overfit control's row of val also has
+``pool_bpd`` and ``pool_stack_mse``.
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import override
 
 import torch
 from torch import Tensor
 
+from exp.lib.elbo import bits_per_dim, sigma_gap
 from exp.video.data.walking_tours import eval_windows
 from exp.video.measure.encoder_eval import STREAM_STEPS, WINDOWS, iter_stream_windows
 from exp.video.programs.vision import TOURS_SEED
 from exp.video.schema.run import RunConf
+from exp.video.vae.elbo import elbo_terms
 from exp.video.vae.loss import LEVELS, ae_loss, stack_mse_sums, target
-from exp.video.vae.modules import AEModules
+from exp.video.vae.modules import AEModules, VAEModules
 
 __all__ = [
     "EVAL_BATCH",
+    "EVAL_NOISE_SEED",
+    "KL_QUANTILES",
     "SPLITS",
     "AEMeasures",
     "StackMoments",
+    "VAEMeasures",
+    "elbo_errors",
     "held_out_stacks",
     "stack_errors",
     "training_moments",
@@ -41,6 +63,8 @@ __all__ = [
 
 SPLITS = ("val", "test")
 EVAL_BATCH = 32  # the stacks through the autoencoder at once
+EVAL_NOISE_SEED = 12345  # the VAE's noise of the evaluations (one per set)
+KL_QUANTILES = (0, 10, 25, 50, 75, 90, 100)  # percents over the D latents
 
 
 @dataclass(frozen=True)
@@ -105,7 +129,11 @@ def held_out_stacks(conf: RunConf, root: Path) -> dict[str, Tensor]:
 
 @torch.no_grad()
 def stack_errors(
-    mods: AEModules, stacks: Tensor, mean: Tensor, *, batch: int = EVAL_BATCH
+    mods: AEModules | VAEModules,
+    stacks: Tensor,
+    mean: Tensor,
+    *,
+    batch: int = EVAL_BATCH,
 ) -> tuple[float, float]:
     r"""``stack_mse`` (module docstring) of ``mods`` on the stacks u8 ``(n,
     N, C, H, W)`` (any device) with the mean stack ``mean`` ``(N, C, H,
@@ -142,7 +170,7 @@ class AEMeasures:
         self._mean = self.moments.mean.float().to(self._dev)
         self._pool = pool
 
-    def evaluate(self, mods: AEModules, split: str) -> dict[str, float]:
+    def evaluate(self, mods: AEModules | VAEModules, split: str) -> dict[str, float]:
         """The row of ``split``: ``stack_mse`` and ``loss`` (the mean
         $\\ell_{AE}$) of its stacks and, in the row of val of the overfit
         control, ``pool_stack_mse`` and ``pool_loss``."""
@@ -151,4 +179,82 @@ class AEMeasures:
         if split == "val" and self._pool is not None:
             mse, loss = stack_errors(mods, self._pool, self._mean)
             row |= {"pool_stack_mse": mse, "pool_loss": loss}
+        return row
+
+
+@torch.no_grad()
+def elbo_errors(
+    mods: VAEModules,
+    stacks: Tensor,
+    mean: Tensor,
+    *,
+    seed: int,
+    batch: int = EVAL_BATCH,
+) -> dict[str, float]:
+    """The VAE's keys (module docstring) of the stacks u8 ``(n, N, C, H, W)``
+    (any device) with the mean stack ``mean`` ``(N, C, H, W)``, a batch at a
+    time on the modules' device: the noise of the stacks is drawn in their
+    order from a generator of ``seed`` on that device, so that the same seed
+    and ``batch`` give the same noise."""
+    dev = mean.device
+    gen = torch.Generator(device=dev).manual_seed(seed)
+    m = mean.float()
+    loss, kl, sq = torch.zeros(3, dtype=torch.float64, device=dev).unbind()
+    kl_dims: Tensor | None = None
+    sums = torch.zeros(2, dtype=torch.float64, device=dev)
+    for chunk in stacks.split(batch):
+        x = chunk.to(dev)
+        eps = torch.randn(len(x), *mods.code_shape, generator=gen, device=dev)
+        u = torch.rand(x.shape, generator=gen, device=dev)
+        t = elbo_terms(mods, x, u, eps)
+        loss += t.loss.double().sum()
+        kl += t.kl.double().sum()
+        sq += t.sq.double().sum()
+        k = t.kl.double().sum(0)
+        kl_dims = k if kl_dims is None else kl_dims + k
+        sums += stack_mse_sums(target(x), mods.decoder(t.mu), m)
+    n, p = len(stacks), mean.numel()
+    assert kl_dims is not None
+    nll = float(loss) / n
+    sigma_sq = math.exp(2 * float(mods.log_sigma))
+    star_sq = float(sq) / (n * p)
+    err, base = sums.tolist()
+    q = torch.tensor(KL_QUANTILES, dtype=torch.float64, device=dev) / 100
+    quant = (kl_dims / n).quantile(q).tolist()
+    return {
+        "bpd": float(bits_per_dim(nll, p)),
+        "loss": nll,
+        "kl": float(kl) / n,
+        "rate_bpd": float(kl) / n / (p * math.log(2)),
+        "sigma": math.sqrt(sigma_sq),
+        "sigma_star": math.sqrt(star_sq),
+        "sigma_gap": sigma_gap(star_sq, sigma_sq, p),
+        "stack_mse": err / base,
+    } | {f"kl_q{c}": x for c, x in zip(KL_QUANTILES, quant, strict=True)}
+
+
+class VAEMeasures(AEMeasures):
+    """The evaluation of the VAE's run (module docstring): that of
+    ``AEMeasures`` with ``elbo_errors`` in place of ``stack_errors``. The
+    noise of val, test and the pool are of ``EVAL_NOISE_SEED`` plus 0, 1
+    and 2."""
+
+    _SEEDS = {"val": 0, "test": 1, "pool": 2}
+
+    @override
+    def evaluate(self, mods: AEModules | VAEModules, split: str) -> dict[str, float]:
+        """The row of ``split`` and, in the row of val of the overfit
+        control, ``pool_bpd`` and ``pool_stack_mse``."""
+        assert isinstance(mods, VAEModules)
+        row = elbo_errors(
+            mods,
+            self.stacks[split],
+            self._mean,
+            seed=EVAL_NOISE_SEED + self._SEEDS[split],
+        )
+        if split == "val" and self._pool is not None:
+            pool = elbo_errors(
+                mods, self._pool, self._mean, seed=EVAL_NOISE_SEED + self._SEEDS["pool"]
+            )
+            row |= {"pool_bpd": pool["bpd"], "pool_stack_mse": pool["stack_mse"]}
         return row

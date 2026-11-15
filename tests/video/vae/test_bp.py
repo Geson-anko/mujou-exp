@@ -11,9 +11,10 @@ import torch
 
 from exp.lib.host import Host
 from exp.video.schema import AEConf, LearnerConf, OptimConf, RunConf
-from exp.video.vae.bp import AENet, build_ae_net
+from exp.video.vae.bp import AENet, VAENet, VAESample, build_ae_net, build_vae_net
+from exp.video.vae.elbo import elbo_terms
 from exp.video.vae.loss import ae_loss, batch_loss, target
-from exp.video.vae.modules import AEModules, build_ae
+from exp.video.vae.modules import AEModules, build_ae, build_vae
 from tests.video.packed import packed_conf, stacks
 
 FRAME = 1 / 30
@@ -58,7 +59,7 @@ class _Recorded(pc.optim.Optimizer):
         return _Bound()
 
 
-def _host(net: AENet) -> Host:
+def _host(net: AENet | VAENet) -> Host:
     run = mujou.testing.run(net)
     return Host(run, frame=FRAME, period=net.tau.period)
 
@@ -132,4 +133,49 @@ class TestAEBP:
     def test_build_with_fan_in_binds_every_parameter(self):
         rms = OptimConf(kind="rmsprop", lr=1e-3, warmup=0.0, scale="fan_in")
         net = build_ae_net(replace(_conf(), optim_vision=rms))
+        assert math.isfinite(net.tau.period)
+
+
+def _vae_conf() -> RunConf:
+    return replace(_conf(), program="vae", ae=AEConf(decoder_depth=1, sigma0_sq=0.05))
+
+
+class TestVAEBP:
+    def test_one_frame_sends_the_elbo_before_learning_and_steps_by_its_gradient(
+        self,
+    ):
+        """The node's loss and kl are -L and its KL (elbo_terms) of the
+        written stacks with the written noise u and eps, at the initial
+        weights, over the stacks that count; log sigma is the initial one;
+        the frame's step is SGD on d(-L)/dtheta of every parameter, log sigma
+        among them."""
+        conf = _vae_conf()
+        mods = build_vae(conf, seed=conf.seed)
+        before = copy.deepcopy(mods)
+        opt = _Recorded(tau=FRAME / LR)
+        net = VAENet(mods, conf=conf, optimizer=opt)
+        x, valid = stacks(2), torch.tensor([True, False])
+        g = torch.Generator().manual_seed(5)
+        u = torch.rand(x.shape, generator=g)
+        eps = torch.randn(2, *mods.code_shape, generator=g)
+        sample = VAESample(x=x, u=u, eps=eps, mask=valid)
+        p, _ = _host(net).show({net.prev: sample}, net.stats)
+        t = elbo_terms(before, x, u, eps)
+        want = batch_loss(t.loss, valid)
+        assert float(p["loss"]) == pytest.approx(float(want), rel=1e-6)
+        assert float(p["kl"]) == pytest.approx(float(t.kl[0].sum()), rel=1e-6)
+        assert float(p["log_sigma"]) == pytest.approx(0.5 * math.log(0.05))
+        assert float(p["n"]) == 1.0 and len(opt.elapsed) == 1
+        grads = torch.autograd.grad(want, before.parameters())
+        assert float(grads[-1].abs()) > 0  # log sigma learns
+        rate = opt.elapsed[0] / (FRAME / LR)
+        for p_new, p_old, gr in zip(mods.parameters(), before.parameters(), grads):
+            torch.testing.assert_close(p_new, p_old - rate * gr, rtol=1e-5, atol=1e-7)
+
+    def test_build_needs_bp_and_binds_every_parameter_with_fan_in(self):
+        conf = replace(_vae_conf(), learner=LearnerConf(kind="pc"))
+        with pytest.raises(ValueError, match="learner=bp"):
+            build_vae_net(conf)
+        rms = OptimConf(kind="rmsprop", lr=1e-3, warmup=0.0, scale="fan_in")
+        net = build_vae_net(replace(_vae_conf(), optim_vision=rms))
         assert math.isfinite(net.tau.period)

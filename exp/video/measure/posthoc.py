@@ -318,16 +318,16 @@ class Parent:
         """The run in ``run_dir``, decoded on ``device``.
 
         Raises:
-            ValueError: The run is not of the program ``"vision"``, ``"joint"`` or
-                ``"ae"``, or has no
-                evaluation checkpoint.
+            ValueError: The run is not of the program ``"vision"``,
+                ``"joint"``, ``"ae"`` or ``"vae"``, or has no evaluation
+                checkpoint.
         """
         job = json.loads((run_dir / "job.json").read_text())
         conf = dataclasses.replace(from_dict(job["config"]), device=device)
-        if conf.program not in ("vision", "joint", "ae"):
+        if conf.program not in ("vision", "joint", "ae", "vae"):
             raise ValueError(
                 f"the run {run_dir} is of {conf.program!r}, not 'vision', "
-                "'joint' or 'ae'"
+                "'joint', 'ae' or 'vae'"
             )
         ckpts = sorted((run_dir / "ckpt").glob("*.pt"))
         if not ckpts:

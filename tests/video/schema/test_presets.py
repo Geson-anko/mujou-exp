@@ -572,6 +572,27 @@ class TestM18:
         # the batch of the B = 32 streams: below its stacks' mean, so below rho
         assert h["batch"]["rho"] <= h["batch_members_mean_rho"] <= rho
 
+    def test_the_vae_preset_is_the_selected_autoencoder_with_the_elbo(self) -> None:
+        """m18/vae_t128 is the run the decoder axis selected (m18/ae_t128 at
+        depth 4 and RMSProp eta = 1e-3, results/m18.md) but for the program,
+        and sigma_0^2 is stage 0's mean stack's variance plus the
+        dequantization's 1 / (12 * 256^2)."""
+        conf = compose(["+experiment=m18/vae_t128"])
+        base = compose(
+            ["+experiment=m18/ae_t128", "ae.decoder_depth=4", "optim_vision.lr=1e-3"]
+        )
+        assert conf.program == "vae" and conf.seed == 100
+        assert conf.ae is not None and base.ae is not None
+        assert conf.ae == replace(base.ae, sigma0_sq=conf.ae.sigma0_sq)
+        for name in vars(conf):
+            if name not in {"program", "name", "tags", "ae"}:
+                assert getattr(conf, name) == getattr(base, name), name
+        pca = json.loads((M18_STAGE0 / "pca.json").read_text())
+        want = pca["sigma0_sq"] + 1 / (12 * 256**2)
+        assert conf.ae.sigma0_sq == pytest.approx(want, rel=1e-12)
+        ppca = json.loads((M18_STAGE0 / "ppca.json").read_text())
+        assert conf.ae.sigma0_sq == ppca["0"]["sigma_sq"]
+
 
 # The overrides of the sweep and of the decoder axis as the submit commands of
 # results/m18.md write them (「η の掃引（前倒し、回す前に決めたこと）」).

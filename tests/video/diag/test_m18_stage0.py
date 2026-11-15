@@ -1,26 +1,35 @@
 import json
+import math
 from dataclasses import replace
 
 import pytest
 import torch
+from torch.distributions import MultivariateNormal
 
+from exp.lib.elbo import dequant_var
 from exp.video.compose import compose
 from exp.video.data.frames import PooledStackedTourFrames
 from exp.video.diag.m18_stage0 import (
+    ADAM_NOISE_SEED,
+    EPS,
     TOL,
     gram,
     lambda_max,
     pca_basis,
+    ppca_bpd,
     projection_sums,
+    run_adam,
     run_hessian,
     run_pca,
 )
-from exp.video.measure.encoder_eval import stream_windows
+from exp.video.measure.encoder_eval import iter_stream_windows, stream_windows
 from exp.video.programs.vision import DATA_ENV, tours_root
+from exp.video.vae.elbo import elbo_terms
 from exp.video.vae.measures import held_out_stacks
+from exp.video.vae.modules import build_vae
 from exp.video.vae.program import ae_streams
 from tests.video.packed import smooth_tours
-from tests.video.vae.test_program import tiny_ae
+from tests.video.vae.test_program import tiny_ae, tiny_vae
 
 CPU = torch.device("cpu")
 
@@ -80,6 +89,74 @@ class TestPCA:
         assert got["base_ms"] == pytest.approx(
             sum(got["coord_ms"]) + got["residual_ms"]
         )
+
+
+class TestPPCABpd:
+    LEVELS = 4  # coarse integers: the dequantization's v = 1/192 matters
+
+    def _pca(self, k: int) -> tuple[dict, torch.Tensor, torch.Tensor]:
+        """The output of run_pca (by pca_basis and projection_sums) of 400
+        training rows of integers in 0 .. 3 (P = 6, y = x / 4) and the
+        held-out split ``val`` of 50 more; the training and held-out y."""
+        g = torch.Generator().manual_seed(3)
+        lat = torch.randn(450, 2, generator=g, dtype=torch.float64)
+        mix = torch.randn(2, 6, generator=g, dtype=torch.float64)
+        x = (1.5 + lat @ mix + 0.5 * torch.randn(450, 6, generator=g)).round()
+        x = x.clamp(0, self.LEVELS - 1)
+        y = x / self.LEVELS
+        train, held = y[:400], y[400:]
+        m = train.mean(0)
+        evals, u = pca_basis(lambda a, b: train[a:b], 400, m, k, block=64, device=CPU)
+        pca = {
+            "P": 6,
+            "k": k,
+            "levels": self.LEVELS,
+            "eigenvalues": evals.tolist(),
+            "splits": {"val": projection_sums(u, held, m)},
+        }
+        return pca, train, held
+
+    @pytest.mark.parametrize("k", [0, 2])
+    def test_the_expected_nll_of_the_dequantized_held_out_points(self, k):
+        """Against MultivariateNormal of the ML pPCA of the training rows'
+        explicit covariance plus v I (the dequantization noise u / L,
+        independent, of variance v = 1 / (12 L^2)), at the mean shifted by
+        1 / (2 L): E_u[-log p(y + u / L)] = -log p(y + 1 / (2 L)) + v/2 tr
+        C^{-1}, the noise's quadratic term. k = 0 is the isotropic Gaussian
+        of variance tr C / P."""
+        pca, train, held = self._pca(max(k, 1))
+        pca["k"] = k if k else pca["k"]
+        v = dequant_var(self.LEVELS)
+        m = train.mean(0)
+        eye = torch.eye(6, dtype=torch.float64)
+        cov = (train - m).T @ (train - m) / len(train) + v * eye
+        evals, vecs = torch.linalg.eigh(cov)
+        evals, vecs = evals.flip(0), vecs.flip(1)
+        s2 = float(evals[k:].mean())
+        u = vecs[:, :k]
+        c = u @ torch.diag(evals[:k]) @ u.T + s2 * (eye - u @ u.T)
+        shifted = held + 1 / (2 * self.LEVELS)
+        mvn = MultivariateNormal(m + 1 / (2 * self.LEVELS), c)
+        want = -float(mvn.log_prob(shifted).mean()) + 0.5 * v * float(
+            torch.linalg.inv(c).trace()
+        )
+        got = ppca_bpd(pca, k)
+        assert got["sigma_sq"] == pytest.approx(s2, rel=1e-10)
+        assert got["splits"]["val"]["nll"] == pytest.approx(want, rel=1e-10)
+        bpd = want / (6 * math.log(2)) + math.log2(self.LEVELS)
+        assert got["splits"]["val"]["bpd"] == pytest.approx(bpd, rel=1e-10)
+        # in sample: the exact mean -log p of the covariance it was fitted to
+        train_nll = 0.5 * (
+            6 * math.log(2 * math.pi)
+            + float(torch.logdet(c))
+            + float((torch.linalg.inv(c) @ cov).trace())
+        )
+        assert got["splits"]["train"]["nll"] == pytest.approx(train_nll, rel=1e-10)
+
+    def test_k_must_be_that_of_the_residuals_or_zero(self):
+        pca, _, _ = self._pca(2)
+        with pytest.raises(ValueError, match="residuals"):
+            ppca_bpd(pca, 1)
 
 
 def _quadratic(eigs: list[float], seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
@@ -217,3 +294,44 @@ class TestRuns:
         assert r["batch"]["rho"] <= mean * (1 + 10 * TOL)
         with pytest.raises(ValueError, match="multiple"):
             run_hessian(conf, tmp_path / "h.json", windows=5, batch=2, iters=5)
+
+
+class TestAdam:
+    def test_the_denominators_of_the_untrained_vae(self, tmp_path, monkeypatch):
+        """Against the gradients of -L of each of the first stacks of the
+        windows, with the noise drawn in the same order: sqrt(v hat) is the
+        root mean square over them, r its ratio to eps, and the loss over P
+        divides r by P."""
+        root = smooth_tours(tmp_path / "data" / "d", {"A": 120, "B": 80, "H": 200})
+        monkeypatch.setenv(DATA_ENV, str(root.parent))
+        conf = compose(tiny_vae(root.name))
+        assert conf.vision is not None and conf.data.tours is not None
+        assert conf.ae is not None
+        got = run_adam(conf, tmp_path / "adam.json", stacks=2)
+        mods = build_vae(conf, seed=conf.seed)
+        params = mods.parameters()
+        gen = torch.Generator().manual_seed(ADAM_NOISE_SEED)
+        xs = [
+            w[: conf.vision.frames]
+            for w in iter_stream_windows(
+                conf, tours_root(conf.data.tours), windows=2, steps=0
+            )
+        ]
+        sq = [torch.zeros_like(q, dtype=torch.float64) for q in params]
+        for x8 in xs:
+            x = x8[None]
+            u = torch.rand(x.shape, generator=gen)
+            eps = torch.randn(1, *mods.code_shape, generator=gen)
+            grads = torch.autograd.grad(elbo_terms(mods, x, u, eps).loss.sum(), params)
+            for a, g in zip(sq, grads, strict=True):
+                a += g.double() ** 2
+        r = torch.cat([(a / 2).sqrt().flatten() for a in sq]) / EPS
+        p = got["P"]
+        assert p == xs[0].numel() and got["stacks"] == 2
+        assert got["r"]["min"] == pytest.approx(float(r.min()), rel=1e-5)
+        assert got["r"]["below_1"] == int((r < 1).sum())
+        assert got["r_over_P"]["below_1"] == int((r / p < 1).sum())
+        assert got["r"]["count"] == r.numel() == sum(q.numel() for q in params)
+        assert got["log_sigma_r"] == pytest.approx(float(r[-1]), rel=1e-5)
+        assert sum(x["numel"] for x in got["params"].values()) == r.numel()
+        assert got["start"]["sigma0_sq"] == pytest.approx(conf.ae.sigma0_sq)

@@ -33,6 +33,12 @@ def tiny_ae(version: str) -> list[str]:
     ]
 
 
+def tiny_vae(version: str) -> list[str]:
+    """``tiny_ae`` of the VAE (``m18/vae_t128``): the same small run."""
+    kept = [o for o in tiny_ae(version) if not o.startswith("+experiment")]
+    return ["+experiment=m18/vae_t128", *kept]
+
+
 @pytest.fixture(autouse=True)
 def _no_gil_check(monkeypatch):
     monkeypatch.setattr(loop, "assert_free_threaded", lambda where: None)
@@ -199,3 +205,84 @@ class TestPosthoc:
 def _root(overrides: list[str]) -> Path:
     version = next(o for o in overrides if o.startswith("data.tours.data_version="))
     return Path(os.environ[DATA_ENV]) / version.split("=", 1)[1]
+
+
+VAE_KEYS = {
+    "bpd",
+    "loss",
+    "kl",
+    "rate_bpd",
+    "sigma",
+    "sigma_star",
+    "sigma_gap",
+    "stack_mse",
+} | {f"kl_q{c}" for c in (0, 10, 25, 50, 75, 90, 100)}
+
+
+@pytest.fixture
+def vae_tours(tmp_path, monkeypatch) -> list[str]:
+    root = smooth_tours(tmp_path / "data" / "d", {"A": 120, "B": 80, "H": 200})
+    monkeypatch.setenv(DATA_ENV, str(root.parent))
+    return tiny_vae(root.name)
+
+
+class TestVAE:
+    @pytest.mark.parametrize("sampling", ["stream", "pool"])
+    def test_a_run_writes_the_rows_of_the_vae(self, tmp_path, vae_tours, sampling):
+        out = tmp_path / "run"
+        extra = [f"data.tours.sampling={sampling}", "data.tours.pool=5"]
+        assert _run(out, [*vae_tours, *extra]) == Exit.OK
+        rows = _lines(out / "evals.jsonl")
+        assert [(r["t"], r["split"]) for r in rows] == [(0.5, "val"), (1.0, "val")]
+        pool = {"pool_bpd", "pool_stack_mse"} if sampling == "pool" else set()
+        assert set(rows[-1]) == {"t", "frame", "split"} | VAE_KEYS | pool
+        assert all(math.isfinite(rows[-1][k]) for k in VAE_KEYS | pool)
+        logged = _lines(out / "stream.jsonl")
+        assert logged and all(
+            r[k] is not None for r in logged for k in ("loss", "bpd", "kl", "log_sigma")
+        )
+        base = json.loads((out / "baselines.json").read_text())
+        assert set(base) == {"val", "test"} and "bpd" in base["val"]
+        assert base["val"]["sigma"] == pytest.approx(math.sqrt(0.0743143460753926))
+        head = ckpt.load_eval(out / "ckpt" / "00001.0.pt", rebuild(compose(vae_tours)))
+        assert head["t"] == 1.0
+        result = json.loads((out / "result.json").read_text())
+        assert result["objective"] == rows[-1]["bpd"]
+
+    def test_resume_equals_uninterrupted(self, tmp_path, vae_tours):
+        """The noise's generator is in the resume checkpoint: the resumed run
+        draws what the whole run drew."""
+        o = [*vae_tours, "ctl.resume_every=0.2"]
+        whole, parts = tmp_path / "whole", tmp_path / "parts"
+        assert _run(whole, o) == Exit.OK
+        job = local_job(o, parts)
+        assert loop.run(_Stopping(13), job, attempt=1) == Exit.STOPPED
+        (parts / "stop.request").unlink()
+        assert loop.run(PROGRAM, job, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (whole / name).read_bytes() == (parts / name).read_bytes(), name
+
+    def test_posthoc_reads_the_code_mu(self, tmp_path, vae_tours):
+        """The posthoc of a VAE's run: M17's evaluation of mu flattened and
+        the VAE's own decoder at mu; the ViT before learning (unit 0) is the
+        VAE's untrained mu."""
+        runs = tmp_path / "runs"
+        assert _run(runs / "b" / "parent", vae_tours) == Exit.OK
+        run_dir = TestPosthoc()._job(
+            runs,
+            vae_tours,
+            "post",
+            "posthoc",
+            parent="b/parent",
+            decode={"windows": 16, "steps": 3, "ckpts": "last"},
+        )
+        assert (
+            video_main(["--job", str(run_dir / "job.json"), "--attempt", "1"])
+            == Exit.OK
+        )
+        lines = _lines(run_dir / "post" / "decode" / "metrics.jsonl")
+        assert [(x["t"], x["split"]) for x in lines] == [(1.0, "val"), (1.0, "test")]
+        own = {"stack_mse", "loss", "own_recon", "own_recon_blur"}
+        m17 = {"recon", "recon_blur", "dyn_1/copy_1", "rank", "z_spread"}
+        assert own | m17 <= set(lines[-1])
+        assert all(math.isfinite(lines[-1][k]) for k in own | m17)

@@ -22,8 +22,9 @@ directory, which the worker copies to the NAS with the rest; the job's
 ``code``. ``result.json``'s ``final`` has ``"decode"``: the last line of each
 split. There is no objective.
 
-For a parent of the program ``"ae"`` (M18) it runs ``vae.eval.AEEval``
-(the same units, with the autoencoder's own decoder). For a parent of the
+For a parent of the program ``"ae"`` or ``"vae"`` (M18) it runs
+``vae.eval.AEEval`` (the same units, with the autoencoder's own decoder; the
+VAE's code is its posterior mean). For a parent of the
 packed layout (M17) the job runs ``measure.encoder_eval``
 instead: unit 0 the yardsticks (the pixel PCA and the ViT before learning,
 ``baselines.jsonl``), then each checkpoint (``"decode": {"ckpts": "last"}``
@@ -148,9 +149,9 @@ class Posthoc:
             parent = Parent.read(parent_dir(job, run_dir), device=conf.device)
         base = conf if parent is None else parent.conf
         packed = base.vision
-        if base.program == "ae":
+        if base.program in ("ae", "vae"):
             t = base.data.tours
-            assert t is not None  # the ae program streams Walking Tours
+            assert t is not None  # the ae and vae programs stream Walking Tours
             self._decoding = AEEval(
                 parent,
                 base,

@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import replace
 
@@ -7,7 +8,14 @@ import torch
 from exp.lib.optim import fan_ins
 from exp.video.compose import compose
 from exp.video.jepa.vit import Block, build_vision, patchify_tubelets
-from exp.video.vae.modules import TokenDecoder, build_ae, unpatchify_tubelets
+from exp.video.schema import AEConf
+from exp.video.vae.modules import (
+    TokenDecoder,
+    build_ae,
+    build_vae,
+    unpatchify_tubelets,
+)
+from tests.video.packed import packed_conf, stacks
 
 
 def _m18():
@@ -158,3 +166,86 @@ class TestBuildAE:
         assert lo * (1 - 1e-3) <= ms <= hi * (1 + 1e-5)
         bound = float(w.mean(0).norm()) * dim**0.5
         assert abs(float(z.mean())) <= bound * (1 + 1e-5)
+
+
+def _vae(depth: int = 4, sigma0_sq: float = 0.07):
+    conf = compose(
+        [
+            "+experiment=m18/vae_t128",
+            "device=cpu",
+            f"ae.decoder_depth={depth}",
+            f"ae.sigma0_sq={sigma0_sq}",
+        ]
+    )
+    ae = compose(
+        [
+            "+experiment=m18/ae_t128",
+            "device=cpu",
+            f"ae.decoder_depth={depth}",
+            "optim_vision.lr=1e-3",
+        ]
+    )
+    return conf, ae
+
+
+class TestBuildVAE:
+    def test_it_starts_as_the_autoencoder_with_the_priors_variance(self):
+        """Every weight of the autoencoder of the same seed and depth is the
+        VAE's, the encoder's last map widened from d to 2 d: its first d rows
+        (mu) are the autoencoder's, the last d (log s^2) 0, so the untrained
+        posterior is N(code, I); log sigma starts at 1/2 ln sigma_0^2. No RNG
+        is drawn beyond the autoencoder's."""
+        conf, base = _vae(sigma0_sq=0.0625)
+        before = torch.random.get_rng_state()
+        vae = build_vae(conf, seed=100)
+        assert torch.equal(torch.random.get_rng_state(), before)
+        ae = build_ae(base, seed=100)
+        got = dict(vae.vision.encoder.named_parameters())
+        for name, p in ae.vision.encoder.named_parameters():
+            if name.endswith("out.weight") or name.endswith("out.bias"):
+                d = len(p)
+                assert torch.equal(got[name][:d], p), name
+                assert not got[name][d:].any(), name
+                assert len(got[name]) == 2 * d
+            else:
+                assert torch.equal(got[name], p), name
+        for (a, p), (b, q) in zip(
+            vae.decoder.named_parameters(), ae.decoder.named_parameters(), strict=True
+        ):
+            assert a == b and torch.equal(p, q)
+        assert float(vae.log_sigma) == pytest.approx(math.log(0.25))
+        assert vae.code_shape == (128, 8)
+
+    def test_the_posterior_of_a_stack(self):
+        """On a small ViT: mu is the autoencoder's code, log s^2 is 0, and
+        the VAE's g(mu) is the autoencoder's g(f(x))."""
+        conf = replace(
+            packed_conf("bp", token_dim=4),
+            program="vae",
+            ae=AEConf(decoder_depth=1, sigma0_sq=0.1),
+        )
+        vae = build_vae(conf, seed=3)
+        ae = build_ae(replace(conf, program="ae"), seed=3)
+        x = stacks(2)
+        with torch.no_grad():
+            mu, logvar = vae.posterior(x)
+            assert torch.equal(mu, ae.code(x)) and torch.equal(vae.code(x), mu)
+            assert mu.shape == (2, *vae.code_shape) and not logvar.any()
+            assert torch.equal(vae(x), ae(x))
+
+    def test_log_sigma_steps_by_eta_and_the_head_by_eta_over_its_width(self):
+        """``scale=fan_in``: log sigma, held by LogSigma itself, has fan-in 1
+        (a vector: the step eta); the widened head keeps the fan-in 256 of
+        the encoder's last map."""
+        conf, _ = _vae()
+        vae = build_vae(conf, seed=100)
+        n = fan_ins(*vae.named().values())
+        assert n[vae.log_sigma] == 1
+        assert n[vae.head.weight] == 256 and n[vae.head.bias] == 1
+        assert set(n) == set(vae.parameters())
+
+    def test_it_needs_sigma0(self):
+        conf, _ = _vae()
+        assert conf.ae is not None
+        with pytest.raises(ValueError, match="sigma0_sq"):
+            build_vae(replace(conf, ae=replace(conf.ae, sigma0_sq=None)), seed=0)

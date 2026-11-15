@@ -15,7 +15,7 @@ from exp.video.schema.vision import VisionConf
 
 __all__ = ["PHASES", "PROGRAMS", "TASKS", "CtlConf", "RunConf", "TimeConf"]
 
-PROGRAMS = ("dynamics", "vision", "joint", "ae")
+PROGRAMS = ("dynamics", "vision", "joint", "ae", "vae")
 TASKS = ("online", "offline", "baselines", "bench", "posthoc", "prep")
 PHASES = ("explore", "confirm")
 _DEVICE = re.compile(r"cpu|cuda(:\d+)?")
@@ -51,13 +51,14 @@ class CtlConf:
 @dataclass(kw_only=True)
 class RunConf:
     """One run: ``program`` (the dynamics of M14, the vision of M15, both of
-    M16, or the autoencoder of M18) doing ``task`` on the stream ``data`` for
-    ``seconds`` of virtual time.
+    M16, or the autoencoder and the VAE of M18) doing ``task`` on the stream
+    ``data`` for ``seconds`` of virtual time.
 
     A program needs its subtrees: ``dynamics`` for ``"dynamics"`` and
     ``"joint"``; ``vision`` and ``optim_vision`` for ``"vision"``,
-    ``"joint"`` and ``"ae"`` (the encoder of the autoencoder is the vision's);
-    ``ae`` for ``"ae"``; ``offline`` for ``task="offline"``. ``optim`` is the
+    ``"joint"``, ``"ae"`` and ``"vae"`` (the encoder of the autoencoder is
+    the vision's); ``ae`` for ``"ae"`` and ``"vae"`` (with ``ae.sigma0_sq``
+    for ``"vae"``); ``offline`` for ``task="offline"``. ``optim`` is the
     optimizer of the dynamics, ``optim_vision`` that of the encoder.
     """
 
@@ -89,9 +90,9 @@ class RunConf:
             raise ValueError(f"device must be 'cpu' or 'cuda[:i]', not {self.device!r}")
         needs = {
             "dynamics": self.program in ("dynamics", "joint"),
-            "vision": self.program in ("vision", "joint", "ae"),
-            "optim_vision": self.program in ("vision", "joint", "ae"),
-            "ae": self.program == "ae",
+            "vision": self.program in ("vision", "joint", "ae", "vae"),
+            "optim_vision": self.program in ("vision", "joint", "ae", "vae"),
+            "ae": self.program in ("ae", "vae"),
             "offline": self.task == "offline",
         }
         for name, needed in needs.items():
@@ -99,6 +100,8 @@ class RunConf:
                 raise ValueError(
                     f"program {self.program!r} with task {self.task!r} needs {name}"
                 )
+        if self.program == "vae" and (self.ae is None or self.ae.sigma0_sq is None):
+            raise ValueError("program 'vae' needs ae.sigma0_sq")
         v, m = self.vision, self.measure
         if v is not None and v.layout == "packed" and max(m.horizons) > m.steps:
             # The windows of the evaluation have measure.steps stacks after the

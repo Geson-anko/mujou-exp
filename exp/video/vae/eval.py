@@ -1,7 +1,9 @@
 r"""The evaluation of the autoencoder's checkpoints afterwards (M18,
-``task=posthoc`` of a run of the program ``"ae"``, and ``task=baselines``):
-M17's evaluation of a code (``measure.encoder_eval``), with the autoencoder's
-own decoder beside it.
+``task=posthoc`` of a run of the program ``"ae"`` or ``"vae"``, and
+``task=baselines``): M17's evaluation of a code (``measure.encoder_eval``),
+with the autoencoder's own decoder beside it. The VAE's code is its posterior
+mean $\mu$ (``modules.VAEModules.code``) and its own decoder is drawn at it,
+$g(\mu)$; the lines are named ``code=ae`` all the same.
 
 The units, a step each (``AEEval.step``), into the directory ``out``:
 
@@ -56,7 +58,7 @@ from exp.video.vae.measures import (
     stack_errors,
     training_moments,
 )
-from exp.video.vae.modules import build_ae
+from exp.video.vae.modules import build_modules
 
 __all__ = ["AEEval"]
 
@@ -112,7 +114,7 @@ class AEEval:
             config = json.loads((out / "config.json").read_text())
             write_json(out / "config.json", config | self._config(ckpts))
         self._dev = torch.device(conf.device)
-        self._mods = build_ae(conf, seed=conf.seed)
+        self._mods = build_modules(conf, seed=conf.seed)
         self._stacks = held_out_stacks(conf, root)
         moments = training_moments(conf, root)  # the run's m, whatever windows
         self._mean = moments.mean.float().to(self._dev)
