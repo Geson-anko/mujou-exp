@@ -14,6 +14,7 @@ from exp.video.diag.m18_sweep_tables import (
     first_pass,
     last_t,
     load,
+    report,
     scaled,
     select,
 )
@@ -146,3 +147,25 @@ def test_facts_reads_r_u_and_the_overfit_check(tmp_path: Path):
     g = facts(runs, ("adamw", 1e-3, "pool", 2), vit)
     assert g.overfit is False  # diverged, though 0 is below the bar
     assert facts(runs, ("adamw", 1e-2, "stream", 2), vit).state == "無い"
+
+
+def test_report_carries_the_selected_point_to_the_decoder_axis(tmp_path: Path):
+    """One eligible stream run is the selected point; its depth 8 run lands in
+    the decoder axis's table, and a depth with a lower recon_blur is picked."""
+    base = _run(tmp_path, "m18-ae-base-v1", "base", {})
+    line = {"split": "val", "code": "init", "recon_blur": 0.318, "dyn_1/copy_1": 0.653}
+    (base / "post/decode/baselines.jsonl").write_text(json.dumps(line) + "\n")
+    for batch, depth, rb in (("m18-sweep-v1", 2, 0.2), ("m18-dec-v1", 8, 0.1)):
+        st = _run(
+            tmp_path, batch, f"s{depth}", _conf("adamw", 1e-4, "stream", depth=depth)
+        )
+        row = {"t": 1800.0, "split": "val", "stack_mse": 0.5}
+        (st / "evals.jsonl").write_text(json.dumps(row) + "\n")
+        po = _run(
+            tmp_path, batch.replace("-v1", "-post-v1"), f"p{depth}", {}, [st.name]
+        )
+        m = {"t": 1800.0, "split": "val", "recon_blur": rb, "dyn_1/copy_1": 0.4}
+        (po / "post/decode/metrics.jsonl").write_text(json.dumps(m) + "\n")
+    out = report(tmp_path)
+    assert "adamw、lr = 0.0001\n" in out
+    assert "adamw、lr = 0.0001 で選んだ深さ: 8" in out

@@ -373,7 +373,7 @@ def report(root: Path) -> str:
     if pick is None:
         out.append("η の点を選べないので無い")
         return "\n".join(out)
-    o, lr = pick[0]
+    o, lr = pick
     rows, cands = [], []
     for dep in DEPTHS:
         st = facts(runs, (o, lr, "stream", dep), vit)
