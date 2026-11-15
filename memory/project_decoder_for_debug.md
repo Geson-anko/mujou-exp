@@ -10,3 +10,5 @@ metadata:
 **Why:** デコーダはデバッグのためのもので、本来のシステムには取り込まない前提（2026-11-02、ユーザー）。mujou の中で同時に学ぶのは疑問とされた。
 
 **How to apply:** M13 の再構成のノード（`nodes.Reconstruct`、`ModelConfig.recon`）を M15・M16 の学習に入れない。再構成の評価は run の外で、チェックポイントごとに行う。数値の条件は見た目と合うことを確かめてから使う（[[feedback-metrics-need-qualitative-check]]）。方針の全体は [[project-dynamics-only]]。
+
+**例外（2026-11-15、ユーザー）**: VAE・自己符号化器（M18）のデコーダは生成モデルの一部で、エンコーダと同じくシステムの中で学ぶ（のちに PC-ALM でも）。デコーダを外に出していたのは、JEPA が Decoder Free の手法だったため。デコーダは軽い形（エンコーダより小さく）に収める。大きいと、再構成の誤差がエンコーダではなくデコーダの性能で下がりうるため。posthoc の後から学ぶデコーダ（`recon_blur` の物差し）は、M17 と比べるために別に残す。[[project-vae-stream-next]]

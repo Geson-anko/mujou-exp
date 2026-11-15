@@ -14,7 +14,7 @@
 - [合成動画を先に](project_synthetic_first.md) — 2026-11-02、EgoDex は一旦止め、簡単にした合成動画で正確な予測の土台を作る（M13）
 - [M13 の知見](project_m13_findings.md) — w=1 のエンコーダは当てにくい玉を捨てる、再構成の項で保てる、オフラインの上限は 10 フレーム先 0.59 倍（未達）
 - [動力学と視覚を分ける](project_dynamics_only.md) — 2026-11-02、M13 を中断。M14 動力学だけ → M15 JEPA → M16 同時の学習（動力学はエンコーダに credit を送らない）
-- [デコーダはデバッグ用](project_decoder_for_debug.md) — 再構成の評価のデコーダは各チェックポイントに後から学ぶ。システムにも mujou の実行にも入れない
+- [デコーダはデバッグ用](project_decoder_for_debug.md) — JEPA ではデコーダを各チェックポイントに後から学ぶ。例外: VAE（M18）のデコーダは軽い形でシステムの中で学ぶ（2026-11-15）
 - [実動画のデータ](project_video_data.md) — Walking Tours（CC BY 4.0）に決めた。研究は非商用なので CC BY-NC も可
 - [M16 の PC-ALM は窓のエピソード](project_m16_pc_window_episodes.md) — 2026-11-04 決定、0.6 s ごとの窓で学ぶ PC-ALM を M16 のオンラインの PC-ALM とする。速さは学習が現実的な時間で終わること
 - [夢は必須の評価](project_dream_required.md) — 2026-11-11 決定、同時の学習の run は posthoc が毎チェックポイントで 1 フレームと 16 フレームから 150 フレームの夢を計算する。報告の動画は PC-ALM だけでよい
@@ -29,7 +29,7 @@
 - [質問は最後にまとめる](feedback_questions_at_end.md) — 推奨案で進み、質問は区切りにまとめて出す
 - [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
 - [指標は定性評価と照合](feedback_metrics_need_qualitative_check.md) — 予測の数値はデコードした画像と合うか確かめてから条件に使う
-- [実時間はやめ、学習が終わる速さを守る](feedback_realtime_speed.md) — 2026-11-05、実時間の最適化は諦めた（5 更新/フレームで PC-ALM が不安定）。確認の run が 4090 で数時間で終わること
+- [実時間の目標](feedback_realtime_speed.md) — 2026-11-05 に実時間をやめたが、2026-11-15 に M18 からリアルタイムを目指すと決めた（B 倍の B では B 倍の時間を許す）
 - [手法はシンプルで基礎的に](feedback_simple_fundamental.md) — 2026-11-12、理論の裏付けのないヒューリスティック（後付けの正規化・罰・拡張）は入れない。自明な解を目的の式から導出で確かめる
 - [ソースを tmp に置かない](feedback_no_sources_in_tmp.md) — 解析・較正のスクリプトは必ずリポジトリへ（tmp は消える）
 - [手法の前に学習の設定](feedback_learn_setting_first.md) — 2026-11-13、うまくいかないときは optimizer（SGD・RMSProp・Adam）と学習率を 10 倍刻みで掃引して損失が下がる条件を先に探す
