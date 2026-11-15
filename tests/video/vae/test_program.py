@@ -264,8 +264,9 @@ class TestVAE:
 
     def test_posthoc_reads_the_code_mu(self, tmp_path, vae_tours):
         """The posthoc of a VAE's run: M17's evaluation of mu flattened and
-        the VAE's own decoder at mu; the ViT before learning (unit 0) is the
-        VAE's untrained mu."""
+        the VAE's own decoder at mu, each line's keys finite (that the ViT
+        before learning of unit 0 is the VAE's untrained mu is
+        ``test_modules.py``'s)."""
         runs = tmp_path / "runs"
         assert _run(runs / "b" / "parent", vae_tours) == Exit.OK
         run_dir = TestPosthoc()._job(

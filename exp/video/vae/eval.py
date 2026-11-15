@@ -22,7 +22,9 @@ The units, a step each (``AEEval.step``), into the directory ``out``:
   restoration and no completion, which need a predictor), and of the
   autoencoder itself on the held-out stacks of ``measures.held_out_stacks``
   (the first stack of each of the same windows): ``stack_mse`` and ``loss``
-  (``measures.stack_errors``), and ``own_recon``, ``own_recon_blur``, the
+  (``measures.stack_errors``; of a VAE too, ``loss`` is $\ell_{AE}$ of
+  $g(\mu)$, not the $-\mathcal L$ named ``loss`` in the run's
+  ``evals.jsonl`` and ``stream.jsonl``), and ``own_recon``, ``own_recon_blur``, the
   last frame of $g(f(x))$ against the true one as ``recon`` and
   ``recon_blur`` measure the decoder learned afterwards (over the error of
   the mean last frame of the training stacks); the pictures of

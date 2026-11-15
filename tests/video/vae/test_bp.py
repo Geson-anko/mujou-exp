@@ -172,7 +172,9 @@ class TestVAEBP:
         for p_new, p_old, gr in zip(mods.parameters(), before.parameters(), grads):
             torch.testing.assert_close(p_new, p_old - rate * gr, rtol=1e-5, atol=1e-7)
 
-    def test_build_needs_bp_and_binds_every_parameter_with_fan_in(self):
+    def test_build_needs_bp_and_builds_under_rmsprop_fan_in(self):
+        """``learner=pc`` is refused; under RMSProp with ``scale=fan_in`` the
+        net builds (each parameter's fan-in: ``test_modules.py``)."""
         conf = replace(_vae_conf(), learner=LearnerConf(kind="pc"))
         with pytest.raises(ValueError, match="learner=bp"):
             build_vae_net(conf)

@@ -745,8 +745,8 @@ def _frames(conf: RunConf) -> FrameStreams | StackStreams:
     t = conf.data.tours
     if t.sampling in ("shuffle", "pool"):
         raise ValueError(
-            f"data.tours.sampling {t.sampling!r} is of the autoencoder "
-            "(program 'ae') only"
+            f"data.tours.sampling {t.sampling!r} is of the autoencoder and "
+            "the VAE (programs 'ae' and 'vae') only"
         )
     if v.layout == "packed" and t.sampling == "iid":
         return IIDStackedTourFrames(
