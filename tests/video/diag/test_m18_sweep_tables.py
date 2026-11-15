@@ -12,6 +12,7 @@ from exp.video.diag.m18_sweep_tables import (
     Candidate,
     facts,
     first_pass,
+    last_t,
     load,
     scaled,
     select,
@@ -24,31 +25,25 @@ def _c(
     *,
     u: bool | None = True,
     diverged: bool = False,
-    overfit: bool | None = None,
 ) -> Candidate:
-    return Candidate(key, rb, u, diverged, overfit)
+    return Candidate(key, rb, u, diverged)
 
 
 class TestSelect:
-    def test_the_overfit_gate_applies_when_a_pool_arm_passes(self):
-        """A lower recon_blur whose pool arm fails loses to a passing one."""
-        cands = [_c("a", 0.1, overfit=False), _c("b", 0.3, overfit=True)]
-        cands += [_c("c", 0.2, overfit=True)]
-        assert select(cands) == ("c", True)
-
-    def test_without_a_passing_pool_arm_the_code_decides_alone(self):
-        cands = [_c("a", 0.3, overfit=False), _c("b", 0.2, overfit=None)]
-        assert select(cands) == ("b", False)
+    def test_the_lowest_recon_blur_wins_in_any_order(self):
+        cands = [_c("a", 0.3), _c("b", 0.1), _c("c", 0.2)]
+        assert select(cands) == "b"
+        assert select(cands[::-1]) == "b"
 
     def test_a_diverged_run_or_one_without_u_is_not_eligible(self):
         cands = [
-            _c("a", 0.01, diverged=True, overfit=True),
-            _c("b", 0.02, u=False, overfit=True),
+            _c("a", 0.01, diverged=True),
+            _c("b", 0.02, u=False),
             _c("c", 0.03, u=None),
             _c("d", None),
             _c("e", 0.5),
         ]
-        assert select(cands) == ("e", False)
+        assert select(cands) == "e"
         assert select(cands[:4]) is None
         assert select([]) is None
 
@@ -81,6 +76,17 @@ def test_scaled_follows_a_path_in_lr_times_t():
     t = 1800.0
     want = value(lr, t)
     assert scaled(rows, value(ref, 0.0), t * lr / ref, "m") == pytest.approx(want)
+
+
+def test_last_t_skips_non_finite_values_and_other_splits():
+    rows = [
+        {"t": 60.0, "split": "val", "m": 1.0},
+        {"t": 120.0, "split": "val", "m": float("nan")},
+        {"t": 180.0, "split": "test", "m": 0.5},
+        {"t": 240.0, "split": "val", "m": float("inf")},
+    ]
+    assert last_t(rows, "m") == 60.0
+    assert last_t(rows[1:], "m") is None
 
 
 def _run(root: Path, batch: str, rid: str, config: dict, after=()) -> Path:
@@ -126,7 +132,7 @@ def test_facts_reads_r_u_and_the_overfit_check(tmp_path: Path):
     (st / "evals.jsonl").write_text(json.dumps(row) + "\n")
     po = _run(tmp_path, "m18-sweep-post-v1", "b", {}, [st.name])
     m = {"t": 1800.0, "split": "val", "recon": 0.3, "recon_blur": 0.2}
-    m |= {"dyn_1/copy_1": 0.4, "rank": 12.0}
+    m |= {"dyn_1/copy_1": 0.4, "rank": 12.0, "own_recon": 0.6, "own_recon_blur": 0.5}
     (po / "post/decode/metrics.jsonl").write_text(json.dumps(m) + "\n")
     pl = _run(tmp_path, "m18-sweep-v1", "c", _conf("adamw", 1e-3, "pool"))
     (pl / "status.json").write_text(json.dumps({"state": "diverged"}))
@@ -136,6 +142,7 @@ def test_facts_reads_r_u_and_the_overfit_check(tmp_path: Path):
     f = facts(runs, ("adamw", 1e-3, "stream", 2), vit)
     assert (f.end, f.r, f.u, f.overfit) == (0.1, True, True, None)
     assert (f.recon, f.recon_blur, f.dyn, f.rank) == (0.3, 0.2, 0.4, 12.0)
+    assert (f.own, f.own_blur) == (0.6, 0.5)
     g = facts(runs, ("adamw", 1e-3, "pool", 2), vit)
     assert g.overfit is False  # diverged, though 0 is below the bar
     assert facts(runs, ("adamw", 1e-2, "stream", 2), vit).state == "無い"

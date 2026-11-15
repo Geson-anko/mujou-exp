@@ -15,8 +15,10 @@ The criteria are those of stage 1 (``m18_tables``), at t = 1800 s on val: R
 (the stream's ``stack_mse`` < ``R_BAR``), U (the posthoc ``recon_blur`` and
 ``dyn_1/copy_1`` both below the untrained ViT's), the overfit check (the pool
 arm's ``pool_stack_mse`` < ``POOL_BAR``). ``select`` is the rule written
-before the runs: of the stream runs that did not diverge and hold U, those
-whose pool arm passes if any does, the lowest posthoc ``recon_blur``.
+before the runs (revised before the results to drop the overfit gate): of
+the stream runs that did not diverge and hold U, the lowest posthoc
+``recon_blur``; the overfit check reads the system's decoder, not the code,
+and is shown beside it.
 
 ``scaled`` reads a run of a rate below the stage 1 rate against the stage 1
 run of the same optimizer and arm at the time ``t * lr / lr_ref``: if a step
@@ -29,12 +31,21 @@ Run from the repository root: ``python -m exp.video.diag.m18_sweep_tables
 
 import argparse
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from exp.video.diag.m17_tables import at, fmt, jl
-from exp.video.diag.m18_tables import POOL_BAR, R_BAR, T_END, below, both, mark
+from exp.video.diag.m18_tables import (
+    CKPTS,
+    POOL_BAR,
+    R_BAR,
+    T_END,
+    below,
+    both,
+    mark,
+)
 
 # The stage 1 rates (per frame): the geometric mean of the window of the
 # Adam family, and SGD's 1 / (1.02 rho_max) of stage 0's Hessian.
@@ -124,6 +135,8 @@ class Facts(NamedTuple):
     r: bool | None
     u: bool | None
     overfit: bool | None
+    own: float | None  # the system's decoder g: own_recon, own_recon_blur
+    own_blur: float | None
 
 
 def facts(runs: Runs, key: Key, vit: dict[str, Any]) -> Facts:
@@ -131,7 +144,7 @@ def facts(runs: Runs, key: Key, vit: dict[str, Any]) -> Facts:
     line ``vit``."""
     d = runs.train.get(key)
     if d is None:
-        return Facts("無い", *(None,) * 9)
+        return Facts("無い", *(None,) * 11)
     state = json.loads((d / "status.json").read_text())["state"]
     dv = state == "diverged"
     ev = jl(d / "evals.jsonl")
@@ -150,35 +163,42 @@ def facts(runs: Runs, key: Key, vit: dict[str, Any]) -> Facts:
     )
     overfit = below(pool, POOL_BAR, diverged=dv) if key[2] == "pool" else None
     r = below(end, R_BAR, diverged=dv)
-    return Facts(state, end, pool, post("recon"), rb, dyn, post("rank"), r, u, overfit)
+    return Facts(
+        state,
+        end,
+        pool,
+        post("recon"),
+        rb,
+        dyn,
+        post("rank"),
+        r,
+        u,
+        overfit,
+        post("own_recon"),
+        post("own_recon_blur"),
+    )
 
 
 class Candidate(NamedTuple):
-    """A stream run for ``select``: its posthoc ``recon_blur`` and U, whether
-    it diverged, and its pool arm's overfit verdict (None without one)."""
+    """A stream run for ``select``: its posthoc ``recon_blur`` and U, and
+    whether it diverged."""
 
     key: Any
     recon_blur: float | None
     u: bool | None
     diverged: bool
-    overfit: bool | None
 
 
-def select(cands: Sequence[Candidate]) -> tuple[Any, bool] | None:
+def select(cands: Sequence[Candidate]) -> Any:
     """The rule written before the runs: of the candidates that did not
-    diverge, hold U and have a ``recon_blur``, those whose pool arm passes if
-    any does, the one of the lowest ``recon_blur``; with whether the overfit
-    gate was applied. None if no candidate is eligible."""
+    diverge, hold U and have a ``recon_blur``, the key of the one of the
+    lowest ``recon_blur``. None if no candidate is eligible."""
     ok = [
-        (c.recon_blur, c)
+        (c.recon_blur, c.key)
         for c in cands
         if not c.diverged and c.u is True and c.recon_blur is not None
     ]
-    passed = [(v, c) for v, c in ok if c.overfit is True]
-    pick = passed or ok
-    if not pick:
-        return None
-    return min(pick, key=lambda vc: vc[0])[1].key, bool(passed)
+    return min(ok, key=lambda vk: vk[0])[1] if ok else None
 
 
 def first_pass(rates: Sequence[float], verdicts: Sequence[bool | None]) -> float | None:
@@ -201,6 +221,19 @@ def scaled(rows: Sequence[dict[str, Any]], t0: float | None, t: float, key: str)
         if ta <= t <= tb:
             return va + (vb - va) * (t - ta) / (tb - ta)
     return None
+
+
+def last_t(rows: Sequence[dict[str, Any]], key: str) -> float | None:
+    """The last time of val with a finite ``key`` (None if there is none): how
+    far a run that diverged got."""
+    ts = [
+        r["t"]
+        for r in rows
+        if r.get("split") == "val"
+        and isinstance(r.get(key), (int, float))
+        and math.isfinite(r[key])
+    ]
+    return max(ts) if ts else None
 
 
 # --- the tables -----------------------------------------------------------------
@@ -263,7 +296,7 @@ def report(root: Path) -> str:
                 ]
             )
             dv = st.state == "diverged"
-            cands.append(Candidate((o, lr), st.recon_blur, st.u, dv, po.overfit))
+            cands.append(Candidate((o, lr), st.recon_blur, st.u, dv))
     head = ["opt", "lr", "状態（stream / pool）", "stack_mse", "R", "recon"]
     head += ["recon_blur", "dyn_1/copy_1", "rank", "U", "pool_stack_mse", "過学習"]
     out.append(_table(head, rows))
@@ -273,13 +306,8 @@ def report(root: Path) -> str:
     if pick is None:
         out.append("選べない（条件を満たすストリームの run が無い）")
     else:
-        (o, lr), gated = pick
-        gate = (
-            "過学習の確かめを通った点の中"
-            if gated
-            else "過学習の確かめを通った点が無い"
-        )
-        out.append(f"{o}、lr = {lr:g}（{gate}）")
+        o, lr = pick
+        out.append(f"{o}、lr = {lr:g}")
 
     out += ["", "## 過学習の確かめを最初に通る学習率（予測の判定用）", ""]
     rows = []
@@ -308,6 +336,39 @@ def report(root: Path) -> str:
     head = ["opt", "lr", "腕", "値", "1800 秒の値", "段 1 の時刻 s", "段 1 の値"]
     out.append(_table(head, rows))
 
+    out += [
+        "",
+        "## 経過（val、run の evals.jsonl、過学習の確かめは pool_stack_mse）",
+        "",
+    ]
+    times = (60.0, *CKPTS)
+    rows = []
+    for o in OPTS:
+        for lr in _rates(o):
+            for s, k in (("stream", "stack_mse"), ("pool", "pool_stack_mse")):
+                d = runs.train.get((o, lr, s, DEPTH_REF))
+                ev = jl(d / "evals.jsonl") if d else []
+                last = last_t(ev, k)
+                rows.append(
+                    [o, f"{lr:g}", s, fmt(_t0(d, k))]
+                    + [fmt(at(ev, t, "val", k)) for t in times]
+                    + ["–" if last is None else f"{last:.0f}"]
+                )
+    head = ["opt", "lr", "腕", "時刻 0", *(f"{t:.0f}" for t in times)]
+    out.append(_table([*head, "値のある最後の t"], rows))
+
+    out += ["", "## checkpoint ごとの posthoc（ストリーム、val）", ""]
+    keys = ("recon", "recon_blur", "dyn_1/copy_1", "rank", "own_recon")
+    rows = []
+    for o in OPTS:
+        for lr in _rates(o):
+            p = runs.post.get((o, lr, "stream", DEPTH_REF))
+            m = jl(p / "post/decode/metrics.jsonl") if p else []
+            for t in CKPTS:
+                rows.append([o, f"{lr:g}", f"{t:.0f}"])
+                rows[-1] += [fmt(at(m, t, "val", key)) for key in keys]
+    out.append(_table(["opt", "lr", "t", *keys], rows))
+
     out += ["", "## デコーダの大きさ（val、1800 秒）", ""]
     if pick is None:
         out.append("η の点を選べないので無い")
@@ -327,16 +388,20 @@ def report(root: Path) -> str:
                 fmt(st.rank),
                 mark(st.u),
                 fmt(st.end),
+                fmt(st.own),
+                fmt(st.own_blur),
                 fmt(po.pool),
                 mark(po.overfit),
             ]
         )
-        cands.append(Candidate(dep, st.recon_blur, st.u, st.state == "diverged", None))
+        cands.append(Candidate(dep, st.recon_blur, st.u, st.state == "diverged"))
     head = ["深さ", "状態（stream / pool）", "recon", "recon_blur", "dyn_1/copy_1"]
     head += [
         "rank",
         "U",
         "stack_mse（参考）",
+        "own_recon（参考）",
+        "own_recon_blur（参考）",
         "pool_stack_mse（参考）",
         "過学習（参考）",
     ]
@@ -344,8 +409,37 @@ def report(root: Path) -> str:
     dpick = select(cands)
     out += [
         "",
-        f"{o}、lr = {lr:g} で選んだ深さ: {'選べない' if dpick is None else dpick[0]}",
+        f"{o}、lr = {lr:g} で選んだ深さ: {'選べない' if dpick is None else dpick}",
     ]
+
+    out += [
+        "",
+        "## デコーダの大きさの checkpoint ごとの posthoc（ストリーム、val）",
+        "",
+    ]
+    keys = ("recon", "recon_blur", "dyn_1/copy_1", "rank", "own_recon")
+    keys += ("own_recon_blur", "stack_mse")
+    rows = []
+    for dep in DEPTHS:
+        p = runs.post.get((o, lr, "stream", dep))
+        m = jl(p / "post/decode/metrics.jsonl") if p else []
+        for t in CKPTS:
+            rows.append([str(dep), f"{t:.0f}"])
+            rows[-1] += [fmt(at(m, t, "val", key)) for key in keys]
+    out.append(_table(["深さ", "t", *keys], rows))
+
+    out += ["", "## デコーダの大きさの経過（val、run の evals.jsonl）", ""]
+    times = (60.0, *CKPTS)
+    rows = []
+    for dep in DEPTHS:
+        for s, k in (("stream", "stack_mse"), ("pool", "pool_stack_mse")):
+            d = runs.train.get((o, lr, s, dep))
+            ev = jl(d / "evals.jsonl") if d else []
+            rows.append(
+                [str(dep), s, fmt(_t0(d, k))]
+                + [fmt(at(ev, t, "val", k)) for t in times]
+            )
+    out.append(_table(["深さ", "腕", "時刻 0", *(f"{t:.0f}" for t in times)], rows))
     return "\n".join(out)
 
 
