@@ -17,9 +17,8 @@ from exp.video.diag.mean_color_ref import (
     stack_means,
     stack_picture,
     tube_picture,
-    tubelet_means,
 )
-from exp.video.jepa.vit import patchify_tubelets
+from exp.video.measure.mean_color import tubelet_means
 from exp.video.programs.vision import DATA_ENV
 from tests.video.packed import smooth_tours, tiny
 
@@ -38,15 +37,6 @@ def _blocks(colors: torch.Tensor) -> torch.Tensor:
     x = colors.permute(0, 1, 4, 2, 3)  # (n, gt, C, gh, gw)
     x = x.repeat_interleave(TAU, 1).repeat_interleave(P, -2).repeat_interleave(P, -1)
     return x
-
-
-def test_the_tube_code_is_the_mean_of_each_vit_tubelet():
-    """Token t of ``patchify_tubelets`` (its tubelet's (tau, C, p, p) values)
-    averaged over its frames and pixels is the code's colors t C .. t C + C."""
-    x = _x()
-    tok = patchify_tubelets(x, P, TAU).reshape(len(x), -1, TAU, C, P, P)
-    want = tok.mean((2, 4, 5)).flatten(1)
-    torch.testing.assert_close(tubelet_means(x, P, TAU), want, rtol=0, atol=1e-12)
 
 
 def test_the_stack_code_is_the_mean_of_the_tubelet_means():

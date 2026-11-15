@@ -8,7 +8,7 @@ The units, a step each (``AEEval.step``), into the directory ``out``:
 - unit 0, the yardsticks: those of ``EncoderEval`` (the pixel PCA of the last
   frame and the ViT before it learns, ``baselines.jsonl``; the run's encoder
   before it learns is that ViT: ``modules.build_ae``), and the mean color of
-  each tubelet (``diag.mean_color_ref.tubelet_means``, ``tube``,
+  each tubelet (``measure.mean_color.tubelet_means``, ``tube``,
   $D$ = 384), a reference shown beside U and judged by nothing
   (``refs.jsonl``; M17 found that U's reconstruction asks for the mean
   color only, results/m17.md);
@@ -44,8 +44,8 @@ from exp.lib import ckpt
 from exp.lib.blur_error import blur_recon
 from exp.lib.png import tile, write_png
 from exp.lib.rundir import atomic_open, write_json
-from exp.video.diag.mean_color_ref import tubelet_means
 from exp.video.measure.encoder_eval import CKPTS, SHOWN, WINDOWS, EncoderEval
+from exp.video.measure.mean_color import tubelet_means
 from exp.video.measure.posthoc import STEPS, Parent, as_float
 from exp.video.schema.run import RunConf
 from exp.video.vae.loss import LEVELS
@@ -72,7 +72,9 @@ class AEEval:
         conf: The run's config.
         out: The directory of the files.
         root: The local copy of the data.
-        windows: The training windows of the evaluation.
+        windows: The training windows of ``EncoderEval`` (its decoders and
+            yardsticks); the mean stack $m$ of ``stack_mse`` is the run's
+            (``training_moments`` of ``WINDOWS``) whatever it is.
         steps: The steps of each decoder's fit.
         ckpts: ``"all"`` or ``"last"``.
         done: The units done already.
@@ -112,7 +114,7 @@ class AEEval:
         self._dev = torch.device(conf.device)
         self._mods = build_ae(conf, seed=conf.seed)
         self._stacks = held_out_stacks(conf, root)
-        moments = training_moments(conf, root, windows=windows)
+        moments = training_moments(conf, root)  # the run's m, whatever windows
         self._mean = moments.mean.float().to(self._dev)
         self._mean_last = (moments.mean[-1] * _SCALE).float().to(self._dev)[None]
         self._last: list[dict[str, Any]] = []
