@@ -326,6 +326,6 @@ test、run の最後の評価、PC-ALM と BP、seed 0/1/2 のすべてで次を
 
 **通った後**: 選んだエンコーダを、動力学と同時に学ぶ設定（M16 の形）に Walking Tours で持ち込むかを決める。
 
-## M18（下書き）: Walking Tours の単一ストリームから VAE を学ぶ
+## M18: Walking Tours の単一ストリームから VAE を学ぶ
 
-**状態**: 下書き（ユーザーと詰める、2026-11-14）。M17 の次のマイルストーンの計画は [plans/m18-vae-stream.md](plans/m18-vae-stream.md) にある。
+**状態**: 段 0・1 を実装中（2026-11-15）。計画は [plans/m18-vae-stream.md](plans/m18-vae-stream.md) にある。2026-11-15 のユーザーの回答で、段 1（決定的な自己符号化器）を RMSProp・AdamW・SGD × ストリーム・並べ替え・過学習の確かめと、ストリームの $B$ = 32 で回すと決めた。デコーダは軽い 2 ブロックで、システムの中で学ぶ。段 1 の実装（`program=ae`、`exp/video/vae/`）と段 0 の測定は済んだ（[results](results/m18.md) の「段 0 の測定」）。val の PCA-1024 の `stack_mse` は 0.177、SGD の学習率は 7.08 × 10⁻⁷、BP の bench は $B$ = 1 で 80.8 fps（リアルタイムの目標 10 の 8.1 倍）である。並べ替えの対照（計画の未決の 6）はユーザーへの説明を待っている。
