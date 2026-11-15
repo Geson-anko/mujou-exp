@@ -67,9 +67,20 @@ those whose gradient is exactly 0) and parameter by parameter. Of the same
 stacks it also reports $\sigma^{*2}$ (of $z$ and of $\mu$), the KL and
 $-\mathcal L$ at the start.
 
+``last`` (stage 2's yardstick of the stack PCA's last frame, defined in
+results/m18.md 「投げた後の追記」 before the results and measured after the
+runs, ``run_last``): the basis $U$ of ``pca`` again (the same stacks, $k$ and
+blocks: it is not kept), and of the held-out stacks of val and test the last
+frame of the linear reconstruction $m + U U^\top (y - m)$ against the true
+one, in the units of the posthoc (``last_frame_recon``): ``recon`` and
+``recon_blur`` (``blur_recon``, $\sigma$ = 2 px) over the error of the mean
+stack's last frame, as ``eval.AEEval`` measures ``own_recon`` and
+``own_recon_blur``, beside the ``stack_mse`` of the whole stack (that of
+``pca``: the check that $U$ is the same).
+
 Run as ``python -m exp.video.diag.m18_stage0 pca --out F +experiment=m18/ae_t128
-seed=100 device=cuda`` (and ``hessian``), with ``$MUJOU_EXP_DATA`` the data's
-parent; ``ppca --pca F --out G`` needs neither.
+seed=100 device=cuda`` (and ``hessian``, ``last``), with ``$MUJOU_EXP_DATA``
+the data's parent; ``ppca --pca F --out G`` needs neither.
 """
 
 import argparse
@@ -84,6 +95,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from exp.lib.blur_error import blur_recon
 from exp.lib.elbo import bits_per_dim, dequant_var, ppca_fit, ppca_nll
 from exp.lib.png import tile, write_png
 from exp.video.compose import compose
@@ -102,11 +114,13 @@ __all__ = [
     "PPCA_K",
     "gram",
     "lambda_max",
+    "last_frame_recon",
     "main",
     "pca_basis",
     "ppca_bpd",
     "projection_sums",
     "run_adam",
+    "run_last",
 ]
 
 POWER_SEED = 0  # the start of the power iteration
@@ -220,6 +234,44 @@ def projection_sums(
         "residual_ms": err / n,
         "base_ms": base / n,
         "count": n,
+    }
+
+
+@torch.no_grad()
+def last_frame_recon(
+    u: Tensor, stacks: Tensor, mean: Tensor, *, batch: int = 32
+) -> dict[str, float]:
+    r"""Of the u8 stacks ``(n, N, C, H, W)`` and the orthonormal basis ``u``
+    ``(P, k)`` of the targets $y = x / 256$ with the mean stack ``mean``
+    $m$ ``(N, C, H, W)`` (those units): the ``stack_mse`` of the linear
+    reconstruction $\hat y = m + U U^\top (y - m)$, and of its last frame
+    in the evaluation's units, $\hat y_N \cdot 256 / 255$ clamped to
+    $[0, 1]$ against $x_N / 255$, ``recon`` (the squared error over that of
+    $m_N \cdot 256 / 255$) and ``recon_blur`` (``blur_recon`` with the same
+    mean frame): the mean frame is that of ``eval.AEEval``'s ``own_recon``
+    (the last frames of the same training stacks)."""
+    dev = u.device
+    m = mean.double().to(dev)
+    scale = LEVELS / 255
+    err = base = 0.0
+    lasts: list[Tensor] = []
+    for chunk in stacks.split(batch):
+        x = chunk.to(dev)
+        c = (target(x).double() - m).flatten(1)  # (b, P)
+        r = c - (c @ u) @ u.T
+        err += float(r.pow(2).sum())
+        base += float(c.pow(2).sum())
+        y_hat = (m.flatten() + c - r).view_as(x)
+        lasts.append((y_hat[:, -1] * scale).clamp(0, 1).float())
+    lin = torch.cat(lasts)
+    f0 = stacks[:, -1].to(dev).float() / 255
+    mean_last = (m[-1] * scale).float()[None]
+    e0 = float((mean_last.expand_as(f0) - f0).pow(2).mean())
+    return {
+        "stack_mse": err / base,
+        "recon": float((lin - f0).pow(2).mean()) / e0,
+        "recon_blur": blur_recon(lin, f0, mean_last),
+        "count": len(stacks),
     }
 
 
@@ -354,6 +406,38 @@ def run_pca(
     out.write_text(json.dumps(result) + "\n")
     mean = moments.mean.float()
     write_png(out.with_suffix(".png"), tile(mean[[0, -1]][None].clamp(0, 1), scale=2))
+    return result
+
+
+def run_last(
+    conf: RunConf, out: Path, *, k: int, block: int, windows: int = WINDOWS
+) -> dict[str, Any]:
+    """The ``last`` measurement (module docstring) into ``out`` (a JSON file):
+    the basis of ``run_pca`` of ``windows`` training windows, then
+    ``last_frame_recon`` of the held-out stacks of each split."""
+    v, t = conf.vision, conf.data.tours
+    assert v is not None and t is not None
+    dev = torch.device(conf.device)
+    root = tours_root(t)
+    t0 = time.monotonic()
+    moments = training_moments(conf, root, windows=windows)
+    w8, index = _stack_index(conf, root, windows)
+    fetch = _fetcher(w8, index, v.frames)
+    _, u = pca_basis(
+        fetch, len(index), moments.mean, k, block=block, device=dev, scale=1 / LEVELS
+    )
+    splits = {
+        s: last_frame_recon(u, x, moments.mean)
+        for s, x in held_out_stacks(conf, root).items()
+    }
+    result = {
+        "n": len(index),
+        "k": k,
+        "splits": splits,
+        "seconds": time.monotonic() - t0,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=1) + "\n")
     return result
 
 
@@ -557,6 +641,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     a.add_argument("--out", type=Path, required=True)
     a.add_argument("--stacks", type=int, default=STREAMS_B32)
     a.add_argument("overrides", nargs="*")
+    lf = sub.add_parser("last", help="the stack PCA's last frame (stage 2)")
+    lf.add_argument("--out", type=Path, required=True)
+    lf.add_argument("--k", type=int, default=1024)
+    lf.add_argument("--block", type=int, default=512)
+    lf.add_argument("overrides", nargs="*")
     q = sub.add_parser("ppca", help="stage 2's bits per value of pPCA, from pca")
     q.add_argument("--pca", type=Path, required=True)
     q.add_argument("--out", type=Path, required=True)
@@ -573,6 +662,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.cmd == "adam":
         r = run_adam(conf, args.out, stacks=args.stacks)
         shown = {k: x for k, x in r.items() if k != "params"}
+    elif args.cmd == "last":
+        r = run_last(conf, args.out, k=args.k, block=args.block)
+        shown = r
     elif args.cmd == "pca":
         r = run_pca(conf, args.out, k=args.k, block=args.block)
         shown = {k: x for k, x in r.items() if k not in ("eigenvalues", "splits")}

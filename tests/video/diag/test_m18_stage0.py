@@ -15,11 +15,13 @@ from exp.video.diag.m18_stage0 import (
     TOL,
     gram,
     lambda_max,
+    last_frame_recon,
     pca_basis,
     ppca_bpd,
     projection_sums,
     run_adam,
     run_hessian,
+    run_last,
     run_pca,
 )
 from exp.video.measure.encoder_eval import iter_stream_windows, stream_windows
@@ -89,6 +91,40 @@ class TestPCA:
         assert got["base_ms"] == pytest.approx(
             sum(got["coord_ms"]) + got["residual_ms"]
         )
+
+
+class TestLastFrameRecon:
+    """The stack PCA's last frame in the posthoc's units (x / 255) against the
+    true one: k = 0 is the mean stack (1 by the definition of the ratios),
+    and a basis that spans every held-out deviation reconstructs exactly."""
+
+    @staticmethod
+    def _stacks(n: int = 6, seed: int = 0) -> torch.Tensor:
+        g = torch.Generator().manual_seed(seed)
+        return torch.randint(0, 256, (n, 3, 3, 16, 16), generator=g, dtype=torch.uint8)
+
+    def test_no_component_is_the_mean_stack(self):
+        x = self._stacks()
+        m = torch.rand(3, 3, 16, 16, generator=torch.Generator().manual_seed(1))
+        m = m.double() * 255 / 256  # a mean in the units of y = x / 256
+        u = torch.zeros(m.numel(), 0, dtype=torch.float64)
+        got = last_frame_recon(u, x, m, batch=4)
+        assert got["stack_mse"] == pytest.approx(1.0, rel=1e-12)
+        assert got["recon"] == pytest.approx(1.0, rel=1e-6)
+        assert got["recon_blur"] == pytest.approx(1.0, rel=1e-6)
+        assert got["count"] == len(x)
+
+    def test_a_basis_of_the_deviations_reconstructs_exactly(self):
+        x = self._stacks()
+        y = x.double() / 256
+        m = y[:4].mean(0)  # not the held-out mean: m + U U^T (y - m) = y still
+        c = (y - m).flatten(1)
+        u = torch.linalg.qr(c.T).Q  # (P, n): spans every c
+        got = last_frame_recon(u, x, m, batch=4)
+        assert got["stack_mse"] < 1e-20
+        # x / 256 * 256 / 255 is x / 255: float32 rounding only
+        assert got["recon"] < 1e-10
+        assert got["recon_blur"] < 1e-10
 
 
 class TestPPCABpd:
@@ -278,6 +314,20 @@ class TestRuns:
             res = d - d @ u @ u.T
             want = float((res**2).sum() / (d**2).sum())
             assert r["splits"][name]["stack_mse"] == pytest.approx(want, rel=1e-8)
+
+    def test_last_rebuilds_the_basis_of_pca(self, tmp_path, conf):
+        """The basis of ``last`` is that of ``pca`` (the same stacks, k and
+        windows): the stack_mse of the held-out stacks agree."""
+        k, windows = 8, 32
+        a = run_pca(conf, tmp_path / "pca.json", k=k, block=64, windows=windows)
+        b = run_last(conf, tmp_path / "last.json", k=k, block=16, windows=windows)
+        assert json.loads((tmp_path / "last.json").read_text())["k"] == k
+        assert set(b["splits"]) == {"val", "test"}
+        for s, d in b["splits"].items():
+            assert d["stack_mse"] == pytest.approx(
+                a["splits"][s]["stack_mse"], rel=1e-8
+            )
+            assert 0 <= d["recon_blur"] and 0 <= d["recon"]
 
     def test_hessian_rows_and_a_batch_below_its_members_mean_rho(self, tmp_path, conf):
         """The batch of every (windows / batch)-th stack: rho of the mean of

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from exp.lib.png import tile, write_png
+from exp.video.compose import compose
 from exp.video.diag.m18_figs import (
     ROWS,
     chroma,
@@ -16,10 +17,14 @@ from exp.video.diag.m18_figs import (
     own_rows,
     patch_means,
     picture,
+    prior_rows,
     split_rows,
+    stack_pictures,
     stats,
 )
 from exp.video.vae.loss import target
+from exp.video.vae.modules import build_vae
+from tests.video.vae.test_program import tiny_vae
 
 
 def _stacks(n: int = 3) -> torch.Tensor:
@@ -87,3 +92,27 @@ def test_stats_of_a_figure_whose_rows_are_the_truth():
     for _, c, r in stats(image, 64):
         assert c == pytest.approx(chroma(patch_means(first)))
         assert r == pytest.approx(1.0)
+
+
+def test_stack_pictures_keeps_the_given_order(tmp_path: Path):
+    truth = torch.rand(1, 2, 3, 8, 8)
+    decoded = [torch.full_like(truth, i / 3) for i in range(3)]
+    paths = [tmp_path / f"{i}.png" for i in range(3)]
+    for p, d in zip(paths, decoded, strict=True):
+        write_png(p, picture(torch.cat([truth, d])))
+    order = [2, 0, 1]
+    image = stack_pictures([paths[i] for i in order])
+    want = torch.cat([truth, *(decoded[i] for i in order)])
+    assert torch.equal(image, picture(want))
+
+
+def test_prior_rows_are_the_decoder_at_standard_normal_codes():
+    """The last frame of g(z), z the standard normal draws of the generator
+    in the code's shape, in the units of own_rows."""
+    conf = compose(tiny_vae("unused"))
+    mods = build_vae(conf, seed=conf.seed)
+    got = prior_rows(mods, 3, gen=torch.Generator().manual_seed(5))
+    z = torch.randn(3, *mods.code_shape, generator=torch.Generator().manual_seed(5))
+    want = (mods.decoder(z)[:, -1] * (256 / 255)).clamp(0, 1)
+    assert got.shape == (1, *want.shape)
+    torch.testing.assert_close(got[0], want.detach(), rtol=0, atol=0)
