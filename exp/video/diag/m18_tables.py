@@ -23,6 +23,11 @@ pre-registration (``reading``); Q5 compares B = 1 at 1800 s with B = 32 at 60 s
 own time 0 (``q5``). Q1, Q2 and Q5 are predictions of RMSProp and AdamW only
 (``PREDICTED``); SGD's row reads 予測なし.
 
+The table per checkpoint sets the posthoc's ``recon`` (the decoder learned
+afterwards) beside ``own_recon`` (the system's decoder $g$) on the same
+scale; the gap of the stream and the shuffle (``largest_gap``) is over every
+evaluation of ``evals.jsonl``, not only the times of the tables.
+
 The wall-clock of training (``train_rate``) is a run's units over the wall
 time of ``timing.jsonl`` less the time of its evaluations (``eval_s``); the
 real-time target of the plan is ``10 / B`` units a second (a unit is
@@ -158,6 +163,25 @@ def q2(
     if None in shuffle or None in stream:
         return "不明"
     return "当たり" if shuffle == stream else "外れ"
+
+
+def largest_gap(
+    a: Sequence[dict[str, Any]], b: Sequence[dict[str, Any]]
+) -> tuple[float, float] | None:
+    """The largest ``|a - b|`` of val's ``stack_mse`` over the times ``t``
+    > 0 of both lines of ``evals.jsonl``, and its ``t`` (None if they share
+    none)."""
+
+    def by_t(rows: Sequence[dict[str, Any]]) -> dict[float, float]:
+        return {
+            r["t"]: r["stack_mse"]
+            for r in rows
+            if r.get("split") == "val" and "stack_mse" in r and r["t"] > 0
+        }
+
+    x, y = by_t(a), by_t(b)
+    gaps = [(abs(x[t] - y[t]), t) for t in x if t in y]
+    return max(gaps) if gaps else None
 
 
 # --- the speed -----------------------------------------------------------------------
@@ -322,7 +346,8 @@ def report(root: Path) -> str:
     out.append(_table(head, rows))
 
     out += ["", "## checkpoint ごと（val）", ""]
-    keys = ("stack_mse", "recon_blur", "dyn_1/copy_1", "own_recon", "own_recon_blur")
+    keys = ("stack_mse", "recon", "own_recon", "recon_blur", "own_recon_blur")
+    keys += ("dyn_1/copy_1",)
     rows = []
     for k, p in sorted(runs.post.items()):
         m = jl(p / "post/decode/metrics.jsonl")
@@ -330,6 +355,16 @@ def report(root: Path) -> str:
             rows.append([" ".join(map(str, k)), f"{t:.0f}"])
             rows[-1] += [fmt(at(m, t, "val", key)) for key in keys]
     out.append(_table(["run", "t", *keys], rows))
+
+    out += ["", "## ストリームと並べ替えの差（B = 1、val の stack_mse、全時刻）", ""]
+    rows = []
+    for o in OPTS:
+        st, sh = runs.train.get((o, "stream", 1)), runs.train.get((o, "shuffle", 1))
+        if st is None or sh is None:
+            continue
+        d = largest_gap(jl(st / "evals.jsonl"), jl(sh / "evals.jsonl"))
+        rows.append([o, *(["－", "－"] if d is None else [fmt(d[0]), f"{d[1]:.0f}"])])
+    out.append(_table(["opt", "最大の差", "t"], rows))
 
     out += ["", "## 学習の効率（val の stack_mse、学習の壁時計）", ""]
     rows = []

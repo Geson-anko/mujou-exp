@@ -14,6 +14,7 @@ from exp.video.diag.m18_tables import (
     below,
     both,
     facts,
+    largest_gap,
     load,
     mark,
     q2,
@@ -68,6 +69,23 @@ def test_q5_is_judged_only_when_b1_went_below_its_time_0():
     assert q5(0.8, 0.9, 0.7) == "外れ"
     assert q5(0.95, 0.9, 0.7).startswith("判定しない")
     assert q5(None, 0.9, 0.7) == "不明"
+
+
+def test_largest_gap_is_over_the_shared_times_of_val_after_0():
+    a = [{"t": 0.0, "split": "val", "stack_mse": 2.0}]
+    a += [
+        {"t": t, "split": "val", "stack_mse": v} for t, v in ((60.0, 1.0), (120.0, 0.5))
+    ]
+    a += [{"t": 60.0, "split": "test", "stack_mse": 9.0}]  # another split
+    b = [{"t": 0.0, "split": "val", "stack_mse": 0.0}]  # time 0 is not compared
+    b += [
+        {"t": t, "split": "val", "stack_mse": v} for t, v in ((60.0, 0.9), (120.0, 0.8))
+    ]
+    b += [{"t": 180.0, "split": "val", "stack_mse": 5.0}]  # a has no 180
+    gap = largest_gap(a, b)
+    assert gap is not None
+    assert abs(gap[0] - 0.3) < 1e-12 and gap[1] == 120.0
+    assert largest_gap(a, []) is None
 
 
 def test_train_rate_subtracts_the_evaluations():
