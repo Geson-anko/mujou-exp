@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch.distributions import MultivariateNormal
 
+from exp.lib.blur_error import blur_recon
 from exp.lib.elbo import dequant_var
 from exp.video.compose import compose
 from exp.video.data.frames import PooledStackedTourFrames
@@ -125,6 +126,36 @@ class TestLastFrameRecon:
         # x / 256 * 256 / 255 is x / 255: float32 rounding only
         assert got["recon"] < 1e-10
         assert got["recon_blur"] < 1e-10
+
+    def test_a_basis_of_some_values_keeps_them_and_the_mean_elsewhere(self):
+        """U = the unit vectors of the last frame's red channel: the
+        reconstruction is y there and m everywhere else, built here frame by
+        frame and measured with blur_recon directly."""
+        x = self._stacks()
+        m = torch.rand(3, 3, 16, 16, generator=torch.Generator().manual_seed(1))
+        m = m.double() * 255 / 256
+        idx = torch.arange(m.numel()).view_as(m)[-1, 0].flatten()  # last, red
+        u = torch.eye(m.numel(), dtype=torch.float64)[:, idx]
+        got = last_frame_recon(u, x, m, batch=4)
+        y = x.double() / 256
+        c = y - m
+        kept = float(c[:, -1, 0].square().sum())
+        assert got["stack_mse"] == pytest.approx(
+            1 - kept / float(c.square().sum()), rel=1e-12
+        )
+        y_hat = m[-1].expand(len(x), -1, -1, -1).clone()
+        y_hat[:, 0] = y[:, -1, 0]
+        lin = (y_hat * 256 / 255).clamp(0, 1).float()
+        f0 = x[:, -1].float() / 255
+        mean_last = (m[-1] * 256 / 255).float()
+        e0 = float((mean_last - f0).square().mean())
+        assert got["recon"] == pytest.approx(
+            float((lin - f0).square().mean()) / e0, rel=1e-5
+        )
+        assert got["recon_blur"] == pytest.approx(
+            blur_recon(lin, f0, mean_last), rel=1e-5
+        )
+        assert 0 < got["recon_blur"] < 1
 
 
 class TestPPCABpd:

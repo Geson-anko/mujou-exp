@@ -20,10 +20,11 @@ and the VAE's reconstructions, untrained and trained, in one image per run.
 - ``prior``: the VAE's prior samples, the last frame of $g(z)$, $z \sim
   N(0, I_D)$ of a generator of ``--seed``, at a checkpoint of the run
   (``prior_rows``), in the evaluation's units. Needs no data.
-- ``stats``: of a ``figure`` (or of ``rows``, ``--names``), per row of ``ROWS``, the chroma of the mean
-  colours of the ``PATCH`` x ``PATCH`` patches (``chroma``: the mean absolute
-  deviation of a colour from its grey, 0 for grey) and the correlation of the
-  patches' mean brightness with the true frames'.
+- ``stats``: of a ``figure`` (or of ``rows``, ``--names``), per row of
+  ``ROWS``, the chroma of the mean colours of the ``PATCH`` x ``PATCH``
+  patches (``chroma``: the mean absolute deviation of a colour from its grey,
+  0 for grey) and the correlation of the patches' mean brightness with the
+  true frames'.
 
 Run from the repository root: ``python -m exp.video.diag.m18_figs init-own
 --out x.png +experiment=m18/ae_t128 seed=100 device=cuda``, ``python -m

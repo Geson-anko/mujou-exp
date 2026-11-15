@@ -1,6 +1,7 @@
 """The tables of results/m18.md's stage 2 (diagnosis): the squared error of the
-stacks the run learns on, recovered from its logged negative ELBO; the
-verdicts of the criteria and of the predictions written before the runs."""
+stacks the run learns on, recovered from its logged negative ELBO; the KL per
+latent of the linear optimum; the verdicts of the criteria and of the
+predictions written before the runs."""
 
 import json
 import math
@@ -9,7 +10,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from exp.lib.elbo import gauss_nll
+from exp.lib.elbo import dequant_var, gauss_nll
+from exp.video.diag.m18_stage0 import ppca_bpd
 from exp.video.diag.m18_vae_tables import (
     AE_RECON_BLUR,
     COLLAPSE,
@@ -19,10 +21,14 @@ from exp.video.diag.m18_vae_tables import (
     Facts,
     facts,
     load,
+    ppca_kl,
     predictions,
     sigma_track,
+    stack_values,
     train_sigma_star_sq,
 )
+
+F64 = torch.float64
 
 
 class TestSigma:
@@ -63,6 +69,94 @@ class TestSigma:
         assert got["mean"] == pytest.approx(-0.1)
         assert got["mean_abs"] == pytest.approx(0.2)
         assert got["above"] == pytest.approx(0.5)
+
+
+class TestPPCAKL:
+    def test_the_posterior_of_the_linear_optimum(self):
+        """Against the pPCA posterior in its general matrix form (Tipping and
+        Bishop 1999), N(M^-1 W^T (y - m), sigma^2 M^-1) with W = U_k
+        (Lambda_k - sigma^2 I)^{1/2} and M = W^T W + sigma^2 I, of the training
+        covariance plus v I (the dequantization) and the held-out deviations'
+        second moment plus v I (the noise u / L in expectation)."""
+        levels, p, k = 4, 6, 2
+        g = torch.Generator().manual_seed(3)
+        lat = torch.randn(450, 2, generator=g, dtype=F64)
+        mix = torch.randn(2, p, generator=g, dtype=F64)
+        y = (1.5 + lat @ mix + 0.5 * torch.randn(450, p, generator=g, dtype=F64)) / 4
+        train, held = y[:400], y[400:]
+        m = train.mean(0)
+        cov = (train - m).T @ (train - m) / len(train)
+        evals, vecs = torch.linalg.eigh(cov)
+        evals, vecs = evals.flip(0), vecs.flip(1)
+        d = held - m
+        coord = (d @ vecs[:, :k]).square().mean(0)
+        pca = {
+            "P": p,
+            "k": k,
+            "levels": levels,
+            "eigenvalues": evals.tolist(),
+            "splits": {"val": {"coord_ms": coord.tolist()}},
+        }
+        got = ppca_kl(pca, "val")
+
+        v = dequant_var(levels)
+        lam = evals + v
+        s2 = float(lam[k:].mean())
+        w = vecs[:, :k] @ torch.diag((lam[:k] - s2).sqrt())
+        m_inv = torch.linalg.inv(w.T @ w + s2 * torch.eye(k, dtype=F64))
+        a = m_inv @ w.T  # (k, P): the posterior mean's map
+        second = d.T @ d / len(held) + v * torch.eye(p, dtype=F64)
+        mu_sq = torch.diag(a @ second @ a.T)
+        s_sq = torch.diag(s2 * m_inv)
+        want = 0.5 * (mu_sq + s_sq - 1 - s_sq.log())
+        torch.testing.assert_close(got, want, rtol=1e-10, atol=0)
+
+    def test_the_elbo_at_the_exact_posterior_is_the_likelihood(self):
+        """The KL plus the expected reconstruction term of the pPCA's own
+        posterior is its -log p(y) (the bound is tight at the exact
+        posterior): m18_stage0.ppca_bpd's nll of the same split."""
+        levels, p, k = 4, 6, 2
+        g = torch.Generator().manual_seed(5)
+        y = torch.randn(450, p, generator=g, dtype=F64) * torch.linspace(1, 0.2, p)
+        y = (1.5 + y) / levels
+        train, held = y[:400], y[400:]
+        m = train.mean(0)
+        cov = (train - m).T @ (train - m) / len(train)
+        evals, vecs = torch.linalg.eigh(cov)
+        evals, vecs = evals.flip(0), vecs.flip(1)
+        d = held - m
+        r = d - d @ vecs[:, :k] @ vecs[:, :k].T
+        val = {
+            "coord_ms": (d @ vecs[:, :k]).square().mean(0).tolist(),
+            "residual_ms": float(r.square().sum(1).mean()),
+            "base_ms": float(d.square().sum(1).mean()),
+        }
+        pca = {
+            "P": p,
+            "k": k,
+            "levels": levels,
+            "eigenvalues": evals.tolist(),
+            "splits": {"val": val},
+        }
+        v = dequant_var(levels)
+        lam = evals[:k] + v
+        s2 = float(evals[k:].mean()) + v
+        c_sq = torch.tensor(val["coord_ms"], dtype=F64) + v
+        # E||y - m - W z||^2 over q and the split: the posterior mean leaves
+        # sigma^2 / lambda of each coordinate, its variance adds W S W^T's trace
+        sq = float((s2**2 / lam.square() * c_sq).sum())
+        sq += float(((lam - s2) * s2 / lam).sum())
+        sq += val["residual_ms"] + (p - k) * v
+        recon = 0.5 * p * math.log(2 * math.pi * s2) + sq / (2 * s2)
+        want = ppca_bpd(pca, k)["splits"]["val"]["nll"]
+        assert float(ppca_kl(pca, "val").sum()) + recon == pytest.approx(
+            want, rel=1e-12
+        )
+
+    def test_the_values_of_a_stack(self):
+        """16 frames of 3 x 128 x 128: the P of stage 0's PCA."""
+        job = {"config": {"vision": {"frames": 16}, "data": {"tours": {"size": 128}}}}
+        assert stack_values(job) == 786432
 
 
 def _run(root: Path, batch: str, rid: str, sampling: str, b: int, **kw) -> Path:

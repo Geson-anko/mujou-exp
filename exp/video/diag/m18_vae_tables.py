@@ -40,8 +40,23 @@ $$\frac{\lVert y - g(z)\rVert^2}{P} = 2\sigma^2\Big(\frac{-\mathcal L -
 \mathrm{KL}}{P} - \ln\sigma - \tfrac12\ln 2\pi\Big) = \sigma^{*2}_{\rm
 train},$$
 
-exact for a second whose $\sigma$ did not move (it moves at most about
-$\eta$ = 1e-3 a frame, 0.03 in $\ln\sigma$ a second).
+exact for a second whose $\sigma$ did not move. It does move within a
+second: the largest change of $\ln\sigma$ from one second to the next in
+the three runs is 0.13 (B = 1), 0.08 (B = 32) and 0.02 (the pool), not
+bounded by $\eta$ a frame (a step of RMSProp is $\eta\, g/\sqrt{\hat v}$).
+
+``ppca_kl``: the linear optimum's KL per latent (Lucas et al. 2019), the
+yardstick of the KL quantiles. The ML pPCA of eigenvalues $\lambda_j$ and
+$\sigma^2$ (``m18_stage0.ppca_bpd``'s, of the dequantized stacks) has, as
+a VAE with the prior $N(0, I)$, the posterior $N(\mu_j, s_j^2)$ along its
+$j$-th eigenvector with $s_j^2 = \sigma^2/\lambda_j$ and $\mu_j =
+\sqrt{\lambda_j - \sigma^2}\, c_j/\lambda_j$ ($c_j$ the coordinate of
+$y - m$), so that its KL averaged over a held-out split is
+
+$$\tfrac12\big(E[\mu_j^2] + s_j^2 - 1 - \ln s_j^2\big), \quad E[\mu_j^2] =
+\frac{\lambda_j - \sigma^2}{\lambda_j^2}\, E[c_j^2],$$
+
+$E[c_j^2]$ the split's ``coord_ms`` plus the dequantization's $v$.
 
 Run from the repository root: ``python -m exp.video.diag.m18_vae_tables
 [--runs runs] [--json F]``.
@@ -54,15 +69,22 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import torch
+from torch import Tensor
+
+from exp.lib.elbo import dequant_var, ppca_fit
 from exp.video.diag.m17_tables import at, fmt, jl
 from exp.video.diag.m18_tables import CKPTS, T_END, below, both, mark, train_rate
+from exp.video.vae.measures import KL_QUANTILES
 
 R_BAR = 6.887  # results/m18-stage0/ppca.json: val, k = 1024
 POOL_BAR = 7.050  # the same, the pool's 256 stacks
 COLLAPSE = 8.127  # the mean stack's Gaussian (k = 0), val
 COLLAPSE_MARGIN = 0.002  # a collapsed model fitting sigma to val reaches 8.1252
 Q13_BAR = 7.15  # 8 + log2(2 pi e 0.0180) / 2: the autoencoder's error alone
-AE_RECON_BLUR = 0.132  # the autoencoder of the same setting, val, 1800 s
+# the autoencoder of the same setting, val, 1800 s, as Q12 wrote it before the
+# runs (rounded on purpose: AE_POST's 0.13221 is not the bar)
+AE_RECON_BLUR = 0.132
 T_SAME_STACKS = 60.0  # B = 32 at 60 s has seen 57600 stacks, B = 1 at 1800 s 54000
 TIMES = (0.0, 60.0, *CKPTS)
 TRAIN, POST, BASE = "m18-vae-v1", "m18-vae-post-v1", "m18-vae-base-v1"
@@ -195,6 +217,29 @@ def predictions(stream: Facts, pool: Facts) -> dict[str, str]:
     }
 
 
+# --- the KL of the linear optimum ---------------------------------------------------
+
+
+def ppca_kl(pca: dict[str, Any], split: str) -> Tensor:
+    """The KL per latent of the ML pPCA of ``pca`` (the output of
+    ``m18_stage0 pca``, its ``k`` components) averaged over the held-out
+    stacks of ``split`` (module docstring), ``(k,)`` float64 nats."""
+    p, k = int(pca["P"]), int(pca["k"])
+    v = dequant_var(int(pca["levels"]))
+    evals = torch.tensor(pca["eigenvalues"], dtype=torch.float64)
+    lam, sigma_sq = ppca_fit(evals, k, p, floor=v)
+    c_sq = torch.tensor(pca["splits"][split]["coord_ms"][:k], dtype=torch.float64)
+    s_sq = sigma_sq / lam
+    mu_sq = (lam - sigma_sq) / lam.square() * (c_sq + v)
+    return 0.5 * (mu_sq + s_sq - 1 - s_sq.log())
+
+
+def stack_values(job: dict[str, Any]) -> int:
+    """$P$, the values of a stack of the run of ``job.json`` ``job``."""
+    c = job["config"]
+    return int(c["vision"]["frames"]) * 3 * int(c["data"]["tours"]["size"]) ** 2
+
+
 # --- sigma -----------------------------------------------------------------------------
 
 
@@ -263,8 +308,12 @@ def _value(d: Path | None, t: float, split: str, key: str) -> Any:
     return at(jl(d / "evals.jsonl"), t, split, key)
 
 
-def report(root: Path, last: Path | None = None) -> tuple[str, dict[str, Any]]:
-    """The markdown of the tables (module docstring), and their values."""
+def report(
+    root: Path, last: Path | None = None, pca_json: Path | None = None
+) -> tuple[str, dict[str, Any]]:
+    """The markdown of the tables (module docstring), and their values;
+    ``last`` the output of ``m18_stage0 last``, ``pca_json`` that of
+    ``m18_stage0 pca`` (the KL quantiles' pPCA row)."""
     runs = load(root)
     base = runs.base / "post/decode" if runs.base else None
     data: dict[str, Any] = {}
@@ -384,6 +433,12 @@ def report(root: Path, last: Path | None = None) -> tuple[str, dict[str, Any]]:
             v = [_value(d, t, "val", x) for x in KL_Q]
             data.setdefault("kl_q", {}).setdefault(NAMES[k], {})[str(t)] = v
             rows.append([NAMES[k], f"{t:.0f}", *map(fmt, v)])
+    if pca_json and pca_json.exists():
+        kl = ppca_kl(json.loads(pca_json.read_text()), "val")
+        q = torch.tensor(KL_QUANTILES, dtype=torch.float64) / 100
+        v = kl.quantile(q).tolist()
+        data["kl_q_ppca"] = {"val": v, "total": float(kl.sum())}
+        rows.append(["pPCA-1024（線形の最適解）", "－", *map(fmt, v)])
     out.append(_table(["腕", "t", *KL_Q], rows))
 
     # verdicts and predictions
@@ -393,8 +448,9 @@ def report(root: Path, last: Path | None = None) -> tuple[str, dict[str, Any]]:
     rows = []
     for k in ARMS:
         x = f[k]
+        u = mark(x.u) if runs.post.get(k) else "－（posthoc なし）"
         rows.append(
-            [NAMES[k], x.state, fmt(x.recon_blur), fmt(x.dyn), mark(x.u)]
+            [NAMES[k], x.state, fmt(x.recon_blur), fmt(x.dyn), u]
             + [fmt(x.bpd), mark(x.r), fmt(x.pool_bpd)]
             + [mark(x.overfit) if k[0] == "pool" else "－"]
             + [mark(below(x.bpd, COLLAPSE, diverged=x.state == "diverged"))]
@@ -416,8 +472,14 @@ def report(root: Path, last: Path | None = None) -> tuple[str, dict[str, Any]]:
     rows = []
     for k in ARMS:
         d = runs.train.get(k)
-        p = 786432
-        tr = sigma_track(jl(d / "stream.jsonl"), p) if d else {}
+        tr = (
+            sigma_track(
+                jl(d / "stream.jsonl"),
+                stack_values(json.loads((d / "job.json").read_text())),
+            )
+            if d
+            else {}
+        )
         data.setdefault("sigma_track", {})[NAMES[k]] = tr
         rows.append(
             [NAMES[k], fmt(tr.get("first_t")), fmt(tr.get("mean"))]
@@ -487,6 +549,14 @@ def report(root: Path, last: Path | None = None) -> tuple[str, dict[str, Any]]:
                 zip(POSTHOC, v, strict=True)
             )
             rows.append([NAMES[k], f"{t:.0f}", *map(fmt, v)])
+    ae_name = "自己符号化器（深さ 4、η = 1e-3）"
+    ae_m = jl(root / AE_POST / "post/decode/metrics.jsonl")
+    for t in CKPTS if ae_m else ():
+        v = [at(ae_m, t, "val", x) for x in POSTHOC]
+        data.setdefault("posthoc", {}).setdefault(ae_name, {})[str(t)] = dict(
+            zip(POSTHOC, v, strict=True)
+        )
+        rows.append([ae_name, f"{t:.0f}", *map(fmt, v)])
     out.append(_table(["腕", "t", *POSTHOC], rows))
     return "\n".join(out), data
 
@@ -500,9 +570,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=Path("exp/video/results/m18-stage2/last.json"),
         help="the output of m18_stage0 last",
     )
+    p.add_argument(
+        "--pca",
+        type=Path,
+        default=Path("exp/video/results/m18-stage0/pca.json"),
+        help="the output of m18_stage0 pca",
+    )
     p.add_argument("--json", type=Path, help="write the values of the tables here")
     a = p.parse_args(argv)
-    text, data = report(a.runs, a.last)
+    text, data = report(a.runs, a.last, a.pca)
     print(text)
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
