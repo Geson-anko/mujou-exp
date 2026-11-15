@@ -141,7 +141,7 @@ class TestRuns:
         self, tmp_path, conf
     ):
         r = run_hessian(conf, tmp_path / "h.json", stacks=2, iters=30)
-        assert len(r["stacks"]) == 2 and r["max_stack_lam"] == max(
-            s["lam"] for s in r["stacks"]
+        assert len(r["stacks"]) == 2 and r["max_stack_rho"] == max(
+            abs(s["lam"]) for s in r["stacks"]
         )
         assert r["batch"]["iters"] >= 2

@@ -26,7 +26,9 @@ parameters, by power iteration on Hessian-vector products (double backward):
 of $\ell_{AE}$ of each of ``--stacks`` training stacks (the first stack of
 ``iter_stream_windows`` of that many windows, spread over the nine videos;
 a step of $B$ = 1 sees one) and of their mean (a batch). The power iteration
-converges to the eigenvalue of the largest magnitude; its sign is written.
+converges to the eigenvalue of the largest magnitude, whose magnitude is the
+spectral radius $\rho$ (``rho``) and bounds every eigenvalue: SGD's rate is
+derived from the largest $\rho$ of the stacks (plans/m18-vae-stream.md).
 
 Run as ``python -m exp.video.diag.m18_stage0 pca --out F +experiment=m18/ae_t128
 seed=100 device=cuda`` (and ``hessian``), with ``$MUJOU_EXP_DATA`` the data's
@@ -133,6 +135,8 @@ def pca_basis(
     evals, evecs = evals.flip(0), evecs.flip(1)
     vk = evecs[:, :k] / evals[:k].clamp(min=0).sqrt()  # (n, k)
     del evecs
+    if device.type == "cuda":  # the Gram's blocks, cached, would not leave room for U
+        torch.cuda.empty_cache()
     m = mean.double().to(device).flatten()
     u = torch.zeros(m.numel(), k, dtype=torch.float64, device=device)
     for a in range(0, n, block):
@@ -179,12 +183,13 @@ def lambda_max(
     tol: float = 1e-4,
     gen: torch.Generator,
 ) -> dict[str, Any]:
-    r"""The eigenvalue of the largest magnitude of the Hessian of ``loss()``
-    with respect to ``params``, by power iteration from a normal direction of
-    ``gen``: $v \leftarrow Hv / \lVert Hv \rVert$, $\lambda = v^\top H v$, with
-    $Hv$ by double backward of one graph of the gradient; it stops when
-    $\lambda$ changes by less than ``tol`` of itself. Returns ``lam`` (the
-    last quotient), ``iters``, ``converged`` and ``history``."""
+    r"""The eigenvalue of the largest magnitude of the Hessian $H$ of
+    ``loss()`` with respect to ``params`` (its sign kept: $|\lambda|$ is the
+    spectral radius), by power iteration from a normal direction of ``gen``:
+    $v \leftarrow Hv / \lVert Hv \rVert$, $\lambda = v^\top H v$, with $Hv$ by
+    double backward of one graph of the gradient; it stops when $\lambda$
+    changes by less than ``tol`` of itself. Returns ``lam`` (the last
+    quotient), ``iters``, ``converged`` and ``history``."""
     grads = torch.autograd.grad(loss(), params, create_graph=True)
     v = [
         torch.randn(p.shape, generator=gen, dtype=p.dtype).to(p.device) for p in params
@@ -300,18 +305,21 @@ def run_hessian(conf: RunConf, out: Path, *, stacks: int, iters: int) -> dict[st
     def loss_of(xs: Tensor) -> Callable[[], Tensor]:
         return lambda: ae_loss(target(xs), mods(xs)).mean()
 
+    def measured(xs: Tensor) -> dict[str, Any]:
+        r = lambda_max(loss_of(xs), params, iters=iters, gen=gen)
+        with torch.no_grad():
+            loss = float(loss_of(xs)())
+        return {"loss": loss, "rho": abs(r["lam"])} | r
+
     t0 = time.monotonic()
-    rows = []
-    for i in range(len(x)):
-        r = lambda_max(loss_of(x[i : i + 1]), params, iters=iters, gen=gen)
-        rows.append({"stack": i, "loss": float(loss_of(x[i : i + 1])()), **r})
-    batch = lambda_max(loss_of(x), params, iters=iters, gen=gen)
+    rows = [{"stack": i} | measured(x[i : i + 1]) for i in range(len(x))]
+    batch = measured(x)
     result = {
         "seed": conf.seed,
         "power_seed": POWER_SEED,
         "stacks": rows,
-        "batch": dict(batch) | {"loss": float(loss_of(x)())},
-        "max_stack_lam": max(r["lam"] for r in rows),
+        "batch": batch,
+        "max_stack_rho": max(r["rho"] for r in rows),
         "params": sum(p.numel() for p in params),
         "seconds": time.monotonic() - t0,
     }
@@ -345,6 +353,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         shown = {k: x for k, x in r.items() if k != "stacks"}
         shown["batch"] = {k: x for k, x in r["batch"].items() if k != "history"}
         shown["lams"] = [s["lam"] for s in r["stacks"]]
+        shown["converged"] = [s["converged"] for s in r["stacks"]]
     print(json.dumps(shown, indent=1))
 
 
