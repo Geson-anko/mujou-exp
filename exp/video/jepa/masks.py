@@ -9,16 +9,50 @@ at most about ``ratio`` of the grid (the blocks may overlap). A token is a tube
 of all $N$ frames of its patch (``vit.patchify``), so the same mask covers the
 patch in every frame: the context cannot copy a masked patch from a frame
 next to it.
+
+The packed layout (M17) draws each context view by ``multiblock_masks`` (V-JEPA's
+multi-block mask of a ``schema.vision.MaskConf``, made to keep exactly
+``expected_keep`` patches visible, so that every sample has the same shape)
+and packs a stack and its views into one sequence (``pack_views``). The
+visible patches are always outside the blocks: ``expected_keep`` is the lower
+quartile ``KEEP_QUANTILE`` of the visible counts of the unions, a union that
+leaves fewer is drawn again (``CANDIDATES`` draws), and of one that leaves
+more, random visible patches are masked too (V-JEPA's collator cuts the
+visible patches of a batch down to its least count the same way).
+
+A view of ``future`` $f > 0$ (a space-time view) also masks every token of
+the last $f$ time slots: it keeps ``spatial_keep`` patches in each of the
+first ``slots - f`` slots (``view_tokens``, ``token_keep``); with no blocks
+it keeps every patch of them.
 """
 
 import math
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor
 
-__all__ = ["ASPECT", "block_masks", "block_sides", "make_views", "paint"]
+from exp.video.schema.vision import MaskConf
+
+__all__ = [
+    "ASPECT",
+    "CANDIDATES",
+    "KEEP_QUANTILE",
+    "block_masks",
+    "block_sides",
+    "expected_keep",
+    "make_views",
+    "multiblock_masks",
+    "pack_views",
+    "paint",
+    "spatial_keep",
+    "token_keep",
+    "view_tokens",
+]
 
 ASPECT = (0.75, 1.5)  # the range of a block's height / width
+KEEP_QUANTILE = 0.25  # expected_keep: of the visible counts of the unions
+CANDIDATES = 8  # the unions drawn for each mask of multiblock_masks
 
 
 def block_sides(
@@ -93,3 +127,141 @@ def make_views(chunks: Tensor, masks: Tensor, patch: int) -> tuple[Tensor, Tenso
     channel = pixels.expand(b, views, f, 1, hh, ww)
     h = torch.cat([x, channel], 3).flatten(0, 1)
     return h, m.flatten(2).float().flatten(0, 1)
+
+
+def _union(
+    n: int, grid: tuple[int, int], mask: MaskConf, generator: torch.Generator
+) -> Tensor:
+    """``n`` unions ``(n, gh, gw)`` of ``mask.blocks`` rectangles of
+    ``mask.scale`` of the grid each, aspect log-uniform in ``mask.aspect``, at
+    uniform positions (drawn as in ``block_masks``)."""
+    gh, gw = grid
+    dev = generator.device
+    b = mask.blocks
+    lo, hi = math.log(mask.aspect[0]), math.log(mask.aspect[1])
+    u = torch.rand(n, b, generator=generator, device=dev)
+    h, w = block_sides(
+        torch.exp(lo + (hi - lo) * u), grid, ratio=mask.scale * b, blocks=b
+    )
+    top = (torch.rand(n, b, generator=generator, device=dev) * (gh - h + 1)).long()
+    left = (torch.rand(n, b, generator=generator, device=dev) * (gw - w + 1)).long()
+    return paint(top, left, h, w, grid)
+
+
+def multiblock_masks(
+    n: int,
+    grid: tuple[int, int],
+    mask: MaskConf,
+    *,
+    keep: int,
+    generator: torch.Generator,
+) -> Tensor:
+    r"""``n`` masks ``(n, gh, gw)`` bool (True: masked) of the context view
+    ``mask``, each with exactly ``keep`` visible patches, all outside its
+    blocks: for each mask ``CANDIDATES`` unions of its blocks (``_union``),
+    the first that leaves at least ``keep`` patches visible (or, when none
+    does, the one that leaves the most: the only case in which masked patches
+    are shown, of probability at most ``KEEP_QUANTILE ** CANDIDATES`` = 1.5e-5
+    at ``expected_keep``); then the ``keep``
+    patches of the largest score $2 [\text{visible}] + u$, $u \sim U[0, 1)$,
+    stay visible (random visible ones are masked too). Drawn from
+    ``generator``: the blocks of all the candidates, then the scores; no
+    value is read back to the host."""
+    gh, gw = grid
+    dev = generator.device
+    if mask.blocks == 0:  # the past alone: no draw
+        return torch.zeros(n, gh, gw, dtype=torch.bool, device=dev)
+    r = CANDIDATES
+    unions = _union(n * r, grid, mask, generator).view(n, r, gh * gw)
+    visible = (~unions).sum(2)  # (n, R)
+    enough = visible >= keep
+    order = torch.arange(r, 0, -1, device=dev)  # the first of the enough ones
+    pick = torch.where(
+        enough.any(1), (enough.long() * order).argmax(1), visible.argmax(1)
+    )
+    union = unions[torch.arange(n, device=dev), pick]  # (n, T_s)
+    u = torch.rand(n, gh * gw, generator=generator, device=dev)
+    score = 2 * (~union).float() + u
+    shown = score.topk(keep, 1).indices
+    out = torch.ones_like(union)
+    out.scatter_(1, shown, False)
+    return out.view(n, gh, gw)
+
+
+def expected_keep(
+    grid: tuple[int, int], mask: MaskConf, *, draws: int = 4096, seed: int = 0
+) -> int:
+    """The visible patches of the context view ``mask`` (``multiblock_masks``'s
+    ``keep``): the ``KEEP_QUANTILE`` quantile (the lower one) of the visible
+    counts of ``draws`` unions of its blocks drawn from a CPU generator of
+    ``seed``, within ``[1, T_s - 1]``."""
+    g = torch.Generator().manual_seed(seed)
+    visible = (~_union(draws, grid, mask, g)).flatten(1).sum(1).double()
+    q = float(visible.quantile(KEEP_QUANTILE, interpolation="lower"))
+    return int(min(max(round(q), 1), grid[0] * grid[1] - 1))
+
+
+def spatial_keep(grid: tuple[int, int], mask: MaskConf) -> int:
+    """The visible patches of a time slot of the context view ``mask``:
+    ``expected_keep``, or all of them without blocks."""
+    return grid[0] * grid[1] if mask.blocks == 0 else expected_keep(grid, mask)
+
+
+def token_keep(grid: tuple[int, int], slots: int, mask: MaskConf) -> int:
+    """The visible tokens of the context view ``mask`` of stacks of ``slots``
+    time slots: ``spatial_keep`` in each slot but the future ones."""
+    return spatial_keep(grid, mask) * (slots - mask.future)
+
+
+def view_tokens(mask: Tensor, slots: int, future: int = 0) -> Tensor:
+    """The token mask ``(n, T)`` float (1: masked) of the spatial ``mask``
+    ``(n, gh, gw)`` in every time slot (a tube), and every token of the last
+    ``future`` slots, in the id order (slot, row, column)."""
+    per = mask.shape[1] * mask.shape[2]
+    masked = mask.flatten(1).repeat(1, slots).float()
+    if future:
+        masked[:, (slots - future) * per :] = 1.0
+    return masked
+
+
+def pack_views(
+    chunks: Tensor,
+    masks: Sequence[Tensor],
+    *,
+    keeps: Sequence[int],
+    patch: int,
+    tubelet: int,
+    futures: Sequence[int] | None = None,
+) -> tuple[Tensor, Tensor]:
+    """The packed sequences of the stacks ``chunks`` ``(B, N, C, H, W)`` (u8,
+    or float in ``[0, 1]``) with the context masks ``masks`` (one ``(B, gh,
+    gw)`` per context view, the same in every time slot: a tube), mask ``v``
+    with exactly ``keeps[v]`` visible patches in every row (given, so that no
+    count is read back from the device), view ``v`` also masking its last
+    ``futures[v]`` time slots whole (None: none; ``view_tokens``).
+
+    Returns:
+        ``h`` ``(B, L, P + 1)``: the target view's $T$ tubelets
+        (``vit.patchify_tubelets``) in id order, then the visible tubelets of
+        each view in id order, the last column each token's id (a float), and
+        ``y`` ``(B, (V - 1) T)``: per view, 1 at the tokens to predict.
+    """
+    from exp.video.jepa.vit import patchify_tubelets  # vit imports this module
+
+    x = chunks.float() / 255 if chunks.dtype == torch.uint8 else chunks.float()
+    b, f = x.shape[:2]
+    tokens = patchify_tubelets(x, patch, tubelet)  # (B, T, P)
+    t = tokens.shape[1]
+    slots = f // tubelet
+    ids = torch.arange(t, device=x.device).expand(b, t)
+    parts = [torch.cat([tokens, ids[..., None].to(x)], 2)]
+    ys = []
+    futures = [0] * len(masks) if futures is None else futures
+    for m, k, f in zip(masks, keeps, futures, strict=True):
+        masked = view_tokens(m, slots, f)  # (B, T)
+        keep = k * (slots - f)
+        visible = masked.sort(dim=1, stable=True).indices[:, :keep]  # id order
+        picked = tokens.gather(1, visible[..., None].expand(-1, -1, tokens.shape[2]))
+        parts.append(torch.cat([picked, visible[..., None].to(x)], 2))
+        ys.append(masked)
+    return torch.cat(parts, 1), torch.cat(ys, 1)

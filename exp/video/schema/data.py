@@ -7,12 +7,20 @@ from omegaconf import MISSING
 
 from exp.video.schema._check import check_choice
 
-__all__ = ["OBSERVATIONS", "BallsConf", "DataConf", "PhysicsConf", "ToursConf"]
+__all__ = [
+    "OBSERVATIONS",
+    "SAMPLINGS",
+    "BallsConf",
+    "DataConf",
+    "PhysicsConf",
+    "ToursConf",
+]
 
 # "pos_vel": x, y, vx, vy of each ball (M14 stage 0); "pos": x, y (stages 1,
 # 2); "pixels": the rendered image as a vector (stage 3); "frames": the images
 # to an encoder (M15, M16).
 OBSERVATIONS = ("pos_vel", "pos", "pixels", "frames")
+SAMPLINGS = ("stream", "iid")  # ToursConf.sampling
 
 
 @dataclass(kw_only=True)
@@ -60,6 +68,19 @@ class ToursConf:
     held_out: str = MISSING
     size: int = 64
     fps: float = 10.0
+    # The video frames the stream moves on per frame of the run (``time.frame``;
+    # M17: 3, a video of 30 fps learned at 10 fps); 1 only with vision.layout
+    # "pixels".
+    advance: int = 1
+    # How the stacks of the packed layout are drawn (SAMPLINGS): the streams,
+    # or each stack at an independent uniform frame of the nine videos (the
+    # i.i.d. control of an offline fit, data.frames.IIDStackedTourFrames).
+    sampling: str = "stream"
+
+    def __post_init__(self) -> None:
+        if self.advance < 1:
+            raise ValueError(f"tours.advance must be at least 1, not {self.advance}")
+        check_choice("tours.sampling", self.sampling, SAMPLINGS)
 
 
 @dataclass(kw_only=True)

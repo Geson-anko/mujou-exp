@@ -8,7 +8,14 @@ import pytest
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-from exp.lib.optim import AdamDirection, Grafted, Warmup
+from exp.lib.optim import (
+    AdamDirection,
+    Grafted,
+    RMSPropDirection,
+    StepAdamW,
+    Warmup,
+    fan_ins,
+)
 from exp.video.dyn.modules import Top, build_dynamics
 from exp.video.dyn.nets import (
     StateWorldBP,
@@ -112,10 +119,11 @@ class TestMakeOptimizer:
 
     def test_the_kinds_take_the_time_constant_of_the_rate(self):
         frame = 1 / 30
-        c = OptimConf(lr=0.01, warmup=0.0, tau_m=0.2, tau_v=20.0)
+        c = OptimConf(kind="adamw", lr=0.01, warmup=0.0, tau_m=0.2, tau_v=20.0)
         tau = frame / 0.01
-        assert make_optimizer(c, frame) == pc.optim.SGD(tau=tau)
-        adamw = replace(c, kind="adamw", weight_decay=0.1)
+        sgd = OptimConf(lr=0.01, warmup=0.0)
+        assert make_optimizer(sgd, frame) == pc.optim.SGD(tau=tau)
+        adamw = replace(c, weight_decay=0.1)
         assert make_optimizer(adamw, frame) == pc.optim.AdamW(
             tau=tau, tau_m=0.2, tau_v=20.0, weight_decay=0.1
         )
@@ -123,17 +131,120 @@ class TestMakeOptimizer:
         assert make_optimizer(graft, frame) == Grafted(
             inner=AdamDirection(tau=tau, tau_m=0.2, tau_v=20.0)
         )
-        warm = replace(c, warmup=300.0)
+        rmsprop = replace(c, kind="rmsprop", tau_m=0.3)
+        assert make_optimizer(rmsprop, frame) == RMSPropDirection(tau=tau, tau_v=20.0)
+        warm = replace(sgd, warmup=300.0)
         assert make_optimizer(warm, frame) == Warmup(
             inner=pc.optim.SGD(tau=tau), seconds=300.0
         )
+
+    def test_adamw_step_is_step_adamw_of_the_schedules(self):
+        c = OptimConf(
+            kind="adamw_step",
+            lr=7.5e-5,
+            warmup=0.0,
+            betas=[0.9, 0.99],
+            weight_decay=0.04,
+            weight_decay_end=0.4,
+            warmup_steps=10,
+            decay="cosine",
+            decay_steps=100,
+            min_lr=1e-3,
+            clip=1.0,
+        )
+        assert make_optimizer(c, 1 / 30) == StepAdamW(
+            lr=7.5e-5,
+            betas=(0.9, 0.99),
+            weight_decay=0.04,
+            weight_decay_end=0.4,
+            warmup_steps=10,
+            decay="cosine",
+            decay_steps=100,
+            min_lr=1e-3,
+            clip=1.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            ({"kind": "adamw_step"}, "warmup_steps"),  # warmup 300 s
+            ({"kind": "adamw", "warmup_steps": 5}, "adamw_step"),
+            ({"kind": "sgd", "clip": 1.0}, "adamw_step"),
+            ({"kind": "adamw", "betas": [0.8, 0.9]}, "adamw_step"),
+        ],
+    )
+    def test_the_step_settings_belong_to_adamw_step(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            OptimConf(**kw)
+
+    @pytest.mark.parametrize(
+        ("kind", "kw"),
+        [
+            ("sgd", {"tau_m": 0.2}),
+            ("rmsprop", {"tau_m": 0.2}),
+            ("sgd", {"tau_v": 20.0}),
+            ("adamw_step", {"warmup": 0.0, "tau_m": 0.2}),
+            ("adamw_step", {"warmup": 0.0, "tau_v": 20.0}),
+        ],
+    )
+    def test_a_moment_the_kind_has_not_is_an_error(self, kind, kw):
+        """A sweep of it would otherwise change nothing."""
+        name = next(k for k in kw if k.startswith("tau"))
+        with pytest.raises(ValueError, match=f"optim.{name} is of the kinds"):
+            OptimConf(kind=kind, **kw)
+
+    @pytest.mark.parametrize(
+        ("kind", "kw"),
+        [
+            ("adamw", {"tau_m": 0.2, "tau_v": 20.0}),
+            ("graft_adam", {"tau_m": 0.2, "tau_v": 20.0}),
+            ("rmsprop", {"tau_v": 20.0}),
+        ],
+    )
+    def test_a_kind_takes_its_moments(self, kind, kw):
+        assert OptimConf(kind=kind, **kw).kind == kind
 
     @pytest.mark.parametrize("lr", [0.0, -0.01])
     def test_a_rate_not_above_zero_is_an_error(self, lr):
         with pytest.raises(ValueError, match="lr must be > 0"):
             make_optimizer(OptimConf(lr=lr), 1 / 30)
 
-    @pytest.mark.parametrize("kind", ["sgd", "graft_adam"])
+    def test_the_scale_fan_in_divides_by_the_modules_fan_ins(self):
+        """``"adamw"`` goes through ``AdamDirection`` (``pc.optim.AdamW``
+        without weight decay, ``tests/lib/test_optim.py``); ``"none"`` keeps
+        the optimizers without it."""
+        frame, tau = 1 / 30, (1 / 30) / 0.01
+        mods = [torch.nn.Linear(6, 4), torch.nn.LayerNorm(4)]
+        n = fan_ins(*mods)
+        c = OptimConf(kind="adamw", lr=0.01, warmup=0.0, scale="fan_in")
+        assert make_optimizer(c, frame, mods) == AdamDirection(
+            tau=tau, tau_m=0.3, tau_v=30.0, fan_in=n
+        )
+        rms = replace(c, kind="rmsprop")
+        assert make_optimizer(rms, frame, mods) == RMSPropDirection(
+            tau=tau, tau_v=30.0, fan_in=n
+        )
+        none = replace(c, scale="none")
+        assert make_optimizer(none, frame, mods) == pc.optim.AdamW(
+            tau=tau, tau_m=0.3, tau_v=30.0, weight_decay=0.0
+        )
+        with pytest.raises(ValueError, match="needs the modules"):
+            make_optimizer(c, frame)
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            ({"kind": "sgd"}, "adamw and rmsprop"),
+            ({"kind": "graft_adam"}, "adamw and rmsprop"),
+            ({"kind": "adamw", "weight_decay": 0.05}, "weight_decay 0"),
+            ({"kind": "adamw", "scale": "fan_out"}, "optim.scale"),
+        ],
+    )
+    def test_the_scale_belongs_to_adamw_and_rmsprop(self, kw, match):
+        with pytest.raises(ValueError, match=match):
+            OptimConf(**({"scale": "fan_in"} | kw))
+
+    @pytest.mark.parametrize("kind", ["sgd", "graft_adam", "rmsprop"])
     def test_weight_decay_without_adamw_is_an_error(self, kind):
         """A sweep of ``weight_decay`` would otherwise change nothing."""
         with pytest.raises(ValueError, match="has no weight decay"):

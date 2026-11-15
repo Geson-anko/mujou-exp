@@ -13,6 +13,13 @@ Every ``step`` it reads the NAS and, for each running trial:
 3. once every seed completed or diverged, tells the mean (a diverged seed
    counts ``log 10``).
 
+With ``objective_from = "posthoc"`` (M17) there is no report (and so no
+pruning): once every seed ended, each completed run gets a ``task=posthoc``
+job (``StudyConf.posthoc_job``, its run_id kept in the trial's user attribute
+``post``), and the trial is told the mean of their
+``final.decode.val.objective`` (``sweep.objective.posthoc_value``; a diverged
+seed ``log 10``) once all completed; a posthoc job that fails fails the trial.
+
 Then it asks new trials until ``parallel`` are in flight or ``max_trials``
 were asked. A trial's runs are ``overrides`` + its parameters + ``seed=s``,
 composed in the study's snapshot and queued as ``fleet submit`` queues them
@@ -40,10 +47,11 @@ from typing import Any
 
 import optuna
 
+from exp.lib.fleet.contract import read_json
 from exp.lib.fleet.jobs import make_job
-from exp.lib.fleet.queue import Nas
+from exp.lib.fleet.queue import Nas, nas_retry
 from sweep.fleetio import FleetView
-from sweep.objective import reports, trial_value
+from sweep.objective import DIVERGED, SeedRun, posthoc_value, reports, trial_value
 from sweep.study import StudyConf, check_bound
 
 __all__ = ["CODE_KEYS", "Composer", "Coordinator", "StepError", "code_of"]
@@ -176,6 +184,9 @@ class Coordinator:
             r, s = bad[0]
             self._fail(frozen, runs, f"{r}: {s.status} ({s.reason})")
             return
+        if self._conf.objective_from == "posthoc":
+            self._follow_posthoc(frozen, runs, seeds, absent)
+            return
         trial = optuna.Trial(self._study, frozen._trial_id)
         last = frozen.last_step if frozen.last_step is not None else -1
         ended = all(s.status in _ENDED for s in seeds)
@@ -194,6 +205,75 @@ class Coordinator:
                 self._fail(frozen, runs, str(e))
                 return
             self._tell(frozen, value=value)
+
+    def _follow_posthoc(
+        self,
+        frozen: optuna.trial.FrozenTrial,
+        runs: Sequence[str],
+        seeds: Sequence[SeedRun],
+        absent: Mapping[str, int],
+    ) -> None:
+        """Queue the posthoc job of each completed run of ``frozen`` once all
+        its seeds ended, and tell the mean of their objectives once all
+        completed (module docstring)."""
+        if not all(s.status in _ENDED for s in seeds):
+            return
+        trial = optuna.Trial(self._study, frozen._trial_id)
+        posts: dict[str, str] = dict(frozen.user_attrs.get("post", {}))
+        values: list[float] = []
+        waiting = False
+        for r, s in zip(runs, seeds, strict=True):
+            if s.status == "diverged":
+                values.append(DIVERGED)
+                continue
+            post = posts.get(r)
+            if post is None:
+                posts[r] = self._queue_posthoc(r, frozen.number)
+                trial.set_user_attr("post", posts)
+                waiting = True
+                continue
+            seen = self._view.seed_run(post)
+            if seen.status == "absent":
+                self._absent[post] = absent.get(post, 0) + 1
+                if self._absent[post] >= 2:  # queued again, as a run is
+                    self._queue_posthoc(r, frozen.number)
+            if seen.status in _PENDING:
+                waiting = True
+            elif seen.status == "completed":
+                try:
+                    values.append(posthoc_value(seen))
+                except ValueError as e:
+                    self._fail(frozen, runs, f"{post}: {e}")
+                    return
+            else:
+                self._fail(
+                    frozen, runs, f"posthoc {post}: {seen.status} ({seen.reason})"
+                )
+                return
+        if not waiting:
+            self._tell(frozen, value=sum(values) / len(values))
+
+    def _queue_posthoc(self, run_id: str, number: int) -> str:
+        """Queue the posthoc job of the completed run ``run_id`` (unless it is
+        taken already); its run_id."""
+        conf = self._conf
+        run = nas_retry(
+            lambda: read_json(self._nas.runs / conf.batch / run_id / "job.json")
+        )
+        job = conf.posthoc_job(
+            run,
+            nas_runs=self._nas.runs,
+            code=self._code,
+            ckpts=conf.post_ckpts,
+            trial=number,
+        )
+        post = job["run_id"]
+        if not self._view.is_taken(post):
+            self._nas.drop_done(post)
+            self._view.queued(post, self._nas.submit(job))
+            log.info("trial %d: posthoc %s of %s", number, post, run_id)
+        self._absent.pop(post, None)
+        return post
 
     def _fail(
         self, frozen: optuna.trial.FrozenTrial, runs: Sequence[str], why: str

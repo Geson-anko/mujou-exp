@@ -44,6 +44,7 @@ __all__ = [
     "MANIFEST",
     "data_version",
     "eval_clips",
+    "eval_windows",
     "finalize",
     "manifest_entry",
     "prepare",
@@ -234,6 +235,40 @@ def eval_clips(
     g = torch.Generator().manual_seed(seed)
     chosen = torch.randperm(slots, generator=g)[:clips].sort().values
     return torch.stack([reader[s * length : (s + 1) * length] for s in chosen.tolist()])
+
+
+def eval_windows(
+    root: Path,
+    *,
+    held_out: str,
+    clips: int,
+    frames: int,
+    stride: int,
+    steps: int,
+    seed: int,
+) -> Tensor:
+    """``clips`` windows of ``frames + steps`` frames of the held-out video,
+    ``stride`` video frames apart, u8 ``(clips, frames + steps, 3, size,
+    size)``: frame ``j`` of window ``c`` is frame ``s_c + j stride`` of the
+    video. Stack ``k`` of a window (its frames ``k .. k + frames - 1``) is
+    the encoder's input ``k`` steps of ``stride`` frames after the first.
+
+    The windows are chosen as ``eval_clips`` chooses its clips, from slots of
+    ``(frames + steps - 1) stride + 1`` frames (``stride=1, steps=0`` gives
+    ``eval_clips(length=frames)``'s bytes).
+
+    Raises:
+        ValueError: ``frames`` or ``stride`` is not positive, ``steps`` is
+            negative, or ``eval_clips`` raises (too few slots).
+    """
+    if frames < 1 or stride < 1 or steps < 0:
+        raise ValueError(
+            f"frames and stride must be positive and steps >= 0, not {frames}, "
+            f"{stride} and {steps}"
+        )
+    span = (frames + steps - 1) * stride + 1
+    slots = eval_clips(root, held_out=held_out, clips=clips, length=span, seed=seed)
+    return slots[:, ::stride].contiguous()
 
 
 def main() -> None:

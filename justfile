@@ -77,3 +77,13 @@ sweep *args:
 # The tests of tools/sweep (its own uv project; not in `just test`)
 test-sweep:
     uv run --project tools/sweep pytest tools/sweep/tests
+
+# The TensorBoard view of runs (tools/tb/README.md): just tb export --batch B... | view [tb]
+[positional-arguments]
+tb *args:
+    @PYTHONPATH=tools/tb uv run --project tools/tb python -m tb "$@"
+
+# The tests of tools/tb (its own uv project, Python 3.13; not in `just test`)
+test-tb:
+    uv run --project tools/tb pytest tools/tb/tests
+    uv run --project tools/tb pyright -p tools/tb

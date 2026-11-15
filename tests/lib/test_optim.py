@@ -7,7 +7,15 @@ import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
 
-from exp.lib.optim import AdamDirection, Grafted, Warmup, adam
+from exp.lib.optim import (
+    AdamDirection,
+    Grafted,
+    RMSPropDirection,
+    StepAdamW,
+    Warmup,
+    adam,
+    fan_ins,
+)
 from mujou import TensorSpec
 
 
@@ -47,6 +55,71 @@ class TestAdamDirection:
             strict=True,
         ):
             torch.testing.assert_close(a, b)
+
+
+class TestRMSPropDirection:
+    FRAME, LR, TAU_V, EPS = 1 / 30, 1e-3, 30.0, 1e-8
+
+    def _opt(self) -> RMSPropDirection:
+        return RMSPropDirection(tau=self.FRAME / self.LR, tau_v=self.TAU_V)
+
+    def test_steps_of_one_frame_are_those_of_adam_without_momentum(self):
+        """Adam of beta1 = 0 has no first moment and no bias of it; its beta2
+        per step of one frame is exp(-frame / tau_v)."""
+        params = _params(*SHAPES)
+        grads = _grads(params, 300)
+        got = _trajectory(self._opt(), params, grads, elapsed=self.FRAME)
+        want = [p.clone() for p in params]
+        beta2 = math.exp(-self.FRAME / self.TAU_V)
+        torch_opt = torch.optim.Adam(want, lr=self.LR, betas=(0.0, beta2), eps=self.EPS)
+        for gs in grads:
+            for p, g in zip(want, gs, strict=True):
+                p.grad = g.clone()
+            torch_opt.step()
+        for a, b in zip(got, want, strict=True):
+            torch.testing.assert_close(a, b, rtol=1e-12, atol=1e-12)
+
+    def test_state_round_trips_and_resuming_is_not_interrupting(self):
+        params = _params(*SHAPES)
+        grads = _grads(params, 12)
+        whole = _trajectory(self._opt(), params, grads, elapsed=self.FRAME)
+        first = [p.clone() for p in params]
+        bound = self._opt().bind(first)
+        for gs in grads[:5]:
+            bound.step_(gs, self.FRAME)
+        state = bound.state_dict()
+        second = [p.clone() for p in first]
+        resumed = self._opt().bind(second)
+        resumed.load_state_dict(state)
+        again = resumed.state_dict()
+        assert again["c_v"] == state["c_v"]
+        for x, y in zip(again["v"], state["v"], strict=True):
+            assert x is not y and torch.equal(x, y)
+        for gs in grads[5:]:
+            resumed.step_(gs, self.FRAME)
+        for x, y in zip(second, whole, strict=True):
+            torch.testing.assert_close(x, y, rtol=0, atol=0)
+
+
+BAD = [0.0, -1.0, math.inf, math.nan]
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.parametrize("name", ["tau", "tau_m", "tau_v", "eps"])
+def test_adam_direction_refuses_what_adamw_refuses(name, bad):
+    kw = {"tau": 2.0, "tau_m": 0.3, "tau_v": 3.0, "eps": 1e-8, name: bad}
+    with pytest.raises(ValueError, match=f"AdamDirection.{name} must be finite"):
+        AdamDirection(**kw)
+    with pytest.raises(ValueError, match=f"AdamW.{name} must be finite"):
+        pc.optim.AdamW(**kw)
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.parametrize("name", ["tau", "tau_v", "eps"])
+def test_rmsprop_direction_refuses_a_constant_not_finite_and_positive(name, bad):
+    kw = {"tau": 2.0, "tau_v": 3.0, "eps": 1e-8, name: bad}
+    with pytest.raises(ValueError, match=f"RMSPropDirection.{name} must be finite"):
+        RMSPropDirection(**kw)
 
 
 class TestGrafted:
@@ -224,3 +297,252 @@ class TestAdam:
     def test_values_out_of_range_raise(self, lr, b1, b2, name):
         with pytest.raises(ValueError, match=name):
             adam(lr, b1, b2)
+
+
+class TestStepAdamW:
+    """The steps of ``torch.optim.AdamW`` (the oracle), with the learning rate
+    and the weight decay of each step set by hand, the decay only of the
+    parameters of two or more dimensions, and ``clip_grad_norm_``."""
+
+    @staticmethod
+    def _torch(opt: StepAdamW, params, grads) -> list[torch.Tensor]:
+        ps = [p.clone().requires_grad_() for p in params]
+        groups = [
+            {"params": [p for p in ps if p.dim() >= 2]},
+            {"params": [p for p in ps if p.dim() < 2], "weight_decay": 0.0},
+        ]
+        ref = torch.optim.AdamW(groups, lr=opt.lr, betas=opt.betas, eps=opt.eps)
+        for t, gs in enumerate(grads, start=1):
+            for p, g in zip(ps, gs, strict=True):
+                p.grad = g.clone()
+            if opt.clip > 0:
+                torch.nn.utils.clip_grad_norm_(ps, opt.clip)
+            for group in ref.param_groups:
+                group["lr"] = opt.lr_at(t)
+            ref.param_groups[0]["weight_decay"] = opt.wd_at(t)
+            ref.step()
+        return [p.detach() for p in ps]
+
+    @pytest.mark.parametrize(
+        "opt",
+        [
+            StepAdamW(lr=1e-2),
+            StepAdamW(lr=1e-2, betas=(0.8, 0.99), weight_decay=0.05),
+            StepAdamW(
+                lr=1e-2,
+                warmup_steps=3,
+                decay="cosine",
+                decay_steps=8,
+                min_lr=1e-3,
+                weight_decay=0.04,
+                weight_decay_end=0.4,
+                clip=0.5,
+            ),
+        ],
+        ids=["plain", "betas-wd", "scheduled-clipped"],
+    )
+    def test_the_steps_of_torch_adamw(self, opt):
+        params = _params(*SHAPES)
+        grads = _grads(params, 10)
+        for a, b in zip(
+            _trajectory(opt, params, grads),
+            self._torch(opt, params, grads),
+            strict=True,
+        ):
+            torch.testing.assert_close(a, b)
+
+    def test_the_schedules_by_hand(self):
+        opt = StepAdamW(
+            lr=1.0,
+            warmup_steps=4,
+            decay="cosine",
+            decay_steps=8,
+            min_lr=0.1,
+            weight_decay=0.0,
+            weight_decay_end=0.8,
+        )
+        assert [opt.lr_at(t) for t in (1, 2, 4)] == [0.25, 0.5, 1.0]
+        # half way down the cosine: the mean of 1 and 0.1; then 0.1 for good
+        assert opt.lr_at(6) == pytest.approx(0.55)
+        assert opt.lr_at(8) == pytest.approx(0.1) and opt.lr_at(20) == opt.lr_at(8)
+        assert [opt.wd_at(t) for t in (0, 4, 8, 20)] == [0.0, 0.4, 0.8, 0.8]
+        constant = StepAdamW(lr=1.0, warmup_steps=2)
+        assert [constant.lr_at(t) for t in (1, 2, 3, 1000)] == [0.5, 1.0, 1.0, 1.0]
+
+    def test_a_step_of_no_time_moves_nothing_and_the_state_resumes(self):
+        opt = StepAdamW(lr=1e-2, warmup_steps=4)
+        params = _params(*SHAPES)
+        grads = _grads(params, 6)
+        whole = _trajectory(opt, params, grads)
+        moved = [p.clone() for p in params]
+        bound = opt.bind(moved)
+        for gs in grads[:3]:
+            bound.step_(gs, 0.03)
+            bound.step_(gs, 0.0)
+        again = opt.bind(moved)
+        again.load_state_dict(bound.state_dict())
+        for gs in grads[3:]:
+            again.step_(gs, 0.03)
+        for a, b in zip(moved, whole, strict=True):
+            torch.testing.assert_close(a, b)
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"lr": 0.0},
+            {"lr": 1e-3, "betas": (0.9, 1.0)},
+            {"lr": 1e-3, "decay": "linear"},
+            {"lr": 1e-3, "decay": "cosine", "decay_steps": 5, "warmup_steps": 5},
+            {"lr": 1e-3, "weight_decay_end": 0.4},
+        ],
+    )
+    def test_refused(self, kw):
+        with pytest.raises(ValueError):
+            StepAdamW(**kw)
+
+
+class _Token(nn.Module):
+    """A module of the model holding a learned token itself."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        self.token = nn.Parameter(torch.zeros(d))
+
+
+def _net() -> nn.Module:
+    """A fused map (6 to 3 x 6, as attention's qkv), a LayerNorm, a map of 18
+    inputs and a token, in float64."""
+    torch.manual_seed(0)
+    net = nn.ModuleDict(
+        {
+            "qkv": nn.Linear(6, 18),
+            "norm": nn.LayerNorm(18),
+            "down": nn.Linear(18, 4),
+            "tok": _Token(4),
+        }
+    )
+    return net.double()
+
+
+class TestFanIns:
+    def test_the_rule_by_role(self):
+        net = _net()
+        n = fan_ins(net)
+        want = {
+            "qkv.weight": 6,  # fused: in_features, not 18
+            "qkv.bias": 1,
+            "norm.weight": 1,
+            "norm.bias": 1,
+            "down.weight": 18,
+            "down.bias": 1,
+            "tok.token": 1,
+        }
+        assert {k: n[p] for k, p in net.named_parameters()} == want
+
+    @pytest.mark.parametrize(
+        "layer",
+        [nn.Conv2d(2, 3, 3), nn.Embedding(5, 4), nn.MultiheadAttention(4, 2)],
+        ids=["conv", "embedding", "mha"],
+    )
+    def test_a_torch_layer_without_a_rule_raises(self, layer):
+        with pytest.raises(ValueError, match="no fan-in rule"):
+            fan_ins(nn.Sequential(nn.Linear(4, 4), layer))
+
+    def test_binding_a_parameter_it_does_not_hold_raises(self):
+        net = _net()
+        stranger = torch.zeros(3, dtype=torch.float64)
+        opt = RMSPropDirection(tau=1.0, tau_v=3.0, fan_in=fan_ins(net))
+        with pytest.raises(ValueError, match="no fan-in"):
+            opt.bind([*net.parameters(), stranger])
+
+
+class TestPerTensorRate:
+    """With ``fan_in``, steps of one frame are those of ``torch.optim.Adam``
+    with one group per tensor of the rate lr / n (the oracle)."""
+
+    FRAME, LR, TAU_M, TAU_V, EPS = 1 / 30, 1e-2, 0.3, 30.0, 1e-8
+
+    @staticmethod
+    def _case() -> tuple[list[torch.Tensor], list[int], list[list[torch.Tensor]]]:
+        """The values of ``_net``'s parameters, their fan-ins, 300 gradients."""
+        net = _net()
+        n = fan_ins(net)
+        values = [p.detach().clone() for p in net.parameters()]
+        ns = [n[p] for p in net.parameters()]
+        return values, ns, _grads(values, 300)
+
+    def _bind(self, kind: str, values, ns):
+        """Copies of ``values`` and an optimizer of ``kind`` bound to them, of
+        the fan-ins ``ns``."""
+        tau = self.FRAME / self.LR
+        copies = [v.clone() for v in values]
+        fan_in = dict(zip(copies, ns, strict=True))
+        if kind == "adam":
+            opt = AdamDirection(
+                tau=tau, tau_m=self.TAU_M, tau_v=self.TAU_V, fan_in=fan_in
+            )
+        else:
+            opt = RMSPropDirection(tau=tau, tau_v=self.TAU_V, fan_in=fan_in)
+        return copies, opt.bind(copies)
+
+    def _torch(self, values, ns, grads, beta1: float) -> list[torch.Tensor]:
+        ps = [v.clone() for v in values]
+        beta2 = math.exp(-self.FRAME / self.TAU_V)
+        groups = [{"params": [p], "lr": self.LR / n} for p, n in zip(ps, ns)]
+        ref = torch.optim.Adam(groups, betas=(beta1, beta2), eps=self.EPS)
+        for gs in grads:
+            for p, g in zip(ps, gs, strict=True):
+                p.grad = g.clone()
+            ref.step()
+        return ps
+
+    @pytest.mark.parametrize("kind", ["adam", "rmsprop"])
+    def test_steps_are_torch_adam_of_lr_over_the_fan_in(self, kind):
+        values, ns, grads = self._case()
+        got, bound = self._bind(kind, values, ns)
+        for gs in grads:
+            bound.step_(gs, self.FRAME)
+        beta1 = math.exp(-self.FRAME / self.TAU_M) if kind == "adam" else 0.0
+        want = self._torch(values, ns, grads, beta1)
+        for a, b in zip(got, want, strict=True):
+            torch.testing.assert_close(a, b, rtol=1e-12, atol=1e-12)
+        # the fan-ins differ, so the oracle checks the scale of each tensor
+        assert sorted(set(ns)) == [1, 6, 18]
+
+    @pytest.mark.parametrize("kind", ["adam", "rmsprop"])
+    def test_resuming_is_not_interrupting(self, kind):
+        values, ns, grads = self._case()
+        whole, bound = self._bind(kind, values, ns)
+        for gs in grads:
+            bound.step_(gs, self.FRAME)
+        first, bound = self._bind(kind, values, ns)
+        for gs in grads[:100]:
+            bound.step_(gs, self.FRAME)
+        second, resumed = self._bind(kind, first, ns)  # a new run of the values
+        resumed.load_state_dict(bound.state_dict())
+        for gs in grads[100:]:
+            resumed.step_(gs, self.FRAME)
+        for a, b in zip(second, whole, strict=True):
+            torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda f: AdamDirection(tau=2.0, tau_m=0.3, tau_v=3.0, fan_in=f),
+            lambda f: RMSPropDirection(tau=2.0, tau_v=3.0, fan_in=f),
+            lambda f: Grafted(
+                inner=AdamDirection(tau=2.0, tau_m=0.3, tau_v=3.0, fan_in=f)
+            ),
+        ],
+        ids=["adam", "rmsprop", "grafted"],
+    )
+    def test_without_it_or_of_ones_the_steps_are_the_same_bit_for_bit(self, make):
+        params = _params(*SHAPES)
+        grads = _grads(params, 50)
+        plain = _trajectory(make(None), params, grads)
+        copies = [p.clone() for p in params]
+        bound = make({c: 1 for c in copies}).bind(copies)
+        for gs in grads:
+            bound.step_(gs, 0.03)
+        for a, b in zip(plain, copies, strict=True):
+            assert torch.equal(a, b)

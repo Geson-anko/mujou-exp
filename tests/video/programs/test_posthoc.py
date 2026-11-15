@@ -18,8 +18,9 @@ from exp.video.compose import compose, to_dict
 from exp.video.main import local_job, main as video_main
 from exp.video.programs import posthoc
 from exp.video.programs.posthoc import main, parent_dir
-from exp.video.programs.vision import PROGRAM
+from exp.video.programs.vision import DATA_ENV, PROGRAM
 from tests.video.measure.test_posthoc import TINY
+from tests.video.packed import smooth_tours, tiny
 
 CODE = {
     "snap": "unknown",
@@ -143,3 +144,70 @@ class TestEntry:
         monkeypatch.setattr(posthoc, "assert_free_threaded", lambda where: None)
         monkeypatch.setenv("OMP_NUM_THREADS", "4")
         assert main(["--run", str(runs / "b" / "parent")]) == Exit.ENV
+
+
+class TestPackedJob:
+    """M17: the posthoc job of a run of the packed layout evaluates the
+    encoder (measure.encoder_eval) by the same contract; task=baselines the
+    yardsticks alone."""
+
+    @pytest.fixture(scope="class")
+    def m17(self, tmp_path_factory) -> tuple[Path, list[str]]:
+        tmp = tmp_path_factory.mktemp("m17")
+        root = smooth_tours(tmp / "data" / "d", {"A": 120, "B": 80, "H": 200})
+        overrides = tiny(root.name)
+        runs = tmp / "runs"
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv(DATA_ENV, str(root.parent))
+            mp.setattr(loop, "assert_free_threaded", lambda where: None)
+            job = local_job(overrides, runs / "b" / "parent")
+            assert loop.run(PROGRAM, job, attempt=1) == Exit.OK
+        return runs, overrides
+
+    def _job(self, runs: Path, overrides: list[str], name: str, task: str, **extra):
+        o = [*overrides, f"task={task}"]
+        job = make_job(
+            batch="b",
+            config=to_dict(compose(o)),
+            overrides=o,
+            code=CODE,
+            res=RES,
+            extra=extra,
+        )
+        run_dir = runs / "b" / name
+        run_dir.mkdir(parents=True)
+        (run_dir / "job.json").write_text(json.dumps(job))
+        return run_dir
+
+    def test_the_last_checkpoint_with_the_objective(self, m17, monkeypatch):
+        runs, overrides = m17
+        monkeypatch.setenv(DATA_ENV, str(runs.parent / "data"))
+        decode = {"windows": 16, "steps": 3, "ckpts": "last"}
+        run_dir = self._job(
+            runs, overrides, "post", "posthoc", parent="b/parent", decode=decode
+        )
+        assert _run(run_dir, 1, monkeypatch) == Exit.OK
+        result = json.loads((run_dir / "result.json").read_text())
+        final = result["final"]
+        assert (
+            final["decode"]["val"]["t"] == 1.0 and "objective" in final["decode"]["val"]
+        )
+        assert set(final["baselines"]["val"]) == {"pca", "init"}
+        manifest = json.loads((run_dir / "manifest.json").read_text())["files"]
+        for name in ("baselines.jsonl", "metrics.jsonl", "00001.0-restore.png"):
+            assert f"post/decode/{name}" in manifest, name
+        verify_manifest(run_dir)
+
+    def test_the_baselines_task_needs_no_parent(self, m17, monkeypatch):
+        runs, overrides = m17
+        monkeypatch.setenv(DATA_ENV, str(runs.parent / "data"))
+        run_dir = self._job(
+            runs, overrides, "base", "baselines", decode={"windows": 16, "steps": 3}
+        )
+        assert _run(run_dir, 1, monkeypatch) == Exit.OK
+        final = json.loads((run_dir / "result.json").read_text())["final"]
+        assert final["decode"] == {} and set(final["baselines"]["test"]) == {
+            "pca",
+            "init",
+        }
+        assert (run_dir / "post/decode/pca-dyn.png").is_file()

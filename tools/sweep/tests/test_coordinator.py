@@ -523,3 +523,100 @@ class TestLate:
         assert t.state == State.COMPLETE
         assert t.value == pytest.approx(0.0)
         assert t.intermediate_values == {300: pytest.approx(0.0)}
+
+
+def _post_final(objective: float | None) -> dict[str, Any]:
+    val: dict[str, Any] = {"split": "val", "recon": 0.5}
+    if objective is not None:
+        val["objective"] = objective
+    return {"decode": {"val": val, "test": {"split": "test"}}}
+
+
+class TestPosthoc:
+    """objective_from = "posthoc" (M17): a trial's value is the mean over its
+    seeds of the objective of the posthoc job after each completed run."""
+
+    def conf(self, **post: Any) -> StudyConf:
+        return make_conf(
+            objective_from="posthoc",
+            posthoc={"res": "4090", "gpu_mem": 6.0, **post},
+            max_trials=1,
+            parallel=1,
+        )
+
+    def test_the_posthoc_jobs_follow_the_runs_and_tell_the_mean(self, nas, fleet):
+        coord, study, _ = start(nas, self.conf())
+        coord.step()
+        runs = runs_of(study, 0)
+        fleet.claim_all(runs)
+        fleet.end(runs[0], "completed", [row(300.0, 9.0)])
+        coord.step()
+        assert not fleet.queued()  # not before every seed ended
+        fleet.end(runs[1], "completed", [row(300.0, 9.0)])
+        coord.step()
+        posts = fleet.queued()
+        assert len(posts) == 2 and study.trials[0].state == State.RUNNING
+        for post, run in zip(sorted(posts, key=lambda j: j["after"]), sorted(runs)):
+            assert post["after"] == [run]
+            assert post["batch"] == "m14-s1-test-v1-post"
+            assert post["config"]["task"] == "posthoc"
+            assert post["overrides"][-1] == "task=posthoc"
+            assert post["parent"] == str(nas.runs / "m14-s1-test-v1" / run)
+            assert post["decode"] == {"ckpts": "last"}
+            assert post["res"]["class"] == "4090" and post["res"]["gpu_mem_gb"] == 6.0
+        assert study.trials[0].user_attrs["post"] == {
+            j["after"][0]: j["run_id"] for j in posts
+        }
+        assert study.trials[0].last_step is None  # no report: ASHA never prunes
+        for j, value in zip(posts, (0.8, 1.2)):
+            fleet.claim(j["run_id"])
+            fleet.end(j["run_id"], "completed", final=_post_final(value))
+        coord.step()
+        assert study.trials[0].state == State.COMPLETE
+        assert study.trials[0].value == pytest.approx(1.0)
+        coord.step()
+        assert len(fleet.queued()) == 0  # nothing queued twice
+
+    def test_a_diverged_seed_counts_log10_and_gets_no_posthoc(self, nas, fleet):
+        coord, study, _ = start(nas, self.conf())
+        coord.step()
+        runs = runs_of(study, 0)
+        fleet.claim_all(runs)
+        fleet.end(runs[0], "completed", [row(300.0, 1.0)])
+        fleet.end(runs[1], "diverged", [], t_end=120.0)
+        coord.step()
+        (post,) = fleet.queued()
+        assert post["after"] == [runs[0]]
+        fleet.claim(post["run_id"])
+        fleet.end(post["run_id"], "completed", final=_post_final(0.5))
+        coord.step()
+        assert study.trials[0].value == pytest.approx((0.5 + LOG10) / 2)
+
+    @pytest.mark.parametrize("how", ["failed", "no-objective"])
+    def test_a_posthoc_without_a_value_fails_the_trial(self, nas, fleet, how):
+        coord, study, _ = start(nas, self.conf())
+        coord.step()
+        runs = runs_of(study, 0)
+        fleet.claim_all(runs)
+        for r in runs:
+            fleet.end(r, "completed", [row(300.0, 1.0)])
+        coord.step()
+        post = fleet.queued()[0]
+        fleet.claim(post["run_id"])
+        if how == "failed":
+            fleet.end(post["run_id"], "failed", reason="boom")
+        else:
+            fleet.end(post["run_id"], "completed", final=_post_final(None))
+        coord.step()
+        assert study.trials[0].state == State.FAIL
+
+    def test_the_settings_are_checked(self):
+        with pytest.raises(ValueError, match="objective_from"):
+            make_conf(objective_from="probe")
+        with pytest.raises(ValueError, match="unknown keys"):
+            make_conf(objective_from="posthoc", posthoc={"color": 1})
+        with pytest.raises(ValueError, match="ckpts"):
+            make_conf(objective_from="posthoc", posthoc={"ckpts": "some"})
+        conf = make_conf(objective_from="posthoc", posthoc={"ckpts": "all"})
+        assert StudyConf.from_dict(conf.to_dict()).to_dict() == conf.to_dict()
+        assert "objective_from" not in make_conf().to_dict()["study"]

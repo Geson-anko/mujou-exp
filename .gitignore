@@ -22,6 +22,8 @@ build/
 
 # Experiment artifacts (checkpoints, logs, plots): keep them out of git
 runs/
+# the TensorBoard events of `just tb export` (tools/tb)
+/tb/
 outputs/
 wandb/
 logs/

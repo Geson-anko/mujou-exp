@@ -1,15 +1,32 @@
 r"""The visions of M15: ``Chunker -> Enc1 .. EncL -> JEPAHead`` (PC-ALM) or
 ``Chunker -> JEPABP`` (BP), made from a ``RunConf`` from the same initial
 weights (``vit.build_vision``) and the same masks (the ``Chunker`` of the same
-seed)."""
+seed). The packed layout (M17): ``StackChunker -> Enc1 .. EncL ->
+PackedJEPAHead`` (each stage a ``vit.Segmented``, or with the target
+encoder of ``vision.ema`` an ``ema.TargetStage``) or ``StackChunker ->
+JEPABP``."""
+
+from typing import cast
 
 import mujou.pc as pc
+import torch
+from mujou.pc.optim import Optimizer
 
 import mujou
 from exp.video.dyn.nets import make_optimizer
 from exp.video.jepa.bp import JEPABP
-from exp.video.jepa.nodes import Chunker, JEPAHead
-from exp.video.jepa.vit import VisionModules, build_vision, image_shape
+from exp.video.jepa.ema import Following, TargetStage
+from exp.video.jepa.masks import spatial_keep
+from exp.video.jepa.nodes import Chunker, JEPAHead, PackedJEPAHead, StackChunker
+from exp.video.jepa.vit import (
+    PackedPredictor,
+    Predictor,
+    Segmented,
+    Stage,
+    VisionModules,
+    build_vision,
+    image_shape,
+)
 from exp.video.schema.run import RunConf
 from exp.video.schema.vision import VisionConf
 from mujou import TensorSpec
@@ -52,6 +69,30 @@ def _chunker(conf: RunConf, v: VisionConf, tau: pc.TimeConstants, b: int) -> Chu
     )
 
 
+def _stack_chunker(
+    conf: RunConf, v: VisionConf, tau: pc.TimeConstants, b: int, mods: VisionModules
+) -> StackChunker:
+    channels, size = image_shape(conf)
+    return StackChunker(
+        stack=TensorSpec((b, v.frames, channels, size, size), torch.uint8),
+        patch=v.patch,
+        tubelet=v.tubelet,
+        masks=v.context_masks,
+        keeps=[spatial_keep(mods.grid, m) for m in v.context_masks],
+        period=tau.period,
+        seed=conf.seed + CHUNKER_SEED,
+        device=conf.device,
+    )
+
+
+def _first(
+    conf: RunConf, v: VisionConf, tau: pc.TimeConstants, b: int, mods: VisionModules
+) -> Chunker | StackChunker:
+    if v.layout == "packed":
+        return _stack_chunker(conf, v, tau, b, mods)
+    return _chunker(conf, v, tau, b)
+
+
 class VisionPC(mujou.Network):
     """``Chunker -> Enc1 .. EncL -> JEPAHead`` of ``mods``: one ``pc.Layer`` per
     stage of the encoder (``enc1``, ``enc2``, ..., in ``names``), the head on
@@ -62,6 +103,12 @@ class VisionPC(mujou.Network):
     Args:
         mods: The modules, on ``conf.device``.
         conf: The run: its vision, time, streams, seed and device.
+
+    Raises:
+        ValueError: The past data points are stored inputs
+            (``vision.datapoint_store`` ``"input"``): encoding them anew needs
+            the encoder, which no node of PC-ALM holds whole (``JEPABP``
+            only).
     """
 
     enc1: pc.Layer  # set by name: those of vision.nodes only
@@ -71,17 +118,29 @@ class VisionPC(mujou.Network):
         super().__init__()
         v, tau, b = _parts(conf)
         assert conf.optim_vision is not None  # _parts checks
+        if v.datapoint_buffer and v.datapoint_store == "input":
+            raise ValueError(
+                "vision.datapoint_store 'input' encodes the stored stacks anew "
+                "with the whole encoder, which the head of PC-ALM does not "
+                "hold: learner=bp only"
+            )
         optimizer = make_optimizer(conf.optim_vision, conf.time.frame)
         self.mods, self.tau = mods, tau
-        self.chunker = _chunker(conf, v, tau, b)
+        packed = v.layout == "packed"
+        self.chunker = _first(conf, v, tau, b, mods)
         spec, port = self.chunker.act_spec, self.chunker.next
         self.names = tuple(f"enc{i + 1}" for i in range(len(mods.encoder.stages)))
-        for name, stage in zip(self.names, mods.encoder.stages, strict=True):
+        for i, (name, stage) in enumerate(
+            zip(self.names, mods.encoder.stages, strict=True)
+        ):
+            module, moves = self._node_module(
+                i, cast(Stage, stage), optimizer, v, conf.time.frame
+            )
             node = pc.Layer(
-                stage,
+                module,
                 act_spec=spec,
                 tau=tau,
-                optimizer=optimizer,
+                optimizer=moves,
                 learn_interval=conf.time.learn_interval,
                 device=conf.device,
                 cuda_graph=conf.ctl.cuda_graph and conf.device.startswith("cuda"),
@@ -89,33 +148,88 @@ class VisionPC(mujou.Network):
             setattr(self, name, node)
             port.connect(node.prev)
             spec, port = node.act_spec, node.next
-        self.head = JEPAHead(
-            mods.predictor,
-            act_spec=spec,
-            views=v.views,
-            extra=mods.encoder.extra,
-            z_pool=v.z_pool,
-            lam=v.sigreg,
-            sg=v.sg,
-            sigreg_on=v.sigreg_on,
-            decoder=mods.decoder,
-            recon=v.recon,
-            pixel_mean=v.pixel_mean,
-            pixel_std=v.pixel_std,
-            directions=v.sigreg_directions,
-            tau=tau,
-            optimizer=optimizer,
-            learn_interval=conf.time.learn_interval,
-            seed=conf.seed + HEAD_SEED,
-            device=conf.device,
-            cuda_graph=conf.ctl.cuda_graph,
-        )
+        self.head: JEPAHead | PackedJEPAHead
+        if packed:
+            assert isinstance(mods.predictor, PackedPredictor)
+            self.head = PackedJEPAHead(
+                mods.predictor,
+                proj=mods.proj,
+                act_spec=spec,
+                keeps=list(mods.segments[1:]),
+                lam=v.sigreg,
+                sg=v.sg,
+                sigreg_on=v.sigreg_on,
+                pred_loss=v.pred_loss,
+                token_sigreg=v.token_sigreg,
+                token_weight=v.token_weight,
+                z_weight=v.z_weight,
+                projector=mods.projector,
+                zpred=mods.zpred,
+                target_norm=v.target_norm,
+                target=mods.target is not None,
+                token_buffer=v.token_buffer,
+                token_insert=v.token_insert,
+                datapoint_buffer=v.datapoint_buffer,
+                datapoint_every=v.datapoint_every,
+                datapoint_law=v.datapoint_law,
+                directions=v.sigreg_directions,
+                tau=tau,
+                optimizer=optimizer,
+                learn_interval=conf.time.learn_interval,
+                seed=conf.seed + HEAD_SEED,
+                device=conf.device,
+                cuda_graph=conf.ctl.cuda_graph,
+            )
+        else:
+            assert isinstance(mods.predictor, Predictor)
+            self.head = JEPAHead(
+                mods.predictor,
+                act_spec=spec,
+                views=v.views,
+                extra=mods.encoder.extra,
+                z_pool=v.z_pool,
+                lam=v.sigreg,
+                sg=v.sg,
+                sigreg_on=v.sigreg_on,
+                decoder=mods.decoder,
+                recon=v.recon,
+                pixel_mean=v.pixel_mean,
+                pixel_std=v.pixel_std,
+                directions=v.sigreg_directions,
+                tau=tau,
+                optimizer=optimizer,
+                learn_interval=conf.time.learn_interval,
+                seed=conf.seed + HEAD_SEED,
+                device=conf.device,
+                cuda_graph=conf.ctl.cuda_graph,
+            )
         port.connect(self.head.prev)
         self.prev, self.stats, self.z_out = (
             self.chunker.prev,
             self.head.stats,
             self.head.z_out,
         )
+
+    def _node_module(
+        self, i: int, stage: Stage, optimizer: Optimizer, v: VisionConf, frame: float
+    ) -> tuple[torch.nn.Module, Optimizer]:
+        """The module and the optimizer of encoder node ``i``: the stage
+        (``Segmented``, packed) and ``optimizer``; with the target encoder
+        (``vision.ema``) the stage and its copy (``ema.TargetStage``) and
+        ``optimizer`` followed by the copy's move (``ema.Following``, ``v.ema``
+        per ``frame`` seconds)."""
+        mods = self.mods
+        if v.layout != "packed":
+            return stage, optimizer
+        if mods.target is None:
+            return Segmented(stage, mods.segments), optimizer
+        assert v.ema  # build_vision builds the target with it only
+        target = cast(Stage, mods.target.stages[i])
+        module = TargetStage(stage, target, mods.segments, first=i == 0)
+        moves = Following(
+            optimizer, online=stage, target=target, momentum=v.ema, frame=frame
+        )
+        return module, moves
 
 
 class VisionBP(mujou.Network):
@@ -126,7 +240,7 @@ class VisionBP(mujou.Network):
         v, tau, b = _parts(conf)
         assert conf.optim_vision is not None  # _parts checks
         self.mods, self.tau = mods, tau
-        self.chunker = _chunker(conf, v, tau, b)
+        self.chunker = _first(conf, v, tau, b, mods)
         self.vision = JEPABP(
             mods,
             act_spec=self.chunker.act_spec,
@@ -137,9 +251,24 @@ class VisionBP(mujou.Network):
             recon=v.recon,
             pixel_mean=v.pixel_mean,
             pixel_std=v.pixel_std,
+            pred_loss=v.pred_loss,
+            token_sigreg=v.token_sigreg,
+            token_weight=v.token_weight,
+            z_weight=v.z_weight,
+            target_norm=v.target_norm,
+            ema=v.ema,
+            frame=conf.time.frame,
+            token_buffer=v.token_buffer,
+            token_insert=v.token_insert,
+            datapoint_buffer=v.datapoint_buffer,
+            datapoint_every=v.datapoint_every,
+            datapoint_store=v.datapoint_store,
+            datapoint_law=v.datapoint_law,
             directions=v.sigreg_directions,
             tau=tau,
-            optimizer=make_optimizer(conf.optim_vision, conf.time.frame),
+            optimizer=make_optimizer(
+                conf.optim_vision, conf.time.frame, list(mods.named().values())
+            ),
             learn_interval=conf.time.learn_interval,
             seed=conf.seed + HEAD_SEED,
             device=conf.device,

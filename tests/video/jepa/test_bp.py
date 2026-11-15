@@ -12,7 +12,13 @@ from exp.video.jepa.nets import VisionBP, VisionPC, build_vision_net
 from exp.video.jepa.nodes import Chunker
 from exp.video.jepa.vit import build_vision
 from mujou import TensorSpec
-from tests.video.jepa.test_nodes import TAU, _conf, _frames, _sample, _show
+from tests.video.jepa.test_nodes import (
+    TAU,
+    _conf,
+    _frames,
+    _sample,
+    _show,
+)
 
 
 class _Recording(Optimizer):

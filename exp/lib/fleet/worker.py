@@ -527,7 +527,7 @@ class Worker:
     def _slot_for(self, job: dict[str, Any], cordoned: dict[str, str]) -> Slot | None:
         res = job["res"]
         return allocate(
-            self._conf.slots,
+            self._conf.slots[self._host],
             self._cores,
             self._used(),
             res_class=res["class"],
@@ -556,7 +556,7 @@ class Worker:
         names = {p.name for p in entries}
         self._jobs = {n: j for n, j in self._jobs.items() if n in names}
         cordoned = self._nas.cordoned(self._host)
-        n_units = len(units(self._conf.slots, self._cores))
+        n_units = len(units(self._conf.slots[self._host], self._cores))
         here = set(self._runs) | {j["run_id"] for j, _ in self._pending}
         for path in entries:
             if len(self._runs) + len(self._pending) >= n_units:
@@ -674,7 +674,7 @@ class Worker:
 
     def _heartbeat(self, now: float) -> None:
         used = self._used()
-        slots = self._conf.slots
+        slots = self._conf.slots[self._host]
         if shutil.which("nvidia-smi") and now - self._gpu_at >= self._timing.live:
             self._gpu_free, self._gpu_at = _gpu_free_mb(), now
         beat = {

@@ -1,15 +1,24 @@
+from typing import override
+
 import pytest
 import torch
 
-from exp.lib.sigreg import sigreg
+from exp.lib.gauss_kl import buffer_moments, gauss_kl_grad
+from exp.lib.sigreg import T_POINTS, ecf_sums, sigreg
 from exp.video.jepa.loss import (
+    PastSums,
     Reconstruction,
     jepa_loss,
+    jepa_loss_packed,
     pool,
     prediction_errors,
     split_y,
+    token_sigreg_of,
+    view_embeddings,
     weighted_sigreg,
+    z_errors,
 )
+from exp.video.jepa.vit import ZPredictor
 
 B, V, E, T, D = 3, 3, 1, 4, 5
 
@@ -287,3 +296,588 @@ class TestReconstruction:
         assert torch.equal(frames.flatten(1), y.view(2, 3, 10)[:, 0, 4:])
         masks, frames = split_y(y, 2, 3, None)
         assert frames is None and masks.shape == (2, 2, 10)
+
+
+class _Shift(torch.nn.Module):
+    """A predictor of the packed layout one can compute by hand: each masked
+    token is predicted as the mean of the context plus a learned offset and
+    its id / 10."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        self.offset = torch.nn.Parameter(torch.linspace(-1, 1, d, dtype=torch.float64))
+
+    @override
+    def forward(self, ctx, ctx_ids, tgt_ids):
+        m = tgt_ids.shape[1]
+        base = ctx.mean(1, keepdim=True).expand(-1, m, -1)
+        return base + self.offset + tgt_ids[..., None].to(ctx) / 10
+
+
+def _packed_inputs(seed: int = 0):
+    """B = 3 streams, T = 6 tokens of D = 5, two context views keeping 2 and 4."""
+    g = torch.Generator().manual_seed(seed)
+    t, keeps = 6, [2, 4]
+    y = torch.zeros(3, 2 * t)
+    for b in range(3):
+        for v, k in enumerate(keeps):
+            masked = torch.randperm(t, generator=g)[: t - k]
+            y[b, v * t + masked] = 1.0
+    tokens = torch.randn(3, t + sum(keeps), 5, generator=g, dtype=torch.float64)
+    dirs = torch.randn(7, 5, generator=g, dtype=torch.float64)
+    return tokens, y, keeps, dirs / dirs.norm(dim=1, keepdim=True)
+
+
+class TestJEPALossPacked:
+    @pytest.mark.parametrize("pred_loss", ["l2", "l1"])
+    def test_by_hand(self, pred_loss):
+        """L = (1 / B) sum_valid [(1 - lam) L_pred_b + lam S], L_pred_b the mean
+        over the views of the mean over the masked tokens of l / D."""
+        tokens, y, keeps, dirs = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        pred = _Shift(5)
+        lam, t = 0.3, 6
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            pred,
+            keeps=keeps,
+            proj=None,
+            lam=lam,
+            sg=False,
+            sigreg_on="z",
+            pred_loss=pred_loss,
+        )
+        target = tokens[:, :t]
+        per_b = []
+        for b in range(3):
+            views, at = [], t
+            for v, k in enumerate(keeps):
+                ctx = tokens[b, at : at + k]
+                at += k
+                masked = (y[b, v * t : (v + 1) * t] == 1).nonzero().flatten()
+                guess = ctx.mean(0) + pred.offset + masked[:, None] / 10
+                diff = guess - target[b, masked]
+                err = diff.abs() if pred_loss == "l1" else diff**2
+                views.append(err.mean())
+            per_b.append(sum(views) / 2)
+        z = target.mean(1)
+        s = weighted_sigreg(z, valid.double(), dirs)
+        expect = ((1 - lam) * (per_b[0] + per_b[2]) + lam * 2 * s) / 3
+        torch.testing.assert_close(got.loss, expect)
+        torch.testing.assert_close(got.pred, (per_b[0] + per_b[2]) / 2)
+        torch.testing.assert_close(got.z, z)
+        assert got.recon == 0
+
+    def test_the_projection_and_sigreg_on_both(self):
+        """z = proj(mean); "both" averages S_z (on z, its directions) and S_t / T
+        (on the target tokens, the other directions)."""
+        tokens, y, keeps, dirs = _packed_inputs(1)
+        g = torch.Generator().manual_seed(9)
+        proj = torch.nn.Linear(5, 3).double()
+        dz = torch.randn(7, 3, generator=g, dtype=torch.float64)
+        valid = torch.ones(3, dtype=torch.bool)
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dz,
+            dirs,
+            _Shift(5),
+            keeps=keeps,
+            proj=proj,
+            lam=1.0,
+            sg=False,
+            sigreg_on="both",
+            pred_loss="l2",
+        )
+        target = tokens[:, :6]
+        z = proj(target.mean(1))
+        s_z = weighted_sigreg(z, valid.double(), dz)
+        s_t = weighted_sigreg(target.reshape(-1, 5), torch.ones(18).double(), dirs)
+        torch.testing.assert_close(got.sigreg, (s_z + s_t / 6) / 2)
+        torch.testing.assert_close(got.z, z)
+
+    def test_sg_stops_the_prediction_at_the_target(self):
+        tokens, y, keeps, dirs = _packed_inputs(2)
+        tokens.requires_grad_()
+        valid = torch.ones(3, dtype=torch.bool)
+        for sg in (False, True):
+            t = jepa_loss_packed(
+                tokens,
+                y,
+                valid,
+                dirs,
+                None,
+                _Shift(5),
+                keeps=keeps,
+                proj=None,
+                lam=0.0,
+                sg=sg,
+                sigreg_on="z",
+                pred_loss="l2",
+            )
+            (g,) = torch.autograd.grad(t.loss, [tokens])
+            target_zero = bool((g[:, :6] == 0).all())
+            assert target_zero == sg
+            assert (g[:, 6:] != 0).any()
+
+
+class TestTokenSigreg:
+    """The SIGReg of the target tokens of the packed layout."""
+
+    def _dirs(self, d: int = 5) -> torch.Tensor:
+        g = torch.Generator().manual_seed(3)
+        a = torch.randn(9, d, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def test_scaled_and_raw_are_of_all_the_tokens(self):
+        g = torch.Generator().manual_seed(0)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.tensor([1.0, 0.0, 1.0], dtype=torch.float64), self._dirs()
+        raw = weighted_sigreg(target.reshape(-1, 5), w.repeat_interleave(6), dirs)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "raw"), raw)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "scaled"), raw / 6)
+
+    def test_clip_of_tokens_constant_within_each_stack_is_that_of_zeros(self):
+        """Tokens that collapse to a constant per stack (z of any spread) are
+        zeros less the stack's mean: the empirical characteristic function is
+        1, so the statistic is n_w T int (1 - e^{-t^2/2})^2 e^{-t^2/2} dt,
+        growing with the tokens; that of "scaled" stays below S_z."""
+        g = torch.Generator().manual_seed(1)
+        clip = torch.randn(4, 1, 5, generator=g, dtype=torch.float64)
+        target = clip.expand(4, 8, 5)
+        w, dirs = torch.ones(4, dtype=torch.float64), self._dirs()
+        t = T_POINTS.double()
+        phi = torch.exp(-(t**2) / 2)
+        by_hand = 4 * 8 * torch.trapezoid((1 - phi) ** 2 * phi, t)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "clip"), by_hand)
+        s_z = weighted_sigreg(clip[:, 0], w, dirs)
+        torch.testing.assert_close(token_sigreg_of(target, w, dirs, "scaled"), s_z)
+
+    def test_clip_does_not_see_the_stacks_means(self):
+        g = torch.Generator().manual_seed(2)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        shift = 7 * torch.randn(3, 1, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.ones(3, dtype=torch.float64), self._dirs()
+        torch.testing.assert_close(
+            token_sigreg_of(target + shift, w, dirs, "clip"),
+            token_sigreg_of(target, w, dirs, "clip"),
+        )
+
+    @pytest.mark.parametrize("kind", ["raw", "clip"])
+    def test_the_loss_averages_it_with_s_z_on_both(self, kind):
+        tokens, y, keeps, dirs = _packed_inputs(4)
+        valid = torch.ones(3, dtype=torch.bool)
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=1.0,
+            sg=False,
+            sigreg_on="both",
+            pred_loss="l2",
+            token_sigreg=kind,
+        )
+        target = tokens[:, :6]
+        w = valid.double()
+        s_z = weighted_sigreg(target.mean(1), w, dirs)
+        s_t = token_sigreg_of(target, w, dirs, kind)
+        torch.testing.assert_close(got.sigreg, (s_z + s_t) / 2)
+
+
+def _past(buffer: torch.Tensor, dirs: torch.Tensor) -> PastSums:
+    cos, sin = ecf_sums(buffer, dirs)
+    return PastSums(cos, sin, torch.tensor(float(len(buffer)), dtype=buffer.dtype))
+
+
+class TestPastTokens:
+    """The SIGReg of the tokens with the past target tokens of a buffer among
+    its samples (vision.token_buffer)."""
+
+    def _dirs(self, d: int = 5) -> torch.Tensor:
+        g = torch.Generator().manual_seed(3)
+        a = torch.randn(9, d, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def test_it_is_sigreg_of_the_current_and_the_past_samples_together(self):
+        """The statistic of the samples of weight 1 and the buffer is that of
+        exp.lib.sigreg.sigreg on them concatenated, and so is its gradient to
+        the current samples (the buffer a constant)."""
+        g = torch.Generator().manual_seed(0)
+        x = torch.randn(9, 5, generator=g, dtype=torch.float64).requires_grad_()
+        buffer = torch.randn(11, 5, generator=g, dtype=torch.float64)
+        w = torch.tensor([1, 0, 1, 1, 0, 0, 1, 1, 0], dtype=torch.bool)
+        dirs = self._dirs()
+        got = weighted_sigreg(x, w, dirs, _past(buffer, dirs))
+        expect = sigreg(x[w], buffer, dirs)
+        torch.testing.assert_close(got, expect)
+        (g_got,) = torch.autograd.grad(got, [x])
+        (g_expect,) = torch.autograd.grad(expect, [x])
+        torch.testing.assert_close(g_got, g_expect)
+        assert (g_got[~w] == 0).all()
+
+    def test_the_raw_token_statistic_of_the_valid_streams_and_the_past(self):
+        g = torch.Generator().manual_seed(1)
+        target = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        buffer = torch.randn(7, 5, generator=g, dtype=torch.float64)
+        w, dirs = torch.tensor([1.0, 0.0, 1.0], dtype=torch.float64), self._dirs()
+        got = token_sigreg_of(target, w, dirs, "raw", _past(buffer, dirs))
+        expect = sigreg(target[[0, 2]].reshape(-1, 5), buffer, dirs)
+        torch.testing.assert_close(got, expect)
+
+    def test_tokens_constant_within_each_stack_are_t_times_the_stacks(self):
+        """Tokens s_{b,t} = c_b have the empirical characteristic function of
+        the c_b: the statistic of the B T tokens is exactly T times that of
+        the B samples c_b (module docstring of jepa.loss)."""
+        g = torch.Generator().manual_seed(2)
+        c = torch.randn(4, 1, 5, generator=g, dtype=torch.float64)
+        t = 8
+        w, dirs = torch.ones(4, dtype=torch.float64), self._dirs()
+        tokens = token_sigreg_of(c.expand(4, t, 5), w, dirs, "raw")
+        torch.testing.assert_close(tokens, t * weighted_sigreg(c[:, 0], w, dirs))
+
+    @pytest.mark.parametrize("kind", ["scaled", "clip"])
+    def test_only_raw_takes_the_past(self, kind):
+        dirs = self._dirs()
+        past = _past(torch.zeros(2, 5, dtype=torch.float64), dirs)
+        with pytest.raises(ValueError, match="raw"):
+            token_sigreg_of(
+                torch.zeros(1, 2, 5, dtype=torch.float64),
+                torch.ones(1, dtype=torch.float64),
+                dirs,
+                kind,
+                past,
+            )
+
+
+class TestDataPoints:
+    """The SIGReg of the data points (sigreg_on 'datapoints'): one sample per
+    stack, its target tokens flattened, with the past data points stored as
+    representations (past, constants) or as inputs encoded anew (points, in
+    the graph)."""
+
+    def _dirs(self) -> torch.Tensor:
+        g = torch.Generator().manual_seed(4)
+        a = torch.randn(9, 6 * 5, generator=g, dtype=torch.float64)
+        return a / a.norm(dim=1, keepdim=True)
+
+    def _loss(self, tokens, y, keeps, valid, **kw):
+        return jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            self._dirs(),
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=0.3,
+            sg=False,
+            sigreg_on="datapoints",
+            pred_loss="l2",
+            **kw,
+        )
+
+    def test_the_statistic_is_sigreg_of_the_current_and_the_buffer_concatenated(
+        self,
+    ):
+        """S equals exp.lib.sigreg.sigreg of the valid streams' flattened
+        target tokens with the buffer, stored as sums or as points alike, and
+        L = (1 - lam) sum pred / B + lam |M| S / B."""
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        buffer = torch.randn(
+            11, 30, generator=torch.Generator().manual_seed(5), dtype=torch.float64
+        )
+        target = tokens[:, :6].flatten(1)  # (B, T D)
+        expect = sigreg(target[valid], buffer, self._dirs())
+        alone = self._loss(tokens, y, keeps, valid)
+        torch.testing.assert_close(
+            alone.sigreg, sigreg(target[valid], target[:0], self._dirs())
+        )
+        for kw in ({"past": _past(buffer, self._dirs())}, {"points": buffer}):
+            t = self._loss(tokens, y, keeps, valid, **kw)
+            torch.testing.assert_close(t.sigreg, expect)
+            torch.testing.assert_close(t.pred, alone.pred)
+            torch.testing.assert_close(
+                t.loss, ((1 - 0.3) * 2 * t.pred + 0.3 * 2 * expect) / 3
+            )
+
+    def test_the_stored_representations_get_no_gradient_the_encoded_inputs_do(
+        self,
+    ):
+        """With past (stored representations) only the current samples are
+        in the graph; with points the gradient reaches every stored sample,
+        and that of the current samples is the same."""
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.ones(3, dtype=torch.bool)
+        buffer = torch.randn(
+            11, 30, generator=torch.Generator().manual_seed(5), dtype=torch.float64
+        )
+        h = tokens.clone().requires_grad_()
+        points = buffer.clone().requires_grad_()
+        t = self._loss(h, y, keeps, valid, points=points)
+        g_h, g_p = torch.autograd.grad(t.loss, [h, points])
+        assert (g_p.norm(dim=1) > 0).all()  # every stored sample
+        h2 = tokens.clone().requires_grad_()
+        t2 = self._loss(h2, y, keeps, valid, past=_past(buffer, self._dirs()))
+        (g_h2,) = torch.autograd.grad(t2.loss, [h2])
+        torch.testing.assert_close(g_h2, g_h)
+
+
+class TestGaussDataPoints:
+    """The Gaussian moment matching of the data points (datapoint_law
+    'gauss', exp.lib.gauss_kl): lam |M| S / B of the value lam |M| F^ / (D B)
+    and of the gradient lam w_b g^_b / (D B) at each flattened stack."""
+
+    def _loss(self, tokens, y, keeps, valid, **kw):
+        return TestDataPoints()._loss(tokens, y, keeps, valid, **kw)
+
+    def _moments(self):
+        rows = torch.randn(
+            40, 30, generator=torch.Generator().manual_seed(6), dtype=torch.float64
+        )
+        return buffer_moments(rows)
+
+    def test_the_value_is_f_over_d_and_the_gradient_g_over_d(self):
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.tensor([True, False, True])
+        m = self._moments()
+        h = tokens.clone().requires_grad_()
+        t = self._loss(h, y, keeps, valid, datapoint_law="gauss", moments=m)
+        torch.testing.assert_close(t.sigreg, m.kl / 30)
+        alone = self._loss(h, y, keeps, valid, datapoint_law="gauss")
+        assert float(alone.sigreg) == 0  # no moments: no term
+        torch.testing.assert_close(t.loss, alone.loss + 0.3 * 2 * m.kl / 30 / 3)
+        (g,) = torch.autograd.grad(t.loss - alone.loss, [h])
+        x = tokens[:, :6].flatten(1)
+        expect = 0.3 * gauss_kl_grad(x, m) / 30 / 3 * valid[:, None]
+        torch.testing.assert_close(g[:, :6].flatten(1), expect)
+        assert g[:, 6:].abs().max() == 0  # the context tokens: none
+
+    def test_refused_with_points_or_another_law(self):
+        tokens, y, keeps, _ = _packed_inputs()
+        valid = torch.ones(3, dtype=torch.bool)
+        with pytest.raises(ValueError, match="no points"):
+            self._loss(
+                tokens,
+                y,
+                keeps,
+                valid,
+                datapoint_law="gauss",
+                points=torch.zeros(2, 30, dtype=torch.float64),
+            )
+        with pytest.raises(ValueError, match="datapoint_law"):
+            self._loss(tokens, y, keeps, valid, datapoint_law="other")
+
+
+class TestSpaceTimeCompletion:
+    """The completion of the whole stack's embedding u_g from each context
+    view's u_v (LeJEPA's form; module docstring)."""
+
+    def test_u_g_is_the_pooled_target_view_and_u_v_the_pooled_context(self):
+        tokens, _, keeps, _ = _packed_inputs(5)
+        proj = torch.nn.Linear(5, 4).double()
+        head = torch.nn.Linear(4, 3).double()
+        u = view_embeddings(tokens, keeps, 6, proj, head)
+        assert u.shape == (3, 3, 3)
+        torch.testing.assert_close(u[:, 0], head(proj(tokens[:, :6].mean(1))))
+        torch.testing.assert_close(u[:, 1], head(proj(tokens[:, 6:8].mean(1))))
+        torch.testing.assert_close(u[:, 2], head(proj(tokens[:, 8:].mean(1))))
+
+    def test_by_hand(self):
+        """L = (1 / B) sum_valid [(1 - lam)(beta L_pred + alpha L_z) + lam S],
+        L_z the mean over the context views of |u_g - q(u_v, v)|^2 / d_u, S
+        the mean over the views of SIGReg of u_v."""
+        tokens, y, keeps, dirs = _packed_inputs(6)
+        valid = torch.tensor([True, True, False])
+        g = torch.Generator().manual_seed(4)
+        du = torch.randn(7, 5, generator=g, dtype=torch.float64)
+        lam, alpha, beta = 0.2, 0.7, 0.4
+
+        def zpred(u: torch.Tensor, kind: int) -> torch.Tensor:
+            return u * (kind + 2)
+
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=lam,
+            sg=False,
+            sigreg_on="views",
+            pred_loss="l2",
+            token_weight=beta,
+            z_weight=alpha,
+            zpred=zpred,
+            directions_u=du,
+        )
+        base = jepa_loss_packed(
+            tokens,
+            y,
+            valid,
+            dirs,
+            None,
+            _Shift(5),
+            keeps=keeps,
+            proj=None,
+            lam=0.0,
+            sg=False,
+            sigreg_on="z",
+            pred_loss="l2",
+        )
+        u = view_embeddings(tokens, keeps, 6, None, None)
+        lz = torch.stack(
+            [((u[:, 0] - zpred(u[:, v], v - 1)) ** 2).mean(1) for v in (1, 2)], 1
+        ).mean(1)
+        w = valid.double()
+        s = torch.stack([weighted_sigreg(u[:, v], w, du) for v in range(3)]).mean()
+        pred_sum = base.pred * 2
+        expect = (
+            (1 - lam) * (beta * pred_sum + alpha * lz[:2].sum()) + lam * 2 * s
+        ) / 3
+        torch.testing.assert_close(got.loss, expect)
+        torch.testing.assert_close(got.sigreg, s)
+        assert got.zpred is not None
+        torch.testing.assert_close(got.zpred, lz[:2].mean())
+        torch.testing.assert_close(
+            z_errors(u, zpred),
+            torch.stack(
+                [((u[:, 0] - zpred(u[:, v], v - 1)) ** 2).mean(1) for v in (1, 2)], 1
+            ),
+        )
+
+    def test_a_view_that_pools_as_the_whole_completes_it_exactly(self):
+        """Tokens constant within each stack: every view pools to u_g, so the
+        completion term is 0 (and the loss is lam S alone without tokens)."""
+        g = torch.Generator().manual_seed(7)
+        clip = torch.randn(3, 1, 5, generator=g, dtype=torch.float64)
+        tokens = clip.expand(3, 12, 5).contiguous()
+        _, y, keeps, dirs = _packed_inputs(0)
+
+        def never(*_: torch.Tensor) -> torch.Tensor:
+            raise AssertionError("token_weight 0 calls no predictor")
+
+        got = jepa_loss_packed(
+            tokens,
+            y,
+            torch.ones(3, dtype=torch.bool),
+            dirs,
+            None,
+            never,
+            keeps=keeps,
+            proj=None,
+            lam=0.0,
+            sg=False,
+            sigreg_on="z",
+            pred_loss="l2",
+            token_weight=0.0,
+            z_weight=1.0,
+        )
+        assert float(got.loss) < 1e-30 and float(got.pred) == 0.0
+
+    def test_sg_stops_the_completion_at_u_g(self):
+        tokens, y, keeps, dirs = _packed_inputs(8)
+        tokens.requires_grad_()
+        for sg in (False, True):
+            t = jepa_loss_packed(
+                tokens,
+                y,
+                torch.ones(3, dtype=torch.bool),
+                dirs,
+                None,
+                _Shift(5),
+                keeps=keeps,
+                proj=None,
+                lam=0.0,
+                sg=sg,
+                sigreg_on="z",
+                pred_loss="l2",
+                token_weight=0.0,
+                z_weight=1.0,
+            )
+            (g,) = torch.autograd.grad(t.loss, [tokens])
+            assert bool((g[:, :6] == 0).all()) == sg
+            assert (g[:, 6:] != 0).any()
+
+    def test_the_z_predictor_starts_as_the_identity(self):
+        q = ZPredictor(4, kinds=2, hidden=8)
+        u = torch.randn(5, 4)
+        torch.testing.assert_close(q(u, 0), u)
+        torch.testing.assert_close(q(u, 1), u)
+
+
+class TestTargets:
+    def test_target_norm_predicts_the_tokens_through_a_layernorm(self):
+        """The goal of each token is its target token through a LayerNorm
+        without affine (zero mean, unit variance over its D); the context and
+        SIGReg see the tokens as they are."""
+        tokens, y, keeps, dirs = _packed_inputs(9)
+        valid = torch.ones(3, dtype=torch.bool)
+        kw = {
+            "keeps": keeps,
+            "proj": None,
+            "lam": 0.5,
+            "sg": False,
+            "sigreg_on": "z",
+            "pred_loss": "l2",
+        }
+        got = jepa_loss_packed(
+            tokens, y, valid, dirs, None, _Shift(5), target_norm=True, **kw
+        )
+        target = tokens[:, :6]
+        mu = target.mean(-1, keepdim=True)
+        var = target.var(-1, unbiased=False, keepdim=True)
+        by_hand = (target - mu) / torch.sqrt(var + 1e-5)
+        want = jepa_loss_packed(
+            tokens, y, valid, dirs, None, _Shift(5), goal=by_hand, **kw
+        )
+        torch.testing.assert_close(got.loss, want.loss)
+        torch.testing.assert_close(got.sigreg, want.sigreg)
+
+    def test_a_goal_is_a_constant_target(self):
+        """With a goal (the EMA's tokens) the prediction aims at it, and the
+        target tokens get no credit from the prediction."""
+        tokens, y, keeps, dirs = _packed_inputs(10)
+        tokens.requires_grad_()
+        g = torch.Generator().manual_seed(11)
+        goal = torch.randn(3, 6, 5, generator=g, dtype=torch.float64)
+        kw = {
+            "keeps": keeps,
+            "proj": None,
+            "lam": 0.0,
+            "sg": False,
+            "sigreg_on": "z",
+            "pred_loss": "l2",
+        }
+        t = jepa_loss_packed(
+            tokens,
+            y,
+            torch.ones(3, dtype=torch.bool),
+            dirs,
+            None,
+            _Shift(5),
+            goal=goal,
+            **kw,
+        )
+        (grad,) = torch.autograd.grad(t.loss, [tokens])
+        assert bool((grad[:, :6] == 0).all()) and (grad[:, 6:] != 0).any()
+        swapped = tokens.detach().clone()
+        swapped[:, :6] = goal
+        want = jepa_loss_packed(
+            swapped, y, torch.ones(3, dtype=torch.bool), dirs, None, _Shift(5), **kw
+        )
+        torch.testing.assert_close(t.pred, want.pred)

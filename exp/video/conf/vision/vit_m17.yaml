@@ -1,0 +1,8 @@
+# The ViT of M17 (Walking Tours, 128 x 128): width 256, 4 heads, 8 blocks in 4
+# PC-ALM nodes, a predictor of 2 blocks, patches of 16 pixels.
+dim: 256
+heads: 4
+depth: 8
+nodes: 4
+pred_depth: 2
+patch: 16

@@ -1,0 +1,17 @@
+{
+ "law": "gauss",
+ "tau": 100.0,
+ "dim": 16,
+ "buffer": 4096,
+ "every": 1,
+ "steps": 500000,
+ "tau_learn": 100000.0,
+ "eta": 8e-05,
+ "seed": 7,
+ "frozen": true,
+ "seconds": 61.23224070761353,
+ "c_star": 0.9993000522284712,
+ "k_diag_sd": 0.002454786877985717,
+ "k_offdiag_rms": 0.005015534033878481,
+ "k_steps": 495904
+}

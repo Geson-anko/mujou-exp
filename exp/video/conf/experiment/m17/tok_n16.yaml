@@ -1,0 +1,29 @@
+# @package _global_
+# M17, the token sequence as the representation (MILESTONES.md, M17, decided
+# 2026-11-12): the stacks, encoder, context views and optimizer of m17/wt_n16,
+# with the last stage mapping each of the 512 tokens to token_dim = 16
+# dimensions (32: the override vision.token_dim=32). The loss is the prediction
+# of the masked tokens and SIGReg of the target tokens as samples of one law of
+# 16 dimensions (raw: not divided by T, not less the stack's mean) with a
+# buffer of 2048 past target tokens per stream, every target token of each
+# stream's frame (512) inserted at random rows (jepa.nodes.PastTokens): a row's
+# age is geometric of mean 4 frames (0.4 s) whatever the streams, and one
+# stream (data.streams=1) is the single stream of MILESTONES M17.
+# lambda (vision.sigreg) is a placeholder, set by the sweep from the measured
+# correlation of the tokens within a stack. The posthoc evaluation codes a
+# stack by its flattened tokens (512 x 16 = 8192 numbers).
+defaults:
+  - m17/wt_n16
+  - _self_
+name: m17/tok_n16
+tags: [m17, wt, n16, tok]
+seconds: 1800.0  # checkpoints every 300 s (wt_n16)
+measure:
+  posthoc_code: tokens
+vision:
+  token_dim: 16
+  sigreg_on: tokens
+  token_sigreg: raw
+  token_buffer: 2048  # per stream
+  token_insert: 512  # per stream: T, every target token
+  sigreg: 0.003  # a placeholder, to be overridden

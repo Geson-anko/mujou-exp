@@ -20,6 +20,7 @@ __all__ = [
     "DIVERGED",
     "OBJECTIVE",
     "SeedRun",
+    "posthoc_value",
     "reports",
     "seed_value",
     "trial_value",
@@ -83,6 +84,17 @@ def seed_value(run: SeedRun) -> float:
         got = run.val[-1][OBJECTIVE]
     if got is None:
         raise ValueError("a completed run without an objective")
+    return _penalized(float(got))
+
+
+def posthoc_value(run: SeedRun) -> float:
+    """$J_s$ of a completed ``task=posthoc`` job (M17): the objective of its
+    val line, ``final.decode.val.objective`` of its ``result.json``.
+    ``ValueError`` when it has none."""
+    final = (run.result or {}).get("final") or {}
+    got = ((final.get("decode") or {}).get("val") or {}).get(OBJECTIVE)
+    if got is None:
+        raise ValueError("a posthoc job without final.decode.val.objective")
     return _penalized(float(got))
 
 

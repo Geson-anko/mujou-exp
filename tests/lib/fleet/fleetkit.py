@@ -79,12 +79,15 @@ def ready_root(root: Path, config: Path | None = None) -> None:
 
 
 class Fleet:
-    """The fleet of the tests: ``conf`` (host h0) and ``conf_h1`` share ``nas``."""
+    """The fleet of the tests: ``conf`` (host h0) and ``conf_h1`` share ``nas``;
+    ``more`` is appended to the TOML (such as a ``[slots.h1]`` table)."""
 
-    def __init__(self, tmp: Path) -> None:
+    def __init__(self, tmp: Path, more: str = "") -> None:
         self.tmp = tmp
         self.toml = tmp / "fleet.toml"
-        self.toml.write_text(TOML.format(nas=tmp / "nas", root=tmp / "h0", repo=REPO))
+        self.toml.write_text(
+            TOML.format(nas=tmp / "nas", root=tmp / "h0", repo=REPO) + more
+        )
         self.conf = FleetConf.load(self.toml)
         self.conf_h1 = replace(self.conf, root=tmp / "h1")
         for c in (self.conf, self.conf_h1):
