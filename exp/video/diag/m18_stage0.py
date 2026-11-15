@@ -20,15 +20,20 @@ $r = (y - m) - U U^\top (y - m)$ computed directly. It also keeps, per split,
 the mean square of each coordinate $u_j^\top (y - m)$ and of the residual (the
 held-out sums of the pPCA likelihood of stage 2).
 
-``hessian``: $\lambda_{\max}$ of the Hessian of the loss of the untrained
-autoencoder (``modules.build_ae`` of the seed) with respect to all its
-parameters, by power iteration on Hessian-vector products (double backward):
-of $\ell_{AE}$ of each of ``--stacks`` training stacks (the first stack of
-``iter_stream_windows`` of that many windows, spread over the nine videos;
-a step of $B$ = 1 sees one) and of their mean (a batch). The power iteration
-converges to the eigenvalue of the largest magnitude, whose magnitude is the
-spectral radius $\rho$ (``rho``) and bounds every eigenvalue: SGD's rate is
-derived from the largest $\rho$ of the stacks (plans/m18-vae-stream.md).
+``hessian``: the spectral radius $\rho$ (the largest $|\lambda|$) of the
+Hessian of the loss of the untrained autoencoder (``modules.build_ae`` of the
+seed) with respect to all its parameters, by power iteration on
+Hessian-vector products (double backward, ``lambda_max``): of $\ell_{AE}$ of
+the first stack of each of ``--windows`` training windows (``WINDOWS``, the
+windows of the moments and the PCA above, spread evenly over the loop of the
+nine videos; a step of $B$ = 1 sees one stack), with the quantiles of $\rho$
+over them, and of the mean $\ell_{AE}$ of ``--batch`` of them, every
+``windows // batch``-th (the first stacks of ``data.streams`` = ``batch``
+streams, which start at the loop's ``batch`` equal divisions; a step of
+$B$ = ``batch`` sees their mean). $\rho$ bounds every eigenvalue, and the
+batch's $\rho$ is at most the mean of its stacks' (the triangle inequality of
+the spectral norm): SGD's rate is derived from the largest $\rho$ of the
+stacks (plans/m18-vae-stream.md).
 
 Run as ``python -m exp.video.diag.m18_stage0 pca --out F +experiment=m18/ae_t128
 seed=100 device=cuda`` (and ``hessian``), with ``$MUJOU_EXP_DATA`` the data's
@@ -67,6 +72,8 @@ __all__ = [
 ]
 
 POWER_SEED = 0  # the start of the power iteration
+TOL = 1e-4  # the relative error lambda_max leaves in rho, far below the 2 of 2 / rho
+STREAMS_B32 = 32  # the streams of stage 1's B = 32 runs
 
 
 def _centred(
@@ -183,13 +190,26 @@ def lambda_max(
     tol: float = 1e-4,
     gen: torch.Generator,
 ) -> dict[str, Any]:
-    r"""The eigenvalue of the largest magnitude of the Hessian $H$ of
-    ``loss()`` with respect to ``params`` (its sign kept: $|\lambda|$ is the
-    spectral radius), by power iteration from a normal direction of ``gen``:
-    $v \leftarrow Hv / \lVert Hv \rVert$, $\lambda = v^\top H v$, with $Hv$ by
-    double backward of one graph of the gradient; it stops when $\lambda$
-    changes by less than ``tol`` of itself. Returns ``lam`` (the last
-    quotient), ``iters``, ``converged`` and ``history``."""
+    r"""The spectral radius $\rho$ of the Hessian $H$ of ``loss()`` with
+    respect to ``params``, by power iteration from a normal direction of
+    ``gen``: $v \leftarrow Hv / \lVert Hv \rVert$, with $Hv$ by double
+    backward of one graph of the gradient.
+
+    For a unit $v$, $\lVert Hv \rVert \le \rho$, and it never decreases from
+    one iteration to the next ($\lVert Hv \rVert^2 = v^\top H^2 v \le
+    \lVert H^2 v \rVert$ by Cauchy-Schwarz): it is the power iteration of
+    $H^2$, and converges to $\rho$ by the factor $q = (\lambda_2 / \rho)^2$
+    an iteration ($\lambda_2$ the largest other $|\lambda|$) even when
+    $\rho$ and $-\rho$ are both eigenvalues, where the Rayleigh quotient
+    $v^\top H v$ need not converge. It stops when the rest of the geometric
+    tail, $\delta_k q_k / (1 - q_k)$ with $\delta_k$ the last change of
+    $\lVert Hv \rVert$ and $q_k = \delta_k / \delta_{k-1}$, is below ``tol``
+    of it.
+
+    Returns ``rho`` (the last $\lVert Hv \rVert$, a lower bound of $\rho$),
+    ``lam`` (the last $v^\top H v$: the dominant eigenvalue with its sign
+    when one sign dominates), ``iters``, ``converged`` and ``history`` (of
+    $\lVert Hv \rVert$)."""
     grads = torch.autograd.grad(loss(), params, create_graph=True)
     v = [
         torch.randn(p.shape, generator=gen, dtype=p.dtype).to(p.device) for p in params
@@ -197,19 +217,25 @@ def lambda_max(
     norm = math.sqrt(sum(float(x.pow(2).sum()) for x in v))
     v = [x / norm for x in v]
     history: list[float] = []
+    lam = math.nan
     converged = False
     for _ in range(iters):
         dot = torch.stack([(g * x).sum() for g, x in zip(grads, v, strict=True)]).sum()
         hv = torch.autograd.grad(dot, params, retain_graph=True)
         lam = float(sum(float((h * x).sum()) for h, x in zip(hv, v, strict=True)))
-        history.append(lam)
         norm = math.sqrt(sum(float(h.pow(2).sum()) for h in hv))
+        history.append(norm)
         v = [h.detach() / norm for h in hv]
-        if len(history) > 1 and abs(history[-1] - history[-2]) < tol * abs(lam):
-            converged = True
-            break
+        if len(history) >= 3:
+            d1 = abs(history[-1] - history[-2])
+            d0 = abs(history[-2] - history[-3])
+            q = d1 / d0 if d0 > 0 else 0.0
+            if d1 == 0 or (q < 1 and d1 * q / (1 - q) < tol * norm):
+                converged = True
+                break
     return {
-        "lam": history[-1],
+        "rho": history[-1],
+        "lam": lam,
         "iters": len(history),
         "converged": converged,
         "history": history,
@@ -290,36 +316,58 @@ def run_pca(
     return result
 
 
-def run_hessian(conf: RunConf, out: Path, *, stacks: int, iters: int) -> dict[str, Any]:
-    """The ``hessian`` measurement (module docstring) into ``out``."""
+def run_hessian(
+    conf: RunConf, out: Path, *, windows: int, batch: int, iters: int
+) -> dict[str, Any]:
+    """The ``hessian`` measurement (module docstring) into ``out``: a row of
+    each stack (no history), the quantiles of their $\\rho$, and the batch's
+    measurement with its history."""
     t, v = conf.data.tours, conf.vision
     assert t is not None and v is not None
+    if windows % batch:
+        raise ValueError(f"the windows {windows} are not a multiple of {batch}")
     dev = torch.device(conf.device)
     root = tours_root(t)
     mods = build_ae(conf, seed=conf.seed)
     params = mods.parameters()
-    windows = iter_stream_windows(conf, root, windows=stacks, steps=0)
-    x = torch.stack([w[: v.frames] for w in windows]).to(dev)
+    stacks = [
+        w[: v.frames] for w in iter_stream_windows(conf, root, windows=windows, steps=0)
+    ]
+    if len(stacks) != windows:  # a window across two videos is skipped
+        raise ValueError(f"{windows - len(stacks)} windows cross two videos")
     gen = torch.Generator().manual_seed(POWER_SEED)
 
-    def loss_of(xs: Tensor) -> Callable[[], Tensor]:
-        return lambda: ae_loss(target(xs), mods(xs)).mean()
-
     def measured(xs: Tensor) -> dict[str, Any]:
-        r = lambda_max(loss_of(xs), params, iters=iters, gen=gen)
+        x = xs.to(dev)
+
+        def loss() -> Tensor:
+            return ae_loss(target(x), mods(x)).mean()
+
+        r = lambda_max(loss, params, iters=iters, tol=TOL, gen=gen)
         with torch.no_grad():
-            loss = float(loss_of(xs)())
-        return {"loss": loss, "rho": abs(r["lam"])} | r
+            return {"loss": float(loss())} | r
 
     t0 = time.monotonic()
-    rows = [{"stack": i} | measured(x[i : i + 1]) for i in range(len(x))]
-    batch = measured(x)
+    rows = []
+    for i, s in enumerate(stacks):
+        r = measured(s[None])
+        del r["history"]
+        rows.append({"stack": i} | r)
+    members = list(range(0, windows, windows // batch))
+    together = measured(torch.stack([stacks[i] for i in members]))
+    rho = torch.tensor([r["rho"] for r in rows], dtype=torch.float64)
     result = {
         "seed": conf.seed,
         "power_seed": POWER_SEED,
+        "tol": TOL,
         "stacks": rows,
-        "batch": batch,
-        "max_stack_rho": max(r["rho"] for r in rows),
+        "rho_quantiles": {
+            str(q): float(rho.quantile(q)) for q in (0.5, 0.9, 0.99, 0.999)
+        },
+        "max_stack_rho": float(rho.max()),
+        "all_converged": all(r["converged"] for r in rows),
+        "batch": together | {"members": members},
+        "batch_members_mean_rho": float(rho[members].mean()),
         "params": sum(p.numel() for p in params),
         "seconds": time.monotonic() - t0,
     }
@@ -338,7 +386,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("overrides", nargs="*")
     h = sub.add_parser("hessian", help="lambda_max of the untrained loss")
     h.add_argument("--out", type=Path, required=True)
-    h.add_argument("--stacks", type=int, default=8)
+    h.add_argument("--windows", type=int, default=WINDOWS)
+    h.add_argument("--batch", type=int, default=STREAMS_B32)
     h.add_argument("--iters", type=int, default=200)
     h.add_argument("overrides", nargs="*")
     args = ap.parse_args(argv)
@@ -349,11 +398,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         shown = {k: x for k, x in r.items() if k not in ("eigenvalues", "splits")}
         shown |= {s: d["stack_mse"] for s, d in r["splits"].items()}
     else:
-        r = run_hessian(conf, args.out, stacks=args.stacks, iters=args.iters)
+        r = run_hessian(
+            conf, args.out, windows=args.windows, batch=args.batch, iters=args.iters
+        )
         shown = {k: x for k, x in r.items() if k != "stacks"}
         shown["batch"] = {k: x for k, x in r["batch"].items() if k != "history"}
-        shown["lams"] = [s["lam"] for s in r["stacks"]]
-        shown["converged"] = [s["converged"] for s in r["stacks"]]
     print(json.dumps(shown, indent=1))
 
 

@@ -1,10 +1,13 @@
 import json
+from dataclasses import replace
 
 import pytest
 import torch
 
 from exp.video.compose import compose
+from exp.video.data.frames import PooledStackedTourFrames
 from exp.video.diag.m18_stage0 import (
+    TOL,
     gram,
     lambda_max,
     pca_basis,
@@ -12,7 +15,10 @@ from exp.video.diag.m18_stage0 import (
     run_hessian,
     run_pca,
 )
-from exp.video.programs.vision import DATA_ENV
+from exp.video.measure.encoder_eval import stream_windows
+from exp.video.programs.vision import DATA_ENV, tours_root
+from exp.video.vae.measures import held_out_stacks
+from exp.video.vae.program import ae_streams
 from tests.video.packed import smooth_tours
 from tests.video.vae.test_program import tiny_ae
 
@@ -76,19 +82,57 @@ class TestPCA:
         )
 
 
+def _quadratic(eigs: list[float], seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """The point t and the matrix A = Q diag(eigs) Q^T of L = 1/2 t^T A t (its
+    Hessian A), Q a random rotation."""
+    g = torch.Generator().manual_seed(seed)
+    n = len(eigs)
+    q, _ = torch.linalg.qr(torch.randn(n, n, generator=g, dtype=torch.float64))
+    a = q @ torch.diag(torch.tensor(eigs, dtype=torch.float64)) @ q.T
+    t = torch.randn(n, generator=g, dtype=torch.float64, requires_grad=True)
+    return t, a
+
+
 class TestLambdaMax:
     def test_the_top_eigenvalue_of_a_quadratic(self):
         """L = 1/2 t^T A t has the Hessian A: eigenvalues 5, 2, 1, 0.5."""
-        g = torch.Generator().manual_seed(0)
-        q, _ = torch.linalg.qr(torch.randn(4, 4, generator=g, dtype=torch.float64))
-        a = (
-            q
-            @ torch.diag(torch.tensor([5.0, 2.0, 1.0, 0.5], dtype=torch.float64))
-            @ q.T
-        )
-        t = torch.randn(4, generator=g, dtype=torch.float64, requires_grad=True)
+        t, a = _quadratic([5.0, 2.0, 1.0, 0.5])
+        g = torch.Generator().manual_seed(1)
         got = lambda_max(lambda: 0.5 * t @ a @ t, [t], tol=1e-12, iters=500, gen=g)
-        assert got["converged"] and got["lam"] == pytest.approx(5.0, rel=1e-9)
+        assert got["converged"]
+        assert got["rho"] == pytest.approx(5.0, rel=1e-9)
+        assert got["lam"] == pytest.approx(5.0, rel=1e-9)
+
+    def test_a_negative_dominant_eigenvalue_keeps_its_sign_in_lam(self):
+        """Eigenvalues -5, 2, 1: rho = 5 and the Rayleigh quotient -5."""
+        t, a = _quadratic([-5.0, 2.0, 1.0])
+        g = torch.Generator().manual_seed(1)
+        got = lambda_max(lambda: 0.5 * t @ a @ t, [t], tol=1e-12, iters=500, gen=g)
+        assert got["rho"] == pytest.approx(5.0, rel=1e-9)
+        assert got["lam"] == pytest.approx(-5.0, rel=1e-9)
+
+    def test_rho_converges_when_plus_and_minus_rho_are_both_there(self):
+        """Eigenvalues 5, -4.99, 1: v stays a mixture of the two top
+        directions (the Rayleigh quotient need not converge), but ||Hv|| is
+        the power iteration of H^2 (eigenvalues 25, 24.9, 1): within 4.99 ..
+        5 once the third direction is gone (rate (1/5)^2), so the stop at
+        TOL leaves rho in 5 (1 - TOL) .. 5."""
+        t, a = _quadratic([5.0, -4.99, 1.0])
+        g = torch.Generator().manual_seed(1)
+        got = lambda_max(lambda: 0.5 * t @ a @ t, [t], tol=TOL, iters=500, gen=g)
+        assert got["converged"]
+        assert 5.0 * (1 - TOL) <= got["rho"] <= 5.0 * (1 + 1e-12)
+
+    def test_the_norms_never_decrease_and_stay_below_rho(self):
+        """||H v_{k+1}|| >= ||H v_k|| (Cauchy-Schwarz on v^T H^2 v) and
+        ||H v|| <= rho for unit v."""
+        t, a = _quadratic([3.0, -2.9, 2.0, -1.0, 0.1])
+        g = torch.Generator().manual_seed(1)
+        got = lambda_max(lambda: 0.5 * t @ a @ t, [t], tol=0.0, iters=60, gen=g)
+        h = got["history"]
+        assert len(h) == 60 and not got["converged"]
+        assert all(b >= a_ * (1 - 1e-12) for a_, b in zip(h, h[1:], strict=False))
+        assert max(h) <= 3.0 * (1 + 1e-12)
 
     def test_against_the_explicit_hessian_of_a_small_net(self):
         g = torch.Generator().manual_seed(2)
@@ -112,6 +156,7 @@ class TestLambdaMax:
         got = lambda_max(
             lambda: loss_of(w1, w2), [w1, w2], tol=1e-12, iters=2000, gen=g
         )
+        assert got["rho"] == pytest.approx(abs(want), rel=1e-6)
         assert got["lam"] == pytest.approx(want, rel=1e-6)
 
 
@@ -122,26 +167,53 @@ class TestRuns:
         monkeypatch.setenv(DATA_ENV, str(root.parent))
         return compose([*tiny_ae(root.name), "data.tours.pool=6", "seed=3"])
 
-    def test_pca_writes_the_yardsticks(self, tmp_path, conf):
-        """sigma_0^2 is the trace of the covariance over P; the PCA of k
-        components reconstructs held-out stacks no better than the mean
-        stack can be beaten (stack_mse in [0, 1]) and the pool's draws."""
+    def test_pca_is_that_of_the_explicit_covariance_of_the_stacks(self, tmp_path, conf):
+        """Against the PCA of the explicit P x P covariance of every training
+        stack (stream_windows, stack k of a window its frames k .. k + N - 1,
+        y = x / 256): sigma_0^2 its trace over P, and the stack_mse of the
+        held-out stacks and the pool through its top-k projector."""
         out = tmp_path / "pca.json"
-        r = run_pca(conf, out, k=8, block=64, windows=32)
+        k, windows = 8, 32
+        r = run_pca(conf, out, k=k, block=64, windows=windows)
         assert json.loads(out.read_text())["n"] == r["n"]
-        assert r["sigma0_sq"] == pytest.approx(r["trace_over_P"], rel=1e-9)
-        assert set(r["splits"]) == {"val", "test", "pool"}
-        assert r["splits"]["pool"]["count"] == 6
-        for s in r["splits"].values():
-            assert 0 <= s["stack_mse"] < 1.5
-        assert r["orthonormal_max_dev"] < 1e-8
         assert out.with_suffix(".png").is_file()
+        w = stream_windows(conf, tours_root(conf.data.tours), windows=windows)
+        n = conf.vision.frames
+        steps = w.shape[1] - n + 1
+        y = torch.cat([w[:, i : i + n] for i in range(steps)]).double() / 256
+        m = y.mean(0)
+        c = (y - m).flatten(1)
+        cov = c.T @ c / len(c)
+        evals, vecs = torch.linalg.eigh(cov)
+        assert evals[-k] > 1.01 * evals[-k - 1]  # the top-k subspace is unique
+        u = vecs[:, -k:]
+        assert r["n"] == len(y)
+        assert r["sigma0_sq"] == pytest.approx(float(evals.sum()) / c.shape[1])
+        assert r["sigma0_sq"] == pytest.approx(r["trace_over_P"], rel=1e-9)
+        sets = held_out_stacks(conf, tours_root(conf.data.tours))
+        t = replace(conf.data.tours, sampling="pool")
+        pooled = ae_streams(replace(conf, data=replace(conf.data, tours=t)))
+        assert isinstance(pooled, PooledStackedTourFrames)
+        sets["pool"] = pooled.stacks
+        assert set(r["splits"]) == set(sets) and len(sets["pool"]) == 6
+        for name, x in sets.items():
+            d = (x.double() / 256 - m).flatten(1)
+            res = d - d @ u @ u.T
+            want = float((res**2).sum() / (d**2).sum())
+            assert r["splits"][name]["stack_mse"] == pytest.approx(want, rel=1e-8)
 
-    def test_hessian_writes_lambda_max_of_each_stack_and_the_batch(
-        self, tmp_path, conf
-    ):
-        r = run_hessian(conf, tmp_path / "h.json", stacks=2, iters=30)
-        assert len(r["stacks"]) == 2 and r["max_stack_rho"] == max(
-            abs(s["lam"]) for s in r["stacks"]
-        )
-        assert r["batch"]["iters"] >= 2
+    def test_hessian_rows_and_a_batch_below_its_members_mean_rho(self, tmp_path, conf):
+        """The batch of every (windows / batch)-th stack: rho of the mean of
+        their Hessians is at most the mean of their rho (the triangle
+        inequality of the spectral norm), up to the tolerance left in each."""
+        r = run_hessian(conf, tmp_path / "h.json", windows=4, batch=2, iters=500)
+        rows = r["stacks"]
+        assert [s["stack"] for s in rows] == [0, 1, 2, 3]
+        assert all(s["converged"] for s in rows) and r["all_converged"]
+        assert r["max_stack_rho"] == max(s["rho"] for s in rows)
+        assert r["batch"]["members"] == [0, 2]
+        mean = (rows[0]["rho"] + rows[2]["rho"]) / 2
+        assert r["batch_members_mean_rho"] == pytest.approx(mean)
+        assert r["batch"]["rho"] <= mean * (1 + 10 * TOL)
+        with pytest.raises(ValueError, match="multiple"):
+            run_hessian(conf, tmp_path / "h.json", windows=5, batch=2, iters=5)
