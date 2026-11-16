@@ -43,4 +43,4 @@ metadata:
 
 2026-11-16（ユーザー、段 2 の結果を受けて）: M18 の VAE の目的は、mujou + PC-ALM でエンコーダが学べるかを確かめることで、PCA を上回る性能は求めない。BP の段 0〜2 は PC-ALM の比べる相手として読む。結果は TensorBoard で詳しく見たい（`tools/tb`、run の名前に job の label が付く）。seed を足すのは「やってもよい」。PC-ALM にまだ載せていないことには驚いていたので、PC-ALM への移行を先延ばしにしない。
 
-**段 4 の実装（2026-11-16）**: PC-ALM の VAE を実装した（`exp/video/vae/pc.py`、preset `m18/vae_t128_pc`、mujou への追加なし）。小さなネットで、15 歩目（29 ms）の勾配は BP と float32 の丸めの範囲で一致し、14 歩目では `enc1` だけが外れる。bench と run はまだ（exp/video/plans/m18-vae-stream.md の「実装（2026-11-16）」）
+**段 4 の実装（2026-11-16）**: PC-ALM の VAE を実装した（`exp/video/vae/pc.py`、preset `m18/vae_t128_pc`、mujou への追加なし）。小さなネットで、15 歩目（29 ms）の勾配は BP と float32 の丸めの範囲で一致し、14 歩目では `enc1` だけが外れる。bench と run はまだ（exp/video/plans/m18-vae-stream.md の「実装（2026-11-16）」）。レビューを受けて事前登録の下書きを直した。対にする BP は `time.learn_interval=0.029` で 4 seed 回し、BP との差は 4 本の平均の差を BP の範囲と比べる。QP3 と QP4 は `m18_pc_grad` で float64 の PC-ALM を float64 の BP と比べ、閾値は float32 の丸めから導いた（同じ計画の「レビューを受けて直した点（2026-11-16）」）
