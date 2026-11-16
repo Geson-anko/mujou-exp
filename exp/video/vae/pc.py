@@ -121,7 +121,7 @@ class Latent(Node):
     ``(B, T, 2d)`` ($\ell = \ln s^2$), with the KL of $q = N(\mu,
     \mathrm{diag}\, e^\ell)$ to $N(0, I)$ as a local energy. $\varepsilon$
     is the last $T d$ values of each stack's ``y`` (the values before it are
-    the next nodes' target).
+    the next nodes' target), taken as 0 for a stack whose ``mask`` is False.
 
     It holds $r$ and $\lambda$ of $z$ ``(B, T, d)`` as ``pc.Layer`` does: it
     sends $f(h)$ on, with the ``y``, ``mask``, ``reset`` and ``time`` it
@@ -204,6 +204,9 @@ class Latent(Node):
         b, t, _two = h.shape
         d = self._d
         eps = y[:, self._values :].reshape(b, t, d)
+        # a stack that does not count adds nothing, whatever its y (a NaN in
+        # it would give 0 * NaN in the gradient), as pc.functional.loss_vjp
+        eps = torch.where(rows(valid, eps), eps, 0.0)
         n, weight = _count(valid, h)
         with torch.enable_grad():
             leaf = h.detach().requires_grad_()
@@ -296,6 +299,8 @@ class GaussOut(Node):
         """``[g_in, nll, n, *g_theta]`` (``g_theta`` only when it learns)."""
         params = self._params if learn else []
         target = y[:, : self._values].reshape(self._shape)
+        # as Latent's eps: a stack that does not count has no target
+        target = torch.where(rows(valid, target), target, 0.0)
         n, weight = _count(valid, h)
         with torch.enable_grad():
             leaf = h.detach().requires_grad_()

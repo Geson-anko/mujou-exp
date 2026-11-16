@@ -136,10 +136,13 @@ def _show(
     u: Tensor,
     eps: Tensor,
     valid: Tensor,
+    reset: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    reset = torch.ones(len(x), dtype=torch.bool)
+    """Show one frame; ``reset`` is that of every stack (the program writes
+    the stream's: True only where a video starts)."""
+    reset_ = torch.full((len(x),), reset, dtype=torch.bool)
     (out, latent), _ = host.show_all(
-        {net.prev: net.sample(x, u, eps, valid, reset)}, [net.stats, net.kl]
+        {net.prev: net.sample(x, u, eps, valid, reset_)}, [net.stats, net.kl]
     )
     return out, latent
 
@@ -196,8 +199,11 @@ class TestStepFifteen:
     def _frames(
         self, learn_interval: float, valid: Tensor | None = None
     ) -> list[tuple[dict[Tensor, Tensor], dict[Tensor, Tensor], VAEModules]]:
-        """Two frames of different stacks under the host's steps; per frame
-        the gradients the nodes stepped by (nothing moves) and BP's."""
+        """Two frames of different stacks under the host's steps, reset only
+        in the first (the second's r and lam start from the first's, as in a
+        video of the stream); per frame the gradients the nodes stepped by
+        (nothing moves) and BP's. The noise of a stack that does not count
+        is NaN: it must add nothing."""
         b = 2 if valid is None else len(valid)
         conf = _conf(learn_interval=learn_interval, streams=b)
         mods = _mods(conf)
@@ -209,17 +215,19 @@ class TestStepFifteen:
         for k in range(2):
             x = stacks(b, seed=k)
             u, eps = _noise(mods, x, seed=10 + k)
+            bp = _bp_grads(mods, x, u, eps, valid) if valid.all() else {}
+            u[~valid], eps[~valid] = math.nan, math.nan
             rec.grads.clear()
-            _show(host, net, x, u, eps, valid)
-            out.append((dict(rec.grads), _bp_grads(mods, x, u, eps, valid), mods))
+            _show(host, net, x, u, eps, valid, reset=k == 0)
+            out.append((dict(rec.grads), bp, mods))
         host.run.shutdown()
         return out
 
     def test_every_node_steps_by_bps_gradient(self):
         """At 29 ms (the 15th step) each node's g_theta / B is the gradient
         of BP's mean -L for every parameter, ln sigma and the rows of ln s^2
-        that start at 0 included, in the first frame and in the next (whose
-        r and lam start from those of the frame before)."""
+        that start at 0 included, in the first frame and in the next (not
+        reset: its r and lam start from those of the frame before)."""
         for pcs, bps, mods in self._frames(AT_15):
             assert set(pcs) == set(mods.parameters())
             assert float(bps[mods.log_sigma].abs()) > 0
@@ -234,19 +242,21 @@ class TestStepFifteen:
     def test_one_step_earlier_only_enc1_is_off(self):
         """At 27 ms (the 14th step) enc1's credit is still that of a step
         before it settles: its gradient differs from BP's, every other
-        node's is BP's. The derived step count is not more than needed."""
-        _, (pcs, bps, mods) = self._frames(AT_14)
-        first = _encoder_params(mods, 0)
-        for p, g in bps.items():
-            err = float((pcs[p] - g).norm() / g.norm())
-            if p in first:
-                assert err > 1e-2
-            else:
-                assert err < 1e-9
+        node's is BP's, in the first frame and in the next. The derived
+        step count is not more than needed."""
+        for pcs, bps, mods in self._frames(AT_14):
+            first = _encoder_params(mods, 0)
+            for p, g in bps.items():
+                err = float((pcs[p] - g).norm() / g.norm())
+                if p in first:
+                    assert err > 1e-2
+                else:
+                    assert err < 1e-9
 
     def test_a_stack_that_does_not_count_adds_nothing(self):
-        """B = 3 with the middle stack masked: the gradient is BP's mean over
-        the other two (the energies weighed by B / n), not over 3."""
+        """B = 3 with the middle stack masked (its noise NaN): the gradient
+        is BP's mean over the other two (the energies weighed by B / n), not
+        over 3."""
         valid = torch.tensor([True, False, True])
         for k, (pcs, _, mods) in enumerate(self._frames(AT_15, valid)):
             x = stacks(3, seed=k)
@@ -374,8 +384,8 @@ class TestLatent:
         r"""z = mu + e^{l/2} eps is sent on with the y it came with; the
         credit is -dz/dh^T delta + (B / n) dKL/dh with dKL/dmu = mu, dKL/dl
         = (e^l - 1) / 2, dz/dmu = 1, dz/dl = e^{l/2} eps / 2; a stack that
-        does not count sends none; stats is the mean KL over the stacks that
-        count."""
+        does not count sends none and its eps is not read (its z is mu);
+        stats is the mean KL over the stacks that count."""
         net = _LatentNet(self.B, self.T, self.D, self.P)
         valid = torch.tensor([True, False, True])
         no = torch.zeros(self.B, dtype=torch.bool)
@@ -386,10 +396,11 @@ class TestLatent:
             run.write({net.inp.prev: sample})
             run.step(net.tau.period)
             act = run.read(net.latent.next)
-            torch.testing.assert_close(act["h"], mu + (0.5 * ell).exp() * eps)
+            on = valid[:, None, None]
+            z = mu + (0.5 * ell).exp() * torch.where(on, eps, 0.0)
+            torch.testing.assert_close(act["h"], z)
             assert torch.equal(act["y"], sample["y"])
             kl_grad = torch.cat([mu, 0.5 * (ell.exp() - 1)], -1)
-            on = valid[:, None, None]
             want = torch.where(on, w * kl_grad, 0.0)  # delta is 0 at the start
             torch.testing.assert_close(run.read(net.latent.prev), want)
             kl = 0.5 * (mu.square() + ell.exp() - 1 - ell).sum((1, 2))

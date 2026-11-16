@@ -570,8 +570,9 @@ class VisionModules:
     def tokens(self, chunks: Tensor) -> Tensor:
         """The target view's tokens ``(n, T, D)`` of the stacks ``chunks``
         ``(n, N, C, H, W)`` (u8, or float in ``[0, 1]``) of the packed
-        layout, at the weights as they are now."""
-        return self.encoder(self.whole(chunks), (self.tokens_per_view,))
+        layout, at the weights as they are now (of the encoder's dtype)."""
+        dtype = next(self.encoder.parameters()).dtype
+        return self.encoder(self.whole(chunks).to(dtype), (self.tokens_per_view,))
 
     def target_tokens(self, chunks: Tensor) -> Tensor:
         """The prediction's targets ``(n, T, D)`` of the stacks ``chunks``:
