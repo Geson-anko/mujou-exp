@@ -58,10 +58,18 @@ class TestVerdict:
 
     def test_a_diverged_run_fails_even_of_seed_0(self):
         """The seed 0 is falsy: the diverged set must still count."""
-        v = verdict(BP, BP, INIT, diverged=frozenset({0}))
+        v = verdict(BP, BP, INIT, pc_diverged=frozenset({0}))
         assert v["u"][0] is False and v["U"] is False
         assert v["diff"]["recon_blur"]["within"] is False
         assert v["passed"] is False
+
+    def test_a_diverged_bp_run_fails_the_difference_not_u(self):
+        """U is of the PC-ALM runs: a BP run that diverged fails only the
+        difference to BP."""
+        v = verdict(BP, BP, INIT, bp_diverged=frozenset({1}))
+        assert v["u"][1] is True and v["U"] is True
+        assert v["diff"]["recon_blur"]["within"] is False
+        assert v["D"] is False and v["passed"] is False
 
 
 class TestPairTrack:
@@ -111,6 +119,12 @@ class TestGradSummary:
         assert g["QP3"] is False and g["QP4"] is True
         g = grad_summary({"init": _point(["enc1.w"], 0.0, 1.0, 0.0, 1.0)})
         assert g["QP3"] is True and g["QP4"] is False
+
+    def test_the_provenance_is_not_a_point(self):
+        g = grad_summary(
+            {"provenance": {"code": None}, "init": _point([], 0.0, 1.0, 0.0, 1.0)}
+        )
+        assert list(g["points"]) == ["init"]
 
 
 class TestQP6:

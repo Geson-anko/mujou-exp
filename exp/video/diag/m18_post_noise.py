@@ -4,9 +4,10 @@ r"""DIAGNOSIS ONLY (M18 stage 4): how much of a difference of the posthoc
 The posthoc (``measure.encoder_eval``) learns a decoder of the last frame
 from the code by 2000 steps of Adam (``posthoc.fit_decoder``, from the
 generator of ``seed + DECODER_SEED``) and measures its ``recon_blur`` on
-val. In stage 4 the codes of PC-ALM and of BP at the same seed agree to
-1e-5 or better by ``dyn_1/copy_1`` and ``stack_mse``, yet their
-``recon_blur`` differ by up to 0.014. This measures, at given checkpoints,
+val. In stage 4 the codes of PC-ALM and of BP at the same seed agree to a
+relative 1e-4 or better by ``dyn_1/copy_1`` and 3e-3 or better by
+``stack_mse``, yet their ``recon_blur`` differ by up to 0.014. This
+measures, at given checkpoints,
 
 - ``diffs``: per pair of checkpoints, the difference of their codes on the
   training stacks and on val's first stacks (``code_diff``);
@@ -21,7 +22,9 @@ val. In stage 4 the codes of PC-ALM and of BP at the same seed agree to
 - ``jitter``: the first checkpoint's code plus Gaussian noise of RMS ``rel``
   times the code's RMS std (``jittered``, the same on the training and val
   codes, from the generator of ``JITTER_SEED``), fit at ``k`` = 0 (is the
-  fit sensitive to a difference of the codes of the size measured?).
+  fit sensitive to a difference of the codes of the size measured?);
+- ``provenance``: the snapshot, the host and the settings
+  (``provenance.of_diagnosis``).
 
 The numerics are the runs' (``provenance.configure_determinism``: no TF32
 in matmuls and cuDNN, the deterministic algorithms), as the posthoc's; a
@@ -45,7 +48,7 @@ from torch import Tensor
 
 from exp.lib import ckpt
 from exp.lib.blur_error import blur_recon
-from exp.lib.provenance import configure_determinism
+from exp.lib.provenance import configure_determinism, of_diagnosis
 from exp.video.compose import compose
 from exp.video.measure.encoder_eval import (
     DECODER_LR,
@@ -150,7 +153,23 @@ def main(argv: Sequence[str] | None = None) -> None:
         z_val = ev._split_z(code, "val")[:, 0]  # pyright: ignore[reportPrivateUsage]
         codes[name] = (z_train.flatten(0, 1), z_val)
     names = list(codes)
-    result: dict[str, Any] = {"seed": conf.seed, "diffs": {}, "fits": {}}
+    base_seed = conf.seed + DECODER_SEED
+    settings = {
+        "overrides": a.overrides,
+        "ckpt": a.ckpt,
+        "seeds": a.seeds,
+        "jitter": a.jitter,
+        "decoder_seed": base_seed,
+        "seed_step": SEED_STEP,
+        "jitter_seed": JITTER_SEED,
+        "steps": ev._steps,  # pyright: ignore[reportPrivateUsage]
+    }
+    result: dict[str, Any] = {
+        "seed": conf.seed,
+        "provenance": of_diagnosis(settings),
+        "diffs": {},
+        "fits": {},
+    }
     for i, x in enumerate(names):
         for y in names[i + 1 :]:
             result["diffs"][f"{x}-{y}"] = {
@@ -158,7 +177,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "val": code_diff(codes[x][1], codes[y][1]),
             }
     print(json.dumps(result["diffs"]))
-    base_seed = conf.seed + DECODER_SEED
     for name, (zt, zv) in codes.items():
         rows = []
         for k in range(a.seeds):

@@ -31,8 +31,10 @@ again for float64's rounding before it.
 writes these at the initial weights (``init``) and at each checkpoint on the
 first ``--stacks`` held-out stacks of val (``measures.held_out_stacks``) with
 $u$ and $\varepsilon$ of ``EVAL_NOISE_SEED`` drawn as the evaluations draw
-them (the diagnosis of results/m18.md 「段 4」, QP3 and QP4). Needs the data
-and the checkpoints (run it on a host).
+them (the diagnosis of results/m18.md 「段 4」, QP3 and QP4), and under
+``provenance`` the snapshot, the host and the settings
+(``provenance.of_diagnosis``). Needs the data and the checkpoints (run it
+on a host).
 
 Run from the repository root: ``python -m exp.video.diag.m18_pc_grad --out F
 --ckpt NAME=PATH [--ckpt ...] +experiment=m18/vae_t128_pc seed=100
@@ -55,6 +57,7 @@ from torch import Tensor
 
 from exp.lib import ckpt
 from exp.lib.host import Host
+from exp.lib.provenance import of_diagnosis
 from exp.video.compose import compose
 from exp.video.programs.vision import tours_root
 from exp.video.schema.run import RunConf
@@ -231,7 +234,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     for spec in a.ckpt:
         name, path = spec.split("=", 1)
         points.append((name, Path(path)))
-    result: dict[str, Any] = {}
+    settings = {"overrides": a.overrides, "ckpt": a.ckpt, "stacks": a.stacks}
+    result: dict[str, Any] = {"provenance": of_diagnosis(settings)}
     u64, eps64 = u.double(), eps.double()
     for name, path in points:
         mods = build_vae(conf, seed=conf.seed)

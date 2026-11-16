@@ -19,7 +19,7 @@ PC-ALM（回す前に決めたこと）」), at t = 1800 s on val, unrounded (``
   m_{BP}|$ (the means over the 4 seeds) at most $\max_s m_{BP}(s) - \min_s
   m_{BP}(s)$;
 - a missing value of the 8 runs makes a criterion 不明; a diverged run fails
-  it.
+  the criteria it enters (U: the PC-ALM runs; the difference: all 8).
 
 The predictions (``predictions``): QP1 U; QP2 the difference within BP's
 range for both metrics; QP3 no ``loss`` and QP4 no tensor in any
@@ -104,18 +104,20 @@ def verdict(
     bp: Mapping[int, Mapping[str, float | None]],
     init: Mapping[int, Mapping[str, float | None]],
     *,
-    diverged: frozenset[int] = frozenset(),
+    pc_diverged: frozenset[int] = frozenset(),
+    bp_diverged: frozenset[int] = frozenset(),
     seeds: Sequence[int] = SEEDS,
 ) -> dict[str, Any]:
     r"""The verdict of the module docstring of the posthoc values at 1800 s:
     ``pc``, ``bp`` and ``init`` (the untrained $\mu$ of each seed) map a
-    seed to its ``METRICS``; ``diverged`` the seeds whose PC-ALM or BP run
-    diverged. Returns U per seed (``u``) and in all (``U``), per metric the
+    seed to its ``METRICS``; ``pc_diverged`` and ``bp_diverged`` the seeds
+    whose PC-ALM or BP run diverged (U is of the PC-ALM runs only, the
+    difference of all eight). Returns U per seed (``u``) and in all (``U``), per metric the
     means, the difference, BP's range and whether it is within (``diff``),
     their conjunction (``D``) and the two together (``passed``)."""
     u = {}
     for s in seeds:
-        dv = s in diverged
+        dv = s in pc_diverged
         p, i = pc.get(s, {}), init.get(s, {})
         u[s] = _u(p, i, diverged=dv)
     big_u = _all(list(u.values()))
@@ -123,7 +125,7 @@ def verdict(
     for m in METRICS:
         a = [pc.get(s, {}).get(m) for s in seeds]
         b = [bp.get(s, {}).get(m) for s in seeds]
-        if diverged:
+        if pc_diverged or bp_diverged:
             diff[m] = {"within": False}
             continue
         if any(x is None for x in a + b):
@@ -210,6 +212,8 @@ def grad_summary(grad: Mapping[str, Any]) -> dict[str, Any]:
     points = {}
     qp3 = qp4 = True
     for name, p in grad.items():
+        if name == "provenance":  # m18_pc_grad's record of the run, not a point
+            continue
         st = p["loss"]["pc64"]
         bound = 2.0**-23 * (abs(st["nll"]) + abs(st["kl"]))
         gap = abs(st["nll"] + st["kl"] - p["loss"]["exact"])
@@ -339,14 +343,20 @@ def report(root: Path, grad_dir: Path | None) -> tuple[str, dict[str, Any]]:
             "pca_recon_blur": pca.get("recon_blur"),
             "tube_dyn": tube.get("dyn_1/copy_1"),
         }
-    dv = frozenset(
-        s for (r, b, s), d in runs.train.items() if b == 1 and _state(d) == "diverged"
-    )
+    dv = {
+        rule: frozenset(
+            s
+            for (r, b, s), d in runs.train.items()
+            if r == rule and b == 1 and _state(d) == "diverged"
+        )
+        for rule in ("pc", "bp")
+    }
     v = verdict(
         {s: post.get(("pc", 1, s), {}) for s in SEEDS},
         {s: post.get(("bp", 1, s), {}) for s in SEEDS},
         {s: init.get(("pc", 1, s), {}) for s in SEEDS},
-        diverged=dv,
+        pc_diverged=dv["pc"],
+        bp_diverged=dv["bp"],
     )
     data["verdict"] = v
     out += ["", "## 判定（val、1800 秒、posthoc、丸める前）", ""]
