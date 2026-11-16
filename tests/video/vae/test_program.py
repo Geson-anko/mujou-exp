@@ -303,16 +303,19 @@ class TestVAE:
                 for k in keys:
                     assert rb[k] == pytest.approx(ra[k], rel=1e-6), (name, k)
 
-    def test_posthoc_reads_the_code_mu(self, tmp_path, vae_tours):
+    @pytest.mark.parametrize("learner", ["bp", "pc"])
+    def test_posthoc_reads_the_code_mu(self, tmp_path, vae_tours, learner):
         """The posthoc of a VAE's run: M17's evaluation of mu flattened and
         the VAE's own decoder at mu, each line's keys finite (that the ViT
         before learning of unit 0 is the VAE's untrained mu is
-        ``test_modules.py``'s)."""
+        ``test_modules.py``'s); also of a run of PC-ALM (stage 4), whose
+        checkpoint holds the same modules."""
+        o = [*vae_tours, f"learner={learner}", "time.learn_interval=0.029"]
         runs = tmp_path / "runs"
-        assert _run(runs / "b" / "parent", vae_tours) == Exit.OK
+        assert _run(runs / "b" / "parent", o) == Exit.OK
         run_dir = TestPosthoc()._job(
             runs,
-            vae_tours,
+            o,
             "post",
             "posthoc",
             parent="b/parent",
