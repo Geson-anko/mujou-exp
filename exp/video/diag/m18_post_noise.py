@@ -23,7 +23,11 @@ val. In stage 4 the codes of PC-ALM and of BP at the same seed agree to
   codes, from the generator of ``JITTER_SEED``), fit at ``k`` = 0 (is the
   fit sensitive to a difference of the codes of the size measured?).
 
-Needs the data and the checkpoints (run it on a host). Run from the
+The numerics are the runs' (``provenance.configure_determinism``: no TF32
+in matmuls and cuDNN, the deterministic algorithms), as the posthoc's; a
+first version left cuDNN's TF32 and the nondeterministic algorithms on, and
+its ``repeat`` differed from its own first fit. Needs the data and the
+checkpoints (run it on a host). Run from the
 repository root: ``python -m exp.video.diag.m18_post_noise --out F --ckpt
 NAME=PATH [--ckpt ...] [--seeds K] [--jitter REL ...]
 +experiment=m18/vae_t128 seed=S device=cuda``.
@@ -41,6 +45,7 @@ from torch import Tensor
 
 from exp.lib import ckpt
 from exp.lib.blur_error import blur_recon
+from exp.lib.provenance import configure_determinism
 from exp.video.compose import compose
 from exp.video.measure.encoder_eval import (
     DECODER_LR,
@@ -128,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     a = ap.parse_args(argv)
     conf = compose(a.overrides)
     assert conf.data.tours is not None and conf.vision is not None
-    torch.backends.cuda.matmul.allow_tf32 = False
+    configure_determinism(conf.device)  # the posthoc's numerics (k = 0 reproduces it)
     root = tours_root(conf.data.tours)
     with tempfile.TemporaryDirectory() as tmp:
         ev = EncoderEval(None, conf, Path(tmp), root=root)
