@@ -593,6 +593,36 @@ class TestM18:
         ppca = json.loads((M18_STAGE0 / "ppca.json").read_text())
         assert conf.ae.sigma0_sq == ppca["0"]["sigma_sq"]
 
+    def test_the_pc_preset_is_the_vae_learning_at_the_fifteenth_step(self) -> None:
+        """m18/vae_t128_pc is m18/vae_t128 but for learner=pc and
+        learn_interval: with 2 ms updates moving delta to -g in one, the k-th
+        node from the output has BP's credit after step 2k, so the 4 encoder
+        nodes, the latent and the decoder's blocks at the encoder's blocks a
+        node put enc1 at k = 7 and every node learns by BP's gradient from
+        step 2k + 1 = 15 (plans/m18-vae-stream.md 「有限の歩数での一致」).
+        learn_interval is the middle of ((s - 1) period, s period], which
+        learns at step s; s fits in the shortest frame and a second learning
+        falls after it."""
+        conf = compose(["+experiment=m18/vae_t128_pc"])
+        base = compose(["+experiment=m18/vae_t128"])
+        assert conf.learner.kind == "pc" and base.learner.kind == "bp"
+        for name in vars(conf):
+            if name not in {"learner", "time", "name", "tags"}:
+                assert getattr(conf, name) == getattr(base, name), name
+        assert replace(conf.time, learn_interval=None) == replace(
+            base.time, learn_interval=None
+        )
+        v, ae, t = conf.vision, conf.ae, conf.time
+        assert v is not None and ae is not None and t.learn_interval is not None
+        assert t.lam == t.h / 2 and t.r == t.h  # pc.TimeConstants' defaults
+        period = t.h / 2
+        k = v.nodes + 1 + ae.decoder_depth // (v.depth // v.nodes)
+        assert k == 7
+        s = 2 * k + 1
+        assert t.learn_interval == pytest.approx((s - 0.5) * period, rel=1e-12)
+        assert s <= math.floor(t.frame / period)  # within the frame's steps
+        assert 2 * t.learn_interval > t.frame  # once a frame
+
 
 # The overrides of the sweep and of the decoder axis as the submit commands of
 # results/m18.md write them (「η の掃引（前倒し、回す前に決めたこと）」).

@@ -29,7 +29,11 @@ dequantization's $u$ and the code's $\varepsilon$, from one generator on the
 device seeded with ``seed + NOISE_SEED`` (kept in the resume checkpoint), and
 ``stream.jsonl`` has the means of $-\mathcal L$ (``loss``, nats a stack, and
 ``bpd``) and of its KL (``kl``), and the last $\ln \sigma$
-(``log_sigma``).
+(``log_sigma``). With ``learner=pc`` (stage 4) the VAE learns by PC-ALM
+(``pc.VAEPC``): the host writes the same stacks and noise, packed with the
+target and the noise in ``y`` (``VAEPC.sample``, the stream's ``reset``
+with them), and reads $-\mathcal L$ as the sum of the output's
+$-\log p(y \mid z)$ and the latent's KL.
 """
 
 import math
@@ -58,9 +62,16 @@ from exp.video.loop import Built, Schedule, every
 from exp.video.measure.objective import PENALTY
 from exp.video.programs.vision import tours_root
 from exp.video.schema.run import RunConf
-from exp.video.vae.bp import VAENet, VAESample, build_ae_net, build_vae_net
+from exp.video.vae.bp import (
+    AENet,
+    VAENet,
+    VAESample,
+    build_ae_net,
+    build_vae_net,
+)
 from exp.video.vae.measures import AEMeasures, VAEMeasures
 from exp.video.vae.modules import build_modules
+from exp.video.vae.pc import VAEPC, build_vae_pc_net
 
 __all__ = [
     "NOISE_SEED",
@@ -111,9 +122,15 @@ class _Online:
         self.conf = conf
         bench = conf.task == "bench"
         self.vae = conf.program == "vae"
-        self.net = build_vae_net(conf) if self.vae else build_ae_net(conf)
+        self.net: AENet | VAENet | VAEPC
+        if self.vae and conf.learner.kind == "pc":
+            self.net = build_vae_pc_net(conf)
+        elif self.vae:
+            self.net = build_vae_net(conf)
+        else:
+            self.net = build_ae_net(conf)
         self._code_shape = (0, 0)  # (T, d) of the VAE's code
-        if isinstance(self.net, VAENet):
+        if isinstance(self.net, VAENet | VAEPC):
             self._code_shape = self.net.mods.code_shape
         self.streams = ae_streams(conf)
         self.measures: AEMeasures | None = None
@@ -177,18 +194,7 @@ class _Online:
         stacks, ready, reset = self.streams.next()
         dev = self._y.device
         x, mask = stacks.to(dev), ready.to(dev)
-        sample: VAESample | pc.msg.Sample
-        if self.vae:
-            shape = (len(x), *self._code_shape)
-            sample = VAESample(
-                x=x,
-                u=torch.rand(x.shape, generator=self._noise, device=dev),
-                eps=torch.randn(shape, generator=self._noise, device=dev),
-                mask=mask,
-            )
-        else:
-            sample = pc.msg.Sample(x=x, y=self._y, mask=mask, reset=reset.to(dev))
-        p, _ = self.host.show({self.net.prev: sample}, self.net.stats)
+        p = self._show(x, mask, reset.to(dev))
         if k == 0:
             return
         counted = p["n"] > 0
@@ -197,6 +203,31 @@ class _Online:
         self._acc += torch.where(counted, terms.double(), 0.0)
         if self.vae:
             self._log_sigma = float(p["log_sigma"])
+
+    def _show(self, x: torch.Tensor, mask: torch.Tensor, reset: torch.Tensor) -> Any:
+        """Show the frame's stacks ``x`` (with the VAE's noise drawn here)
+        and return what the net sent first of them: ``n``, ``loss`` (and the
+        VAE's ``kl`` and ``log_sigma``)."""
+        dev = x.device
+        net = self.net
+        if not self.vae:
+            sample = pc.msg.Sample(x=x, y=self._y, mask=mask, reset=reset)
+            return self.host.show({net.prev: sample}, net.stats)[0]
+        shape = (len(x), *self._code_shape)
+        u = torch.rand(x.shape, generator=self._noise, device=dev)
+        eps = torch.randn(shape, generator=self._noise, device=dev)
+        if not isinstance(net, VAEPC):
+            sample = VAESample(x=x, u=u, eps=eps, mask=mask)
+            return self.host.show({net.prev: sample}, net.stats)[0]
+        (out, latent), _ = self.host.show_all(
+            {net.prev: net.sample(x, u, eps, mask, reset)}, [net.stats, net.kl]
+        )
+        return {
+            "loss": out["nll"] + latent["kl"],
+            "kl": latent["kl"],
+            "log_sigma": out["log_sigma"],
+            "n": out["n"],
+        }
 
     def log(self) -> dict[str, float | None]:
         loss, kl, n = self._acc.tolist()

@@ -59,6 +59,46 @@ class TestTokenDecoder:
         want[2:4, 0:4, 4:8] = True
         assert torch.equal(changed, want)
 
+    @staticmethod
+    def _decoder(depth: int) -> TokenDecoder:
+        torch.manual_seed(0)
+        return TokenDecoder(
+            token_dim=3,
+            dim=16,
+            heads=2,
+            depth=depth,
+            grid3=(2, 2, 2),
+            patch=4,
+            tubelet=2,
+            channels=3,
+            mean=0.5,
+            std=0.25,
+        )
+
+    @pytest.mark.parametrize(
+        ("depth", "per", "parts"), [(4, 2, 3), (4, 1, 5), (0, 1, 2)]
+    )
+    def test_its_parts_compose_to_it_with_its_own_parameters(self, depth, per, parts):
+        """The parts of PC-ALM's nodes (``depth / per`` of ``per`` blocks,
+        then the readout) give the decoder's output bit for bit, and hold the
+        decoder's parameters themselves, each in one part."""
+        dec = self._decoder(depth)
+        cut = dec.parts(per)
+        assert len(cut) == parts
+        t = torch.randn(2, 8, 3, generator=torch.Generator().manual_seed(1))
+        x = t
+        with torch.no_grad():
+            for part in cut:
+                x = part(x)
+            assert torch.equal(x, dec(t))
+        held = [p for part in cut for p in part.parameters()]
+        assert len(held) == len({id(p) for p in held})
+        assert {id(p) for p in held} == {id(p) for p in dec.parameters()}
+
+    def test_parts_not_dividing_the_depth_are_refused(self):
+        with pytest.raises(ValueError, match="cannot be cut"):
+            self._decoder(4).parts(3)
+
 
 # The fan-in of each parameter of the decoder of m18/ae_t128 by name (the first
 # pattern that matches; every other is a vector): the encoder's are those of

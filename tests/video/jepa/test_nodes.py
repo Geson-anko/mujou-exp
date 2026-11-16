@@ -909,7 +909,7 @@ class TestDataPointSIGReg:
         for row, x in zip(bp.points.filled, xs[:2], strict=True):
             pixels = row.view(t, -1).float() / 255
             torch.testing.assert_close(
-                pixels, net.mods._whole(x)[0, :, :-1], rtol=0, atol=0
+                pixels, net.mods.whole(x)[0, :, :-1], rtol=0, atol=0
             )
         params = list(net.mods.encoder.parameters())
         loss = bp.terms(act).loss

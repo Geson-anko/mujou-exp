@@ -262,6 +262,47 @@ class TestVAE:
         for name in ("evals.jsonl", "stream.jsonl"):
             assert (whole / name).read_bytes() == (parts / name).read_bytes(), name
 
+    def test_a_pc_run_writes_the_rows_and_resumes(self, tmp_path, vae_tours):
+        """learner=pc (stage 4, ``pc.VAEPC``): the rows of the BP run, and a
+        resumed run (the nodes' r, lam, clocks and optimizers in the state)
+        writes what the whole run wrote."""
+        o = [*vae_tours, "learner=pc", "time.learn_interval=0.029"]
+        o = [*o, "ctl.resume_every=0.2"]
+        whole, parts = tmp_path / "whole", tmp_path / "parts"
+        assert _run(whole, o) == Exit.OK
+        rows = _lines(whole / "evals.jsonl")
+        assert [(r["t"], r["split"]) for r in rows] == [(0.5, "val"), (1.0, "val")]
+        assert set(rows[-1]) == {"t", "frame", "split"} | VAE_KEYS
+        assert all(math.isfinite(rows[-1][k]) for k in VAE_KEYS)
+        logged = _lines(whole / "stream.jsonl")
+        assert logged and all(
+            r[k] is not None for r in logged for k in ("loss", "bpd", "kl", "log_sigma")
+        )
+        head = ckpt.load_eval(whole / "ckpt" / "00001.0.pt", rebuild(compose(o)))
+        assert head["t"] == 1.0
+        job = local_job(o, parts)
+        assert loop.run(_Stopping(13), job, attempt=1) == Exit.STOPPED
+        (parts / "stop.request").unlink()
+        assert loop.run(PROGRAM, job, attempt=2) == Exit.OK
+        for name in ("evals.jsonl", "stream.jsonl"):
+            assert (whole / name).read_bytes() == (parts / name).read_bytes(), name
+
+    def test_pc_learns_as_bp_at_the_same_learn_interval(self, tmp_path, vae_tours):
+        """The same run by BP and by PC-ALM, both learning at 29 ms (the
+        step from which this net's nodes learn by BP's gradient): the same
+        stream rows and evaluations up to the rounding, through the second
+        of learning (QP3 of 「段 4」, extended)."""
+        o = [*vae_tours, "time.learn_interval=0.029"]
+        bp, pc_ = tmp_path / "bp", tmp_path / "pc"
+        assert _run(bp, o) == Exit.OK
+        assert _run(pc_, [*o, "learner=pc"]) == Exit.OK
+        for name, keys in (("stream.jsonl", ("loss", "kl")), ("evals.jsonl", ("bpd",))):
+            a, b = _lines(bp / name), _lines(pc_ / name)
+            assert len(a) == len(b) > 0
+            for ra, rb in zip(a, b, strict=True):
+                for k in keys:
+                    assert rb[k] == pytest.approx(ra[k], rel=1e-6), (name, k)
+
     def test_posthoc_reads_the_code_mu(self, tmp_path, vae_tours):
         """The posthoc of a VAE's run: M17's evaluation of mu flattened and
         the VAE's own decoder at mu, each line's keys finite (that the ViT

@@ -33,6 +33,7 @@ from exp.video.schema.run import RunConf
 __all__ = [
     "DECODER_SEED",
     "AEModules",
+    "DecoderPart",
     "LogSigma",
     "TokenDecoder",
     "VAEModules",
@@ -111,8 +112,76 @@ class TokenDecoder(nn.Module):
     @override
     def forward(self, tokens: Tensor) -> Tensor:
         out = self.stage(self.embed(tokens) + self.pos)  # (n, T, tau C p^2)
+        return self.stacks(out)
+
+    def stacks(self, out: Tensor) -> Tensor:
+        r"""$\hat y$ ``(n, N, C, H, W)`` of the last map's outputs ``(n, T,
+        \tau C p^2)``: the tubelets put back in place and the standardized
+        pixels unstandardized."""
         stacks = unpatchify_tubelets(out, self._grid3, self._patch, self._channels)
         return self._mean + self._std * stacks
+
+    def parts(self, per: int) -> list[DecoderPart]:
+        """The decoder cut into the modules of the nodes of PC-ALM (``vae.pc``):
+        ``depth / per`` parts of ``per`` blocks (the first with ``embed`` and
+        the position), then the readout (the ``LayerNorm`` and the last map).
+        Their parameters are the decoder's own, not copies, and composed in
+        order they compute ``forward`` with the same operations.
+
+        Raises:
+            ValueError: ``per`` is not > 0 or does not divide the depth.
+        """
+        depth = len(self.stage.blocks)
+        if per < 1 or depth % per:
+            raise ValueError(
+                f"the decoder of {depth} blocks cannot be cut by {per} a node"
+            )
+        cuts = [list(self.stage.blocks)[i : i + per] for i in range(0, depth, per)]
+        parts = [
+            DecoderPart(self, blocks, first=i == 0) for i, blocks in enumerate(cuts)
+        ]
+        if not parts:  # no blocks: the embedding alone
+            parts = [DecoderPart(self, [], first=True)]
+        return [*parts, DecoderPart(self, [], readout=True)]
+
+
+class DecoderPart(nn.Module):
+    """A node's part of a ``TokenDecoder`` (``TokenDecoder.parts``): with
+    ``first`` the decoder's ``embed`` and position, then ``blocks``, and with
+    ``readout`` the final ``LayerNorm``, the last map and ``stacks``. It holds
+    the decoder's modules themselves (its parameters are the decoder's)."""
+
+    def __init__(
+        self,
+        decoder: TokenDecoder,
+        blocks: list[nn.Module],
+        *,
+        first: bool = False,
+        readout: bool = False,
+    ) -> None:
+        super().__init__()
+        stage = decoder.stage
+        assert stage.norm is not None and stage.out is not None  # TokenDecoder's
+        self.embed = decoder.embed if first else None
+        if first:
+            self.register_buffer("pos", decoder.pos, persistent=False)
+            self.pos: Tensor
+        self.blocks = nn.ModuleList(blocks)
+        self.norm = stage.norm if readout else None
+        self.out = stage.out if readout else None
+        # unpatchify and unstandardize; a bound method, so not a submodule
+        self._stacks = decoder.stacks if readout else None
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        if self.embed is not None:
+            x = self.embed(x) + self.pos
+        for block in self.blocks:
+            x = block(x)
+        if self._stacks is not None:
+            assert self.norm is not None and self.out is not None  # with it
+            x = self._stacks(self.out(self.norm(x)))
+        return x
 
 
 @dataclass
