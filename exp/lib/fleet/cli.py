@@ -494,7 +494,7 @@ def _submit(conf: FleetConf, args: argparse.Namespace) -> int:
     else:
         try:
             python = venv_python(conf.root, info["envkey"])
-            configs = compose_configs(python, code_dir, lists)
+            configs = compose_configs(python, code_dir, lists, args.entry)
         except (ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from None
     if any(c.get("phase") == "confirm" for c in configs) and (

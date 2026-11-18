@@ -15,7 +15,7 @@ that sleeps in the same process group (its pid in ``child.pid``);
 ``resume/latest`` when that exists, and writes ``status.json`` (the heartbeat,
 whose last ``state`` is ``stopped``, ``env`` or ``failed`` when it ends so),
 ``evals.jsonl``, ``result.json`` and ``manifest.json`` like a run of
-``exp.video.main``.
+``exp.vision.main``.
 """
 
 import argparse

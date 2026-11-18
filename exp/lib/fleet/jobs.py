@@ -22,6 +22,7 @@ __all__ = [
     "GPU_ANY",
     "canonical_json",
     "compose_configs",
+    "compose_module",
     "expand",
     "group_of",
     "label_of",
@@ -31,7 +32,7 @@ __all__ = [
     "seed_of",
 ]
 
-DEFAULT_ENTRY = "exp.video.main"
+DEFAULT_ENTRY = "exp.vision.main"
 GPU_ANY = "any_gpu"
 _ENTRY = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 _HASH_DROP = ("seed", "device", "ctl", "phase")
@@ -202,10 +203,11 @@ def make_job(
 
 # Run by the venv python of a snapshot, in that snapshot: hydra stays out of the
 # fleet's own process. stdin: a JSON list of override lists; stdout: a JSON
-# list of {"config": dict} or {"error": str}.
+# list of {"config": dict} or {"error": str}. argv[1]: the compose module.
 _COMPOSE_SRC = """
-import json, sys
-from exp.video.compose import compose, to_dict
+import importlib, json, sys
+_m = importlib.import_module(sys.argv[1])
+compose, to_dict = _m.compose, _m.to_dict
 out = []
 for overrides in json.load(sys.stdin):
     try:
@@ -216,14 +218,25 @@ json.dump(out, sys.stdout)
 """
 
 
+def compose_module(entry: str) -> str:
+    """The compose module of the program ``entry``: ``<pkg>.compose`` for
+    ``<pkg>.main``, the module beside the entry."""
+    if not _ENTRY.fullmatch(entry) or "." not in entry:
+        raise ValueError(f"entry must be a dotted module name, not {entry!r}")
+    return entry.rsplit(".", 1)[0] + ".compose"
+
+
 def compose_configs(
-    python: Path, cwd: Path, override_lists: Sequence[Sequence[str]]
+    python: Path,
+    cwd: Path,
+    override_lists: Sequence[Sequence[str]],
+    entry: str = DEFAULT_ENTRY,
 ) -> list[dict[str, Any]]:
-    """The resolved config of each override list, composed by ``exp.video.compose``
-    under ``python`` in the snapshot ``cwd``. ``ValueError`` lists the lists
-    that do not compose."""
+    """The resolved config of each override list, composed by the compose module
+    of ``entry`` (``compose_module``) under ``python`` in the snapshot ``cwd``.
+    ``ValueError`` lists the lists that do not compose."""
     proc = subprocess.run(
-        [str(python), "-c", _COMPOSE_SRC],
+        [str(python), "-c", _COMPOSE_SRC, compose_module(entry)],
         cwd=cwd,
         input=json.dumps([list(o) for o in override_lists]),
         capture_output=True,

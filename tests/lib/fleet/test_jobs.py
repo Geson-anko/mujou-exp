@@ -5,6 +5,7 @@ import pytest
 
 from exp.lib.fleet.jobs import (
     compose_configs,
+    compose_module,
     expand,
     group_of,
     label_of,
@@ -105,17 +106,39 @@ class TestExpand:
 
 class TestCompose:
     def test_composes_in_the_snapshot_with_its_python(self):
+        """The default entry is exp.vision.main: its compose and presets."""
         (cfg,) = compose_configs(
-            Path(sys.executable), REPO, [["+experiment=m14/s0", "seed=4"]]
+            Path(sys.executable), REPO, [["+experiment=v0/tiny", "seed=4"]]
         )
-        assert cfg["name"] == "m14/s0"
+        assert cfg["name"] == "v0/tiny"
         assert cfg["seed"] == 4
-        assert cfg["program"] == "dynamics"
+        assert cfg["program"] == "vae"
+
+    def test_the_compose_module_is_the_one_beside_the_entry(self):
+        assert compose_module("exp.vision.main") == "exp.vision.compose"
+        assert compose_module("exp.other.main") == "exp.other.compose"
+        with pytest.raises(ValueError, match="entry"):
+            compose_module("main")
+
+    def test_composes_with_the_module_of_the_entry(self, tmp_path: Path):
+        pkg = tmp_path / "toy"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "compose.py").write_text(
+            "def compose(o):\n"
+            "    if 'bad' in o:\n        raise ValueError('bad')\n"
+            "    return {'got': list(o)}\n"
+            "def to_dict(c):\n    return c\n"
+        )
+        (cfg,) = compose_configs(Path(sys.executable), tmp_path, [["a=1"]], "toy.main")
+        assert cfg == {"got": ["a=1"]}
+        with pytest.raises(ValueError, match="bad"):
+            compose_configs(Path(sys.executable), tmp_path, [["bad"]], "toy.main")
 
     def test_names_the_lists_that_do_not_compose(self):
         with pytest.raises(ValueError, match="optim.kind=foo"):
             compose_configs(
                 Path(sys.executable),
                 REPO,
-                [["+experiment=m14/s0"], ["+experiment=m14/s0", "optim.kind=foo"]],
+                [["+experiment=v0/tiny"], ["+experiment=v0/tiny", "optim.kind=foo"]],
             )

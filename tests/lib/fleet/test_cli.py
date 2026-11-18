@@ -76,7 +76,19 @@ class TestSubmit:
 
         monkeypatch.setattr("exp.lib.fleet.cli.compose_configs", crash)
         with pytest.raises(SystemExit, match="ImportError: hydra"):
-            _fleet(fleet, "submit", "--batch", "b", "+experiment=m14/s0")
+            _fleet(fleet, "submit", "--batch", "b", "+experiment=v0/tiny")
+
+    def test_submit_composes_with_the_entry_of_the_job(self, fleet: Fleet, monkeypatch):
+        seen = []
+
+        def record(python, cwd, lists, entry):
+            seen.append(entry)
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr("exp.lib.fleet.cli.compose_configs", record)
+        with pytest.raises(SystemExit, match="stop here"):
+            _fleet(fleet, "submit", "--batch", "b", "--entry", "exp.vision.main", "a=1")
+        assert seen == ["exp.vision.main"]
 
     def test_an_unknown_class_is_refused(self, fleet: Fleet):
         with pytest.raises(SystemExit, match="any_gpu"):
@@ -96,7 +108,7 @@ class TestSubmit:
         write_json(code, {**read_json(code), "dirty": True})
         with pytest.raises(SystemExit, match="confirm"):
             _fleet(
-                fleet, "submit", "--batch", "b", "+experiment=m14/s0", "phase=confirm"
+                fleet, "submit", "--batch", "b", "+experiment=v0/tiny", "phase=confirm"
             )
 
 
