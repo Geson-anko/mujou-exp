@@ -36,7 +36,21 @@ A row of a split (val; test too with ``ctl.eval_test``) has
   training stacks, its ridge ``alpha`` chosen on the calib windows
   (``linear_dyn.select_alpha``), on the split's windows;
 - ``rank``: the effective rank of the first stacks' $z$
-  (``metrics.effective_rank``).
+  (``metrics.effective_rank``);
+- ``dec_spread`` (the VAE only): $\overline{\mathrm{Var}_i\, g(\mu(x_i))}
+  / \overline{\mathrm{Var}_i\, x_i / 255}$ over the first stacks $x_i$, the
+  variance across the windows $i$ of each value (frame, channel, pixel)
+  averaged over the values: 1 when the system's reconstruction varies across
+  the windows as much as the stacks, 0 when it is one image.
+
+Beside the split, a VAE's row after ``frame`` > 0 frames of the run has the
+recent stacks (``recent_stacks``: up to ``RECENT`` stacks that the run's stream
+0 showed in the ``RECENT`` seconds before, one a second): ``recent_stacks``
+(their number), ``recent_stack_mse`` and ``recent_dec_spread`` (``stack_mse``
+and ``dec_spread`` on them, still against the mean training stack) and
+``recent_stack_mse_init`` (``stack_mse`` of the run's initialization, the
+checkpoint of $t$ = 0, on the same stacks); null at $t$ = 0, without recent
+stacks, or (``_init``) without the checkpoint of 0.
 
 The yardstick (``Evaluator.baseline``, ``code`` ``"pca"``): the pixel PCA of
 $D$ = ``model.latent`` components of the training stacks' last frames
@@ -46,7 +60,9 @@ stack's last frame, through the same rows but ``stack_mse``, with
 
 Pictures of val (``SHOWN`` windows, ``SCALE`` times larger): ``<name>.png``,
 rows the true last frames, the system's (the VAE's $g(\mu)$, the PCA's
-linear decoder), and those of the decoder learned afterwards with seed 0.
+linear decoder), and those of the decoder learned afterwards with seed 0;
+for a VAE after ``frame`` > 0 frames also ``<name>-recent.png``, the same rows
+of ``SHOWN`` of the recent stacks evenly spaced in time.
 
 ``evaluate_run`` evaluates every ``ckpt/<t>.pt`` of a run directory into
 ``posthoc/`` (``baselines.jsonl``, ``evals.jsonl``, a row per checkpoint and
@@ -80,7 +96,7 @@ from exp.lib.optim import adam
 from exp.lib.png import tile, write_png
 from exp.lib.provenance import configure_determinism
 from exp.lib.rundir import atomic_open, write_json
-from exp.lib.tours.stacks import tours_root
+from exp.lib.tours.stacks import StackedTourFrames, tours_root
 from exp.lib.tours.walking_tours import eval_windows, videos
 from exp.lib.video_io import U8Reader
 from exp.vision.compose import from_dict
@@ -95,6 +111,8 @@ __all__ = [
     "HORIZON",
     "PCA_SEED",
     "POSTHOC",
+    "RECENT",
+    "RECENT_EVERY",
     "SCALE",
     "SEED_STEP",
     "SHOWN",
@@ -110,6 +128,7 @@ __all__ = [
     "evaluate_run",
     "fit_decoder",
     "main",
+    "recent_stacks",
     "stream_windows",
 ]
 
@@ -125,6 +144,8 @@ WINDOWS, STREAM_STEPS = 2048, 8  # the training windows and their stacks after t
 HORIZON = 1  # stacks after the first in a held-out window: dyn_1
 BATCH = 256  # stacks encoded or decoded at once
 SHOWN, SCALE = 10, 2  # val windows in a picture, and its upscale
+# The recent stacks of a checkpoint: how many, and the seconds between two.
+RECENT, RECENT_EVERY = 64, 1.0
 SPLITS = ("calib", "val", "test")
 POSTHOC = "posthoc"  # the directory of evaluate_run in the run's
 _BASE = 32  # the channels of the decoder's last transposed convolution
@@ -230,6 +251,56 @@ def _iter_stream_windows(
         local = g - firsts[a]
         if local + span <= lengths[a]:
             yield readers[a][local : local + span : t.stride]
+
+
+def recent_stacks(conf: RunConf, root: Path, frame: int) -> tuple[list[int], Tensor]:
+    r"""The stacks that stream 0 of the run ``conf`` showed in the ``RECENT``
+    seconds before its checkpoint after ``frame`` frames, one every
+    ``RECENT_EVERY`` seconds.
+
+    The run's stream is ``StackedTourFrames`` of ``data.tours`` (as
+    ``program.tour_streams``) and its unit ``k`` (from 0) shows the stacks of
+    its ``k``-th ``next()``, so a checkpoint after ``frame`` frames follows
+    those of ``k`` < ``frame``. With $p$ = ``RECENT_EVERY / time.frame``
+    frames, the recent stacks are those of stream 0 at $k = \mathrm{frame} -
+    j p$, $j = R, \dots, 1$ ($R$ = ``RECENT``), $k \ge 0$, but those it marks
+    not ``ready`` or ``reset``. Stream 0 starts at the loop's frame 0 whatever
+    ``data.streams``, so it is read as the only stream.
+
+    Returns:
+        The kept ``k`` in increasing order and their stacks u8 ``(r, n, 3,
+        S, S)`` (CPU), ``r`` possibly 0.
+
+    Raises:
+        ValueError: ``RECENT_EVERY`` is not a whole number of frames.
+    """
+    p = RECENT_EVERY / conf.time.frame
+    if abs(p - round(p)) > 1e-6:
+        raise ValueError(
+            f"RECENT_EVERY {RECENT_EVERY} s is not a whole number of frames of "
+            f"{conf.time.frame} s"
+        )
+    p, t = round(p), conf.data.tours
+    stream = StackedTourFrames(
+        root,
+        n=1,
+        held_out=t.held_out,
+        frames=t.frames,
+        stride=t.stride,
+        advance=t.advance,
+    )
+    kept, stacks = [], []
+    for k in range(frame - RECENT * p, frame, p):
+        if k < 0:
+            continue
+        stream.load_state_dict({"k": k})
+        x, ready, reset = stream.next()
+        if ready[0] and not reset[0]:
+            kept.append(k)
+            stacks.append(x[0])
+    if not stacks:
+        return [], torch.empty(0, t.frames, 3, t.size, t.size, dtype=torch.uint8)
+    return kept, torch.stack(stacks)
 
 
 def _stacks(windows: Tensor, n: int) -> Tensor:
@@ -344,6 +415,36 @@ def _mse(a: Tensor, b: Tensor) -> float:
     return float(((a - b) ** 2).double().mean())
 
 
+class _Spread:
+    r"""``dec_spread``: $\overline{\mathrm{Var}_i \hat x_i} /
+    \overline{\mathrm{Var}_i x_i}$ of the reconstructions $\hat x_i$ and the
+    stacks $x_i$, the population variance across the stacks $i$ of each
+    value, averaged over the values; from the float64 sums of $x$ and $x^2$,
+    a batch at a time."""
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._sums: Tensor | None = None  # (2 moments, 2: x_hat and x, ...)
+
+    def add(self, x_hat: Tensor, x: Tensor) -> None:
+        """Add the reconstructions and the stacks ``(B, ...)`` alike."""
+        both = torch.stack([x_hat, x], 1).double()  # (B, 2, ...)
+        sums = torch.stack([both.sum(0), (both * both).sum(0)])
+        self._sums = sums if self._sums is None else self._sums + sums
+        self._count += len(x)
+
+    def value(self) -> float:
+        assert self._sums is not None
+        mean = self._sums[0] / self._count
+        var = (self._sums[1] / self._count - mean * mean).flatten(1).mean(1)
+        return float(var[0] / var[1])
+
+
+def _spaced(r: int) -> list[int]:
+    """``SHOWN`` of ``r`` indices evenly spaced from 0 (all ``r`` if fewer)."""
+    return [i * r // SHOWN for i in range(SHOWN)] if r >= SHOWN else list(range(r))
+
+
 def _sd(values: Sequence[float]) -> float:
     """The sample standard deviation, NaN of one value."""
     return statistics.stdev(values) if len(values) > 1 else math.nan
@@ -375,7 +476,8 @@ class Evaluator:
         steps: int = STREAM_STEPS,
         fit_steps: int = FIT_STEPS,
     ) -> None:
-        self._conf, self._out, self._fit_steps = conf, out, fit_steps
+        self._conf, self._root, self._out = conf, root, out
+        self._fit_steps = fit_steps
         self._dev = torch.device(conf.device)
         self._n = n = conf.data.tours.frames
         self._measured = ("val", "test") if conf.ctl.eval_test else ("val",)
@@ -411,30 +513,90 @@ class Evaluator:
             "pca_seed": self._conf.seed + PCA_SEED,
             "blur_sigma": m.blur_sigma,
             "splits": list(self._measured),
+            "recent": RECENT,
+            "recent_every": RECENT_EVERY,
         }
 
     @torch.no_grad()
-    def evaluate(self, code: VaeCode, name: str) -> list[dict[str, Any]]:
-        """The VAE's rows (``code`` ``"vae"``) and its picture ``<name>.png``."""
+    def evaluate(
+        self,
+        code: VaeCode,
+        name: str,
+        *,
+        frame: int = 0,
+        init: VaeCode | None = None,
+    ) -> list[dict[str, Any]]:
+        """The VAE's rows (``code`` ``"vae"``) and its picture ``<name>.png``;
+        after ``frame`` > 0 frames of the run also the recent ones (module
+        docstring), with ``recent_stack_mse_init`` of ``init``, the VAE of
+        the checkpoint of 0, if given."""
         n = self._n
-        rows, zs, post = self._rows(code.mu)
-        own = None
+        rows, zs, post, post_of = self._rows(code.mu)
         for row in rows:
             split = row["split"]
-            z0 = zs[split][:, 0]
             first = self._windows[split][:, :n]
-            err = base = 0.0
-            for zc, xc in zip(z0.split(BATCH), first.split(BATCH), strict=True):
-                x = xc.to(self._dev).float() / 255
-                x_hat = code.decode(zc)
-                err += float(((x_hat - x) ** 2).double().sum())
-                base += float(((self._mean_stack - x) ** 2).double().sum())
-                if split == "val" and own is None:
-                    own = x_hat[:SHOWN, -1].clamp(0, 1)
-            row["stack_mse"] = err / base
+            mse, spread, own = self._system(code, zs[split][:, 0], first)
+            row["stack_mse"], row["dec_spread"] = mse, spread
+            if split == "val":
+                self._picture(name, self._f0["val"][:SHOWN], own, post)
+        recent = self._recent(code, name, frame, init, post_of)
+        return [{"code": "vae", **r, **recent} for r in rows]
+
+    def _system(
+        self, code: VaeCode, z: Tensor, x: Tensor
+    ) -> tuple[float, float, Tensor]:
+        """``stack_mse`` and ``dec_spread`` (module docstring) of the system's
+        reconstructions from ``z`` ``(B, D)`` of the stacks ``x`` u8 ``(B, n,
+        C, H, W)`` (CPU), and the last frames of the first ``SHOWN``."""
+        err = base = 0.0
+        spread = _Spread()
+        own = None
+        for zc, xc in zip(z.split(BATCH), x.split(BATCH), strict=True):
+            xc = xc.to(self._dev).float() / 255
+            x_hat = code.decode(zc)
+            err += float(((x_hat - xc) ** 2).double().sum())
+            base += float(((self._mean_stack - xc) ** 2).double().sum())
+            spread.add(x_hat, xc)
+            if own is None:
+                own = x_hat[:SHOWN, -1].clamp(0, 1)
         assert own is not None
-        self._picture(name, own, post)
-        return [{"code": "vae", **r} for r in rows]
+        return err / base, spread.value(), own
+
+    def _recent(
+        self,
+        code: VaeCode,
+        name: str,
+        frame: int,
+        init: VaeCode | None,
+        post_of: Callable[[Tensor], Tensor],
+    ) -> dict[str, Any]:
+        """The ``recent_*`` of a row after ``frame`` frames (module
+        docstring), and the picture ``<name>-recent.png`` of the recent
+        stacks; ``post_of`` is the decoder of seed 0."""
+        got: dict[str, Any] = dict.fromkeys(
+            [
+                "recent_stacks",
+                "recent_stack_mse",
+                "recent_stack_mse_init",
+                "recent_dec_spread",
+            ]
+        )
+        if frame == 0:
+            return got
+        _, x = recent_stacks(self._conf, self._root, frame)
+        got["recent_stacks"] = len(x)
+        if not len(x):
+            return got
+        z = self._codes(code.mu, x)[:, 0]
+        got["recent_stack_mse"], got["recent_dec_spread"], _ = self._system(code, z, x)
+        if init is not None:
+            z_init = self._codes(init.mu, x)[:, 0]
+            got["recent_stack_mse_init"], _, _ = self._system(init, z_init, x)
+        idx = _spaced(len(x))
+        true = x[idx, -1].to(self._dev).float() / 255
+        own = code.decode(z[idx])[:, -1].clamp(0, 1)
+        self._picture(f"{name}-recent", true, own, post_of(z[idx]))
+        return got
 
     @torch.no_grad()
     def baseline(self) -> list[dict[str, Any]]:
@@ -448,7 +610,7 @@ class Evaluator:
         def z_of(x: Tensor) -> Tensor:
             return pca.encode(x[:, -1].flatten(1).float() / 255, mean, comps)
 
-        rows, zs, post = self._rows(z_of)
+        rows, zs, post, _ = self._rows(z_of)
         sigma = conf.measure.blur_sigma
         lins = {}
         for row in rows:
@@ -458,7 +620,7 @@ class Evaluator:
             row["recon_lin"] = _mse(lin, f0) / _mse(self._mean.expand_as(f0), f0)
             row["recon_lin_blur"] = blur_recon(lin, f0, self._mean, sigma)
             lins[row["split"]] = lin
-        self._picture("pca", lins["val"][:SHOWN], post)
+        self._picture("pca", self._f0["val"][:SHOWN], lins["val"][:SHOWN], post)
         return [{"code": "pca", **r} for r in rows]
 
     def _codes(self, z_of: Callable[[Tensor], Tensor], windows: Tensor) -> Tensor:
@@ -474,10 +636,13 @@ class Evaluator:
 
     def _rows(
         self, z_of: Callable[[Tensor], Tensor]
-    ) -> tuple[list[dict[str, Any]], dict[str, Tensor], Tensor]:
-        """The rows of the code ``z_of`` but ``stack_mse`` (module docstring),
-        its codes ``(m, 1 + HORIZON, D)`` of each split, and the first
-        ``SHOWN`` frames of val of the decoder of seed 0."""
+    ) -> tuple[
+        list[dict[str, Any]], dict[str, Tensor], Tensor, Callable[[Tensor], Tensor]
+    ]:
+        """The rows of the code ``z_of`` but ``stack_mse`` and ``dec_spread``
+        (module docstring), its codes ``(m, 1 + HORIZON, D)`` of each split,
+        the first ``SHOWN`` frames of val of the decoder of seed 0, and that
+        decoder: frames ``(B, C, H, W)`` of codes ``(B, D)``."""
         conf = self._conf
         z_train = self._codes(z_of, self._train)  # (w, K, D)
         zs = {s: self._codes(z_of, w) for s, w in self._windows.items()}
@@ -485,7 +650,7 @@ class Evaluator:
         std = _Standardizer(flat)
         recon: dict[str, list[float]] = {s: [] for s in self._measured}
         blur: dict[str, list[float]] = {s: [] for s in self._measured}
-        post = None
+        post = dec0 = None
         for k in range(conf.measure.posthoc_seeds):
             seed = conf.seed + DECODER_SEED + SEED_STEP * k
             dec = fit_decoder(
@@ -495,6 +660,7 @@ class Evaluator:
                 lr=DECODER_LR,
                 gen=torch.Generator().manual_seed(seed),
             )
+            dec0 = dec if k == 0 else dec0
             for s in self._measured:
                 f0 = self._f0[s]
                 x_hat = _decoded(dec, std(zs[s][:, 0]))
@@ -504,7 +670,7 @@ class Evaluator:
                 )
                 if s == "val" and k == 0:
                     post = x_hat[:SHOWN]
-        assert post is not None
+        assert post is not None and dec0 is not None
         z0, z1 = z_train[:, :-1].flatten(0, 1), z_train[:, 1:].flatten(0, 1)
         alpha = linear_dyn.select_alpha(z0, z1, zs["calib"])
         a, b = linear_dyn.fit(z0, z1, alpha=alpha)
@@ -523,12 +689,16 @@ class Evaluator:
             row["alpha"] = alpha
             row["rank"] = effective_rank(zs[s][:, 0])
             rows.append(row)
-        return rows, zs, post
 
-    def _picture(self, name: str, own: Tensor, post: Tensor) -> None:
-        """``<name>.png``: the true last frames of val, ``own`` and ``post``
-        ``(SHOWN, C, H, W)``."""
-        true = self._f0["val"][:SHOWN]
+        def post_of(z: Tensor) -> Tensor:
+            return _decoded(dec0, std(z))
+
+        return rows, zs, post, post_of
+
+    def _picture(self, name: str, true: Tensor, own: Tensor, post: Tensor) -> None:
+        """``<name>.png``: the rows ``true`` (the true last frames), ``own``
+        (the system's) and ``post`` (the decoder's of seed 0), each ``(w, C,
+        H, W)`` in ``[0, 1]`` on the device."""
         grid = torch.stack([true, own, post]).cpu()
         write_png(self._out / f"{name}.png", tile(grid, scale=SCALE))
 
@@ -549,7 +719,9 @@ def evaluate_run(
     ``out`` (``run_dir / POSTHOC``; module docstring): ``config.json``,
     ``baselines.jsonl`` (the PCA), ``evals.jsonl`` (a row per checkpoint and
     split, with its ``t`` and ``frame``, appended as each is done) and the
-    pictures. Returns ``out``.
+    pictures. The recent stacks of a checkpoint are those before its
+    ``frame``; ``recent_stack_mse_init`` is of a second ``build(conf)`` with
+    the weights of the first checkpoint if its ``t`` is 0. Returns ``out``.
 
     Args:
         run_dir: The run.
@@ -579,10 +751,12 @@ def evaluate_run(
     )
     _write(out / "baselines.jsonl", ev.baseline())
     _write(out / "evals.jsonl", [])
-    code = build(conf)
+    code, init = build(conf), build(conf)
+    if ckpt.load_eval(paths[0], init.modules())["t"] != 0:
+        init = None  # the run's initialization is not among its checkpoints
     for path in paths:
         head = ckpt.load_eval(path, code.modules())
-        rows = ev.evaluate(code, path.stem)
+        rows = ev.evaluate(code, path.stem, frame=int(head["frame"]), init=init)
         _append(
             out / "evals.jsonl",
             [{"t": head["t"], "frame": head["frame"], **r} for r in rows],

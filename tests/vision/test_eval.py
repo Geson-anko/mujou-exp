@@ -15,19 +15,22 @@ from exp.lib import ckpt
 from exp.lib.blur_error import blur_recon
 from exp.lib.png import read_png
 from exp.lib.rundir import Exit
-from exp.lib.tours.stacks import DATA_ENV
+from exp.lib.tours.stacks import DATA_ENV, StackedTourFrames
 from exp.lib.tours.walking_tours import finalize
 from exp.lib.video_io import U8Writer
 from exp.vision import loop
 from exp.vision.compose import compose, to_dict
 from exp.vision.eval import (
+    RECENT,
     SCALE,
+    SHOWN,
     Evaluator,
     check_splits,
     eval_splits,
     evaluate_run,
     fit_decoder,
     main,
+    recent_stacks,
     stream_windows,
 )
 from exp.vision.models import build_vae
@@ -195,6 +198,107 @@ class TestStreamWindows:
         assert (video == video[:, :1]).all()
         assert (j[:, 1:] - j[:, :-1] == 1).all()
         assert x.shape[1] == N + STEPS
+
+
+class TestRecentStacks:
+    """The loop of A, B, C (20 frames each) is 60 frames; at 0.1 s frames a
+    recent stack is every p = 10 frames of the run."""
+
+    @pytest.fixture
+    def root(self, tmp_path) -> Path:
+        return numbered(tmp_path / "d", {"A": 20, "B": 20, "C": 20, "H": 40}, size=SIZE)
+
+    @pytest.mark.parametrize("frame", [5, 95, 700])
+    def test_the_stacks_the_stream_showed_one_a_second_before(self, root, frame):
+        # The oracle: run stream 0 of 2 streams (the run's stream with another
+        # number of streams) through its first `frame` next(), and keep the
+        # stacks of k = frame - 10 j, j = 1 .. RECENT, it marks ready, not reset.
+        stream = StackedTourFrames(
+            root, n=2, held_out="H", frames=N, stride=1, advance=1
+        )
+        want_k, want = [], []
+        for k in range(frame):
+            x, ready, reset = stream.next()
+            back = frame - k
+            if back % 10 == 0 and back <= 10 * RECENT and ready[0] and not reset[0]:
+                want_k.append(k)
+                want.append(x[0])
+        kept, x = recent_stacks(conf_of(), root, frame)
+        assert kept == want_k
+        assert x.shape == (len(want), N, 3, SIZE, SIZE) and x.dtype == torch.uint8
+        if want:
+            assert torch.equal(x, torch.stack(want))
+
+    def test_by_hand_after_700_frames(self, root):
+        # k = 60, 70, .., 690 (64 stacks); k = 0 mod 20 ends at the first
+        # frame of A, B or C (not ready, reset): left out.
+        kept, x = recent_stacks(conf_of(), root, 700)
+        assert kept == [k for k in range(60, 700, 10) if k % 20]
+        assert len(kept) == RECENT // 2
+        video = x[:, :, 0, 0, 0].long()
+        local = torch.tensor([k % 60 % 20 for k in kept])
+        assert (video == torch.tensor([k % 60 // 20 for k in kept])[:, None]).all()
+        assert torch.equal(frame_numbers(x), torch.stack([local - 1, local], 1))
+
+    def test_none_before_the_first_second(self, root):
+        kept, x = recent_stacks(conf_of(), root, 9)
+        assert kept == [] and x.shape == (0, N, 3, SIZE, SIZE)
+
+
+class TestDecSpread:
+    @pytest.fixture
+    def root(self, tmp_path) -> Path:
+        return random_tours(tmp_path / "d")
+
+    def evaluator(self, root: Path, out: Path) -> Evaluator:
+        return Evaluator(
+            conf_of(), root, out, windows=WINDOWS, steps=STEPS, fit_steps=FIT
+        )
+
+    @pytest.mark.parametrize("c", [0.0, 1.0])
+    def test_the_identity_gives_1_and_a_constant_0(self, root, tmp_path, c):
+        # c = 0: g(mu(x)) = x, the variance of the stacks over itself; c = 1:
+        # the mean stack m for every window, of no variance.
+        code = MixCode(brute_mean_stack(conf_of(), root))
+        code.net.c.data.fill_(c)
+        ev = self.evaluator(root, tmp_path / "out")
+        (row,) = ev.evaluate(code, "x", frame=700)
+        spread = 1.0 - c
+        assert row["dec_spread"] == pytest.approx(spread, rel=1e-9, abs=1e-9)
+        assert row["recent_dec_spread"] == pytest.approx(spread, rel=1e-9, abs=1e-9)
+        assert row["recent_stack_mse"] == pytest.approx(c, rel=1e-5, abs=1e-12)
+        assert row["recent_stacks"] == RECENT // 2
+        assert row["recent_stack_mse_init"] is None  # no init given
+
+    def test_no_recent_rows_at_the_initialization(self, root, tmp_path):
+        (row,) = self.evaluator(root, tmp_path / "out").evaluate(ColorCode(), "x")
+        assert row["dec_spread"] > 0
+        assert all(
+            row[k] is None
+            for k in (
+                "recent_stacks",
+                "recent_stack_mse",
+                "recent_stack_mse_init",
+                "recent_dec_spread",
+            )
+        )
+        assert not (tmp_path / "out" / "x-recent.png").exists()
+
+    def test_the_init_is_measured_on_the_same_recent_stacks(self, root, tmp_path):
+        # The oracle: stack_mse of ColorCode on recent_stacks, against the mean
+        # training stack; the code and its "init" give it alike only if both
+        # see those stacks.
+        conf = conf_of()
+        _, x = recent_stacks(conf, root, 700)
+        code = ColorCode()
+        x = x.float() / 255
+        m = brute_mean_stack(conf, root)
+        err = ((code.decode(code.mu(x * 255)).double() - x) ** 2).sum()
+        want = float(err / ((m - x) ** 2).sum())
+        ev = self.evaluator(root, tmp_path / "out")
+        (row,) = ev.evaluate(code, "x", frame=700, init=ColorCode())
+        assert row["recent_stack_mse"] == pytest.approx(want, rel=1e-5)
+        assert row["recent_stack_mse_init"] == row["recent_stack_mse"]
 
 
 class TestStackMse:
@@ -414,6 +518,20 @@ class TestEvaluateRun:
         assert torch.equal(png[:side], png[side : 2 * side])  # g = identity
         png0 = read_png(out / "00000.0.png")  # g = the mean stack
         assert not torch.equal(png0[:side], png0[side : 2 * side])
+        # t = 0 is a constant image, t = 60 the identity; the recent stacks of
+        # 600 frames are k = 0, 10, .., 590 but k = 0 mod 20 (the first frame
+        # of a video): 30, measured too with the weights of t = 0 (c = 1)
+        assert rows[0]["dec_spread"] == pytest.approx(0.0, abs=1e-9)
+        assert rows[0]["recent_stack_mse"] is None
+        assert rows[1]["dec_spread"] == pytest.approx(1.0, rel=1e-9)
+        assert rows[1]["recent_stacks"] == 30
+        assert rows[1]["recent_stack_mse"] == 0.0
+        assert rows[1]["recent_stack_mse_init"] == pytest.approx(1.0, rel=1e-5)
+        assert rows[1]["recent_dec_spread"] == pytest.approx(1.0, rel=1e-9)
+        recent = read_png(out / "00060.0-recent.png")
+        assert recent.shape == (3 * side, SHOWN * side, 3)
+        assert torch.equal(recent[:side], recent[side : 2 * side])
+        assert not (out / "00000.0-recent.png").exists()
 
     def test_a_run_without_checkpoints_raises(self, tmp_path):
         run = tmp_path / "run"
