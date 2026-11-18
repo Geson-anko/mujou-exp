@@ -232,6 +232,14 @@ details.full td, details.full th { padding: 6px 8px; white-space: nowrap; }
 .chart .legend svg { width: 22px; height: 10px; display: inline-block; overflow: visible; }
 .dots .track, .dots .axis { margin: 0 14px; }
 @media (max-width: 560px) { .chart svg { min-width: 540px; } }
+/* column rules */
+th + th, td + td { border-left: 1px solid var(--rule); }
+table { border-top: 1px solid var(--rule); }
+.dots .track, .dots .axis { position: relative; }
+.dots .track::before, .dots .axis::before { content: ""; position: absolute; left: -8px; top: -3px; bottom: -3px; border-left: 1px solid var(--rule); }
+.dots .row.head .axis::before { top: -6px; bottom: -7px; }
+.dots .row > div:last-child { border-left: 1px solid var(--rule); padding-left: 8px; align-self: stretch; }
+.dots .row.group > span { border: none; }
 </style>
 <main>
 <header class="hero">
