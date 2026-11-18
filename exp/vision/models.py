@@ -386,12 +386,14 @@ def _decoder(m: ModelConf, *, channels: int, size: int) -> Decoder:
 
 
 class LogSigma(nn.Module):
-    r"""The likelihood's one learned $\ln \sigma$ (``log_sigma``, 0-d), from
-    $\frac12 \ln$ ``sigma0_sq``."""
+    r"""The likelihood's one $\ln \sigma$ (``log_sigma``, 0-d), from $\frac12
+    \ln$ ``sigma0_sq``; learned when ``learn``, else fixed (no gradient)."""
 
-    def __init__(self, sigma0_sq: float) -> None:
+    def __init__(self, sigma0_sq: float, *, learn: bool = True) -> None:
         super().__init__()
-        self.log_sigma = nn.Parameter(torch.tensor(0.5 * math.log(sigma0_sq)))
+        self.log_sigma = nn.Parameter(
+            torch.tensor(0.5 * math.log(sigma0_sq)), requires_grad=learn
+        )
 
 
 @dataclass
@@ -416,8 +418,14 @@ class VAEModules:
         }
 
     def parameters(self) -> list[nn.Parameter]:
-        """The encoder's, the decoder's, then $\\ln \\sigma$."""
-        return [p for m in self.modules().values() for p in m.parameters()]
+        """The learned parameters: the encoder's, the decoder's, then $\\ln
+        \\sigma$ unless it is fixed."""
+        return [
+            p
+            for m in self.modules().values()
+            for p in m.parameters()
+            if p.requires_grad
+        ]
 
     @property
     def log_sigma(self) -> Tensor:
@@ -471,7 +479,7 @@ def build_vae(conf: RunConf, *, seed: int) -> VAEModules:
     return VAEModules(
         encoder.to(dev),
         decoder.to(dev),
-        LogSigma(m.sigma0_sq).to(dev),
+        LogSigma(m.sigma0_sq, learn=m.learn_sigma).to(dev),
         frames=t.frames,
     )
 

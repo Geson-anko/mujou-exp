@@ -41,6 +41,10 @@ class ModelConf:
     # The likelihood's sigma^2 at the start: M18's ML variance of the stacks
     # about the mean stack (Walking Tours, 128 px; the 64 px value is close).
     sigma0_sq: float = 0.0743
+    # Whether ln sigma is learned; when not, sigma^2 stays at sigma0_sq, which
+    # then fixes the balance of the reconstruction against the KL (as the beta
+    # = 2 sigma^2 of a beta-VAE at sigma = 1).
+    learn_sigma: bool = True
 
     def __post_init__(self) -> None:
         check_choice("model.arch", self.arch, ARCHS)

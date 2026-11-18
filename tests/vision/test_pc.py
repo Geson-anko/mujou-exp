@@ -33,11 +33,17 @@ FRAME = 0.1
 ARCHS = ["vit", "resnet"]
 
 
-def _conf(arch: str, learn_interval: float = LEARN_INTERVAL, b: int = 2) -> RunConf:
+def _conf(
+    arch: str,
+    learn_interval: float = LEARN_INTERVAL,
+    b: int = 2,
+    learn_sigma: bool = True,
+) -> RunConf:
     """The tiny run with ``learn_interval`` set after RunConf's check: these
     tests probe intervals outside its window (30 ms, inf) on purpose."""
     conf = tiny(arch, streams=b)
     conf.time = TimeConf(learn_interval=learn_interval)
+    conf.model.learn_sigma = learn_sigma
     return conf
 
 
@@ -157,7 +163,11 @@ def _constrained(net: VAEPC) -> list[Any]:
 
 
 def _frames(
-    arch: str, learn_interval: float, valid: Tensor | None = None, frames: int = 2
+    arch: str,
+    learn_interval: float,
+    valid: Tensor | None = None,
+    frames: int = 2,
+    learn_sigma: bool = True,
 ) -> tuple[VAEModules, GradRecorder, list[tuple[dict, dict]]]:
     """``frames`` frames of different stacks shown by the host, reset in the
     first only (the next start from the r and lam the first left, as in a
@@ -166,7 +176,7 @@ def _frames(
     NaN: it must add nothing."""
     b = 2 if valid is None else len(valid)
     valid = torch.ones(b, dtype=torch.bool) if valid is None else valid
-    conf = _conf(arch, learn_interval, b)
+    conf = _conf(arch, learn_interval, b, learn_sigma)
     mods = _mods(conf)
     rec = GradRecorder()
     net = VAEPC(mods, conf=conf, optimizer=rec)
@@ -210,6 +220,17 @@ class TestBPGradient:
         mods, _, frames = _frames(arch, LEARN_INTERVAL, valid)
         for pcs, bps in frames:
             assert all(torch.isfinite(g).all() for g in pcs.values())
+            _assert_bps(mods, pcs, bps)
+
+    def test_a_fixed_sigma_is_not_learned_and_the_rest_is_bps(self, arch):
+        """``learn_sigma=False``: no node steps ln sigma, which stays at
+        1/2 ln sigma0_sq, and every other parameter still learns by BP's
+        gradient of the -ELBO at that sigma."""
+        mods, _, frames = _frames(arch, LEARN_INTERVAL, learn_sigma=False)
+        assert float(mods.log_sigma) == pytest.approx(0.5 * math.log(0.05), rel=1e-6)
+        for pcs, bps in frames:
+            assert mods.log_sigma not in pcs
+            assert set(pcs) == set(mods.parameters())
             _assert_bps(mods, pcs, bps)
 
 

@@ -308,7 +308,10 @@ class GaussOut(Node):
         self.clock = pc.clock.LearnClock.of(
             tau, period=self.period, learn_interval=learn_interval
         )
-        self._params = [*module.parameters(), *likelihood.parameters()]
+        self._params = [
+            *module.parameters(),
+            *(p for p in likelihood.parameters() if p.requires_grad),
+        ]
         self.optimizer = optimizer.bind(self._params)
         h = act_spec.field("h", TensorSpec)
         with torch.no_grad():
