@@ -21,3 +21,5 @@ metadata:
 **How to apply:** 順番にはこだわらず、VAE が安定して学べる設定と限界を行き来して探る（ユーザー）。全部の組み合わせは回さず、1 軸ずつ動かす。初期化は安定しないときに考える。関連: [[project-vae-stream-next]]、[[feedback-simple-fundamental]]、[[feedback-learn-setting-first]]、[[feedback-realtime-speed]]
 
 **V1 の結果（2026-11-18）**: SGD の τ は 1e5 が規則の上での出発点（1e4 は 2 秒で発散、1e5・1e6 は 3 条件を満たす、1e7 は dyn_1/copy_1 で外れ）。ただしシステムのデコーダは 1800 秒でも val のどの窓にも同じ画像（学習中の場面）を出し、z を使っていない。符号の実効ランクは 80.6 → 10.2。「初期化時より下がる」だけでは学べたかを分けられない。次の一歩はユーザーと決める（exp/vision/README.md の「V1: 結果」）
+
+**V2〜V5 の結果（2026-11-18）**: 「学べた」（stack_mse < 1 を含む 4 条件）は RMSProp τ=1e4 の 1 本だけ（stack_mse 0.640、システムのデコーダが窓ごとに違う画像を出す）。SGD・momentum・モデルの大きさ・stack の枚数では、デコーダが z を無視したまま（dec_spread ≈ 0、直前 64 秒でも recent_stack_mse 1.4〜1.6）。KL は 300〜700 nat あり、つぶれてはいない。ResNet は ViT より悪い（S・L は τ=1e5 で発散）。AdamW・RMSProp の小さい τ は符号の実効ランクが 1〜3.5 に崩れ、dyn_1/copy_1 だけ下がる。次は V6（RMSProp 1e4 の seed 1・2、RMSProp・AdamW の τ=1e5）
