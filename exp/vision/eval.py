@@ -24,7 +24,7 @@ A row of a split (val; test too with ``ctl.eval_test``) has
 - ``recon`` and ``recon_blur``, the mean over ``measure.posthoc_seeds``
   decoders learned afterwards (``recon_sd``, ``recon_blur_sd`` their sample
   standard deviation, ``recon_k``, ``recon_blur_k`` each seed's): a
-  ``decoder`` of $z$ standardized by one scalar (``_Standardizer``) fit to
+  ``decoder`` of $z$ standardized by one scalar (``Standardizer``) fit to
   the last frames of the training stacks (``fit_decoder``, ``DECODER_LR``,
   seed $k$ from the generator of ``seed + DECODER_SEED + SEED_STEP k``),
   decoding the first stack's $z$ of each window; ``recon`` its squared error
@@ -121,6 +121,7 @@ __all__ = [
     "TOURS_SEED",
     "WINDOWS",
     "Evaluator",
+    "Standardizer",
     "VaeCode",
     "check_splits",
     "decoder",
@@ -129,6 +130,7 @@ __all__ = [
     "fit_decoder",
     "main",
     "recent_stacks",
+    "stacks_at",
     "stream_windows",
 ]
 
@@ -280,7 +282,23 @@ def recent_stacks(conf: RunConf, root: Path, frame: int) -> tuple[list[int], Ten
             f"RECENT_EVERY {RECENT_EVERY} s is not a whole number of frames of "
             f"{conf.time.frame} s"
         )
-    p, t = round(p), conf.data.tours
+    p = round(p)
+    return stacks_at(
+        conf, root, [k for k in range(frame - RECENT * p, frame, p) if k >= 0]
+    )
+
+
+def stacks_at(conf: RunConf, root: Path, ks: Sequence[int]) -> tuple[list[int], Tensor]:
+    r"""The stacks that stream 0 of the run ``conf`` showed at its units
+    ``ks`` (its ``k``-th ``next()``; ``StackedTourFrames`` of ``data.tours``,
+    stream 0 starting at the loop's frame 0 whatever ``data.streams``), but
+    those it marks not ``ready`` or ``reset``.
+
+    Returns:
+        The kept ``k`` in the order of ``ks`` and their stacks u8 ``(r, n, 3,
+        S, S)`` (CPU), ``r`` possibly 0.
+    """
+    t = conf.data.tours
     stream = StackedTourFrames(
         root,
         n=1,
@@ -290,9 +308,7 @@ def recent_stacks(conf: RunConf, root: Path, frame: int) -> tuple[list[int], Ten
         advance=t.advance,
     )
     kept, stacks = [], []
-    for k in range(frame - RECENT * p, frame, p):
-        if k < 0:
-            continue
+    for k in ks:
         stream.load_state_dict({"k": k})
         x, ready, reset = stream.next()
         if ready[0] and not reset[0]:
@@ -389,7 +405,7 @@ def fit_decoder(
     return dec
 
 
-class _Standardizer:
+class Standardizer:
     r"""$(z - \bar z) / s$: $\bar z$ the mean of each component of the
     training codes ``z`` ``(N, D)``, $s$ one scalar for all of them, the root
     mean square of their stds. One scale, not one per component: the PCA's
@@ -647,7 +663,7 @@ class Evaluator:
         z_train = self._codes(z_of, self._train)  # (w, K, D)
         zs = {s: self._codes(z_of, w) for s, w in self._windows.items()}
         flat = z_train.flatten(0, 1)
-        std = _Standardizer(flat)
+        std = Standardizer(flat)
         recon: dict[str, list[float]] = {s: [] for s in self._measured}
         blur: dict[str, list[float]] = {s: [] for s in self._measured}
         post = dec0 = None
