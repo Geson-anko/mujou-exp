@@ -1,0 +1,47 @@
+"""The settings of the evaluation."""
+
+from dataclasses import dataclass, field
+
+__all__ = ["MeasureConf"]
+
+
+@dataclass(kw_only=True)
+class MeasureConf:
+    """The evaluation of V0: the held-out stacks of the video ``data.tours.
+    held_out`` (``clips`` x ``windows`` per split; calib, val and test are the
+    three equal parts in time of ``walking_tours.eval_windows``), the
+    checkpoints (``ckpt_times``, seconds of virtual time; 0 is the
+    initialization) and the posthoc evaluation of each (``recon_blur`` with
+    ``blur_sigma`` pixels, ``posthoc_seeds`` seeds of the decoder it learns)."""
+
+    duration: float = 1800.0  # the length of the run
+    ckpt_times: list[float] = field(
+        default_factory=lambda: [0.0, 60.0, 300.0, 600.0, 1200.0, 1800.0]
+    )
+    # Seconds between two evaluations on val during a run, by the program's
+    # measures (exp.vision.program.Measures). V0's PROGRAM has none: its
+    # online runs write no evals.jsonl rows, and the numbers come from the
+    # posthoc evaluation of the checkpoints (python -m exp.vision.eval).
+    every: float = 60.0
+    clips: int = 256  # per split
+    windows: int = 4  # per clip
+    blur_sigma: float = 1.0  # pixels (64 px; 128 px used 2)
+    posthoc_seeds: int = 4
+    # The thresholds of a confirmation preset by metric name; empty: nothing to
+    # judge (judged by the loop on the last online row of "test", else "val":
+    # passed when below, not judged without the value; so, as every, not for
+    # V0's posthoc numbers).
+    criteria: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.duration > 0:
+            raise ValueError(f"measure.duration must be > 0, not {self.duration}")
+        times = self.ckpt_times
+        if times != sorted(set(times)) or (times and times[0] < 0):
+            raise ValueError(f"measure.ckpt_times must increase from >= 0: {times}")
+        if times and times[-1] > self.duration:
+            raise ValueError(
+                f"measure.ckpt_times {times} go beyond measure.duration {self.duration}"
+            )
+        if self.clips < 3 or self.windows < 1 or self.posthoc_seeds < 1:
+            raise ValueError("measure.clips >= 3, windows >= 1, posthoc_seeds >= 1")

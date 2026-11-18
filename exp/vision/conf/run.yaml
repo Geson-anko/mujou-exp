@@ -1,0 +1,8 @@
+# The root of every run: the schema (exp.vision.schema.RunConf), then the groups.
+# A run picks an experiment on top: `+experiment=v0/base`.
+defaults:
+  - run_schema
+  - _self_
+  - model: vit_s
+  - optim: sgd
+  - phase: explore

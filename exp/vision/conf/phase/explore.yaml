@@ -1,0 +1,5 @@
+# @package _global_
+# A run of a sweep: the validation stacks only.
+phase: explore
+ctl:
+  eval_test: false

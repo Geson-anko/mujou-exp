@@ -1,0 +1,12 @@
+# @package _global_
+# The starting point of V0 (plans/v0-foundation.md): ViT-S, 8 frames of
+# 64 x 64, SGD (tau 1e5, optim/sgd.yaml), 1800 s of the single stream, checkpoints at 0, 60, 300, 600,
+# 1200 and 1800 s. The defaults of the schema are these values.
+name: v0/base
+program: vae
+task: online
+tags: [v0]
+seed: 0
+time:
+  # every node learns once a frame, late in it (exp.vision.pc's docstring)
+  learn_interval: 0.09
