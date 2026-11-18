@@ -32,7 +32,7 @@ uniform, $P$ the values of a stack; ``prequential``). A past group's
 ``pre_<group>`` is $\sum_G p / \sum_G b$ (the error when the stream showed
 those stacks), so ``<group> - pre_<group>`` is how much was forgotten since.
 
-The probes, at the checkpoints of ``PROBE_AT`` only. The run's span is cut
+The probes, at the checkpoints of ``PROBE_AT`` and the last one. The run's span is cut
 into ``BLOCK``-second blocks; pairs of consecutive stacks $(x_k, x_{k+1})$
 every ``PROBE_EVERY`` seconds of the odd blocks fit, of the even blocks
 evaluate (``span``), with those every ``FUTURE_EVERY`` seconds after the span
@@ -295,7 +295,6 @@ class StreamEvaluator:
                 for k in range(m.posthoc_seeds)
             ],
             "blur_sigma": m.blur_sigma,
-            "probe_at": list(PROBE_AT),
         }
 
     @torch.no_grad()
@@ -439,7 +438,7 @@ def evaluate_stream(
     (its ``config.yaml``; the VAE of ``build(conf)``, on ``conf.device``)
     in the order of ``t``, under ``provenance.configure_determinism``, into
     ``out`` (``run_dir / OUT``; module docstring); the probes only at the
-    checkpoints of ``PROBE_AT``. ``spacing`` passes the spacings of
+    checkpoints of ``PROBE_AT`` and the last one. ``spacing`` passes the spacings of
     ``StreamEvaluator`` by name. Returns ``out``.
 
     Raises:
@@ -450,6 +449,10 @@ def evaluate_stream(
     paths = sorted(run_dir.glob("ckpt/*.pt"), key=lambda p: float(p.stem))
     if not paths:
         raise FileNotFoundError(f"no checkpoint under {run_dir / 'ckpt'}")
+    times = [float(p.stem) for p in paths]
+    probe_at = [
+        t for t in times if t == times[-1] or any(abs(t - a) < 1e-6 for a in PROBE_AT)
+    ]
     root = tours_root(conf.data.tours.data_version) if root is None else root
     out = run_dir / OUT if out is None else out
     ev = StreamEvaluator(
@@ -457,7 +460,12 @@ def evaluate_stream(
     )
     write_json(
         out / "config.json",
-        ev.settings() | {"ckpts": [p.name for p in paths], "determinism": determinism},
+        ev.settings()
+        | {
+            "probe_at": probe_at,
+            "ckpts": [p.name for p in paths],
+            "determinism": determinism,
+        },
     )
     write_json(
         out / "positions.json",
@@ -471,14 +479,14 @@ def evaluate_stream(
     for f in ("matrix.jsonl", "summary.jsonl", "probes.jsonl"):
         _write(out / f, [])
     code = build(conf)
-    for path in paths:
+    for path, at in zip(paths, times, strict=True):
         head = ckpt.load_eval(path, code.modules())
         t, frame = head["t"], int(head["frame"])
         err = ev.errors(code)
         stamp = {"t": t, "frame": frame}
         _append(out / "matrix.jsonl", [stamp | {"err": err}])
         _append(out / "summary.jsonl", [stamp | ev.summary(err, frame)])
-        if any(abs(t - a) < 1e-6 for a in PROBE_AT):
+        if at in probe_at:
             rows = ev.probes(code, path.stem)
             _append(out / "probes.jsonl", [stamp | r for r in rows])
     return out

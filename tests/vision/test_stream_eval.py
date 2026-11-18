@@ -181,14 +181,16 @@ class TestProbes:
 
 
 class TestEvaluateStream:
-    def test_every_checkpoint_in_order_probes_at_probe_at_only(self, root, tmp_path):
+    def test_every_checkpoint_in_order_probes_at_probe_at_and_the_last(
+        self, root, tmp_path
+    ):
         conf = conf_of()
         run = tmp_path / "run"
         run.mkdir()
         (run / "config.yaml").write_text(yaml.safe_dump(to_dict(conf)))
         m = brute_mean_stack(root)
         saved = MixCode(m)
-        for t, c in ((DURATION, 0.0), (0.0, 1.0)):  # saved out of order
+        for t, c in ((DURATION, 0.0), (0.0, 1.0), (1.0, 0.5)):  # out of order
             saved.net.c.data.fill_(c)
             ckpt.save_eval(
                 run,
@@ -208,13 +210,21 @@ class TestEvaluateStream:
         matrix, summary, probes = (
             jsonl(f) for f in ("matrix.jsonl", "summary.jsonl", "probes.jsonl")
         )
-        assert [(r["t"], r["frame"]) for r in summary] == [(0.0, 0), (DURATION, 30)]
+        assert [(r["t"], r["frame"]) for r in summary] == [
+            (0.0, 0),
+            (1.0, 10),
+            (DURATION, 30),
+        ]
         positions = json.loads((out / "positions.json").read_text())
         assert all(len(r["err"]) == len(positions["k"]) for r in matrix)
         assert summary[0]["future"] == pytest.approx(1.0, rel=1e-5)  # c = 1
-        assert summary[1]["past"] == 0.0 and summary[1]["future"] == 0.0  # c = 0
+        assert summary[2]["past"] == 0.0 and summary[2]["future"] == 0.0  # c = 0
         assert summary[0]["span"] == pytest.approx(1.0, rel=1e-5)
-        assert summary[1]["span"] == summary[1]["after"] == 0.0
-        assert summary[1]["n_span"] == summary[1]["n_past"]  # all of it, at the end
-        assert {r["t"] for r in probes} == {0.0}  # 3.0 is not in PROBE_AT
-        assert [r["group"] for r in probes] == ["span", "after", "zurich"]
+        assert summary[2]["span"] == summary[2]["after"] == 0.0
+        assert summary[2]["n_span"] == summary[2]["n_past"]  # all of it, at the end
+        # 0 is in PROBE_AT, 3.0 is the last checkpoint, 1.0 is neither
+        assert [(r["t"], r["group"]) for r in probes] == [
+            (t, g) for t in (0.0, DURATION) for g in ("span", "after", "zurich")
+        ]
+        settings = json.loads((out / "config.json").read_text())
+        assert settings["probe_at"] == [0.0, DURATION]
