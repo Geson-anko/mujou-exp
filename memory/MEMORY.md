@@ -35,3 +35,4 @@
 - [手法はシンプルで基礎的に](feedback_simple_fundamental.md) — 2026-11-12、理論の裏付けのないヒューリスティック（後付けの正規化・罰・拡張）は入れない。自明な解を目的の式から導出で確かめる
 - [ソースを tmp に置かない](feedback_no_sources_in_tmp.md) — 解析・較正のスクリプトは必ずリポジトリへ（tmp は消える）
 - [手法の前に学習の設定](feedback_learn_setting_first.md) — 2026-11-13、うまくいかないときは optimizer（SGD・RMSProp・Adam）と学習率を 10 倍刻みで掃引して損失が下がる条件を先に探す
+- [結果の書き方](feedback_results_writing.md) — 2026-11-18、体系的に順を追って説明し、日本語は sonnet/haiku に /yomiyasu で推敲させる。文科省の HP の文体が手本
