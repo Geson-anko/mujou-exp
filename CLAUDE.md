@@ -85,6 +85,7 @@ mujou の hook と skill は、このリポジトリのルートで起動した 
 - 既定はシングルエージェント（skill `solo-dev-cycle`）。サブエージェントやチーム（skill `agent-team-startup`）は、ユーザーが明示したときだけ使う
 - ユーザーへの質問は作業の区切りにまとめて出し、推奨案で進める（[memory/feedback_questions_at_end.md](memory/feedback_questions_at_end.md)）
 - 中間メモは `memory/agents/<agent-name>/<task-slug>.md`
+- 実験が詰まったとき・結果の読みに自信がないときは、1 人で抱えず Codex に読み取り専用で相談し、反論を受けて考え直す（skill `ask-codex`）
 
 ## Hooks（`.claude/settings.json`）
 
@@ -109,4 +110,5 @@ hook は `python3` と `bash` だけに依存し、fail-open。テストは `tes
 - 並列化: `/maximize-parallels` / `.claude/` 編集: `/edit-dot-claude`
 - 日本語の推敲: `/yomiyasu`（日本語ドキュメントを書く・直すときに使う）
 - 実験の結果の資料（`report.html`）: `/experiment-report`（本文は `/yomiyasu` で推敲する）
+- Codex とのディスカッション: `/ask-codex`
 - context 管理: `/compact-prep` / 言語切替: `/japanese`
