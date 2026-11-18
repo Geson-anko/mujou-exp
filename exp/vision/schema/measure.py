@@ -11,13 +11,17 @@ class MeasureConf:
     held_out`` (``clips`` x ``windows`` per split; calib, val and test are the
     three equal parts in time of ``walking_tours.eval_windows``), the
     checkpoints (``ckpt_times``, seconds of virtual time; 0 is the
-    initialization) and the posthoc evaluation of each (``recon_blur`` with
+    initialization; with ``ckpt_every`` > 0 they are instead every
+    ``ckpt_every`` seconds from 0 to ``duration``) and the posthoc evaluation of each (``recon_blur`` with
     ``blur_sigma`` pixels, ``posthoc_seeds`` seeds of the decoder it learns)."""
 
     duration: float = 1800.0  # the length of the run
     ckpt_times: list[float] = field(
         default_factory=lambda: [0.0, 60.0, 300.0, 600.0, 1200.0, 1800.0]
     )
+    # > 0: checkpoints every this many seconds from 0 to duration, in place of
+    # ckpt_times (the matrix of python -m exp.vision.stream_eval).
+    ckpt_every: float = 0.0
     # Seconds between two evaluations on val during a run, by the program's
     # measures (exp.vision.program.Measures). V0's PROGRAM has none: its
     # online runs write no evals.jsonl rows, and the numbers come from the
@@ -36,6 +40,16 @@ class MeasureConf:
     def __post_init__(self) -> None:
         if not self.duration > 0:
             raise ValueError(f"measure.duration must be > 0, not {self.duration}")
+        if self.ckpt_every < 0:
+            raise ValueError(f"measure.ckpt_every must be >= 0, not {self.ckpt_every}")
+        if self.ckpt_every > 0:
+            count = round(self.duration / self.ckpt_every)
+            if abs(count * self.ckpt_every - self.duration) > 1e-9 * self.duration:
+                raise ValueError(
+                    f"measure.duration {self.duration} is not a multiple of "
+                    f"measure.ckpt_every {self.ckpt_every}"
+                )
+            self.ckpt_times = [i * self.ckpt_every for i in range(count + 1)]
         times = self.ckpt_times
         if times != sorted(set(times)) or (times and times[0] < 0):
             raise ValueError(f"measure.ckpt_times must increase from >= 0: {times}")
