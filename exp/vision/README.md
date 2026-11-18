@@ -1,6 +1,6 @@
 # vision: 単一ストリームから PC-ALM で VAE のエンコーダを学ぶ
 
-計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
+計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V8 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
 
 ## 実行方法
 
@@ -293,6 +293,8 @@ run は `v0-base-<id>-s0`。0 秒の行は V1 と同じ。
 - $\sigma^2$ が大きいほど `dec_spread` が大きい、は外れた。RMSProp の 3 本は 0.236〜0.289 で、むしろ 0.1 が最も小さい
 
 **判定**: 事前に決めた反証の規則で、RMSProp の 0.01 でも学べたので、V5 の「RMSProp で学べた」は**釣り合いではなく optimizer の効果**とみなす。RMSProp では、$\sigma^2$ を 10 倍変えても `stack_mse`（0.654〜0.678）、`recon_blur`（0.228〜0.232）、`dec_spread` はほとんど変わらない。SGD は、$\sigma^2$ を V1 の 10 倍（0.1）にしても、デコーダが $z$ を使わない。
+
+**補足（2026-11-19、資料を作る中で気づいたこと）**: SGD の $\sigma^2$ は 1 秒ごとに大きく揺れる（V1 の $\tau = 10^5$ では、600 秒以降も 0.003〜0.11）。V2〜V5 の読みに書いた「1800 秒の $\sigma^2$」（SGD の腕で 0.006〜0.011）は 1800 秒ちょうどの 1 点の値で、最後の 60 秒の平均は、$\tau = 10^5$〜$10^6$ の SGD（V1〜V4）で 0.025〜0.029 だった。RMSProp $10^4$ は 0.054 で、ほとんど揺れない。V7 は 0.01・0.03・0.1 をすべて試したので、この判定は変わらない。
 
 ## V8: 学習のストリームそのもので評価し直す（回す前に決めたこと、2026-11-19）
 
