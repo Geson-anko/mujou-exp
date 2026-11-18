@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "status": "completed",
+  "reason": null,
+  "t_end": 60.0,
+  "frames": 1800,
+  "final": {
+    "timing": {
+      "fps": 82.27553332483691
+    }
+  },
+  "criteria": {},
+  "objective": null,
+  "metrics_sha256": {
+    "stream": "95f44f6c8c72766dc8c8746039f3c4ad2643c8d79040f0956f4c12fde5bf3906",
+    "evals": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "peak": {
+    "rss_mb": 1227.4,
+    "gpu_mem_mb": 184.1
+  }
+}

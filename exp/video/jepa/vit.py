@@ -570,18 +570,21 @@ class VisionModules:
     def tokens(self, chunks: Tensor) -> Tensor:
         """The target view's tokens ``(n, T, D)`` of the stacks ``chunks``
         ``(n, N, C, H, W)`` (u8, or float in ``[0, 1]``) of the packed
-        layout, at the weights as they are now."""
-        return self.encoder(self._whole(chunks), (self.tokens_per_view,))
+        layout, at the weights as they are now (of the encoder's dtype)."""
+        dtype = next(self.encoder.parameters()).dtype
+        return self.encoder(self.whole(chunks).to(dtype), (self.tokens_per_view,))
 
     def target_tokens(self, chunks: Tensor) -> Tensor:
         """The prediction's targets ``(n, T, D)`` of the stacks ``chunks``:
         the tokens of the ``target`` encoder, or ``tokens`` without one."""
         if self.target is None:
             return self.tokens(chunks)
-        return self.target(self._whole(chunks), (self.tokens_per_view,))
+        return self.target(self.whole(chunks), (self.tokens_per_view,))
 
-    def _whole(self, chunks: Tensor) -> Tensor:
-        """The packed sequence ``(n, T, P + 1)`` of the stacks' target view."""
+    def whole(self, chunks: Tensor) -> Tensor:
+        """The packed sequence ``(n, T, P + 1)`` of the stacks' target view
+        (float32: the encoder's first stage's input; the host of the VAE's
+        PC-ALM writes it, ``vae.pc``)."""
         x = chunks.float() / 255 if chunks.dtype == torch.uint8 else chunks.float()
         t = self.tokens_per_view
         pixels = patchify_tubelets(x, self.patch, self.tubelet)

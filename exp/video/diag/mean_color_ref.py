@@ -8,7 +8,7 @@ data alone:
 
 - ``tube``: the mean color of each tubelet ($\tau$ frames x $p \times p$
   pixels, the ViT's tokens in ``patchify_tubelets``' order), $D = T C$
-  (``tubelet_means``);
+  (``measure.mean_color.tubelet_means``);
 - ``stack``: the mean color of the whole stack, $D = C$ (``stack_means``),
   the mean of the ``tube`` code's tubelets (they are of one size).
 
@@ -68,6 +68,7 @@ from exp.video.measure.encoder_eval import (
     EncoderEval,
     stream_windows,
 )
+from exp.video.measure.mean_color import tubelet_means
 from exp.video.measure.posthoc import BATCH, DECODER_SEED, STEPS, as_float
 from exp.video.programs.vision import PackedMeasures, tours_root
 from exp.video.schema.run import RunConf
@@ -80,7 +81,6 @@ __all__ = [
     "stack_means",
     "stack_picture",
     "tube_picture",
-    "tubelet_means",
 ]
 
 CODES = ("tube", "stack")
@@ -96,17 +96,6 @@ _KEPT = (
     "z_spread",
     "alpha",
 )
-
-
-def tubelet_means(x: Tensor, patch: int, tubelet: int) -> Tensor:
-    """The ``tube`` code ``(n, T C)`` of stacks ``x`` ``(n, N, C, H, W)``
-    float: the mean color of each tubelet, the tubelets in
-    ``patchify_tubelets``' order (time slot, row, column), the $C$ colors of
-    one together."""
-    n, f, c, h, w = x.shape
-    gt, gh, gw = f // tubelet, h // patch, w // patch
-    m = x.reshape(n, gt, tubelet, c, gh, patch, gw, patch).mean((2, 5, 7))
-    return m.permute(0, 1, 3, 4, 2).reshape(n, gt * gh * gw * c)  # (n, gt gh gw C)
 
 
 def stack_means(x: Tensor) -> Tensor:

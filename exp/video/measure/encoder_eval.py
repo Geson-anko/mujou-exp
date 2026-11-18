@@ -111,7 +111,7 @@ checkpoint's ``<t>``, ``init`` or ``pca``.
 import bisect
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, override
 
@@ -156,6 +156,7 @@ __all__ = [
     "STREAM_STEPS",
     "WINDOWS",
     "EncoderEval",
+    "iter_stream_windows",
     "stream_windows",
 ]
 
@@ -180,6 +181,16 @@ def stream_windows(
     starts at frame $\\lfloor j L / \\mathrm{windows} \\rfloor$ of the loop and
     its frame ``i`` is ``i vision.stride`` frames later; a window that would
     cross the end of its video is left out."""
+    return torch.stack(
+        list(iter_stream_windows(conf, root, windows=windows, steps=steps))
+    )
+
+
+def iter_stream_windows(
+    conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS
+) -> Iterator[Tensor]:
+    """The windows of ``stream_windows`` one at a time, u8 ``(N + steps, C,
+    S, S)`` each, read when asked for."""
     t, v = conf.data.tours, conf.vision
     assert t is not None and v is not None
     readers = [U8Reader(root / name) for name in videos(root) if name != t.held_out]
@@ -187,14 +198,12 @@ def stream_windows(
     firsts = [sum(lengths[:j]) for j in range(len(lengths))]
     loop = sum(lengths)
     span = (v.frames + steps - 1) * v.stride + 1
-    out = []
     for j in range(windows):
         g = j * loop // windows
         a = bisect.bisect_right(firsts, g) - 1
         local = g - firsts[a]
         if local + span <= lengths[a]:
-            out.append(readers[a][local : local + span : v.stride])
-    return torch.stack(out)
+            yield readers[a][local : local + span : v.stride]
 
 
 def _stacks(windows: Tensor, n: int) -> Tensor:

@@ -1,0 +1,36 @@
+# @package _global_
+# M18 stage 1 (plans/m18-vae-stream.md): the deterministic autoencoder,
+# 1/2 ||y - g(f(x))||^2 over the P values of a stack, y = x / 256, learned by
+# BP from one stream (B = 1). The encoder f is M17's t128 ViT (m17/ssig_t128:
+# width 256, 8 blocks in 4 nodes, patch 32, tubelet 2, 128 tokens of d = 8,
+# D = 1024; the same initial weights for the same seed); of that preset the
+# autoencoder uses the vision's encoder, the data, the measures and the
+# checkpoints only (the predictor and SIGReg are unused). The decoder g is the
+# encoder turned around with 2 blocks (one node of the encoder's 4): lighter
+# than the encoder, so that the reconstruction measures the code rather than
+# the decoder's capacity. RMSProp (tau_v 30 s) with the per-layer rate of M17
+# (scale fan_in) at eta = 2.9e-5 per frame, the geometric mean of the window
+# 1/F = 1.85e-5 (the output can move O(1) in the F = 54000 frames) to 1/K =
+# 4.6e-5 (no full adaptation within the longest correlation time); constant,
+# no warm-up, no weight decay. 1800 s, checkpoints every 300 s, the held-out
+# stack_mse every 60 s. The sources (data.tours.sampling stream, shuffle, pool),
+# the optimizers (optim_vision.kind) and B (data.streams) are overrides.
+# The seed is 100: the values of stage 0 (results/m18.md) belong to it (the
+# overfit control's 256 stacks are drawn from seed + 6, and the PCA-1024 bar
+# 0.196 is of those; SGD's rate is of the initial weights of seed 100).
+defaults:
+  - m17/ssig_t128
+  - _self_
+program: ae
+seed: 100
+name: m18/ae_t128
+tags: [m18, wt, t128, ae]
+data:
+  streams: 1
+optim_vision:
+  kind: rmsprop
+  lr: 2.9e-5
+  warmup: 0.0
+  scale: fan_in
+ae:
+  decoder_depth: 2

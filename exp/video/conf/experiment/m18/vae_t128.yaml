@@ -1,0 +1,34 @@
+# @package _global_
+# M18 stage 2 (plans/m18-vae-stream.md 「段 2: VAE」): the VAE of m18/ae_t128
+# at the setting the decoder axis selected (results/m18.md 「デコーダの大きさの
+# 結果」): a decoder of 4 blocks, RMSProp (tau_v 30 s) with the per-layer rate
+# (scale fan_in) at eta = 1e-3 a frame, constant, no warm-up, no weight decay;
+# eta is not measured again at depth 4 (the user's decision, 2026-11-15). Only
+# the objective differs from that run: the negative ELBO of a stack in nats
+# (beta = 1, no annealing, no free bits), the dequantized Gaussian likelihood
+# of one learned scalar sigma (its log sigma a vector of one: fan-in 1, so
+# stepped by eta) and the diagonal Gaussian posterior (the encoder's last map
+# widened to mu and log s^2; exp.video.vae.modules.build_vae). sigma starts at
+# sigma_0: sigma0_sq is the ML variance of the mean stack's Gaussian of the
+# dequantized training stacks, sigma_0^2 = 0.07431307 of stage 0 plus the
+# dequantization's 1 / (12 * 256^2) (results/m18-stage0/ppca.json, k = 0). The
+# encoder's mu and the decoder start as m18/ae_t128's of the same seed and
+# depth. 1800 s, checkpoints every 300 s, the held-out bpd every 60 s. The
+# sources (data.tours.sampling) and B (data.streams) are overrides.
+defaults:
+  - m17/ssig_t128
+  - _self_
+program: vae
+seed: 100
+name: m18/vae_t128
+tags: [m18, wt, t128, vae]
+data:
+  streams: 1
+optim_vision:
+  kind: rmsprop
+  lr: 1.0e-3
+  warmup: 0.0
+  scale: fan_in
+ae:
+  decoder_depth: 4
+  sigma0_sq: 0.0743143460753926

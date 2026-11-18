@@ -1,0 +1,28 @@
+# @package _global_
+# M18 stage 1 (plans/m18-vae-stream.md, 「SGD の学習率」): m18/ae_t128 learned
+# by plain SGD (no per-layer rate) at lr = 1 / (1.02 rho) per frame, rho the
+# largest spectral radius of the Hessian of the untrained loss over the first
+# stacks of the 2048 training windows (exp.video.diag.m18_stage0 hessian,
+# results/m18-stage0/hessian.json: 4.793e6) and 1.02 the largest elapsed of a
+# step in frames (tests/video/vae/test_bp.py): the largest rate at which no
+# direction of the measured stacks' Hessians oscillates. The same lr at B = 32
+# (the spectral radius of a batch's mean Hessian is at most its stacks' mean).
+# The rest is m18/ae_t128's, repeated (Hydra resolves one level of
+# /experiment@_here_ only; tests/video/schema/test_presets.py checks that the
+# two differ in the optimizer alone).
+defaults:
+  - m17/ssig_t128
+  - _self_
+program: ae
+seed: 100
+name: m18/ae_t128_sgd
+tags: [m18, wt, t128, ae, sgd]
+data:
+  streams: 1
+optim_vision:
+  kind: sgd
+  lr: 2.05e-7
+  warmup: 0.0
+  scale: none
+ae:
+  decoder_depth: 2

@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from exp.lib.provenance import EnvError, collect, configure_determinism
+from exp.lib.provenance import (
+    EnvError,
+    collect,
+    configure_determinism,
+    of_diagnosis,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
@@ -169,3 +174,27 @@ class TestCollect:
     def test_a_run_without_tours_has_no_data_version(self):
         config = {"device": "cpu", "data": {"balls": {}, "tours": None}}
         assert collect({"config": config}, attempt=1)["data_version"] is None
+
+
+class TestOfDiagnosis:
+    def test_the_snapshot_of_the_current_directory_and_the_settings(
+        self, tmp_path, monkeypatch
+    ):
+        """In a host's ``code/latest`` (a ``CODE.json`` in the current
+        directory) its content is recorded, with the host the fleet names
+        and the settings as given."""
+        code = {"snap": "a" * 40, "mujou_snap": "b" * 40, "dirty": False}
+        (tmp_path / "CODE.json").write_text(json.dumps(code))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("FLEET_HOST", "std-03")
+        got = of_diagnosis({"seed_step": 1000})
+        assert got["code"] == code
+        assert got["host"] == "std-03"
+        assert got["settings"] == {"seed_step": 1000}
+        assert got["torch"] == torch.__version__
+        assert set(got["determinism"]) >= {"matmul_tf32", "deterministic"}
+        json.dumps(got)  # it goes into a JSON output
+
+    def test_no_snapshot_outside_a_host(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert of_diagnosis({})["code"] is None

@@ -1,6 +1,7 @@
 """What a run ran on, and the settings that make it deterministic.
 
-``collect`` gathers the environment of an attempt (``provenance/attempt-<n>.json``).
+``collect`` gathers the environment of an attempt (``provenance/attempt-<n>.json``),
+``of_diagnosis`` that of a diagnosis run outside the runs.
 ``configure_determinism`` fixes the threads and the kernels of torch, and
 ``assert_free_threaded`` stops a run in which something brought the GIL back
 (a free-threaded Python enables it again when an extension that does not
@@ -14,6 +15,7 @@ deterministic algorithms there only warn), so the kind of device is recorded.
 
 import datetime
 import importlib.machinery
+import json
 import os
 import platform
 import socket
@@ -33,6 +35,7 @@ __all__ = [
     "assert_free_threaded",
     "collect",
     "configure_determinism",
+    "of_diagnosis",
 ]
 
 CUBLAS_WORKSPACE = (":4096:8", ":16:8")  # what cuBLAS needs to be deterministic
@@ -198,4 +201,22 @@ def collect(job: Mapping[str, Any], *, attempt: int) -> dict[str, Any]:
         "env": {k: os.environ.get(k) for k in _ENV},
         "determinism": _determinism(),
         "data_version": tours.get("data_version"),
+    }
+
+
+def of_diagnosis(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The provenance of a diagnosis run from the current directory, for its
+    output: the snapshot's ``CODE.json`` there (``fleet x`` runs in a host's
+    ``code/latest``; None elsewhere), the host, the command line, the
+    environment of ``collect``, torch, the determinism in force and the
+    diagnosis's own ``settings``."""
+    code = Path("CODE.json")
+    return {
+        "code": json.loads(code.read_text()) if code.is_file() else None,
+        "host": os.environ.get("FLEET_HOST") or socket.gethostname(),
+        "argv": list(sys.argv),
+        "env": {k: os.environ.get(k) for k in _ENV},
+        "torch": torch.__version__,
+        "determinism": _determinism(),
+        "settings": dict(settings),
     }

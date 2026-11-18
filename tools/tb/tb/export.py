@@ -1,5 +1,7 @@
 """The run directories of the fleet (``exp/lib/fleet/README.md``) as TensorBoard
-event files: one directory of events per run, ``<logdir>/<batch>/<run_id>/``.
+event files: one directory of events per run, ``<logdir>/<batch>/<run_id>/``
+(``<run_id> <label>`` when its ``job.json`` has a ``label``, the overrides
+that set it apart in its batch, so TensorBoard names the run by them).
 
 A run directory gives (each only when its file is there)
 
@@ -11,7 +13,8 @@ A run directory gives (each only when its file is there)
   data version, the seed and the overrides (``job.json``, ``CODE.json``,
   ``provenance/``);
 - the hyperparameters (the HParams tab): the config's ``vision.*``,
-  ``optim_vision.*``, ``learner.kind``, ``seed`` (and ``name``), with the
+  ``optim_vision.*``, ``learner.kind``, ``seed``, ``name``, ``program``,
+  ``ae.*``, ``data.streams`` and ``data.tours.sampling``, with the
   last val numbers as its metrics (``hp/<key>``) and those of the last
   ``vit`` val line of its posthoc (``hp/post/<key>``: ``objective``,
   ``recon``, ``dyn_1``, ...) when the posthoc is in the same export (or in the
@@ -49,7 +52,17 @@ from tensorboardX.summary import hparams
 
 __all__ = ["HPARAM_PREFIXES", "export", "export_run", "png_size"]
 
-HPARAM_PREFIXES = ("vision.", "optim_vision.", "learner.kind", "seed", "name")
+HPARAM_PREFIXES = (
+    "vision.",
+    "optim_vision.",
+    "learner.kind",
+    "seed",
+    "name",
+    "program",
+    "ae.",
+    "data.streams",
+    "data.tours.sampling",
+)
 # protobuf's generated module has no stubs: its message classes are untyped.
 Summary: Any = vars(summary_pb2)["Summary"]
 _SUFFIX = {"run": ".run", "post": ".post"}  # the event files of an export
@@ -108,19 +121,37 @@ def _hparam(v: Any) -> bool | str | float | int:
     return json.dumps(v)
 
 
+def _hparams(config: Mapping[str, Any]) -> dict[str, bool | str | float | int]:
+    """The flattened ``config``'s keys under ``HPARAM_PREFIXES`` (no nulls)."""
+    return {
+        k: _hparam(v)
+        for k, v in _flat(dict(config)).items()
+        if k.startswith(HPARAM_PREFIXES) and v is not None
+    }
+
+
 def _target(run_dir: Path, job: Mapping[str, Any], logdir: Path) -> Path:
     """The directory of events of ``run_dir``: its parent run's for a posthoc
-    job, else ``<batch>/<run_id>``."""
+    job, else ``<batch>/<run_id>``, with `` <label>`` when the job has one. A
+    parent named by its NAS path is looked for under this job's runs' root
+    too; a parent not here has no ``job.json``: its bare ``run_id``."""
     parent = job.get("parent")
     if isinstance(parent, str) and parent:
         p = Path(parent)
         if not p.is_absolute():  # relative to the runs' root (programs.posthoc)
             p = run_dir.parents[1] / p
-        if (p / "job.json").is_file():  # here: its own batch and run_id
-            return _target(p, _json(p / "job.json"), logdir)
+        # here (as named, or pulled beside this job: <batch>/<run_id> of the
+        # runs' root): its own batch, run_id and label
+        for q in (p, run_dir.parents[1] / p.parent.name / p.name):
+            if (q / "job.json").is_file():
+                return _target(q, _json(q / "job.json"), logdir)
         return logdir / p.parent.name / p.name  # <batch>/<run_id> on the NAS
     batch = job.get("batch") or run_dir.parent.name
-    return logdir / str(batch) / str(job.get("run_id") or run_dir.name)
+    name = str(job.get("run_id") or run_dir.name)
+    label = job.get("label")
+    if isinstance(label, str) and label:
+        name = f"{name} {label}"
+    return logdir / str(batch) / name
 
 
 def _writer(target: Path, kind: str) -> SummaryWriter:
@@ -204,12 +235,7 @@ def _run_events(
             base = {k.removeprefix("init_"): v for k, v in _numbers(row).items()}
             _levels(w, f"base/{split}/run_init", base, [0, max(steps)])
         w.add_text("run", _text(run_dir, job), 0)
-        config = _flat(dict(job.get("config") or {}))
-        hp = {
-            k: _hparam(v)
-            for k, v in config.items()
-            if k.startswith(HPARAM_PREFIXES) and v is not None
-        }
+        hp = _hparams(job.get("config") or {})
         last = next((r for r in reversed(evals) if r.get("split") == "val"), {})
         metrics = {f"hp/{k}": v for k, v in _numbers(last, ("t", "frame")).items()}
         metrics |= {f"hp/post/{k}": v for k, v in post.items()}

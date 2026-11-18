@@ -20,7 +20,7 @@ __all__ = [
 # 2); "pixels": the rendered image as a vector (stage 3); "frames": the images
 # to an encoder (M15, M16).
 OBSERVATIONS = ("pos_vel", "pos", "pixels", "frames")
-SAMPLINGS = ("stream", "iid")  # ToursConf.sampling
+SAMPLINGS = ("stream", "iid", "shuffle", "pool")  # ToursConf.sampling
 
 
 @dataclass(kw_only=True)
@@ -74,13 +74,20 @@ class ToursConf:
     advance: int = 1
     # How the stacks of the packed layout are drawn (SAMPLINGS): the streams,
     # or each stack at an independent uniform frame of the nine videos (the
-    # i.i.d. control of an offline fit, data.frames.IIDStackedTourFrames).
+    # i.i.d. control of an offline fit, data.frames.IIDStackedTourFrames);
+    # for the autoencoder (M18) also the streams' stacks of the whole run in
+    # a random order ("shuffle", data.frames.ShuffledStackedTourFrames) or
+    # stacks drawn with replacement from ``pool`` stacks drawn once
+    # ("pool", the overfit control, data.frames.PooledStackedTourFrames).
     sampling: str = "stream"
+    pool: int = 256  # the stacks of sampling "pool"
 
     def __post_init__(self) -> None:
         if self.advance < 1:
             raise ValueError(f"tours.advance must be at least 1, not {self.advance}")
         check_choice("tours.sampling", self.sampling, SAMPLINGS)
+        if self.pool < 1:
+            raise ValueError(f"tours.pool must be at least 1, not {self.pool}")
 
 
 @dataclass(kw_only=True)

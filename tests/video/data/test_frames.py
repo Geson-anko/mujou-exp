@@ -6,6 +6,8 @@ import torch
 from exp.video.data.frames import (
     BallFrames,
     IIDStackedTourFrames,
+    PooledStackedTourFrames,
+    ShuffledStackedTourFrames,
     StackedTourFrames,
     TourFrames,
 )
@@ -199,3 +201,70 @@ class TestIIDStackedTourFrames:
         c = IIDStackedTourFrames(root, seed=3, **self.KW)
         c.load_state_dict({"k": 1})
         assert not torch.equal(b.next()[0], c.next()[0])
+
+
+def _keyed(stack: torch.Tensor, ready: torch.Tensor) -> list[tuple]:
+    """Each stack of ``stack`` as its frames' (video, frame) and its ready."""
+    return [
+        (tuple(decode(x.float() / 255)), bool(r))
+        for x, r in zip(stack, ready, strict=True)
+    ]
+
+
+class TestShuffledStackedTourFrames:
+    KW: dict = {"held_out": "H", "frames": 3, "stride": 2, "advance": 3}
+
+    @pytest.mark.parametrize("n", [1, 3])
+    def test_the_same_stacks_as_the_streams_in_another_order(self, root, n):
+        """Over its units calls it gives exactly the multiset of (stack, ready)
+        the streams give over theirs, every one reset, in another order."""
+        units = 40
+        stream = StackedTourFrames(root, n=n, **self.KW)
+        shuffle = ShuffledStackedTourFrames(root, n=n, units=units, seed=5, **self.KW)
+        want, got = [], []
+        for _ in range(units):
+            want += _keyed(*stream.next()[:2])
+            stack, ready, reset = shuffle.next()
+            assert stack.shape[0] == n and reset.all()
+            got += _keyed(stack, ready)
+        assert sorted(got) == sorted(want)
+        assert got != want
+        with pytest.raises(ValueError, match="spent"):
+            shuffle.next()
+
+    def test_state_dict_continues_exactly(self, root):
+        a = ShuffledStackedTourFrames(root, n=2, units=10, seed=1, **self.KW)
+        for _ in range(4):
+            a.next()
+        b = ShuffledStackedTourFrames(root, n=2, units=10, seed=1, **self.KW)
+        b.load_state_dict(a.state_dict())
+        for x, y in zip(a.next(), b.next(), strict=True):
+            assert torch.equal(x, y)
+
+
+class TestPooledStackedTourFrames:
+    KW: dict = {"held_out": "H", "frames": 3, "stride": 2}
+
+    def test_the_pool_is_the_first_draw_of_the_iid_stacks(self, root):
+        pooled = PooledStackedTourFrames(root, n=4, pool=6, seed=7, **self.KW)
+        iid = IIDStackedTourFrames(root, n=6, seed=7, **self.KW)
+        assert torch.equal(pooled.stacks, iid.next()[0])
+
+    def test_every_draw_is_a_stack_of_the_pool_and_all_are_drawn(self, root):
+        pooled = PooledStackedTourFrames(root, n=8, pool=5, seed=2, **self.KW)
+        pool = set(_keyed(pooled.stacks, torch.ones(5, dtype=torch.bool)))
+        seen = set()
+        for _ in range(50):
+            stack, ready, reset = pooled.next()
+            assert ready.all() and reset.all()
+            drawn = _keyed(stack, ready)
+            assert set(drawn) <= pool
+            seen |= set(drawn)
+        assert seen == pool  # 400 draws of 5: each missed with p = 0.8^400
+
+    def test_state_dict_continues_exactly(self, root):
+        a = PooledStackedTourFrames(root, n=3, pool=4, seed=0, **self.KW)
+        a.next()
+        b = PooledStackedTourFrames(root, n=3, pool=4, seed=0, **self.KW)
+        b.load_state_dict(a.state_dict())
+        assert torch.equal(a.next()[0], b.next()[0])

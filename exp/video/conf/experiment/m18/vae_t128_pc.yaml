@@ -1,0 +1,36 @@
+# @package _global_
+# M18 stage 4 (plans/m18-vae-stream.md 「PC-ALM への載せ方」): m18/vae_t128,
+# the VAE of stage 2, learned by PC-ALM (exp.video.vae.pc.VAEPC) instead of
+# BP; the modules, the initial weights, the objective, the optimizer and the
+# noise are those of m18/vae_t128 (the user's decision of 2026-11-16: the
+# VAE is there to check that the encoder learns with mujou + PC-ALM). The
+# nodes: inp, enc1-4 (the encoder's vision.nodes), latent, dec1-2 (the 4
+# decoder blocks at the encoder's 2 a node), out. The time constants are
+# TimeConf's (tau_h 4 ms, tau_lam 2 ms, tau_r 4 ms: a 2 ms update moves
+# delta to -g exactly), so the k-th node from the output holds BP's credit
+# after the 2k-th step of the host's and enc1 (k = 7) learns by BP's
+# gradient from the step 2 * 7 + 1 = 15 on: learn_interval in (28, 30] ms
+# learns there, once a frame (2 L > the frame); 29 ms is its middle
+# (tests/video/schema/test_presets.py). The body repeats m18/vae_t128's (a
+# preset of the experiment group cannot include another that includes one);
+# the test checks that only the learner, learn_interval, name and tags differ.
+defaults:
+  - m17/ssig_t128
+  - override /learner: pc
+  - _self_
+program: vae
+seed: 100
+name: m18/vae_t128_pc
+tags: [m18, wt, t128, vae, pc]
+data:
+  streams: 1
+optim_vision:
+  kind: rmsprop
+  lr: 1.0e-3
+  warmup: 0.0
+  scale: fan_in
+ae:
+  decoder_depth: 4
+  sigma0_sq: 0.0743143460753926
+time:
+  learn_interval: 0.029
