@@ -23,9 +23,11 @@
 - [M17 の単一ストリームの SIGReg](project_m17_stream_sigreg.md) — 2026-11-13、ユーザーの仮説。EMA の後に回す。λ の格子は各腕の学習前の相関で導き直した。z を貯めると k と古さが交絡する
 - [M17 のガウスのモーメント合わせ](project_m17_gauss_kl.md) — 2026-11-13、ユーザーの決定。EMA も負例も使わない。N = 4096、λ は 10 倍刻み、optimizer は m17-opt-v1 から。回す前の決定は登録済みで、未決が 4 点
 - [次は VAE でストリーム](project_vae_stream_next.md) — 2026-11-14、M17 の JEPA は λ の実験と評価の確認で締めくくり、次は Walking Tours のストリームから VAE を学ぶ計画を立てる
+- [exp/vision で V0 から](project_vision_restart.md) — 2026-11-18、M18 の後に基礎を詰め直す。PC-ALM だけの VAE、ViT/ResNet の S・M・L、時定数の momentum、run_manually
 
 ## feedback
 
+- [ルーティンは sonnet に](feedback_routine_to_sonnet.md) — 2026-11-18、run の投入・監視・posthoc・集計は sonnet のサブエージェントか Workflow に任せる。std-00〜03 に並列、mini-00 は試し
 - [質問は最後にまとめる](feedback_questions_at_end.md) — 推奨案で進み、質問は区切りにまとめて出す
 - [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
 - [指標は定性評価と照合](feedback_metrics_need_qualitative_check.md) — 予測の数値はデコードした画像と合うか確かめてから条件に使う
