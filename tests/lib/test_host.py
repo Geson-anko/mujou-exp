@@ -1,7 +1,6 @@
 import math
 
 import mujou.pc as pc
-import mujou.testing
 import torch
 from torch import nn
 
@@ -33,7 +32,7 @@ def _sample(x: torch.Tensor) -> pc.msg.Sample:
 class TestHost:
     def test_the_frames_stay_on_the_grid(self):
         net = _chain()
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             host = Host(run, frame=1 / 30, period=TAU.period)
             for _ in range(30):
                 host.show({net.prev: _sample(torch.ones(2))}, net.next)
@@ -42,17 +41,31 @@ class TestHost:
     def test_it_returns_the_prediction_of_the_frame_written(self):
         net = _chain()
         x = torch.tensor([1.0, -2.0])
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             host = Host(run, frame=1 / 30, period=TAU.period)
             p, written = host.show({net.prev: _sample(x)}, net.next)
         assert p["time"] == written
         with torch.no_grad():
             torch.testing.assert_close(p["y_hat"], net.output.module(x))
 
+    def test_the_first_write_is_not_at_the_time_of_the_initial_zeros(self):
+        """A write at time 0 would share its Timestamp with the zero Activity,
+        and the prediction returned for frame 0 would be that of zero input."""
+        net = _chain()
+        x = torch.tensor([1.0, -2.0])
+        with mujou.run_manually(net) as run:
+            host = Host(run, frame=1 / 30, period=TAU.period)
+            p, written = host.show({net.prev: _sample(x)}, net.next)
+        assert written.ns > 0
+        with torch.no_grad():
+            want = net.output.module(x)
+            assert want.abs().max() > 0
+            torch.testing.assert_close(p["y_hat"], want)
+
     def test_show_all_returns_the_first_message_of_each_port(self):
         net = _chain()
         x = torch.tensor([1.0, -2.0])
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             host = Host(run, frame=1 / 30, period=TAU.period)
             (a, b), written = host.show_all(
                 {net.prev: _sample(x)}, [net.next, net.next]
@@ -65,7 +78,7 @@ class TestHost:
         ``floor(k frame / period)``): a host given ``frames = 4`` steps frame 4
         as a host that showed frames 0..3 does, not as frame 0."""
         net = _chain()
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             host = Host(run, frame=1 / 30, period=TAU.period)
             steps = []
             for _ in range(6):
@@ -77,7 +90,7 @@ class TestHost:
         assert state == {"frames": 6}
         for k in (3, 4, 5):  # 16, 17, 17 steps
             other = _chain()
-            with mujou.testing.run(other) as run:
+            with mujou.run_manually(other) as run:
                 resumed = Host(run, frame=1 / 30, period=TAU.period)
                 resumed.load_state_dict({"frames": k})
                 before = run.timer.now()

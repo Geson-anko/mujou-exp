@@ -1,9 +1,9 @@
 import mujou.pc as pc
-import mujou.testing
 import pytest
 import torch
 from torch import nn
 
+import mujou
 from exp.lib.ckpt import (
     clear_resume,
     eval_path,
@@ -162,11 +162,11 @@ class TestResumeARun:
         other initial weights, restored and shown the other 3: the weights are
         the same bits."""
         whole = _chain(0)
-        with mujou.testing.run(whole) as run:
+        with mujou.run_manually(whole) as run:
             _show(whole, Host(run, frame=FRAME, period=TAU.period), range(6))
 
         first = _chain(0)
-        with mujou.testing.run(first) as run:
+        with mujou.run_manually(first) as run:
             host = Host(run, frame=FRAME, period=TAU.period)
             _show(first, host, range(3))
             save_resume(
@@ -180,7 +180,7 @@ class TestResumeARun:
         tree = load_resume(tmp_path, group="g")
         assert tree is not None
         again = _chain(1)
-        with mujou.testing.run(again, state=tree["mujou"]) as run:
+        with mujou.run_manually(again, state=tree["mujou"]) as run:
             host = Host(run, frame=FRAME, period=TAU.period)
             host.load_state_dict(tree["host"])
             _show(again, host, range(3, 6))

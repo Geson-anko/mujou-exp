@@ -1,18 +1,18 @@
 """The host's loop over a stream: write a frame, step the run through it, read.
 
-The run is a ``mujou.testing.run``: the timer moves only by the steps, so the
+The run is a ``mujou.run_manually``: the timer moves only by the steps, so the
 result does not depend on how long the computation takes. Each step moves the
-timer by ``period`` and updates every node once, in the order of the tree.
+timer by ``period`` and updates every node once, all from the values at the
+start of the step (Jacobi), so a write takes one step per hop to reach a port.
 """
 
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, override
 
-from mujou.testing import ManualRun
 from mujou.time import Timestamp
 
-from mujou import MultiPort, Port, Stateful
+from mujou import ManualRun, MultiPort, Port, Stateful
 
 __all__ = ["Host"]
 
@@ -26,6 +26,12 @@ class Host(Stateful):
 
     Its state is the count of the frames shown (``frames``): a host resumed
     with it on a run restored to the same time steps the same grid on.
+
+    A write at virtual time 0 would carry ``Timestamp`` 0, the time of the
+    initial zero Activity every port holds, so the zero-input message could not
+    be told from the message made from the write. The very first ``show`` of a
+    run at time 0 therefore steps one ``period`` before it writes (that step is
+    part of frame 0, which then has one step fewer after the write).
     """
 
     def __init__(self, run: ManualRun, *, frame: float, period: float) -> None:
@@ -68,6 +74,9 @@ class Host(Stateful):
         """
         k = self.frames
         steps = self._boundary(k + 1) - self._boundary(k)
+        if self.run.timer.now().ns == 0:  # never write at the time of the zeros
+            self.run.step(self._period)
+            steps -= 1
         written = self.run.write(writes)
         first: list[Any] = [None] * len(watches)
         for _ in range(steps):

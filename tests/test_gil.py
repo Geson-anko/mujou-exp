@@ -26,18 +26,16 @@ _RUN = """
 import json, sys
 
 import torch
-from exp.lib.provenance import EnvError, assert_free_threaded, configure_determinism
-from exp.video.compose import compose
-
+import mujou
 import mujou.pc as pc
-import mujou.testing
+from exp.lib.provenance import EnvError, assert_free_threaded, configure_determinism
+
 from mujou import TensorSpec
 
 assert_free_threaded("import")
 configure_determinism("cpu")
-conf = compose(["+experiment=m14/s0", "seed=1"])
-tau = pc.TimeConstants(h=conf.time.h, lam=conf.time.lam, r=conf.time.r)
-torch.manual_seed(conf.seed)
+tau = pc.TimeConstants(h=4e-3, lam=2e-3, r=4e-3)
+torch.manual_seed(1)
 net = pc.Chain(
     torch.nn.Sequential(torch.nn.Linear(2, 3), torch.nn.Tanh()),
     torch.nn.Linear(3, 1),
@@ -46,7 +44,7 @@ net = pc.Chain(
 )
 yes = torch.tensor(True)
 sample = pc.msg.Sample(x=torch.ones(2), y=torch.ones(1), mask=yes, reset=yes)
-with mujou.testing.run(net, inputs={net.prev: sample}) as run:
+with mujou.run_manually(net, inputs={net.prev: sample}) as run:
     for _ in range(20):
         run.step(tau.period)
 assert_free_threaded("build")
