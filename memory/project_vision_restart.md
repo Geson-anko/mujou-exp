@@ -27,3 +27,5 @@ metadata:
 **V6・V7 の結果（2026-11-18）**: RMSProp τ=1e4 は seed 0〜2 で再現（stack_mse 0.640〜0.676）。σ² を 0.01・0.03・0.1 に固定しても RMSProp は同じく学べ、SGD は 0.1 でも z を使わず、0.01・0.03 では数秒で発散した。学べるかを決めるのは KL と再構成の釣り合いではなく optimizer。まとめは exp/vision/results/v0-v8.md。次の候補は RMSProp 1e4 を出発点にモデルと stack の枚数を回し直す、run を長くする、拡散のデコーダと Imagenette の probe、RMSProp が効く理由の確認
 
 **V8 の結果（2026-11-19）**: 評価を学習のストリームそのもの（過去＝忘却、未来＝汎化、60 秒ごとのチェックポイント）に移した。学べた run は Zurich の判定と同じ 7 本（RMSProp 1e4 の seed 3 本と σ² 固定 3 本、AdamW 1e5）。SGD のデコーダは今の場面だけを重みで描き、5〜10 秒離れると平均の stack より悪くなる（過去も未来も同じ）。RMSProp・AdamW は今の場面を追いつつ、未見の場面にも効くものを残す。止めたモデルの誤差と学習中の誤差は相対時刻 0 でほぼ一致するので、R − pre を忘却と読んでよい。図は exp/vision/results/v8/（figs.py）。V9（6000 秒、Amsterdam の終わりを越えて次の動画へ、batch v9-long）を 2026-11-19 に投入
+
+**V9 の結果と V10（2026-11-19）**: 6000 秒で span は RMSProp 1e4 が 0.520、AdamW 1e5 が 0.472（1 seed。1800 秒では RMSProp が上だったが、長くすると AdamW が上）。次の動画に入っても Amsterdam の誤差は上がらず下がり続け、破滅的忘却は見えない。AdamW は今の場面を重みで追う谷がない。SGD は 6000 秒でも 1 を上回る。V0〜V8 の資料は exp/vision/report.html（画像は results/report/、pre-commit の 500 KB 上限のため別ファイル）。V10（RMSProp 1e4 で ViT・ResNet の S・M・L × seed 3、batch v10-model、ViT-S は V8 の run を流用）を投入中
