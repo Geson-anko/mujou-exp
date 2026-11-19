@@ -190,7 +190,7 @@ class BoundOGD(BoundOptimizer):
                 v.lerp_(g * g, a_v)
                 denoms.append((v.sqrt() / sqrt_c_v).add_(base.eps))
             d, metric = _flat(ds), 1 / _flat(denoms)
-        kept = self._kept[self._order()]  # (k, D)
+        kept = self._kept[: min(self._count, self._config.n)]  # (k, D), any order
         pd = d if metric is None else metric * d
         pk = kept if metric is None else kept * metric
         coef = _pinv_solve(gram64(pk, kept), gram64(kept, pd[None])[:, 0]).to(d)
