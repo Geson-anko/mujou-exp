@@ -137,24 +137,54 @@ class TestOptimizers:
         after = list(online.net.mods.decoder.parameters())
         assert any(not torch.equal(a, b) for a, b in zip(before, after, strict=True))
 
+    def test_grad_stats_gives_a_row_a_second_for_every_node(self):
+        conf = compose([*TINY, "optim=muon", "measure.grad_stats=true"])
+        online = Online(conf, None, RandomStacks(conf))
+        try:
+            got = []
+            for _ in range(10):
+                online.advance()
+                got += online.rows().get("grad.jsonl", [])
+        finally:
+            online.close()
+        nodes = ["enc1", "enc2", "enc3", "enc4", "dec1", "dec2", "out"]
+        assert sorted(r["node"] for r in got) == sorted(nodes)
+        assert all(r["t"] == pytest.approx(1.0, abs=0.05) for r in got)
+        assert all(r["cos_prev"] is not None and r["rho_0.1"] for r in got)
+
+    def test_without_grad_stats_there_are_no_rows(self):
+        conf = compose(TINY)
+        online = Online(conf, None, RandomStacks(conf))
+        try:
+            online.advance()
+            assert online.rows() == {}
+        finally:
+            online.close()
+
 
 class TestResume:
     @pytest.mark.parametrize("stop_at", [3, 5])
+    @pytest.mark.parametrize("grad_stats", [False, True])
     def test_a_stopped_and_resumed_run_is_one_never_stopped_bit_for_bit(
-        self, tmp_path, stop_at
+        self, tmp_path, stop_at, grad_stats
     ):
         """On the CPU: stopped after frame ``stop_at`` (between two resume
         checkpoints, on one) and resumed, the run writes the bytes of
-        stream.jsonl and evals.jsonl of a run never stopped, and its last
+        stream.jsonl and evals.jsonl (and grad.jsonl with
+        ``measure.grad_stats``) of a run never stopped, and its last
         checkpoint holds the same weights."""
         overrides = [*TINY, "ctl.log_every=0.1"]
+        names = ["stream.jsonl", "evals.jsonl"]
+        if grad_stats:
+            overrides.append("measure.grad_stats=true")
+            names.append("grad.jsonl")
         whole = _job(tmp_path / "whole", overrides)
         assert loop.run(_Stopping(None), whole, attempt=1) == Exit.OK
         cut = _job(tmp_path / "cut", overrides)
         assert loop.run(_Stopping(stop_at), cut, attempt=1) == Exit.STOPPED
         (cut.parent / "stop.request").unlink()
         assert loop.run(_Stopping(None), cut, attempt=2) == Exit.OK
-        for name in ("stream.jsonl", "evals.jsonl"):
+        for name in names:
             a = (whole.parent / name).read_bytes()
             assert a and a == (cut.parent / name).read_bytes(), name
         conf = compose(overrides)

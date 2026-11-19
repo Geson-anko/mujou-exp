@@ -88,6 +88,9 @@ class Toy:
         out.mkdir(parents=True)
         (out / "seen.txt").write_text(f"{self.u}\n")
 
+    def rows(self) -> dict[str, list[dict[str, Any]]]:
+        return {}
+
     def resume_state(self) -> tuple[Mapping[str, Any], dict[str, Any]]:
         return {}, {"u": self.u, "total": self.total, "since": self.since, "n": self.n}
 

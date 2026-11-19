@@ -14,6 +14,7 @@ from torch import Tensor
 
 import mujou
 from exp.lib.elbo import dequantize, gauss_kl, gauss_nll
+from exp.lib.grad_stats import GradStats
 from exp.lib.host import Host
 from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
 from exp.vision.models import Block, VAEModules, build_vae, early_fusion
@@ -464,11 +465,19 @@ class TestNodeOptimizers:
         the encoder with tau (latent has no parameters)."""
         conf = _conf("vit")
         conf.optim = OptimConf(kind="rmsprop", tau=1e3, tau_v=30.0, dec_scale=10.0)
-        opts = make_optimizers(conf)
+        opts = make_optimizers(conf, _mods(conf))
         assert sorted(opts) == sorted([*NODES])
         for name, opt in opts.items():
             want = 1e4 if name in ("dec1", "dec2", "out") else 1e3
             assert opt == pc.optim.RMSProp(tau=want, tau_v=30.0), name
+
+    def test_grad_stats_wraps_each_node_by_its_name(self):
+        conf = _conf("vit")
+        conf.measure.grad_stats = True
+        opts = make_optimizers(conf, _mods(conf))
+        for name, opt in opts.items():
+            assert isinstance(opt, GradStats) and opt.node == name
+            assert opt.inner == make_optimizer(conf.optim)
 
     @pytest.mark.parametrize("arch", ARCHS)
     def test_each_node_binds_its_own_optimizer(self, arch):

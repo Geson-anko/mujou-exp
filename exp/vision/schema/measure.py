@@ -13,7 +13,8 @@ class MeasureConf:
     checkpoints (``ckpt_times``, seconds of virtual time; 0 is the
     initialization; with ``ckpt_every`` > 0 they are instead every
     ``ckpt_every`` seconds from 0 to ``duration``) and the posthoc evaluation of each (``recon_blur`` with
-    ``blur_sigma`` pixels, ``posthoc_seeds`` seeds of the decoder it learns)."""
+    ``blur_sigma`` pixels, ``posthoc_seeds`` seeds of the decoder it learns),
+    and with ``grad_stats`` the statistics of every node's gradients."""
 
     duration: float = 1800.0  # the length of the run
     ckpt_times: list[float] = field(
@@ -36,6 +37,9 @@ class MeasureConf:
     # passed when below, not judged without the value; so, as every, not for
     # V0's posthoc numbers).
     criteria: dict[str, float] = field(default_factory=dict)
+    # Wrap every node's optimizer in exp.lib.grad_stats.GradStats: grad.jsonl
+    # (a row a second per node). The learning is the same bit for bit.
+    grad_stats: bool = False
 
     def __post_init__(self) -> None:
         if not self.duration > 0:

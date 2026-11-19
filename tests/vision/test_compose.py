@@ -80,6 +80,10 @@ class TestOverrides:
         with pytest.raises(ValueError, match="dec_scale"):
             compose([BASE, "optim.dec_scale=0"])
 
+    def test_grad_stats_is_off_by_default(self) -> None:
+        assert not compose([BASE]).measure.grad_stats
+        assert compose([BASE, "measure.grad_stats=true"]).measure.grad_stats
+
     def test_unknown_optimizer_fails_in_post_init(self) -> None:
         with pytest.raises(ValueError, match="foo"):
             compose([BASE, "optim.kind=foo"])

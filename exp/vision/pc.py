@@ -83,7 +83,7 @@ as these tests do.
 
 import math
 from collections.abc import Mapping
-from typing import TypedDict, override
+from typing import Any, TypedDict, override
 
 import mujou.pc as pc
 import torch
@@ -95,6 +95,7 @@ from torch import Tensor
 
 import mujou
 from exp.lib.elbo import LEVELS, dequantize, gauss_kl, gauss_nll
+from exp.lib.grad_stats import BoundGradStats, GradStats
 from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
 from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion
 from exp.vision.schema.optim import OptimConf
@@ -411,16 +412,31 @@ def make_optimizer(c: OptimConf, *, scale: float = 1.0) -> Optimizer:
             )
 
 
-def make_optimizers(conf: RunConf) -> dict[str, Optimizer]:
-    """The optimizer of each node of ``VAEPC`` by its name (``NODES``):
+def make_optimizers(conf: RunConf, mods: VAEModules) -> dict[str, Optimizer]:
+    r"""The optimizer of each node of ``VAEPC`` by its name (``NODES``):
     ``make_optimizer`` of ``conf.optim``, of ``tau * dec_scale`` for the
-    decoder's (``DECODER``)."""
-    return {
-        name: make_optimizer(
-            conf.optim, scale=conf.optim.dec_scale if name in DECODER else 1.0
-        )
-        for name in NODES
-    }
+    decoder's (``DECODER``); with ``measure.grad_stats``, each wrapped in
+    ``GradStats`` of its node, the parameters named as in their module
+    (``ln_sigma`` for $\ln \sigma$)."""
+    out: dict[str, Optimizer] = {}
+    modules = _node_modules(mods)
+    for name in NODES:
+        scale = conf.optim.dec_scale if name in DECODER else 1.0
+        opt = make_optimizer(conf.optim, scale=scale)
+        if conf.measure.grad_stats:
+            names: dict[Tensor, str] = {
+                p: n for n, p in modules[name].named_parameters()
+            }
+            names[mods.log_sigma] = "ln_sigma"
+            opt = GradStats(inner=opt, node=name, names=names)
+        out[name] = opt
+    return out
+
+
+def _node_modules(mods: VAEModules) -> dict[str, torch.nn.Module]:
+    """The module of each node of ``NODES`` (``out``'s readout)."""
+    parts = [*mods.encoder.parts, *mods.decoder.parts, mods.decoder.readout]
+    return dict(zip(NODES, parts, strict=True))
 
 
 class VAEPC(mujou.Network):
@@ -520,6 +536,16 @@ class VAEPC(mujou.Network):
         port.connect(node.prev)
         return node.act_spec, node.next
 
+    def grad_rows(self) -> list[dict[str, Any]]:
+        """The rows of the nodes' ``GradStats`` since the last call, node by
+        node (none without them). Read between the steps of the run."""
+        rows: list[dict[str, Any]] = []
+        for name in NODES:
+            bound = getattr(self, name).optimizer
+            if isinstance(bound, BoundGradStats):
+                rows += bound.drain()
+        return rows
+
     def sample(
         self, x: Tensor, u: Tensor, eps: Tensor, mask: Tensor, reset: Tensor
     ) -> pc.msg.Sample:
@@ -542,4 +568,4 @@ def build_net(conf: RunConf) -> VAEPC:
     """The VAE of ``conf`` learned by PC-ALM: the modules of ``build_vae``
     (seed ``conf.seed``) with the optimizers of ``make_optimizers``."""
     mods = build_vae(conf, seed=conf.seed)
-    return VAEPC(mods, conf=conf, optimizer=make_optimizers(conf))
+    return VAEPC(mods, conf=conf, optimizer=make_optimizers(conf, mods))
