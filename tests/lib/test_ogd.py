@@ -99,6 +99,36 @@ class TestProjection:
                 assert float(step.norm()) > 0
 
 
+@pytest.mark.parametrize("base", BASES[1:], ids=["rmsprop", "adamw"])
+def test_the_step_is_projected_in_the_metric_of_the_preconditioner(base):
+    r"""$\Delta = -\eta P^{1/2} (I - QQ^\top) P^{1/2} d$, $Q$ an orthonormal
+    basis of $P^{1/2} G$ (QR in float64), $P$ from $\hat v$ and $d$ ($g$, or
+    $\hat m$ of AdamW) of the state after the step, AdamW's decay taken out.
+    The Euclidean projection of $P d$ off the span of $G$ is not it."""
+    params = _params()
+    bound = OGD(base=base, n=3, every=DT).bind(params)
+    eta = DT / base.tau
+    wd = base.weight_decay if isinstance(base, AdamW) else 0.0
+    for g in _grads(6):
+        kept = bound.kept_gradients()
+        before = _flat(params).clone()
+        bound.step_(g, DT)
+        if not len(kept):
+            continue
+        got = _flat(params) - before + eta * wd * before
+        state = bound.state_dict()
+        d = _flat(state["m"]) / state["c_m"] if isinstance(base, AdamW) else _flat(g)
+        root = _metric(bound, base).sqrt()
+        q, _ = torch.linalg.qr((kept * root).T)
+        x = root * d
+        want = -eta * root * (x - q @ (q.T @ x))
+        torch.testing.assert_close(got, want, rtol=1e-10, atol=1e-13)
+        q_e, _ = torch.linalg.qr(kept.T)
+        pd = root**2 * d
+        euclid = -eta * (pd - q_e @ (q_e.T @ pd))
+        assert float((got - euclid).norm()) > 1e-2 * float(got.norm())
+
+
 class TestIdentityMetric:
     def test_sgd_steps_along_the_gradient_off_the_span_of_the_kept(self):
         r"""$P = I$: $\Delta = -\eta (I - QQ^\top) g$, $Q$ an orthonormal basis
