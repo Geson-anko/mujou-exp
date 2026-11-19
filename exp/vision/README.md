@@ -13,6 +13,10 @@ just fleet submit --batch <b> +experiment=v0/base --sweep optim.tau=1e5,1e6 --se
 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data python -m exp.vision.eval <run_dir>
 # bench（B = 1 の速さと GPU メモリ）
 python -m exp.vision.bench --device cuda --frames 100
+# optimizer ごとの bench（ViT-S だけ、勾配の計測つき）
+python -m exp.vision.bench --device cuda --frames 100 --models vit_s optim=muon measure.grad_stats=true
+# 勾配の計測（measure.grad_stats=true の run の grad.jsonl）の集計
+python -m exp.vision.grad_table <run_dir> [...]
 ```
 
 ## V0: 土台の確認（2026-11-18）

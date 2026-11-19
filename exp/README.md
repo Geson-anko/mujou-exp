@@ -20,7 +20,7 @@
 
 ## exp/lib/
 
-`host`（フレーム単位のループ）、`metrics`（実効ランク・probe）、`optim`・`sigreg`・`mingru`（研究中の部品）。使われなかった部品は、次の実験の時点で戻すか消す。
+`host`（フレーム単位のループ）、`metrics`（実効ランク・probe）、`optim`・`optim_zoo`・`grad_stats`・`sigreg`・`mingru`（研究中の部品）。使われなかった部品は、次の実験の時点で戻すか消す。
 
 ## 成果物
 

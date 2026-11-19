@@ -63,6 +63,16 @@
 
 メモリは run あたり 2 GB 以内（必要なら保持する勾配を bf16 にする）。集計は `python -m exp.vision.grad_table <run_dir>...`: ノードごとに、age（0.1・1・10・100 秒）の cos の平均と $\rho_s$ の平均を、0〜300 秒と 300〜1800 秒に分けて出す。
 
+### 実装の記録（optimizer 群・dec_scale・勾配の計測、2026-11-19）
+
+- optimizer は `exp/lib/optim_zoo.py`（`Nesterov`・`RMSPropCentered`・`Adadelta`・`Rprop`・`Muon`）にある。設定は `optim=<kind>`（`conf/optim/<kind>.yaml`）。`torch.optim` との対応は各 docstring に書き、テストで一致を確かめた。torch は偏りを補正しないので、nesterov・rmsprop_centered・adadelta と muon の momentum は、質量を 1 にした状態から一致する
+- `rmsprop_centered` の分母は $\sqrt{(v - m^2)/c} + \varepsilon$ にした（$c$ は質量）。表のとおり $\hat v - \hat m^2$ にすると、1 歩目で 0 になり、一歩が $g/\varepsilon$ まで大きくなるため。$c = 1$ では torch の centered と一致し、1 歩目の大きさは RMSProp と同じになる
+- `adadelta` の $u$ は、学習率を掛ける前の方向の 2 乗の平均にした（torch の `acc_delta` と同じ）
+- `muon` は、2 次元以上のパラメータを行列として扱う。ViT-S とデコーダでは、これが `nn.Linear` と `nn.Conv2d` の重みとちょうど一致する（テストで確かめた）。行列以外は AdamW で、`tau`・`tau_m`・`tau_v`・`eps`・weight decay は Muon と同じ値を使う
+- 勾配の計測は `exp/lib/grad_stats.py` の `GradStats`。時刻はノード自身の `elapsed` の和で数える。周期 $P$ の事象（書き出し・錨・保持）は、$kP$ に最も近い歩で起こす。テンソルごとの $\lVert\Delta\theta\rVert/\lVert\theta\rVert$ は、60 秒ごとの歩の 1 歩分の値。錨と保持は最初の歩で取る
+- 保持する勾配は bf16 にした。ViT-S（8.29M パラメータ）では 52 本 × 8.29M × 2 B = 0.86 GB で、$\rho_s$ の計算のときだけ、さらに最大 0.19 GB を使う（enc4 の 16 本を fp32 にする）。計測の状態は再開の checkpoint に入る。止めて再開しても、`grad.jsonl` は止めなかった run と同じバイトになる（テストで確かめた）
+- `grad_table` の age の bin は、0.1・1・10・100 秒を中心とする対数の区間（$10^k$ の bin は $[10^{k-1/2}, 10^{k+1/2})$）。直前の勾配（0.1 秒）との cos と各錨との cos を、age ごとにまとめて平均する
+
 ### OGD（V13、`exp/lib`）
 
 各ノードで、$s$ 秒ごとに（経過時間で数える）生の勾配 $g$ を保持し、直近 $n$ 個を $G$ とする。前処理の計量 $P$（SGD は $I$、RMSProp・AdamW は $\mathrm{diag}(1/(\sqrt{\hat v} + \varepsilon))$）のもとで、
