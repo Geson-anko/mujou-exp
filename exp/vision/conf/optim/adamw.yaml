@@ -1,0 +1,8 @@
+# @package optim
+# mujou.pc.optim.AdamW: tau as rmsprop.yaml's (1e2-1e4 stayed finite on v0/base).
+kind: adamw
+tau: 1.0e3
+tau_m: 1.0
+tau_v: 30.0
+eps: 1.0e-8
+weight_decay: 0.01

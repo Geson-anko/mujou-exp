@@ -1,0 +1,7 @@
+# @package optim
+# mujou.pc.optim.RMSProp(tau, tau_v, eps). The step is normalized, so tau is
+# not sgd's: 1e3 (a learning rate of 1e-4 a frame) stayed finite on v0/base.
+kind: rmsprop
+tau: 1.0e3
+tau_v: 30.0
+eps: 1.0e-8

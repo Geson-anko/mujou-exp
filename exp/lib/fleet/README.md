@@ -30,13 +30,13 @@ NAS   /nas/geson/mujou-exp/                             全ホストのコンテ
 just fleet doctor                     # 各ホストの ssh・コンテナ・GPU・NAS・時計・道具・コアを確かめる
 just fleet push                       # snapshot を作って各ホストに配る（最後の行が snap）
 just fleet up                         # 止まっている worker を起動する（コードを替えたら --restart）
-just fleet submit --batch m14-s1-v1 +experiment=m14/s1 --sweep optim.lr=0.01,0.03 --seeds 0,1,2
+just fleet submit --batch v0-tau +experiment=v0/base --sweep optim.tau=1e5,1e6 --seeds 0,1,2
 just fleet status                     # 状態ごとの数、ホストごとの枠、走っている run の進み
 just fleet pull --batch m14-s1-v1     # 完了した run を NAS から ./runs/ へ（ckpt を除く）
 just fleet table --batch m14-s1-v1 --rows config.optim.lr --cols config.learner.kind --value roll10/cv10
 ```
 
-`submit` は head（std-00）の `code/<snap>` の中で、その snapshot の venv の python が `exp.video.compose` を呼んで設定を解決する。設定の誤りはキューに入る前に落ちる。同じ (設定, snapshot, 資源の種類, seed) は同じ `run_id` になる。それがキューにあるか、実行中か、completed・diverged で終わっていれば `duplicate` と出して飛ばす。failed などで終わったものは投げ直せる。
+`submit` は head（std-00）の `code/<snap>` の中で、その snapshot の venv の python が、entry（`--entry`、既定は `exp.vision.main`）の隣の compose モジュール（`exp.vision.compose`）を呼んで設定を解決する。設定の誤りはキューに入る前に落ちる。同じ (設定, snapshot, 資源の種類, seed) は同じ `run_id` になる。それがキューにあるか、実行中か、completed・diverged で終わっていれば `duplicate` と出して飛ばす。failed などで終わったものは投げ直せる。
 
 ## コマンド
 
@@ -111,7 +111,7 @@ just fleet submit --batch smoke --raw --entry exp.lib.fleet.fake --name smoke --
 
 ## 他の包みとの約束
 
-- program の起動: `cwd=<root>/code/<snap12>` で `<root>/venv/<envkey>/bin/python -m <entry> --job <run_dir>/job.json --attempt <n>`。`entry` は `job.json` の `entry`（既定は `exp.video.main`）。`resume/latest` があれば program が自分で再開する（worker は `--resume` を渡さない）。新しく始めるときは、worker が `logs/` と `exit/` 以外を消してから起動する
+- program の起動: `cwd=<root>/code/<snap12>` で `<root>/venv/<envkey>/bin/python -m <entry> --job <run_dir>/job.json --attempt <n>`。`entry` は `job.json` の `entry`（既定は `exp.vision.main`）。`resume/latest` があれば program が自分で再開する（worker は `--resume` を渡さない）。新しく始めるときは、worker が `logs/` と `exit/` 以外を消してから起動する
 - manifest: `{"schema": 1, "files": {相対パス: {"sha256", "size"}}}`。`{"path", "sha256", "size"}` のリストでも読める。最上位の `manifest.json`・`resume/`・`logs/`・`exit/`・`status.json`・`timing.jsonl`・`stop.request` は含めない
 - 心拍: worker は `status.json` の `frame` で止まりを見て、`status.json` と `evals.jsonl` を 60 秒ごとに `live/` へ写す
 - 終わりの `state`: program は終わる直前に `status.json` の `state` を書く（例外なら `failed`、環境の誤りなら `env`、停止の要求に従ったなら `stopped`）。worker を再起動すると、引き取った run の exit code は分からなくなる。そのときはこの `state` で終わり方を決める。書かないと `lost` とみなされ、同じホストで起動し直される

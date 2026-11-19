@@ -1,0 +1,941 @@
+{
+ "infra": {
+  "summary": "The run infrastructure has three layers. (1) The entry point is exp/video/main.py. A fleet run starts as `python -m exp.video.main --job <run_dir>/job.json --attempt <n>` and a local run as `python -m exp.video.main <overrides> --out DIR`. For a local run, local_job (main.py:120-159) composes the config, builds the job with fleet's make_job (batch \"local\", CODE.json and code.diff from the checkout and from mujou's), and reruns or resumes the same directory. The program is looked up by name in PROGRAMS (main.py:41-47) and imported lazily (load_program, main.py:52-60), and its module-level PROGRAM is passed to loop.run (main.py:208). (2) exp/video/compose.py (94 lines) wraps hydra's Compose API over CONFIG_MODULE=\"exp.video.conf\" (compose.py:22,25-47). It turns the result into a plain-dataclass RunConf (exp/video/schema/run.py:51-119, stored as run_schema in schema/__init__.py:39), with to_dict/from_dict for job.json and a guard against overriding into a None subtree (compose.py:61-87). (3) exp/video/loop.py is the program-agnostic driver: Program.build(conf, run_dir, resume) returns a Built that advances one unit at a time (loop.py:102-171). _Loop.run (loop.py:295-324) checks the GIL (assert_free_threaded) and determinism (configure_determinism) and writes provenance/attempt-<n>.json, CODE.json/code.diff and config.yaml. It loads ckpt.load_resume and truncates the metrics files to the recorded offsets. _drive/_after (loop.py:328-391) write stream.jsonl every `log` units and evals.jsonl for val (and test) rows, save eval checkpoints and viz, save a resume checkpoint every `resume` units and on stop.request (Exit.STOPPED=75), and maintain the 30 s status.json heartbeat. _finish (loop.py:453-480) writes result.json (status, objective, criteria, metrics_sha256, peak), clears resume/ and writes manifest.json last. exp/lib holds the stdlib or torch-only pieces: rundir.py has the atomic JSON writes, the Jsonl class, RunDir.truncate/sync, the Exit codes 0/1/3/4/75 and the manifest; ckpt.py writes eval checkpoints to ckpt/<t>.pt (weights only) and resume checkpoints to resume/<frame>.pt (mujou tree + host state + offsets, two kept, `latest` pointer); provenance.py has collect, configure_determinism (OMP=1, no TF32, deterministic algorithms) and the free-threading check; host.py is Host, which maps frames onto ManualRun steps. The fleet in exp/lib/fleet (stdlib only) works like this. `just fleet push` snapshots the working tree, git-pushes it to each host and builds a venv per envkey with uv sync. `up` starts one worker per host. `submit` composes on std-00 inside the snapshot's venv, via jobs.compose_configs, which runs hard-coded `from exp.video.compose import compose, to_dict` (jobs.py:206-216). It then queues files on the NAS (queue.Nas.submit), where workers claim them by os.rename. The worker launches `<venv>/bin/python -m <job.entry> --job ... --attempt n` (worker.py:597-633) with taskset, OMP=1, CUBLAS_WORKSPACE_CONFIG, CUDA_VISIBLE_DEVICES, FLEET_HOST and MUJOU_EXP_DATA, and rewrites config.device to the slot's device (worker.py:594). Resume is implicit: if resume/latest exists, the program resumes itself. The worker classifies each end by exit code and files (worker.py:1-31), copies finished runs to the NAS and verifies the manifest. Run ids are `<name>-<group8>-s<seed>`, where group hashes program + config minus seed/device/ctl/phase + snap + res_class (+ entry if non-default; jobs.py:45-68). runs.py (stdlib) indexes and tabulates the NAS runs for `fleet table`. tools/sweep is a separate optuna coordinator project. V0 does not need it: `fleet submit --sweep k=a,b --seeds ...` already gives a cartesian grid. Minimal set for one PC-ALM program with checkpoints, resume and provenance: exp/lib/{rundir,ckpt,provenance,host}.py as they are (host gets a docstring fix), plus a new exp/vision/{main,compose,loop}.py, schema/ and conf/ ported from exp/video with the module paths renamed and the schema reduced to one program. To launch a sweep on the 4 std hosts the fleet needs exp/lib/fleet/* plus one change: the compose module has to follow the job's entry. Otherwise submit composes video's RunConf for a vision job.",
+  "files": [
+   {
+    "path": "exp/video/main.py",
+    "lines": 212,
+    "role": "Entry point for a fleet job (--job/--attempt) or a local run (overrides + --out). It composes the job, writes job.json/CODE.json/code.diff, resumes the same directory, picks the program from PROGRAMS and calls loop.run",
+    "port": "port-simplified",
+    "why": "Needed by both the fleet and local runs. Port to exp/vision/main.py: PROGRAMS={'vae': 'exp.vision.program'} (or one fixed program), import exp.vision.compose/loop, prog name 'python -m exp.vision.main'. Keep _local_code/_diff (provenance of a local run, including mujou's diff), _attempt and the 'finished run left as it is' check (main.py:196-199). tests/video/test_main.py covers it."
+   },
+   {
+    "path": "exp/video/compose.py",
+    "lines": 94,
+    "role": "hydra Compose API -> RunConf; to_dict/from_dict for job.json; refuses overrides into None subtrees",
+    "port": "port-as-is",
+    "why": "Change only CONFIG_MODULE to 'exp.vision.conf' and the RunConf import. The fleet also calls compose(overrides) and to_dict in the snapshot's venv, so the module must keep that interface. Tests: tests/video/test_compose.py (TestRepeated, the None-subtree check, the GIL-after-compose test)."
+   },
+   {
+    "path": "exp/video/loop.py",
+    "lines": 491,
+    "role": "Program-agnostic host loop: Schedule/Built/Program protocols, provenance, resume with truncate, stream/evals/ckpt/viz/resume cadence, stop.request, heartbeat, result.json + manifest",
+    "port": "port-simplified",
+    "why": "The core of the run contract. Its only experiment couplings are `from exp.video.compose import from_dict, to_dict` and `RunConf` (loop.py:59-60), plus the fields conf.device (299), conf.program (383) and conf.measure.criteria (487). Port it to exp/vision/loop.py with those imports changed; criteria can stay or be dropped. Moving it to exp/lib with an injected from_dict would also fit the lib rule, because video and vision both use it. tests/video/test_loop.py (Toy program, the resume-equals-unstopped byte equality, the cut-back, divergence, the env errors) should come along as the oracle."
+   },
+   {
+    "path": "exp/video/programs/",
+    "lines": 2559,
+    "role": "Programs dynamics/vision/joint/posthoc; vision.py also holds tours_root (vision.py:197-212, DATA_ENV='MUJOU_EXP_DATA' :183) and vision_objective",
+    "port": "reference-only",
+    "why": "How a program is chosen: main.PROGRAMS maps a name to a module, and each module has PROGRAM with build(conf, run_dir, resume) that dispatches on conf.task. The template for the V0 program is exp/video/vae/program.py (_Online, :116-280: Host + run + streams + noise generator + acc, resume_state = (run.state_dict(), host dict)). Port only tours_root (with the EnvError for missing data) and the posthoc task as needed. All of these modules import mujou.testing."
+   },
+   {
+    "path": "exp/video/vae/program.py",
+    "lines": 311,
+    "role": "Programs 'ae'/'vae' (M18), including learner=pc (VAEPC) on ManualRun + Host",
+    "port": "port-simplified",
+    "why": "The closest template for one PC-ALM program under the loop: build, Schedule from ctl/measure (:175-186), advance via host.show_all (:222), resume_state/load (:167-174, :266-274), close=run.shutdown. Drop the BP branches (no BP runs in V)."
+   },
+   {
+    "path": "exp/video/conf/",
+    "lines": 55,
+    "role": "hydra presets: run.yaml defaults (run_schema, dynamics, vision, learner, optim, phase), the experiment/mXX/* presets as @package _global_, phase/explore|confirm (ctl ckpt/viz/eval_test)",
+    "port": "port-simplified",
+    "why": "Keep the pattern: run.yaml defaults list starting with run_schema, a phase group (confirm turns on ckpt/viz/test and is required by the fleet's clean-snapshot check), and experiment presets as `+experiment=v0/...`. New groups: model (vit_s/m/l, resnet_s/m/l), optim (sgd, momentum tau, rmsprop, adamw), stack n. Do not copy the m14-m18 presets."
+   },
+   {
+    "path": "exp/video/schema/",
+    "lines": 1004,
+    "role": "Plain dataclass RunConf tree stored in ConfigStore; __post_init__ choice checks",
+    "port": "port-simplified",
+    "why": "The fleet and the loop need these top-level RunConf keys: program, task, name (MISSING, used for run_id), seed, device (rewritten by the worker), phase (explore|confirm), ctl (dropped from the group hash: log_every, ckpt_every, resume_every, viz_every, eval_test, cuda_graph), measure.every/criteria, time (frame, h, lam, r, learn_interval) and data.tours.data_version (read by provenance.collect, provenance.py:183,203). Port _check.py and run.py's TimeConf/CtlConf as they are, and write a new RunConf with one program. ToursConf comes from schema/data.py (data subsystem)."
+   },
+   {
+    "path": "exp/lib/host.py",
+    "lines": 91,
+    "role": "Host(Stateful): one frame = floor-grid of ManualRun.step(period) calls; show/show_all return the first message of the watched port stamped with the write's time (prequential); state = frames",
+    "port": "port-as-is",
+    "why": "Already imports `from mujou import ManualRun` (uncommitted working-tree change, host.py:12). Its docstring (:3-5) still says mujou.testing.run and 'updates every node once, in the order of the tree', which is wrong under Jacobi and needs fixing. tests/lib/test_host.py backs it (still mujou.testing)."
+   },
+   {
+    "path": "exp/lib/rundir.py",
+    "lines": 317,
+    "role": "Run-directory contract: atomic_open/write_json, Jsonl, RunDir (jsonl, sync, truncate, stop_requested, write_manifest), Exit codes, EnvError, manifest/verify_manifest",
+    "port": "port-as-is",
+    "why": "Stdlib only, generic, and fully covered by tests/lib/test_rundir.py. The fleet's contract.py relies on the same codes and manifest format."
+   },
+   {
+    "path": "exp/lib/ckpt.py",
+    "lines": 195,
+    "role": "Eval checkpoints ckpt/<t:07.1f>.pt (weights) and resume checkpoints resume/<frame:08d>.pt (+latest, keep 2, weights_only load, group check)",
+    "port": "port-as-is",
+    "why": "Generic. tests/lib/test_ckpt.py has the oracle 'resumed run learns bit-identically' (TestResumeARun, :158-193), which uses mujou.testing.run and must switch to mujou.run_manually."
+   },
+   {
+    "path": "exp/lib/provenance.py",
+    "lines": 222,
+    "role": "collect (host, python, torch, cuda, gpu, cpu, affinity, env, determinism, data_version), configure_determinism, assert_free_threaded, of_diagnosis",
+    "port": "port-as-is",
+    "why": "Generic. The mujou SHA is recorded in CODE.json (main._local_code / fleet provision), not in attempt-<n>.json. Tests in tests/lib/test_provenance.py."
+   },
+   {
+    "path": "exp/lib/cuda_graph.py",
+    "lines": 100,
+    "role": "Replayed / graphed_vjp: CUDA-graph replay for custom experiment nodes",
+    "port": "reference-only",
+    "why": "pc.Layer now has cuda_graph=True in mujou (CHANGELOG Unreleased; used at exp/video/vae/pc.py:410). Only the custom jepa/dyn nodes use this module. Keep it in lib and use it only if a V0 custom node (latent/decoder) is not a pc.Layer."
+   },
+   {
+    "path": "exp/lib/runs.py",
+    "lines": 702,
+    "role": "Stdlib index/table/series/export of run directories and of the NAS queue/claimed/done; backs `fleet table`",
+    "port": "port-as-is",
+    "why": "Generic over job.json/result.json/evals.jsonl; no change needed."
+   },
+   {
+    "path": "exp/lib/fleet/jobs.py",
+    "lines": 243,
+    "role": "job.json shape, group_of/run_id_of, expand (sweep x seeds), make_job, compose_configs (runs the compose in the snapshot's venv)",
+    "port": "port-simplified",
+    "why": "Hard-coded to video: DEFAULT_ENTRY='exp.video.main' (:34) and _COMPOSE_SRC `from exp.video.compose import compose, to_dict` (:206-216). A vision job submitted with --entry exp.vision.main would still be composed by video's schema. Smallest fix: derive the compose module from the entry (entry.rpartition('.')[0] + '.compose') and pass it through compose_configs. Leave DEFAULT_ENTRY alone, because changing it changes the group hash of every default-entry job (:61-62)."
+   },
+   {
+    "path": "exp/lib/fleet/cli.py",
+    "lines": 936,
+    "role": "just fleet doctor/push/up/submit/status/ls/logs/stop/cancel/retry/requeue/hold/cordon/pull/table/x; submit at :475-534",
+    "port": "port-simplified",
+    "why": "_submit calls compose_configs(python, code_dir, lists) (:497) without the entry. Pass args.entry (or the derived compose module) through. Everything else is generic. `status` only prints roll10/cv10 if present (:657), which is cosmetic."
+   },
+   {
+    "path": "exp/lib/fleet/worker.py",
+    "lines": 800,
+    "role": "Per-host worker: claim, slot, launch `python -m <entry> --job --attempt` (:583-651), stall detection on status.json 'frame', live copy, end classification, adopt/lost restart from resume/latest",
+    "port": "port-as-is",
+    "why": "Generic over entry. It needs status.json['frame'] (written by loop._Status) and the exit codes. It sets MUJOU_EXP_DATA=<root>/data unless already set (:622)."
+   },
+   {
+    "path": "exp/lib/fleet/{config,contract,queue,slots,snapshot,transport,provision,fake}.py + fleet.toml",
+    "lines": 1226,
+    "role": "fleet.toml parsing, run contract classification, NAS queue (rename claims), slot packing (cpu/gpu/ram budgets), working-tree snapshot, ssh/ControlMaster transport, venv per envkey (uv sync + GIL/mujou/CUDA verify), fake program",
+    "port": "port-as-is",
+    "why": "All generic. fleet.toml: std-00..03 each have 4090 (jobs 6, 22 GB) and 4060 (jobs 2, 7 GB); mini-00 has only a 5070ti. So `--res 4090` keeps a sweep on the 4 std hosts, which is the plan's 'mini-00 only for trial runs'. Tests: tests/lib/fleet/* (including test_stdlib_only)."
+   },
+   {
+    "path": "tools/sweep/",
+    "lines": 1995,
+    "role": "Optuna ASHA coordinator (separate uv project) that queues trials via exp.lib.fleet",
+    "port": "drop",
+    "why": "V0 sweeps are one axis at a time with 1 seed, so `fleet submit --sweep ... --seeds ...` is enough. If it is used later, its composer (cli.py:161-163) inherits the same exp.video.compose hard-coding through compose_configs."
+   },
+   {
+    "path": "tests/video/test_loop.py, tests/video/test_main.py, tests/video/test_compose.py",
+    "lines": 610,
+    "role": "Oracles for the loop contract (resume byte-equality, cut-back, divergence, env errors), the local/fleet entry, and compose",
+    "port": "port-simplified",
+    "why": "Port with the run infrastructure. Toy program in test_loop needs no mujou. test_main's SMALL config (+experiment=m14/s0) must be replaced by a tiny vision preset or a fake program."
+   }
+  ],
+  "apis": [
+   "def run(program: Program, job: Path, *, attempt: int) -> int  # exp/video/loop.py:262",
+   "@dataclass(frozen=True, kw_only=True) class Schedule: units: int; unit: str = \"frame\"; seconds: float | None = None; log: int = 0; evaluate: int = 0; ckpt: int = 0; viz: int = 0; resume: int = 0; test: bool = False  # loop.py:77-99",
+   "class Built(Protocol): schedule (property) -> Schedule; advance() -> None; log() -> dict[str, float | None]; evaluate(split: str) -> dict[str, float]; diverged(row: Mapping[str, float]) -> str | None; objective(row: Mapping[str, Any] | None, *, diverged: bool) -> float | None; modules() -> dict[str, nn.Module]; visualize(out: Path) -> None; resume_state() -> tuple[Mapping[str, Any], dict[str, Any]]; final() -> dict[str, dict[str, Any]]; close() -> None  # loop.py:102-158",
+   "class Program(Protocol): def build(self, conf: RunConf, run_dir: Path, resume: Mapping[str, Any] | None) -> Built  # loop.py:161-171",
+   "def every(seconds: float, unit: float) -> int  # loop.py:68",
+   "def compose(overrides: Sequence[str]) -> RunConf; def to_dict(conf: RunConf) -> dict[str, Any]; def from_dict(d: Mapping[str, Any]) -> RunConf  # exp/video/compose.py:25,50,55",
+   "def load_program(name: str) -> Any; def local_job(overrides: Sequence[str], out: Path, *, repo: Path = REPO) -> Path; def main(argv: Sequence[str] | None = None) -> int  # exp/video/main.py:52,120,171",
+   "class Host(Stateful): def __init__(self, run: ManualRun, *, frame: float, period: float) -> None; def show(self, writes: Mapping[Port[Any, Any], Any], watch: Port[Any, Any] | MultiPort[Any, Any]) -> tuple[Any, Timestamp]; def show_all(self, writes: Mapping[Port[Any, Any], Any], watches: Sequence[Port[Any, Any] | MultiPort[Any, Any]]) -> tuple[list[Any], Timestamp]  # exp/lib/host.py:20-83",
+   "def save_eval(run_dir: Path, *, program: str, group: str, t: float, frame: int, modules: Mapping[str, nn.Module]) -> Path  # exp/lib/ckpt.py:70",
+   "def load_eval(path: Path, modules: Mapping[str, nn.Module], *, group: str | None = None) -> dict[str, Any]  # ckpt.py:97",
+   "def save_resume(run_dir: Path, *, group: str, frame: int, mujou_state: Mapping[str, Any], host: Mapping[str, Any], offsets: Mapping[str, int]) -> Path  # ckpt.py:120",
+   "def load_resume(run_dir: Path, *, group: str) -> dict[str, Any] | None; def clear_resume(run_dir: Path) -> None  # ckpt.py:157,188",
+   "class Exit(IntEnum): OK = 0; ERROR = 1; DIVERGED = 3; ENV = 4; STOPPED = 75  # exp/lib/rundir.py:59-66",
+   "class RunDir: def __init__(self, root: Path, *, metrics: Iterable[str] = METRICS) -> None; read_job; write_json(name, obj); jsonl(name) -> Jsonl; sync() -> dict[str, int]; truncate(offsets); stop_requested() -> bool; close(); write_manifest() -> dict  # rundir.py:151-255",
+   "def verify_manifest(root: Path) -> None  # rundir.py:290",
+   "def collect(job: Mapping[str, Any], *, attempt: int) -> dict[str, Any]; def configure_determinism(device: str) -> dict[str, Any]; def assert_free_threaded(where: str) -> None; def of_diagnosis(settings: Mapping[str, Any]) -> dict[str, Any]  # exp/lib/provenance.py:173,101,75,207",
+   "def make_job(*, batch: str, config: Mapping[str, Any], overrides: Sequence[str], code: Mapping[str, Any], res: Mapping[str, Any], entry: str = DEFAULT_ENTRY, prio: int = 50, after: Sequence[str] = (), host: str | None = None, avoid_host: str | None = None, tags: Sequence[str] = (), retry: Mapping[str, int] | None = None, study: str | None = None, trial: int | None = None, extra: Mapping[str, Any] | None = None, submitted: str | None = None) -> dict[str, Any]  # exp/lib/fleet/jobs.py:134",
+   "def group_of(*, program: str, config: Mapping[str, Any], snap: str, res_class: str, entry: str = DEFAULT_ENTRY) -> str  # jobs.py:45 (drops seed, device, ctl, phase)",
+   "def compose_configs(python: Path, cwd: Path, override_lists: Sequence[Sequence[str]]) -> list[dict[str, Any]]  # jobs.py:219 (runs `from exp.video.compose import compose, to_dict`, :208)",
+   "def expand(overrides: Sequence[str], sweep: Sequence[str] = (), seeds: Sequence[int] | None = None) -> list[list[str]]  # jobs.py:95",
+   "def run_manually[P: Port[Any, Any]](root: Node | Network, *, timer: VirtualTimer | None = None, inputs: Mapping[P, Message] | None = None, state: Mapping[str, Any] | None = None, workers: int | None = None) -> ManualRun  # mujou/src/mujou/execution.py:694",
+   "class ManualRun(Run): def step(self, dt: float, *nodes: Node) -> None  # execution.py:531,563 (no nodes = Jacobi; nodes = Gauss-Seidel in the given order)",
+   "CLI: just fleet submit --batch B [overrides...] --entry exp.vision.main --sweep K=A,B --seeds 0,1 --res 4090 --ram G --gpu-mem G [--prio P] [--dry]"
+  ],
+  "mujou_coupling": "Uses of the old mujou API in this subsystem, and what each needs:\n\n(1) exp/lib/host.py:12 already reads `from mujou import ManualRun` (uncommitted diff). It sits in a separate import block from `from mujou import MultiPort, Port, Stateful` (:15); merge the two. The docstring at :3-5 (\"a mujou.testing.run ... updates every node once, in the order of the tree\") must say run_manually and Jacobi. The semantic change is at host.py:74: `self.run.step(self._period)` is now a Jacobi step. A message advances one node per step, so the watched port gets the message stamped with the write's time only after about as many steps as there are hops to it. show_all raises RuntimeError('the frame did not reach the watched port') (:81-82) when the hops exceed the steps in the frame. That is floor-grid frame/period: 16-17 steps for frame=1/30 s and 50 for 0.1 s at a 2 ms period. A fixed node count keeps the hops constant. Check that hops < steps per frame for the deepest model (M18's VAE chain inp, enc1-4, latent, dec1-2, out is about 8 hops forward). If a program wants the old tree order, `run.step(dt, *nodes)` gives Gauss-Seidel, but the plan chooses Jacobi.\n\n(2) Under Jacobi the 'prediction before learning from this frame' (prequential) now takes several steps, and upstream nodes may learn from earlier frames in the meantime. Write the stream-loss definition down again rather than assuming it is M18's.\n\n(3) The g_in change (credit one hop per step) breaks M18's calibration of time.learn_interval=0.029 in conf/experiment/m18/vae_t128_pc.yaml, whose comment says node k gets BP's credit after 2k steps. Recompute the learn_interval and the relax/learn timing for V0 from the new rule.\n\n(4) Tests to switch from `mujou.testing.run(` to `mujou.run_manually(`: tests/lib/test_host.py:4,36,45,55,68,80; tests/lib/test_ckpt.py:2,165,169,183; tests/test_gil.py:33,49 (and its run.step at :51). Their oracles (frame grid, the resumed run equal to an unstopped one bit for bit) should still hold, because Jacobi is deterministic and independent of the worker count. test_sigreg.py and test_optim.py in tests/lib also import mujou.testing (another subsystem).\n\n(5) The loop, rundir, ckpt and provenance never import mujou. ckpt stores run.state_dict() (ManualRun inherits Run.state_dict/shutdown/read/write/read_with_time). Restore with run_manually(net, state=tree['mujou']); the timer starts at the state's time. A program passes `state=` instead of `mujou.testing.run(net, state=state)` (exp/video/vae/program.py:164).\n\n(6) Programs: exp/video/vae/program.py:45-47,164, programs/vision.py:113-115,816, dynamics.py:33-35,257, joint.py:102-105,495, diag/m18_pc_grad.py:54,130 and diag/ssig.py:83,186 all `import mujou.testing`. With the submodule at origin/main, exp/video and tests/video no longer import. pyright (include exp, tests; pyproject.toml:49) and `just test` (testpaths=tests) will fail on them, so `just run` cannot pass until exp/video and tests/video are either excluded or mechanically updated.\n\n(7) The fleet makes a new envkey because the mujou tree changed, so the first `fleet push` runs uv sync (a maturin Rust build) on every host. Workers keep running the old code/latest until `fleet up --restart`.\n\n(8) ctl.cuda_graph maps to mujou's pc.Layer(cuda_graph=True), now in the Unreleased section of mujou's CHANGELOG. exp/lib/cuda_graph.py is only for custom nodes.\n\n(9) run_manually's default `workers` is the CPUs the process may use. Under the fleet's taskset that is one physical core (2 logical CPUs), so Jacobi gives little CPU parallelism there. Results do not depend on workers, so this is a speed question only, to measure in the V0 bench.",
+  "pitfalls": [
+   "Fleet composes with video's schema: jobs.py:206-216 hard-codes `from exp.video.compose import compose, to_dict` and cli.py:497 does not pass --entry. A submit with --entry exp.vision.main silently gets the wrong config, or fails to compose. Fix this before the first vision submit. Derive the compose module from the entry; do not change DEFAULT_ENTRY (jobs.py:34), which feeds group_of (:61-62) and would rename every old default-entry run.",
+   "The fleet and the loop require these RunConf keys: name (MISSING; run_id = name with '/' as '-', jobs.py:66-68), program, seed, device (the worker overwrites it with 'cuda'/'cpu', worker.py:594, so use 'cuda' not 'cuda:1'), phase in {explore, confirm} (confirm requires a clean snapshot with mujou pushed, cli.py:499-502), ctl (excluded from the group hash, so it must not change metrics), measure.criteria (loop.py:487) and data.tours.data_version (provenance.py:183,203).",
+   "A schedule unit must stay cheap enough that status.json['frame'] advances within the worker's 20-minute stall limit. The heartbeat is written every 30 s of wall time (loop.py:64, 353-356) and carries the unit index; the worker kills a run whose frame stands still.",
+   "To keep a sweep on std-00..03, use `--res 4090` (only std hosts have a 4090 in fleet.toml; mini-00 has only a 5070ti). `any_gpu` can land on mini-00 or on a std host's 4060 (7 GB, 2 jobs). Use `--host mini-00 --res 5070ti` for trial runs.",
+   "Same settings + same snapshot + same res class + same seed give the same run_id, so resubmitting is skipped as a duplicate unless the earlier run failed or stopped. A new `fleet push` (new snap) gives new run_ids, and a dirty tree is snapshotted as is, untracked files included.",
+   "Data is not provisioned by the fleet. tours_root (programs/vision.py:197-212) expects $MUJOU_EXP_DATA/<data_version>/index.json, and the worker sets MUJOU_EXP_DATA=<root>/data (worker.py:622). Copy the data to every host first, or the run exits with Exit.ENV and the worker cordons that host's class.",
+   "Resume is per host: resume/ lives only on the host's local disk (UNLISTED_DIRS, rundir.py:54). `fleet requeue --host` restarts from scratch. ckpt keeps the two newest resume files and clears them on completion. `fleet pull` excludes ckpt unless --ckpt is given.",
+   "Determinism: OMP_NUM_THREADS must be '1' (EnvError otherwise, provenance.py:116-118). A local `main` sets it by default, but a hand-run diag does not. On CUDA, CUBLAS_WORKSPACE_CONFIG must be :4096:8 or :16:8. The deterministic algorithms are warn_only on CUDA, so GPU runs are not bit-reproducible across GPUs; only CPU is.",
+   "assert_free_threaded fails the run (Exit.ENV) if torch._dynamo gets imported (torch.optim, torch.use_deterministic_algorithms). New optimizers (momentum/RMSProp with a time constant) must stay in mujou's pc.optim style and never touch torch.optim. The check runs at import, build and the first evaluation (loop.py:300, 321, 425).",
+   "Resume byte-equality (loop docstring :26-28) holds only if every Built method except advance is side-effect free: no draws from shared generators in evaluate/log/visualize, and every RNG and accumulator goes into resume_state (cf. vae/program.py:266-274).",
+   "Host frame grid: frames are floor(k*frame/period) steps (host.py:37-40), so with frame=1/30 the step counts alternate 16/17. Under Jacobi, the hops to the watched port must fit in the smallest frame, or show raises.",
+   "Two registries must agree: main.PROGRAMS (main.py:41-47) and schema PROGRAMS (schema/run.py:18). Simplest is one program for V0.",
+   "Freezing exp/video does not keep it importable: with mujou at origin/main, every exp/video program and many tests/video tests import mujou.testing. Decide whether to exclude exp/video and tests/video from pyright and pytest or to patch them mechanically. Otherwise `just run` fails and no commit is allowed (CLAUDE.md).",
+   "A changed mujou means a new envkey, so the first `just fleet push` rebuilds the venv with the Rust extension on each host (slow, needs rustup in the container). After changing fleet code, run `just fleet up --restart`; a restart does not kill running runs, which get adopted.",
+   "M18's PC preset timing (learn_interval 29 ms from 'k-th node gets credit after 2k steps', conf/experiment/m18/vae_t128_pc.yaml) is invalid after the g_in change and Jacobi. Do not copy it."
+  ]
+ },
+ "measure": {
+  "summary": "Evaluation of an encoder in exp/video is done afterwards, on frozen checkpoints, by `EncoderEval` (exp/video/measure/encoder_eval.py:270-683). M18's `AEEval` (exp/video/vae/eval.py:67-221) wraps it for the AE/VAE runs and is the path to copy for exp/vision. Checkpoints are `ckpt/<t:07.1f>.pt`, written by `ckpt.save_eval` (exp/lib/ckpt.py:70-94) every `ctl.ckpt_every` (300 s in M17/M18) only after unit u>=1 (exp/video/loop.py:373-381). There is NO t=0 checkpoint. The \"init\" yardstick is rebuilt in unit 0 by `build_vision(conf, seed=conf.seed)` (encoder_eval.py:450-451) as `code=init` in `baselines.jsonl`. Its equality with the untrained VAE's mu was only guaranteed by tests/video/vae/test_modules.py.\n\nSplits: val/test/calib come only from the held-out video (Zurich). `eval_windows(root, held_out, clips=3n, frames=N, stride, steps=measure.steps, seed=TOURS_SEED=4242)` (exp/video/data/walking_tours.py:240-273, built on `eval_clips` :210-237: random non-overlapping slots in time order) is cut into thirds calib/val/test, with n = measure.clips*measure.windows (=64*4=256 in M17/M18) (exp/video/programs/vision.py:486-507, 191). Training data for the posthoc fits is `stream_windows`: WINDOWS=2048 windows of N+STREAM_STEPS(8) frames, evenly spaced over the loop of the 9 training videos, skipping any window that crosses a video end (encoder_eval.py:169, 175-206). Each window gives 9 stacks (`_stacks` :209-213).\n\nPosthoc decoder: `posthoc.decoder(d_z, (C,H,W))` (exp/video/measure/posthoc.py:99-122) maps Linear to 4x4 maps, then log2(H/4) ConvTranspose x2 with ReLU, then a 3x3 conv. It requires H=W, a power of 2 >= 8. `fit_decoder` (:125-157) runs STEPS=2000 steps of `exp.lib.optim.adam(lr)` on the MSE of FIT_BATCH=256 pairs drawn with replacement. The init weights and the batches come from a CPU generator seeded `seed+DECODER_SEED(3)`. EncoderEval uses DECODER_LR=3e-4, not posthoc.LR=1e-3, because 1e-3 died to a constant image (encoder_eval.py:165-168). The decoder sees z centred and divided by ONE scalar, the RMS of the component stds (`_Standardized` :245-267). Its target is the LAST frame of each training stack (`self._targets` :323).\n\nrecon / recon_blur: on val/test, x_hat = dec(z of the first stack of each window).clamp(0,1) (:501-503, 555). recon = MSE(x_hat,f0)/MSE(mean_img,f0), and recon_blur = `blur_recon(x_hat, f0, mean_img)` (:553-562). mean_img is the pixel mean of the TRAINING stacks' last frames (:324-325), not of the split. `blur_recon` = e_sigma(x_hat,x)/e_sigma(mean,x), where e_sigma is the mean of (G_sigma*(a-b))^2 with a separable Gaussian of radius ceil(3 sigma), normalized to 1, borders reflected (exp/lib/blur_error.py:49-88). SIGMA=2.0 is \"for 128 x 128 frames\" (:46). recon_fit is the same on the training stacks (:490-499).\n\ndyn_1/copy_1: z0/z1 are consecutive training stacks (0.1 s apart) (:531). The ridge alpha = c*tr(C00)/D with c in 1e-8..1 is picked by least dyn_1 on the CALIB windows (`linear_dyn.select_alpha`, exp/lib/linear_dyn.py:149-169; encoder_eval.py:539). Then `fit` gives A,b in closed form in float64 (linear_dyn.py:41-76), and `errors(a,b,zs,horizons,train=z0)` on the val windows zs (n,1+H,D) gives dyn_h = ||A-rollout - z_h||^2/var(z_h), copy_h = ||z_0 - z_h||^2/var(z_h), dyn_h/copy_h, and the whitened dynw_h/copyw_h (linear_dyn.py:90-123). Also img_dyn_h decodes the rollout (encoder_eval.py:570-578). Other keys come from z_stats (rank via metrics.effective_rank, z_std_min, z_spread; vision.py:456-464) and from sensitivities (sens_dither/sens_shift; sensitivity.py:65-101).\n\nImages: on val, `<name>.png` is a SHOWN=10 true row over a decoded row, and `<name>-dyn.png` is DYN_SHOWN=4 windows x (true, rollout, decoded) (:662-683). They are drawn by `png.tile` + `write_png` at scale max(1, 96//H) (:721-723). AEEval adds `<t>-own.png` and own_recon/own_recon_blur of the system's decoder g(mu)*256/255 on held-out first stacks (vae/eval.py:172-200), stack_mse (vae/measures.py), and the `tube` reference (`tubelet_means`, D=T*C) in refs.jsonl (vae/eval.py:147-155). In M18 the code was mu (n,T,d) flattened, D=T*d=1024 (vae/eval.py:163-165).\n\nImagenette probe: only in the diagnosis exp/video/diag/imagenette.py. `prep` uses ffmpeg to resize the shorter side to SIDE=128 and centre-crop (:72, 76-106). `probe_accuracy` (:191-220) is ridge regression of one-hot labels from standardized features plus a bias; the ridge (RIDGES x n, :73) is chosen by accuracy on the last fifth of a seed-0 permutation of train, then refit on all train, and scored as argmax accuracy on val. The features are the mean of tokens of a 1-frame stack (`_features` :180-188). It was never run on a stream-trained encoder. Known values: untrained M17 ViT 40.7%, LeJEPA BP 78.5% (exp/video/results/m17.md:286).\n\nFit noise (m18.md:1793-1810, 1862, 1868): the posthoc is deterministic per seed, but refitting the decoder with another seed moves recon_blur by 0.008-0.020 on ONE code. The SD is about 0.0035 per fit (estimate 0.002-0.006, heavy tails; the TF32/non-deterministic build gave about half). Codes that differ by 1e-7 relative jumped by 0.007. Differences below ~0.01 between single fits are unreadable. dyn_1/copy_1 is a closed-form fit and has no such noise. The recommendation is to average several decoder seeds (as `m18_post_noise.py` does with seed+DECODER_SEED+SEED_STEP*k) under `provenance.configure_determinism`. Cost: about 27-30 min of posthoc per run with all 6 checkpoints at 128 px on a 4090 (m18.md:522, 1169).",
+  "files": [
+   {
+    "path": "exp/lib/blur_error.py",
+    "lines": 108,
+    "role": "recon_blur: Gaussian-blurred squared error over the mean image's (blur_recon, blur_mse, gaussian_blur, masked variants); SIGMA=2.0",
+    "port": "port-as-is",
+    "why": "Already in exp/lib, pure torch, 15 oracle tests (tests/lib/test_blur_error.py: cosine response, sigma 0 = MSE, mean image = 1). Only the default SIGMA was set for 128 px and needs a decision at 64 px. The masked variants are unused without restoration."
+   },
+   {
+    "path": "exp/lib/linear_dyn.py",
+    "lines": 169,
+    "role": "dyn_h/copy_h: closed-form ridge A,b (float64, chunked moments), rollout, errors (also whitened dynw/copyw), select_alpha on calib windows",
+    "port": "port-as-is",
+    "why": "Already in exp/lib, no mujou, 12 tests with analytic oracles (noiseless system recovered, identity = copy, scale/invertible-map invariance)."
+   },
+   {
+    "path": "exp/lib/pca.py",
+    "lines": 47,
+    "role": "Pixel-PCA yardstick of D components (randomized SVD seeded from a CPU generator)",
+    "port": "port-as-is",
+    "why": "Yardstick code=pca in baselines.jsonl (encoder_eval.py:436-449). Already lib, 3 tests."
+   },
+   {
+    "path": "exp/lib/png.py",
+    "lines": 175,
+    "role": "write_png/read_png/tile (rows x cols frame grids, grey 1-px gap, integer upscale) and drawing",
+    "port": "port-as-is",
+    "why": "Already lib, torch+zlib only, 13 tests. The image dumps use tile + write_png."
+   },
+   {
+    "path": "exp/lib/metrics.py",
+    "lines": 58,
+    "role": "effective_rank (used by z_stats 'rank'), probe_r2 (ridge R^2), bootstrap_se",
+    "port": "port-as-is",
+    "why": "Already lib, 8 tests. effective_rank feeds the rank/collapse watch. bootstrap_se is useful for error bars."
+   },
+   {
+    "path": "exp/video/measure/posthoc.py",
+    "lines": 532,
+    "role": "decoder() architecture, fit_decoder() (Adam 2000 steps, batch 256, CPU-seeded init), as_float; plus the M15/M16 Decoding/Parent/stream_chunks/joint dream machinery",
+    "port": "port-simplified",
+    "why": "Only decoder (:99-122), fit_decoder (:125-157), as_float (:160-162) and the DECODER_SEED/STEPS/FIT_BATCH constants (:91-95) are needed; PLAN says posthoc goes to exp/lib. Decoding/_BallChunks/_TourChunks/joint imports (:59-70) are for vision/joint runs and pull in jepa.vit, compose, physics. Tests: test_posthoc.py:57-111 cover decoder shape, learning a determined image, the mean-image floor, determinism."
+   },
+   {
+    "path": "exp/video/measure/encoder_eval.py",
+    "lines": 737,
+    "role": "EncoderEval: unit 0 yardsticks (pca, init), then per checkpoint: _Standardized decoder fit on training stacks, recon/recon_blur/recon_fit, linear dynamics with alpha on calib, img_dyn, z_stats, sensitivities, restoration/completion (ViT JEPA), objective; pictures; resumable jsonl",
+    "port": "port-simplified",
+    "why": "Keep stream_windows/iter_stream_windows (:175-206), _stacks (:209-213), _Standardized (:245-267), _fit_error/_decoded (:490-503), the recon/recon_blur/dyn/img_dyn core of _evaluate (:505-578), _pictures (:662-683) and the resumable unit structure. Drop the tokens mode, restore/token decoder, completion, objective/_completion_objective, and the PackedMeasures dependency (masks, SIGReg directions, held_in), which are JEPA-specific. 25 tests incl. 'mean image is one on every key', 'encoder held bit for bit', 'resume writes same bytes', 'identity decoder of last frame is exact' (test_encoder_eval.py:93-426)."
+   },
+   {
+    "path": "exp/video/vae/eval.py",
+    "lines": 236,
+    "role": "AEEval: M18 posthoc of AE/VAE runs = EncoderEval.evaluate_code on mu flattened + own decoder g(mu) (own_recon, own_recon_blur, stack_mse, -own.png) + tube reference",
+    "port": "port-simplified",
+    "why": "The structure exp/vision needs (VAE code = mu, the in-system decoder's reconstruction error beside the posthoc one). It must be rebuilt on the new modules and on a stand-alone evaluator rather than on EncoderEval(None, ...) at :110-112, and without the 256/255 scaling unless the target stays x/256."
+   },
+   {
+    "path": "exp/video/vae/measures.py",
+    "lines": 260,
+    "role": "training_moments (mean stack of training windows, float64 cumulative sums), held_out_stacks (first stack of each eval window), stack_errors/stack_mse, VAE ELBO eval rows",
+    "port": "port-simplified",
+    "why": "The reconstruction-error metric (stack_mse over the mean stack) is the plan's first evaluation. ELBO/KL/bpd rows are not judged in V (PLAN 評価) and may be kept only as logs."
+   },
+   {
+    "path": "exp/video/programs/vision.py",
+    "lines": 948,
+    "role": "PackedMeasures (split windows calib/val/test from eval_windows with TOURS_SEED; masks; SIGReg directions), z_stats, COLLAPSE, TOURS_SEED",
+    "port": "port-simplified",
+    "why": "Only the split construction (:486-507, TOURS_SEED :191) and z_stats (:456-464) are needed; the rest is JEPA."
+   },
+   {
+    "path": "exp/video/data/walking_tours.py",
+    "lines": 290,
+    "role": "videos(), eval_clips(), eval_windows(): the held-out video's non-overlapping windows",
+    "port": "port-as-is",
+    "why": "Defines the val split. Pure data code; prep defaults are already size 64 and fps 10 (:280-282)."
+   },
+   {
+    "path": "exp/video/measure/sensitivity.py",
+    "lines": 101,
+    "role": "sens_dither / sens_shift of a code relative to inter-stack spread, and the same of the pixels",
+    "port": "reference-only",
+    "why": "Not among the PLAN's evaluations. Small and test-backed (5 tests), so it can be added later if nuisance sensitivity matters."
+   },
+   {
+    "path": "exp/video/measure/mean_color.py",
+    "lines": 20,
+    "role": "tubelet_means: the 'tube' reference code (mean color per tubelet)",
+    "port": "reference-only",
+    "why": "In M18 it was a judged-by-nothing reference beside U. Its definition is tied to ViT patch/tubelet, which a ResNet does not have."
+   },
+   {
+    "path": "exp/video/measure/dynamics.py",
+    "lines": 399,
+    "role": "M14 ball-dynamics rollouts and baselines",
+    "port": "drop",
+    "why": "Ball physics, unrelated. Its test (test_dynamics.py) also uses mujou.testing."
+   },
+   {
+    "path": "exp/video/diag/imagenette.py",
+    "lines": 394,
+    "role": "Imagenette prep (ffmpeg, 128 px) and LeJEPA/masked BP training diag with linear probe_accuracy",
+    "port": "port-simplified",
+    "why": "Port prep (with side=64) and probe_accuracy (:191-220, tested by test_imagenette.py:38) and a feature function for a frozen checkpoint. Drop all training (lejepa/masked, StepAdamW, augment)."
+   },
+   {
+    "path": "exp/video/diag/m18_post_noise.py",
+    "lines": 208,
+    "role": "Refits the posthoc decoder at K decoder seeds, repeat and jitter, to measure fit noise",
+    "port": "reference-only",
+    "why": "The design to fold into the evaluator: K seeds and mean ± sd of recon_blur. The file imports encoder_eval private names (_Code, _Standardized)."
+   },
+   {
+    "path": "exp/video/results/m18.md",
+    "role": "Results incl. fit-noise analysis (:1793-1810), conclusions (:1862, 1868), init yardsticks recon_blur 0.318 / dyn_1/copy_1 0.653, PCA 0.051, tube 0.323/0.169",
+    "port": "reference-only",
+    "why": "Numbers at 128 px / 30 fps / M17 ViT. Not comparable to 64 px V runs, but the noise analysis sets the readable resolution."
+   },
+   {
+    "path": "exp/lib/optim.py",
+    "role": "adam(lr) -> mujou.pc.optim.AdamW(tau=1/lr, tau_m, tau_v, eps, weight_decay=0.0) stepped with elapsed=1.0; used by fit_decoder",
+    "port": "port-as-is",
+    "why": "Already lib and still valid against mujou origin/main."
+   },
+   {
+    "path": "exp/lib/ckpt.py",
+    "role": "save_eval/load_eval/eval_path of evaluation checkpoints",
+    "port": "port-as-is",
+    "why": "Already lib. load_eval(path, modules, group=) is what every evaluator uses."
+   }
+  ],
+  "apis": [
+   "def gaussian_kernel(sigma: float, dtype: torch.dtype = torch.float32) -> Tensor",
+   "def gaussian_blur(x: Tensor, sigma: float) -> Tensor",
+   "def blur_mse(a: Tensor, b: Tensor, sigma: float = SIGMA) -> Tensor",
+   "def blur_recon(x_hat: Tensor, x: Tensor, mean: Tensor, sigma: float = SIGMA) -> float",
+   "SIGMA = 2.0  # pixels, for 128 x 128 frames (memory/agents/recon-metric/)",
+   "def fit(z0: Tensor, z1: Tensor, *, alpha: float) -> tuple[Tensor, Tensor]",
+   "def rollout(a: Tensor, b: Tensor, z0: Tensor, steps: int) -> Tensor",
+   "def errors(a: Tensor, b: Tensor, zs: Tensor, horizons: Sequence[int], *, train: Tensor | None = None) -> dict[str, float]",
+   "def select_alpha(z0: Tensor, z1: Tensor, calib: Tensor, *, scales: Sequence[float] = ALPHA_SCALES) -> float",
+   "ALPHA_SCALES = tuple(10.0**e for e in range(-8, 1))",
+   "def fit_pca(x: Tensor, d: int, *, gen: torch.Generator, niter: int = 4) -> tuple[Tensor, Tensor]",
+   "def encode(x: Tensor, mean: Tensor, comps: Tensor) -> Tensor",
+   "def decode(z: Tensor, mean: Tensor, comps: Tensor) -> Tensor",
+   "def write_png(path: Path, image: torch.Tensor) -> None",
+   "def tile(frames: torch.Tensor, scale: int = 1) -> torch.Tensor",
+   "def effective_rank(z: torch.Tensor) -> float",
+   "def probe_r2(train_x: torch.Tensor, train_y: torch.Tensor, test_x: torch.Tensor, test_y: torch.Tensor, ridge: float = 1e-3) -> torch.Tensor",
+   "def bootstrap_se(x: torch.Tensor, *, gen: torch.Generator, resamples: int = 1000) -> float",
+   "def decoder(d_z: int, shape: tuple[int, int, int]) -> nn.Module",
+   "def fit_decoder(z: Tensor, images: Tensor, *, steps: int = STEPS, batch: int = FIT_BATCH, lr: float = LR, gen: torch.Generator) -> nn.Module",
+   "def as_float(x: Tensor) -> Tensor",
+   "DECODER_SEED = 3; SHOWN = 8; FRAMES, STEPS = 16384, 2000; BATCH = 256; FIT_BATCH, LR = 256, 1e-3  (posthoc.py:91-95)",
+   "PCA_SEED = 4; SENS_SEED = 5; DECODER_LR = 3e-4; WINDOWS, STREAM_STEPS = 2048, 8; SHOWN, DYN_SHOWN = 10, 4; SPLITS = (\"val\", \"test\")  (encoder_eval.py:163-172)",
+   "def stream_windows(conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS) -> Tensor",
+   "def iter_stream_windows(conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS) -> Iterator[Tensor]",
+   "class _Standardized(nn.Module): def __init__(self, z: Tensor) -> None; def standardize(self, z: Tensor) -> Tensor",
+   "class EncoderEval: def __init__(self, parent: Parent | None, conf: RunConf, out: Path, *, root: Path, windows: int = WINDOWS, steps: int = STEPS, ckpts: str = \"all\", done: int = 0) -> None",
+   "def evaluate_code(self, name: str, z: Callable[[Tensor], Tensor], *, linear: tuple[Tensor, Tensor] | None = None) -> list[dict[str, Any]]",
+   "def eval_clips(root: Path, *, held_out: str, clips: int, length: int, seed: int) -> Tensor",
+   "def eval_windows(root: Path, *, held_out: str, clips: int, frames: int, stride: int, steps: int, seed: int) -> Tensor",
+   "TOURS_SEED = 4242  # the chunks of the held-out video (programs/vision.py:191)",
+   "def z_stats(z: Tensor) -> dict[str, float]",
+   "def sensitivities(code: Callable[[Tensor], Tensor], stacks: Tensor, *, gen: torch.Generator, batch: int, device: torch.device) -> dict[str, float]",
+   "def training_moments(conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS) -> StackMoments",
+   "def held_out_stacks(conf: RunConf, root: Path) -> dict[str, Tensor]",
+   "def tubelet_means(x: Tensor, patch: int, tubelet: int) -> Tensor",
+   "def probe_accuracy(f_train: Tensor, y_train: Tensor, f_val: Tensor, y_val: Tensor, classes: int) -> float",
+   "def prep(src: Path, out: Path, *, side: int = SIDE, workers: int = 8) -> None",
+   "SIDE = 128; RIDGES = (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  (imagenette.py:72-73)",
+   "def adam(lr: float, beta1: float = 0.9, beta2: float = 0.999, *, eps: float = 1e-8) -> AdamW",
+   "def load_eval(path: Path, modules: Mapping[str, nn.Module], *, group: str | None = None) -> dict[str, Any]",
+   "def save_eval(run_dir: Path, *, program: str, group: str, t: float, frame: int, modules: Mapping[str, nn.Module]) -> Path",
+   "def configure_determinism(device: str) -> dict[str, Any]"
+  ],
+  "mujou_coupling": "The evaluation code does not use mujou.testing, ManualRun, step order, or pc nodes/messages. None of these files import them: posthoc.py, encoder_eval.py, sensitivity.py, mean_color.py, exp/lib/{metrics,blur_error,linear_dyn,pca,png}.py, vae/eval.py, vae/measures.py, diag/imagenette.py. They work on frozen checkpoints by plain forward passes under torch.no_grad, so the Jacobi step and the g_in-after-relax change do not touch any eval formula.\n\nThe one runtime coupling is the posthoc decoder's optimizer. `fit_decoder` (posthoc.py:149, 156) calls `adam(lr).bind(params)` and `optimizer.step_(grads, 1.0)`. `exp.lib.optim.adam` (exp/lib/optim.py:411-440) returns `mujou.pc.optim.AdamW(tau=1/lr, tau_m=-1/ln(beta1), tau_v=-1/ln(beta2), eps=eps, weight_decay=0.0)`, and exp/lib/optim.py:32,35 imports `from mujou.pc.optim import AdamW, BoundOptimizer, Optimizer` and `from mujou import Stateful`. All of these still exist on mujou origin/main: AdamW in mujou/src/mujou/pc/optim.py:163 with fields tau, tau_m, tau_v, eps=1e-8, weight_decay=1e-2 (:241-245); BoundOptimizer.step_(grads, elapsed) at :33-45; Stateful exported at mujou/src/mujou/__init__.py:8. Nothing in this path needs to change. If the planned time-constant momentum SGD/RMSProp are added to pc.optim, the posthoc decoder should keep `adam` so it stays a fixed yardstick.\n\nTest coupling to fix when porting or running `just test`:\n- tests/lib/test_optim.py:4 and :174 use `mujou.testing.run(net, inputs=...)` with `run.step(tau.period, net.input, *net.layers, net.output)`. Change this to `mujou.run_manually(...)`. The explicit node list keeps a sequential order. The test only asserts that the weights changed, so it is unaffected by Jacobi.\n- tests/video/measure/test_dynamics.py uses mujou.testing, but dynamics.py is to be dropped.\n- tests/video/vae/test_pc.py and test_bp.py, and exp/video/vae/program.py:45-47,164 (`mujou.testing.run(self.net, state=state)`), are the training side, not eval. Since exp/video is frozen, they matter only if the M18 VAE PC wiring is ported.\n- exp/lib/host.py is already changed in the working tree to `from mujou import ManualRun` (its docstring at :3 still says `mujou.testing.run`).\n\nIndirect consequence: checkpoints from runs under Jacobi stepping with the new g_in will follow different trajectories. No M18 posthoc number (init recon_blur 0.318, dyn_1/copy_1 0.653, PCA 0.051) can serve as a reference for exp/vision; the yardsticks must be recomputed at 64 px for the new encoders.",
+  "pitfalls": [
+   "SIGMA = 2.0 in exp/lib/blur_error.py:46 was chosen for 128x128 frames. At sigma=2 the error energy halves at a wavelength of about 15 px (memory/agents/recon-metric/m17-shift-tolerant-recon.md:12). At 64x64 that is about 1/4 of the frame, so recon_blur would mostly count the coarse layout. The equivalent at 64 px is sigma=1, which is 2.6x more shift-sensitive (same memo :85). PLAN says 'M17・M18 と同じ物差し', but the resolution change already breaks numeric comparability. Decide sigma explicitly, pass it (blur_recon takes sigma=), and record it.",
+   "Posthoc fit noise (exp/video/results/m18.md:1799-1810, 1862, 1868): refitting the decoder with another seed moves recon_blur by 0.008-0.020 on one code. The SD is about 0.0035 per fit (0.002-0.006), with heavy tails. A relative 1e-7 perturbation of the code moved it by 0.007. Single-fit differences below ~0.01 are unreadable. Fit K decoder seeds (seed+DECODER_SEED+SEED_STEP*k, as m18_post_noise.py) and report the mean ± sd; this multiplies posthoc cost (about 27-30 min per run with all checkpoints at 128 px, m18.md:522). dyn_1/copy_1 is closed form and has no such noise.",
+   "Run the posthoc under provenance.configure_determinism (no TF32, deterministic algorithms; OMP_NUM_THREADS=1, CUBLAS_WORKSPACE_CONFIG). The TF32/non-deterministic version gave a different spread (about half) and non-repeatable fits (0.0004-0.0007 on a repeat) (m18.md:1806).",
+   "There is no t=0 checkpoint. loop.py:373-381 writes ckpts only after unit u>=1 at multiples of ckpt_every. 'Init' was rebuilt as build_vision(conf, seed) in unit 0 (encoder_eval.py:450-451). The PLAN's judgement is 'below the initialization checkpoint', so either save a t=0 eval checkpoint or rebuild the new ViT/ResNet VAE from the same seed, and test that it equals the run's initial weights bit for bit (M18 relied on tests/video/vae/test_modules.py for that).",
+   "Use DECODER_LR = 3e-4 (encoder_eval.py:168), not posthoc.LR = 1e-3: at 1e-3 the fit died to a constant image on some codes. Keep the single-scalar standardization of z (_Standardized, :245-251): per-component std scaling drowned the PCA's first components and the fit died (recon 1.09).",
+   "The recon normalizer mean_img is the pixel mean of the TRAINING stacks' last frames (encoder_eval.py:324-325). The older posthoc.Decoding used the split's own mean (pix_mean, posthoc.py:480). Do not mix them. x_hat is clamped to [0,1] before the error (:503). AEEval's own decoder targets y = x/256 and is rescaled by 256/255 (vae/eval.py:36-37, 63).",
+   "The posthoc decoder decodes only the LAST frame of a stack (encoder_eval.py:323, 553-555). For n=16 the code spans 1.6 s, but only frame n-1 is scored. posthoc.decoder needs H=W to be a power of 2 >= 8 (posthoc.py:110); 64 is fine (4 upsamplings, 512 channels at 4x4).",
+   "dyn_1/copy_1 compares stacks 0.1 s apart that share N-1 frames, so any stack code is smooth and dyn_1 is small by construction; the copy ratio cancels this (encoder_eval.py:96-100). copy_1 itself depends on n, so compare n=4/8/16 with care. The ridge is chosen on CALIB windows (the first third of held-out windows) by least dyn_1 (encoder_eval.py:539), so the calib split must be kept.",
+   "Split construction: eval_windows draws 3*n non-overlapping slots of span (frames+steps-1)*stride+1 from the held-out video (Zurich) with seed TOURS_SEED=4242. These are cut into calib/val/test in time order (programs/vision.py:493-507). With n=16, larger steps or the 10 fps 64 px data (stride 1; data ad6e56b5995e of m15/wt_n8 vs 128 px/30 fps, advance and stride 3 in M17/M18, data 3c3e6805fdaa), check that the video still has enough slots (eval_clips raises otherwise, walking_tours.py:230-235). The window set changes with n, so val differs across n.",
+   "In M18 the code was mu (n,T,d) flattened to D=T*d=1024 (vae/eval.py:163-165; measure.posthoc_code=tokens in m17/tok_n16.yaml:22). The pixel-PCA yardstick uses the same D (encoder_eval.py:438-439). A new VAE latent size changes the decoder input and the PCA rank. The D x D float64 ridge needs memory (comment at encoder_eval.py:533-538).",
+   "PNG upscale is max(1, 96 // H) (encoder_eval.py:723, posthoc.py:508, vae/eval.py:192), which is 1 at 64 px, so the dumps are small. Use scale 2 or more for 64 px if they are meant for viewing.",
+   "Imagenette: prep produces 128 px (SIDE=128, imagenette.py:72) and must be redone with side=64. The data lives on std-01 only (m17.md:389), and the ffmpeg path goes through imageio_ffmpeg. The stream encoder expects an n-frame stack, so a still image has to be repeated n times. That stack has no motion, so it is out of distribution for a temporal tubelet/ResNet-over-time encoder; state this as a caveat. The existing feature is the mean of ViT tokens (_features :180-188); a VAE should use mu, and a ResNet has no tokens. The ridge is selected on the last fifth of a seed-0 permutation of train (:210-218). Reference values exist only for the M17 ViT at 128 px with BP: untrained 40.7%, LeJEPA 78.5% (m17.md:286).",
+   "encoder_eval.py depends on PackedMeasures (programs/vision.py:467-560), which builds JEPA masks, SIGReg directions and held-in stacks, and on restore/completion/objective. Porting EncoderEval wholesale drags in the JEPA stack, so extract the core instead. m18_post_noise imports encoder_eval private names (_Code, _Standardized) with pyright ignores. Avoid that pattern in exp/vision by making the standardizer public in exp/lib.",
+   "In M18, U (recon_blur and dyn_1/copy_1 below init) was met even by points that barely learned (RMSProp 1e-5, stack_mse 0.961; m18.md:951), so 'below init' alone does not separate learning from not learning. Show the PCA yardstick and the reconstruction error next to it."
+  ]
+ },
+ "data": {
+  "summary": "The data path has two stages. (1) An offline prep: `exp/video/data/walking_tours.py:76 prepare` runs ffmpeg once per video through `exp/lib/video_io.py:65 ffmpeg_frames`. The filter at video_io.py:56-62 is `fps=<fps>` (nearest input frame), then the largest centred square crop, then `scale=S:S:flags=area`. Each video goes to a frame dir with `frames.u8` (u8 (N,3,S,S), C order) and `index.json` (frames, shape, sha256, meta), written by `U8Writer` (video_io.py:149). `finalize` (walking_tours.py:137) writes a top-level index.json and renames the dir to `data_version` = sha256(index)[:12] (walking_tours.py:132). `manifest.json` (exp/video/data/walking_tours/manifest.json) is the whitelist: url, licenses, blur 'unverified' and byte size for 10 videos. prepare refuses any video that is not in it or whose size differs.\n\n(2) At run time, `U8Reader` (video_io.py:220) maps frames.u8 with `torch.from_file(shared=False)`. `StackedTourFrames` (exp/video/data/frames.py:179-259) joins the 9 non-held-out videos in name order into one loop of L frames. At call k, stream i ends at g=(floor(iL/n)+k*advance) mod L. Its stack is the frames g-j*stride, j=N-1..0, oldest first, u8 (B,N,3,S,S). `ready` is false when the stack would reach before the video's first frame, and those frames are clamped to frame 0 (frames.py:243-247). `reset` is true at k==0 or when the end is fewer than `advance` frames into a video (frames.py:232). The state is only {\"k\"}. Stacks are read straight from the memmap at each call; there is no ring and no cache beyond the OS page cache. exp/lib/ring.py (WindowRing) is used only by exp/video/dyn (M16), not by the VAE path.\n\nTrain/val split: train is the 9 videos other than `held_out` (Zurich in every preset). Evaluation uses only Zurich. `eval_windows` (walking_tours.py:240) cuts it into slots of (frames+steps-1)*stride+1 frames. It picks 3*n slots by randperm with TOURS_SEED=4242 (programs/vision.py:191), sorted into time order. The first third is calib, the second val, the third test (vae/measures.py:125-141 `held_out_stacks` returns the first stack of each val/test window; programs/vision.py:494-506 PackedMeasures). Posthoc decoders and moments fit on `iter_stream_windows` (measure/encoder_eval.py:189-206): 2048 windows spread evenly over the training loop, each of N+8 frames `stride` apart, skipping any window that crosses a video end.\n\nStreaming to the host: `ae_streams(conf)` (vae/program.py:90-111) builds the source. `_Online.advance` (vae/program.py:191-205) calls `streams.next()`, moves the u8 stacks to the device and draws the VAE noise from one device generator seeded seed+13. `VAEPC.sample` (vae/pc.py:416-431) packs x=vision.whole(x) and y=[(x+u)/256 flattened, eps]. `Host.show_all` (exp/lib/host.py:57-83) writes once per frame, then steps `floor((k+1)*frame/period)-floor(k*frame/period)` periods. It returns the first message whose \"time\" equals the write and raises if none arrives within the frame.\n\nData root: `tours_root` (programs/vision.py:197-212) is `$MUJOU_EXP_DATA/<data_version>`, defaulting to `<repo>/.fleet/data`. The fleet worker sets MUJOU_EXP_DATA=<fleet root>/data (exp/lib/fleet/worker.py:622).\n\nWhere the data lives (checked over ssh today): std-00, std-01, std-02, std-03 and mini-00 all hold both versions at `/data/geson/mujou-exp/.fleet/data/`, plus a copy.log.\n- `ad6e56b5995e`: fps 10, size 64, 6.0 GB, M15. Frames per video: Amsterdam 49126, Bangkok 105000, Chiang_Mai 40752, Istanbul 40800, Kuala_Lampur 43700, Singapore 58004, Stockholm 39895, Venice 65999, Wildlife 36074, Zurich 38996.\n- `3c3e6805fdaa`: fps 30, size 128, 72 GB, M17/M18.\n\nThe NAS copy is `/nas/geson/mujou-exp/data/{3c3e6805fdaa,ad6e56b5995e,wt128-30fps}`. The source mp4s and WTour.txt are in `/nas/datasets/walking_tours/`, mounted in the container at `/datasets/walking_tours` (compose.yaml, devcontainer WALKING_TOURS_DIR). `/nas/geson/mujou-exp-cache/` holds only egodex64; the design's `fleet provision-data` was never built, so copies were made by hand. The Mac has no copy.\n\nFor V0 (64x64, 0.1 s spacing) `ad6e56b5995e` with stride=1, advance=1 is exactly the requested data and is already on every host, so no new prep is needed. The 128 check uses `3c3e6805fdaa` with stride=3, advance=3, size=128.\n\nImagenette (for the probe) is on std-01 only, at `/data/geson/mujou-exp/.fleet/imagenette/u8/train.pt` (plus the extracted imagenette2-160 and the .tgz). It is 128 px, from exp/video/diag/imagenette.py:90 `prep` with SIDE=128 (:72), and has no tests.",
+  "files": [
+   {
+    "path": "exp/lib/video_io.py",
+    "lines": 269,
+    "role": "Decodes video with ffmpeg (fps, centred square crop, area shrink) and stores frames on disk as u8 (U8Writer/U8Reader: frames.u8 + index.json with sha256)",
+    "port": "port-as-is",
+    "why": "Already in exp/lib with no mujou dependency, tested in tests/lib/test_video_io.py (lossless lavfi videos as oracles). Reuse it unchanged."
+   },
+   {
+    "path": "exp/video/data/walking_tours.py",
+    "lines": 295,
+    "role": "Checks the manifest, preps one video into a frame dir, finalizes data_version; videos(), eval_clips(), eval_windows() for the held-out splits",
+    "port": "port-as-is",
+    "why": "Tested in tests/video/data/test_walking_tours.py (the numbered helper at :186 gives exact frame-identity oracles). V needs videos/eval_windows. Keep prepare/finalize so a new data version can be made reproducibly (64@30fps if ever needed). Move to exp/lib or exp/vision/data."
+   },
+   {
+    "path": "exp/video/data/walking_tours/manifest.json",
+    "lines": 27,
+    "role": "Whitelist of the 10 videos: url, licenses, blur 'unverified', byte size, codec, fps",
+    "port": "port-as-is",
+    "why": "prepare() refuses videos not in it; it is the provenance and license record. Its notes say frames shown outside runs must be face-blurred (deface)."
+   },
+   {
+    "path": "exp/video/data/frames.py",
+    "lines": 404,
+    "role": "Stream sources: TourFrames, StackedTourFrames (the single-stream stack source), IID/Shuffled/Pooled controls, BallFrames",
+    "port": "port-simplified",
+    "why": "V needs only StackStreams (protocol, :160) and StackedTourFrames (:179-259), tested in tests/video/data/test_frames.py:120-162. TourFrames is the frames=1 case (test :121). Drop BallFrames (it imports physics/schema BallsConf). Drop the M18 controls IID/Shuffled/Pooled unless an order control is planned."
+   },
+   {
+    "path": "exp/video/data/clips.py",
+    "lines": 229,
+    "role": "Ball clips and splits by SPLIT_SEEDS",
+    "port": "drop",
+    "why": "Balls only (M14-M16)."
+   },
+   {
+    "path": "exp/video/data/observe.py",
+    "lines": 129,
+    "role": "Ball observations and Standardizer",
+    "port": "drop",
+    "why": "Balls only."
+   },
+   {
+    "path": "exp/video/data/physics.py",
+    "lines": 310,
+    "role": "Ball physics and rendering",
+    "port": "drop",
+    "why": "Balls only."
+   },
+   {
+    "path": "exp/lib/ring.py",
+    "lines": 148,
+    "role": "WindowRing: ring of the last W frames for the M16 windowed dynamics",
+    "port": "reference-only",
+    "why": "Used only by exp/video/dyn (M16). The VAE path reads whole stacks from the memmap with no ring. Leave it in lib untouched."
+   },
+   {
+    "path": "exp/video/schema/data.py",
+    "lines": 106,
+    "role": "ToursConf (data_version, held_out, size, fps, advance, sampling, pool) and DataConf (streams, balls|tours)",
+    "port": "port-simplified",
+    "why": "Keep data_version, held_out, size, fps, advance and streams. Drop BallsConf/PhysicsConf, OBSERVATIONS, and sampling/pool unless controls are ported. Note that fps is never checked against the data (pitfalls)."
+   },
+   {
+    "path": "exp/video/programs/vision.py",
+    "lines": 0,
+    "role": "tours_root/DATA_ENV (:183-212), TOURS_SEED=4242 (:191), PackedMeasures split of eval_windows into calib/val/test (:494-506), stream construction (:740-773)",
+    "port": "port-simplified",
+    "why": "Port only tours_root + DATA_ENV + TOURS_SEED. _REPO = Path(__file__).resolve().parents[3] (:194) depends on file depth and must be recomputed. The rest of the file is M15/M17 JEPA and imports mujou.testing (:117-119)."
+   },
+   {
+    "path": "exp/video/vae/program.py",
+    "lines": 311,
+    "role": "ae_streams (:90-111) picks the stack source; _Online.advance/_show (:191-229) moves stacks and noise to the device and writes them via Host",
+    "port": "port-simplified",
+    "why": "Keep the 'stream' branch and the noise generator (seed+NOISE_SEED=13). Replace mujou.testing.run with mujou.run_manually (:41-43, :160)."
+   },
+   {
+    "path": "exp/video/vae/measures.py",
+    "lines": 260,
+    "role": "held_out_stacks (:125-141): first stack of each val/test window; training_moments (:96-122): mean stack and sigma0^2 over the training windows",
+    "port": "port-as-is",
+    "why": "These define the held-out evaluation sets and the normalizer of the reconstruction error. Tested in tests/video/vae/test_measures.py."
+   },
+   {
+    "path": "exp/video/measure/encoder_eval.py",
+    "lines": 0,
+    "role": "stream_windows/iter_stream_windows (:175-206): 2048 training windows of N+8 frames over the 9-video loop for posthoc fits; WINDOWS, STREAM_STEPS=2048, 8 (:169)",
+    "port": "port-as-is",
+    "why": "The posthoc recon_blur and dyn_1/copy_1 fit on these windows. Port with posthoc."
+   },
+   {
+    "path": "exp/video/measure/posthoc.py",
+    "lines": 0,
+    "role": "_TourChunks (:223-260): chunks of the M15 TourFrames streams",
+    "port": "reference-only",
+    "why": "M15 unpacked layout. The packed/VAE path uses iter_stream_windows instead."
+   },
+   {
+    "path": "exp/lib/host.py",
+    "lines": 91,
+    "role": "Host.show/show_all: one write per frame, steps floor-gridded periods, returns the first message whose time equals the write",
+    "port": "port-as-is",
+    "why": "Already in lib (the working tree switched the import to `from mujou import ManualRun`). The module docstring (:3-5) still says mujou.testing.run and 'in the order of the tree' and must be updated for Jacobi."
+   },
+   {
+    "path": "exp/video/diag/imagenette.py",
+    "lines": 394,
+    "role": "prep (:90-108) of Imagenette to {train,val}.pt u8 at SIDE=128 (:72); probe code",
+    "port": "port-simplified",
+    "why": "V wants the Imagenette linear probe at 64 px. Port prep with a side argument (the CLI has no --side) or downsample the existing 128 px u8 files. No tests exist."
+   },
+   {
+    "path": "tests/video/data/test_walking_tours.py",
+    "lines": 272,
+    "role": "Tests prepare, finalize, eval_clips and eval_windows; numbered() helper (:186-195) makes finalized data whose pixels encode (video, frame)",
+    "port": "port-as-is",
+    "why": "These are the oracles for the ported data code. test_frames imports numbered()."
+   },
+   {
+    "path": "tests/video/data/test_frames.py",
+    "lines": 270,
+    "role": "Tests the stream sources against loop_frame oracles",
+    "port": "port-simplified",
+    "why": "Keep TestStackedTourFrames (:120-162), and TestTourFrames only if TourFrames is kept. Drop TestBallFrames."
+   },
+   {
+    "path": "tests/lib/test_video_io.py",
+    "lines": 172,
+    "role": "Tests ffmpeg_frames and U8 against lossless lavfi videos; make_video helper (:20)",
+    "port": "port-as-is",
+    "why": "Already exists for the lib code."
+   },
+   {
+    "path": "exp/lib/fleet/worker.py",
+    "lines": 0,
+    "role": ":622 env.setdefault('MUJOU_EXP_DATA', <fleet root>/data)",
+    "port": "reference-only",
+    "why": "This is how fleet jobs find /data/geson/mujou-exp/.fleet/data. Nothing to port."
+   },
+   {
+    "path": "compose.yaml",
+    "lines": 19,
+    "role": "Mounts WALKING_TOURS_DIR (host /nas/datasets/walking_tours on the std hosts) at /datasets/walking_tours, read-write",
+    "port": "reference-only",
+    "why": "Source videos for prepare (default --src /datasets/walking_tours, walking_tours.py:279)."
+   }
+  ],
+  "apis": [
+   "def ffmpeg_frames(path: Path, *, fps: float, width: int, height: int, start: float = 0.0, duration: float | None = None, threads: int = 4) -> Generator[Tensor]  # exp/lib/video_io.py:65, yields u8 (3,H,W) RGB",
+   "def ffmpeg_filter(*, fps: float, width: int, height: int) -> str  # video_io.py:56: f\"fps={fps},{crop},scale={width}:{height}:flags=area\"",
+   "class U8Writer:\n    def __init__(self, directory: Path, shape: tuple[int, int, int], meta: Mapping[str, Any] | None = None) -> None  # video_io.py:158",
+   "class U8Reader:\n    def __init__(self, directory: Path) -> None  # video_io.py:231; __len__, __getitem__(k: int | slice | Tensor), verify(), .index, .shape",
+   "def prepare(video: str, src: Path, out: Path, *, fps: float = 10.0, size: int = 64, threads: int = 4, manifest: Path = MANIFEST) -> None  # walking_tours.py:76",
+   "def finalize(root: Path, *, expected: Collection[str] | None = None, manifest: Path = MANIFEST) -> Path  # walking_tours.py:137",
+   "def data_version(index: Path) -> str  # walking_tours.py:132",
+   "def videos(root: Path) -> list[str]  # walking_tours.py:205",
+   "def eval_clips(root: Path, *, held_out: str, clips: int, length: int, seed: int) -> Tensor  # walking_tours.py:210, u8 (clips, length, 3, S, S)",
+   "def eval_windows(root: Path, *, held_out: str, clips: int, frames: int, stride: int, steps: int, seed: int) -> Tensor  # walking_tours.py:240, u8 (clips, frames + steps, 3, S, S)",
+   "class StackStreams(Protocol):\n    def next(self) -> tuple[Tensor, Tensor, Tensor]  # (stacks u8 (B,N,C,H,W), ready (B,), reset (B,))  frames.py:160",
+   "class StackedTourFrames(StackStreams):\n    def __init__(self, root: Path, *, n: int, held_out: str, frames: int, stride: int, advance: int) -> None  # frames.py:199",
+   "def tours_root(t: ToursConf) -> Path  # exp/video/programs/vision.py:197; DATA_ENV = \"MUJOU_EXP_DATA\" (:183); TOURS_SEED = 4242 (:191)",
+   "def held_out_stacks(conf: RunConf, root: Path) -> dict[str, Tensor]  # exp/video/vae/measures.py:125",
+   "def training_moments(conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS) -> StackMoments  # vae/measures.py:96",
+   "def iter_stream_windows(conf: RunConf, root: Path, *, windows: int = WINDOWS, steps: int = STREAM_STEPS) -> Iterator[Tensor]  # measure/encoder_eval.py:189; WINDOWS, STREAM_STEPS = 2048, 8",
+   "def ae_streams(conf: RunConf) -> StackStreams  # exp/video/vae/program.py:90",
+   "def sample(self, x: Tensor, u: Tensor, eps: Tensor, mask: Tensor, reset: Tensor) -> pc.msg.Sample  # VAEPC, exp/video/vae/pc.py:416",
+   "class Host(Stateful):\n    def __init__(self, run: ManualRun, *, frame: float, period: float) -> None  # exp/lib/host.py:31\n    def show_all(self, writes: Mapping[Port[Any, Any], Any], watches: Sequence[Port[Any, Any] | MultiPort[Any, Any]]) -> tuple[list[Any], Timestamp]  # :57",
+   "def run_manually[P: Port[Any, Any]](root: Node | Network, *, timer: VirtualTimer | None = None, inputs: Mapping[P, Message] | None = None, state: Mapping[str, Any] | None = None, workers: int | None = None) -> ManualRun  # mujou/src/mujou/execution.py:694",
+   "def step(self, dt: float, *nodes: Node) -> None  # ManualRun, mujou/src/mujou/execution.py:563 (no nodes = Jacobi)"
+  ],
+  "mujou_coupling": "The data code proper has no mujou dependency: video_io.py, walking_tours.py, frames.py (StackedTourFrames), held_out_stacks, iter_stream_windows and eval_windows depend only on torch, ffmpeg and the stdlib. The only mujou contacts on this path are these:\n\n(1) exp/lib/ring.py:7-10 imports `mujou.types.Device` and `mujou.Stateful`. It is unaffected by the update, and the VAE path does not use it.\n\n(2) exp/lib/host.py. The working tree already changed :12 to `from mujou import ManualRun` (the only diff besides the submodule pointer). Its docstring :3-5 still says \"a mujou.testing.run ... updates every node once, in the order of the tree\", which is stale: `self.run.step(self._period)` at :74 is now Jacobi. Consequences:\n- A write reaches the watched output only after one hop per step through the node chain. Before, a tree-order step carried it to the output within one step.\n- show_all raises RuntimeError(\"the frame did not reach the watched port\") when the steps per frame (frame/period) are fewer than the forward depth. Check: with frame=1/30 and period 2 ms that is 16-17 steps, and with frame 0.1 s it is 50 steps. The node count is fixed, so check that count against this bound once.\n- The returned \"first message of this write\" is now the output computed `depth` steps after the write. It is still prequential (before learning from this frame) only if learn_interval and the credit return (now one hop per step, because g_in uses the delta relaxed in the same update) leave no weight update inside that window. M18's learn_interval=0.029 s was derived under tree order with two steps per hop (exp/video/conf/experiment/m18/vae_t128_pc.yaml:9-14) and must be re-derived.\n\n(3) exp/video/vae/program.py:41-43,160 and exp/video/programs/vision.py:117-119 use `import mujou.testing`, `from mujou.testing import ManualRun` and `mujou.testing.run(self.net, state=state)`. In the port these become `mujou.run_manually(self.net, state=state)` (optionally `workers=`) and `from mujou import ManualRun`.\n\n(4) Stream state and noise are kept outside mujou in the resume checkpoint: streams.state_dict() is {\"k\"}, plus the noise generator state (vae/program.py:265-273). They are restored next to `ManualRun.state_dict()`; unchanged.\n\nNo `pc.*` is used in the data path except `pc.msg.Sample` (vae/program.py:214 and VAEPC.sample, vae/pc.py:426), which is unchanged.",
+  "pitfalls": [
+   "Choose the data version deliberately. V0 wants 64x64 with 0.1 s spacing, which is `ad6e56b5995e` (fps 10, size 64) with vision.stride=1 and data.tours.advance=1. It is already on std-00..03, mini-00 and the NAS (/nas/geson/mujou-exp/data/ad6e56b5995e). M17/M18 used `3c3e6805fdaa` (128 px, 30 fps) with stride=3, advance=3. Numbers are not bit-comparable across versions: different frames, and ffmpeg fps=10 nearest-frame resampling versus every 3rd frame. For 29.97 fps sources (Bangkok, Venice, Wildlife) stride 3 gives 0.1001 s.",
+   "ToursConf.fps is never checked against the data's index.json, and tours.size is checked only in the M15/M17 PackedMeasures (programs/vision.py:294, :503), not on the VAE path. A config whose fps/stride does not match the data version silently changes the spacing. The port should read index.json fps/size in tours_root and refuse a mismatch.",
+   "M18 used time.frame=1/30 s of virtual time per stack that moved 0.1 s of video (advance 3), so virtual time ran 3x faster than video. With ad6e and advance 1, decide whether time.frame is 0.1 s (50 steps of 2 ms per stack, about 3x the compute per stack) or stays 1/30. This changes the steps per frame in Host and the learn_interval reasoning.",
+   "Single-stream coverage: with B=1 the stream starts at Amsterdam frame 0, and the loop is name-ordered with Wildlife (not a walking tour) included among the 9 training videos. On ad6e an 1800 s run at time.frame=0.1 sees 18000 stacks, about the first 30 min of Amsterdam (49126 frames). Posthoc fits and training_moments use all 9 videos (iter_stream_windows), so the training stream and the posthoc fit data differ (cf. results/m17.md:567).",
+   "StackedTourFrames.next returns stacks whose `ready` is False near a video start, with their frames clamped to the first frame (frames.py:243-247). The mask must reach the loss (pc.msg.Sample mask) or those stacks train on repeated frames. `reset` is true only within `advance` frames of a video start.",
+   "Splits are positional: eval_windows draws 3*n slots of Zurich by TOURS_SEED=4242 and sorts them in time, then calib/val/test are consecutive thirds. With n=clips*windows=256, Zurich at ad6e (38996 frames) holds 1499 slots of 26 frames (N=16, steps=10), so 768 fit. Larger measure.clips or N can exceed it and eval_clips raises. Adjacent calib/val slots can share a scene (results/m17.md:68).",
+   "tours_root's default `_REPO = Path(__file__).resolve().parents[3]` (programs/vision.py:194) depends on file depth, so recompute it when moving to exp/vision or exp/lib. The fleet sets MUJOU_EXP_DATA itself (worker.py:622), but ad-hoc `just fleet x` diagnostics must pass MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data (as in results/m18.md).",
+   "Do not read the data from the NAS during runs. mini-00 stalled on NAS I/O (user memory std-machines.md), which is why every host has a local copy. The planned `fleet provision-data` was never built: copies were made by hand (copy.log in each .fleet/data). A new data version must be copied to all 5 hosts manually.",
+   "Blur is 'unverified' for every video (manifest notes). Reconstruction images and input rows shown in reports must be face-blurred first, as M14-M18 did with `deface --thresh 0.15 --replacewith blur`.",
+   "Imagenette u8 exists only on std-01 (/data/geson/mujou-exp/.fleet/imagenette/u8/{train,val}.pt) at 128 px (SIDE=128, imagenette.py:72; the CLI has no --side) and has no tests. A 64 px probe needs a re-prep with side=64 (ffmpeg from 160 px) or a documented 2x2 area pool, and a copy to the other hosts.",
+   "The VAE target is (x+u)/256 (LEVELS=256, vae/loss.py:19), not x/255 as in TourFrames (frames.py:149). Keep one convention in the port; held_out_stacks and stack_mse use x/256.",
+   "TourFrames/StackedTourFrames call U8Reader per video at construction. The 3c3e version is 72 GB of memmap (fine with mmap), but stacks are gathered with a Python loop over streams per call (frames.py:245-250). That is cheap at B=1, but for B=32 at 128 px it adds CPU time to every frame."
+  ]
+ },
+ "mujou": {
+  "summary": "The mujou submodule is at c0e7ab7, which is origin/main and includes PRs #118, #121 and #122 since 7a8b72e. Its git state is \"HEAD detached at origin/main\" and clean. Three API changes matter here (mujou/CHANGELOG.md:9-27).\n\n(1) Simulation runs. `mujou.run_manually(root, *, timer: VirtualTimer|None=None, inputs=None, state=None, workers=None) -> ManualRun` (src/mujou/execution.py:694-701) is exported at the top level (src/mujou/__init__.py:6). `mujou.testing` no longer exists. `ManualRun(Run)` (execution.py:531) adds two things: a `timer -> VirtualTimer` property (:558) and `step(self, dt: float, *nodes: Node) -> None` (:563). `step` first advances the timer by dt (:601). Without nodes it updates every node once, in parallel on the workers, and each node reads the values from the start of the step (Jacobi). With nodes it updates them sequentially in the given order (Gauss-Seidel); a node given twice updates once. The period is ignored, and dt is the time since the node's own last update. `step` raises ValueError for a node outside the run or for dt < 0 or non-finite. It raises RuntimeError after a normal stop, while the timer is paused, or when called from a node's hook (:563-607).\n\nManualRun inherits `write(values) -> Timestamp` (:167), `read(port)` (:201), `read_with_time` (:217) and `state_dict(*, timeout)` (:325) from Run; call all of them between steps. `wait_for`, `subscribe` and `run.timer.sleep` never return on the stepping thread, and neither does `pc.show` (src/mujou/pc/chain.py:173). docs/en/topics/simulation.md covers both kinds of step, determinism and the \"keep torch's threads few\" advice. Under Jacobi a write takes one step per hop to reach the output.\n\n(2) pc.Layer now relaxes first and then runs one vjp from the relaxed delta. The update order is tick → reset → relax_ → vjp with delta' = where(mask, r'+lam', 0) → send g_in → send mu → optimizer.step_ (src/mujou/pc/layer.py:244-258, 268-282). g_theta also comes from delta'. Under step(dt), credit goes back one hop per step: with hops = L+1, layer i is exact at step 2·hops − i (mujou/memory/project_pc_g_in_after_relax.md). The fixed point is unchanged.\n\n(3) `pc.Layer(..., cuda_graph: bool = False)` (layer.py:204-217, 236, 296-351) records and replays the vjp in a CUDA graph. It is bit-identical to the plain path. It requires a node on CUDA, the same kernels on every input, no host sync, and parameters updated in place.\n\n`pc.TimeConstants(*, h, lam, r)` (src/mujou/pc/time_constants.py:7-83) has `period = h/(1+h/r)` and `max_dt = min(period, 2*lam)`. `pc.relax.Euler` is the default relaxer (relax.py:115-152). `functional.relax_` moves r, then lam (functional.py:173-218).\n\n`pc.optim` (src/mujou/pc/optim.py) holds frozen keyword-only settings that subclass the ABC `Optimizer` with `bind(params) -> BoundOptimizer` (:63-100). A `BoundOptimizer(Stateful)` implements `step_(grads, elapsed)` (:33-60). `SGD(tau)` does `p.sub_(g, alpha=elapsed/tau)` and has no state (:108-159). `AdamW(tau, tau_m, tau_v, eps=1e-8, weight_decay=1e-2)` (:162-308) treats every constant as a time constant in seconds, not a per-step beta. It uses a = -expm1(-elapsed/tau_x) and the masses c ← c + a(1−c) for bias correction, and returns early on elapsed == 0. Its order is decay, m.lerp_, v.lerp_, then addcdiv with eta = elapsed/tau. Its state is {m, v, c_m, c_v}.\n\nThe nodes pass `g_theta / B` and `tick.elapsed`, the sum of capped dt since the last learn (layer.py:258, output.py:165-168, clock.py:139-153).\n\nOn the experiment side, exp/lib/host.py and four tests in tests/lib still need changes. Running the renamed tests/lib suite against the new mujou gave 107 passed and 2 failed. Both failures come from Jacobi latency, and one of them from a write at virtual time 0 colliding with the zero Activity's time 0 (details under pitfalls).",
+  "files": [
+   {
+    "path": "mujou/src/mujou/execution.py",
+    "lines": 931,
+    "role": "run_manually / ManualRun / Run host API (write, read, read_with_time, state_dict, step)",
+    "port": "reference-only",
+    "why": "The mujou API the vision loop is built on. Key lines: 531-614 (ManualRun.step) and 694-768 (run_manually)."
+   },
+   {
+    "path": "mujou/src/mujou/pc/optim.py",
+    "lines": 308,
+    "role": "Optimizer/BoundOptimizer ABCs, SGD(tau), AdamW(tau,tau_m,tau_v,eps,weight_decay) in time",
+    "port": "reference-only",
+    "why": "New Momentum/RMSProp go here, following the setting + bind pattern and the AdamW mass correction (lines 162-308)."
+   },
+   {
+    "path": "mujou/src/mujou/pc/layer.py",
+    "lines": 351,
+    "role": "pc.Layer: relax then vjp from relaxed delta, g_in sent same update; cuda_graph",
+    "port": "reference-only",
+    "why": "Defines the per-update order (lines 244-258) and the CUDA graph contract (lines 111-121, 296-351) that the vision nodes must respect."
+   },
+   {
+    "path": "mujou/src/mujou/pc/clock.py",
+    "lines": 189,
+    "role": "LearnClock / Tick (dt capped, elapsed, learn)",
+    "port": "reference-only",
+    "why": "elapsed is the dt the optimizer receives, and new and learn depend on Activity.time (lines 139-171)."
+   },
+   {
+    "path": "mujou/src/mujou/pc/time_constants.py",
+    "lines": 83,
+    "role": "TimeConstants(h, lam, r), period, max_dt",
+    "port": "reference-only",
+    "why": "period and max_dt set the steps per frame and the credit latency."
+   },
+   {
+    "path": "mujou/tests/mujou/pc/test_optim.py",
+    "lines": 400,
+    "role": "Oracle tests of SGD/AdamW (hand formulas, split invariance, mass, state, torch subprocess + GIL)",
+    "port": "reference-only",
+    "why": "The template for the tests of the new optimizers."
+   },
+   {
+    "path": "mujou/tests/mujou/test_init.py",
+    "role": "asserts sorted(mujou.pc.optim.__all__)",
+    "port": "reference-only",
+    "why": "Line 92 must list any new optimizer names."
+   },
+   {
+    "path": "mujou/docs/en/topics/simulation.md",
+    "lines": 171,
+    "role": "Simulation topic (Jacobi vs ordered steps, determinism, host call rules)",
+    "port": "reference-only",
+    "why": "Gives the rules the vision host loop has to follow."
+   },
+   {
+    "path": "exp/lib/host.py",
+    "lines": 91,
+    "role": "Host: write a frame, step through it by period, return the first message stamped with the write",
+    "port": "port-simplified",
+    "why": "The import is already switched to `from mujou import ManualRun`, but ruff flags I001 (run `just format`). The module docstring at lines 3-5 still says 'mujou.testing.run' and 'in the order of the tree'. The semantics change under Jacobi (output latency of hops steps; a write at t=0 matches the initial zero Activity)."
+   },
+   {
+    "path": "exp/lib/optim.py",
+    "lines": 574,
+    "role": "DirectionOptimizer/Grafted/AdamDirection/RMSPropDirection/Warmup/StepAdamW",
+    "port": "port-simplified",
+    "why": "RMSPropDirection (lines 296-356) already implements the time-constant RMSProp math that would move into mujou. Once mujou has pc.optim.RMSProp, vision needs none of this module unless it uses Grafted or fan_in."
+   },
+   {
+    "path": "exp/lib/sigreg.py",
+    "lines": 216,
+    "role": "SIGReg node keyed on Activity time change",
+    "port": "reference-only",
+    "why": "Not needed by the VAE plan. If kept, its test needs a Jacobi fix."
+   },
+   {
+    "path": "exp/lib/cuda_graph.py",
+    "lines": 100,
+    "role": "Lib CUDA-graph vjp for custom nodes",
+    "port": "reference-only",
+    "why": "pc.Layer(cuda_graph=True) covers Layer nodes. Keep it only for custom vision nodes that need it."
+   },
+   {
+    "path": "tests/lib/test_host.py",
+    "lines": 87,
+    "role": "Host tests",
+    "port": "port-simplified",
+    "why": "Needs the rename (6 uses). test_it_returns_the_prediction_of_the_frame_written fails under Jacobi because of the t=0 collision."
+   },
+   {
+    "path": "tests/lib/test_ckpt.py",
+    "lines": 193,
+    "role": "save/resume bit-equality through Host",
+    "port": "port-as-is",
+    "why": "Needs only the rename (4 uses). It passes under Jacobi."
+   },
+   {
+    "path": "tests/lib/test_optim.py",
+    "lines": 548,
+    "role": "lib optimizer tests + a Chain that learns",
+    "port": "port-as-is",
+    "why": "Needs only the rename (2 uses). The explicit order step(tau.period, net.input, *net.layers, net.output) is still valid (Gauss-Seidel), and it passes."
+   },
+   {
+    "path": "tests/lib/test_sigreg.py",
+    "lines": 348,
+    "role": "SIGReg node tests",
+    "port": "port-simplified",
+    "why": "Needs the rename (5 uses). test_the_directions_are_drawn_anew_with_each_frame_only fails (one-step latency under Jacobi)."
+   },
+   {
+    "path": "tests/test_gil.py",
+    "role": "GIL subprocess test; imports exp.video.compose and mujou.testing",
+    "port": "port-simplified",
+    "why": "Line 33 has `import mujou.testing` and line 49 calls `mujou.testing.run`. It also depends on the frozen exp/video."
+   }
+  ],
+  "apis": [
+   "def run_manually[P: Port[Any, Any]](root: Node | Network, *, timer: VirtualTimer | None = None, inputs: Mapping[P, Message] | None = None, state: Mapping[str, Any] | None = None, workers: int | None = None) -> ManualRun  # mujou/src/mujou/execution.py:694",
+   "class ManualRun(Run)  # execution.py:531; property timer -> VirtualTimer (:558)",
+   "def step(self, dt: float, *nodes: Node) -> None  # execution.py:563; no nodes = Jacobi in parallel, nodes = sequential in the given order",
+   "def write[P: Port[Any, Any]](self, values: Mapping[P, Message]) -> Timestamp  # execution.py:167",
+   "def read[S](self, port: Port[S, Any] | MultiPort[S, Any]) -> S  # execution.py:201",
+   "def read_with_time[S](self, port: Port[S, Any] | MultiPort[S, Any]) -> tuple[S, Timestamp | None]  # execution.py:217",
+   "def state_dict(self, *, timeout: float = math.inf) -> dict[str, Any]  # execution.py:325; {'timer': {...}, 'nodes': {path: {'state', 'last_update_ns', 'ports'}}}",
+   "VirtualTimer(start: Timestamp = ..., ...)  # mujou/src/mujou/_native.pyi:527-546; advance(seconds)",
+   "Layer(module: nn.Module, *, act_spec: DictSpec[Activity], tau: TimeConstants, optimizer: Optimizer, relaxer: Relaxer = Euler(), learn_interval: float | None, period: float | None = None, max_dt: float | None = None, device: Device = 'cpu', cuda_graph: bool = False)  # pc/layer.py:204",
+   "Input(*, x: TensorSpec, y: TensorSpec, period: float, batch: Size = (), device: Device = 'cpu')  # pc/input.py:55",
+   "Output(module: nn.Module, *, act_spec: DictSpec[Activity], loss: Callable[[Tensor, Tensor], Tensor], tau: TimeConstants, optimizer: Optimizer, learn_interval: float | None, period: float | None = None, max_dt: float | None = None, device: Device = 'cpu')  # pc/output.py:102",
+   "Chain(*modules: nn.Module, x: TensorSpec, y: TensorSpec, loss, tau: TimeConstants, optimizer: Optimizer, relaxer: Relaxer = Euler(), learn_interval: float | None, batch: Size = (), max_dt: float | None = None, period: float | None = None, device: Device = 'cpu')  # pc/chain.py:101 (no cuda_graph pass-through)",
+   "@dataclass(frozen=True, kw_only=True) class TimeConstants: h: float; lam: float; r: float; period = h / (1 + h / r); max_dt = min(period, 2 * lam)  # pc/time_constants.py:7",
+   "def relax_(r, lam, g, dt: float, tau: TimeConstants, relaxer: BoundRelaxer | None = None) -> None  # pc/functional.py:173",
+   "class Optimizer(ABC): def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer  # pc/optim.py:63",
+   "class BoundOptimizer(Stateful): def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None  # pc/optim.py:33",
+   "@dataclass(frozen=True, kw_only=True) class SGD(Optimizer): tau: float  # p.sub_(g, alpha=elapsed / tau); state {}  # pc/optim.py:108",
+   "@dataclass(frozen=True, kw_only=True) class AdamW(Optimizer): tau: float; tau_m: float; tau_v: float; eps: float = 1e-8; weight_decay: float = 1e-2  # pc/optim.py:162; a_x = -expm1(-elapsed/tau_x); c_x += a_x*(1-c_x); p *= 1-eta*w; m.lerp_(g,a_m); v.lerp_(g*g,a_v); p.addcdiv_(m, sqrt(v)/sqrt(c_v)+eps, value=-eta/c_m); eta = elapsed/tau; elapsed==0 returns",
+   "class Tick(NamedTuple): dt: float; new: bool; learn: bool; elapsed: float  # pc/clock.py:18",
+   "def show(run: Run, chain: Shown, sample: Sample, *, seconds: float) -> Prediction  # pc/chain.py:157; never returns under ManualRun"
+  ],
+  "mujou_coupling": "Every use of the removed or changed API in exp/lib and tests/lib, with the change each needs:\n\n1. exp/lib/host.py:12. The working tree already changed the import to `from mujou import ManualRun`, but ruff reports I001: it is now split from `from mujou import MultiPort, Port, Stateful` at line 15. Run `just format`, or merge it into one `from mujou import ManualRun, MultiPort, Port, Stateful`. The docstring at lines 3-5 must change from \"The run is a ``mujou.testing.run`` ... updates every node once, in the order of the tree\" to: the run is a `mujou.run_manually`, and each step updates every node once in parallel from the values at the start of the step (Jacobi). `self.run.step(self._period)` (line 74) stays as it is, since step(dt) without nodes is now Jacobi.\n\nBehaviour change: the first message of the watched output stamped with the write now arrives after `hops` steps, not in the step of the write. `show_all` raises RuntimeError when `hops >= steps per frame` (frame/period).\n\nA write at virtual time 0 gets Timestamp 0, which equals the `time` of the initial zero Activity (pc/msg.py:36, input.py:82). So on the first frame the Output's first Prediction, made from zeros, already matches `msg['time'] == written`. Fix options: (a) step once before the first write; (b) run on `mujou.run_manually(net, timer=VirtualTimer(start=Timestamp(ns=1)))` or another non-zero start; (c) have Host also skip a message whose `mask` is all False. Option (a) or (b) is preferred. The same collision makes LearnClock treat the first real write as not new (`tick.new` fired on the zero activity), so the `reset` of the first real sample is skipped. That is harmless at the start, when r = lam = 0.\n\n2. tests/lib/test_host.py:4 has `import mujou.testing`; delete it (`import mujou` is already at line 8). Lines 36, 45, 55, 68 and 80 change `mujou.testing.run(` to `mujou.run_manually(`. After the rename, test_it_returns_the_prediction_of_the_frame_written (lines 42-50) fails: y_hat = module(0) instead of module(x), because of the t=0 collision. Fix with a priming `run.step(TAU.period)` before Host, or a non-zero VirtualTimer start, or a Host-side fix.\n\n3. tests/lib/test_ckpt.py:2 has `import mujou.testing`. Replace it with `import mujou`, which the file does not import yet. Lines 165, 169 and 183 change to `mujou.run_manually(...)`, keeping `state=tree[\"mujou\"]` at 183. No other change: the bit-equality of the resumed run passes under Jacobi.\n\n4. tests/lib/test_optim.py:4 has `import mujou.testing`; replace it with `import mujou`. Line 174 becomes `mujou.run_manually(net, inputs={net.prev: sample})`. Line 176, `run.step(tau.period, net.input, *net.layers, net.output)`, is still valid as an ordered Gauss-Seidel step; it may also become `run.step(tau.period)`. It passes either way.\n\n5. tests/lib/test_sigreg.py:4 has `import mujou.testing`; delete it (`import mujou` is at line 8). Lines 165, 186, 204 and 323 become `mujou.run_manually(net)`. test_the_directions_are_drawn_anew_with_each_frame_only (lines 184-196) fails at line 194 because the SIGReg node sees the second write one step later. Fix: add one more `run.step(TAU.period)` after the second write before the assert, or use `run.step(TAU.period, net.z_in, net.sigreg)` throughout. The count and buffer tests pass, because the first write at t=0 coincides with the initial time 0.\n\n6. tests/test_gil.py:33 and :49 have `import mujou.testing` and `mujou.testing.run(net, inputs=...)`, which become `mujou.run_manually`. The file also imports exp.video.compose (frozen).\n\nOutside the lib, 126 `mujou.testing` occurrences remain across exp/video/** and tests/video/**. Examples: tests/video/jepa/test_nodes.py has 22, tests/video/vae/test_pc.py 10, exp/video/vae/program.py:45,47,164. `just run` (and so every commit) fails until these are renamed or the frozen tests are excluded. exp/video/vae/pc.py:37-43 documents the old timing (\"forward reaches out in the step of the write, k-th node from output has BP's credit after step 2k\", learn_interval 29 ms). Under Jacobi with g_in after relax, the forward reaches node j at step j, and layer i is exact at step 2·hops − i. So learn_interval and the posthoc timing must be re-derived as > (2·hops − 1)·period.\n\nNo lib file uses pc.Layer(cuda_graph=...) directly. exp/lib/cuda_graph.py is a separate implementation for custom nodes.\n\nThe submodule pointer change (7a8b72e → c0e7ab7, origin/main) can be committed as `chore(mujou): ...` because it points to a pushed commit.",
+  "pitfalls": [
+   "Under Jacobi, a write at VirtualTimer time 0 is stamped Timestamp(ns=0), the same as the initial zero Activity (pc/msg.py:36). Host.show takes the zero-input prediction as the frame's (verified: tests/lib/test_host.py::test_it_returns_the_prediction_of_the_frame_written fails), and the first real sample is not 'new' to the LearnClock, so its reset flag is skipped. Step once before the first write, or start the VirtualTimer at a non-zero time.",
+   "Jacobi latency: node j after the Input sees a write at step j, and with g_in after relax, layer i has its exact credit at step 2*hops - i (hops = L + 1). With a fixed node count N and frames of frame/period steps (0.1 s / period), choose N so that 2*hops*period < learn_interval < the frame length. Otherwise Host.show_all raises 'the frame did not reach the watched port', or the nodes learn from an unrelaxed delta. The old timing in exp/video/vae/pc.py:37-43 (forward in the step of the write, credit after 2k) no longer holds.",
+   "ManualRun: never call wait_for, subscribe, run.timer.sleep or pc.show on the stepping thread (they never return; chain.py:173). Call write, read and state_dict only between steps, and draw random numbers only from self.generator, or results stop being bit-reproducible (docs/en/topics/simulation.md).",
+   "step(dt) runs the nodes in parallel on the workers. Set torch's intra-op threads low (simulation.md 'Keep torch's threads few'). With several CUDA nodes on one GPU, each runs on its own thread and stream.",
+   "pc.Chain does not pass cuda_graph through (chain.py:101-146). To use pc.Layer(cuda_graph=True), build the nodes by hand. The module must have no host sync and no data-dependent branches, and its parameters must change in place. An optimizer that replaces parameter tensors (p = p - ...) instead of updating them in place silently breaks a recorded graph.",
+   "Under cuda_graph, the g_theta that pc.Layer passes to optimizer.step_ are the graph's own output buffers, which the next replay overwrites (layer.py:296-302). A new optimizer must copy values into its own state (lerp_, copy_) and never keep a reference to a grad across steps.",
+   "The plan's momentum formula theta <- theta - eta*dt*v does not match mujou's convention, where pc.optim parameterizes the rate as a time constant: SGD is p -= (elapsed/tau)*g. A mujou Momentum should be `tau` (of theta) plus `tau_m` (of momentum), giving p -= (elapsed/tau)*m_hat. Writing it with an lr instead of a tau would be inconsistent with SGD and AdamW.",
+   "Bias correction: an EMA from zero without correction makes the first steps shrink by c = 1 - exp(-t/tau_m). To keep the plan's claim that a constant g gives exactly SGD, use AdamW's mass c_m (m_hat = m/c_m) and return early on elapsed == 0 (c = 0 gives 0/0). With the mass, a constant g gives m_hat == g from the first step, and tau_m -> 0 gives SGD.",
+   "No torch oracle matches the time-constant momentum exactly. torch.optim.SGD(momentum, dampening) sets buf = g on the first step and has no bias correction. Use a hand-written discrete formula plus closed forms. RMSProp with the mass has an exact torch oracle, torch.optim.AdamW(betas=(0.0, exp(-dt/tau_v)), eps, weight_decay, foreach=False), but not torch.optim.RMSprop, which has no bias correction.",
+   "Only the moments and masses are exact in time (two steps of dt equal one of 2*dt). Theta takes explicit Euler steps with the newly moved moment, as AdamW does, so split invariance must not be asserted on theta (cf. test_optim.py:138-154).",
+   "`just stub` regenerates only _native.pyi from Rust. A Python-only optimizer needs no stub, but mujou/tests/mujou/test_init.py:92 asserts the exact sorted pc.optim.__all__ and must be updated.",
+   "Never import torch.optim in src/mujou (it re-enables the GIL on 3.14t; memory/project_pc_optimizers.md). Torch comparisons go only in the subprocess test, which also checks that binding and stepping the new optimizers keep the GIL disabled (test_optim.py:316-399).",
+   "Committing: `just run` fails until the 126 `mujou.testing` uses in exp/video and tests/video, plus tests/test_gil.py, are renamed or the frozen tests are excluded. The mujou pointer may be committed now (c0e7ab7 is on origin/main), but an unpushed mujou feature branch for the optimizers must not be pointed to in a commit (CLAUDE.md).",
+   "exp/lib/sigreg.py treats a change of Activity.time as a new frame. Under Jacobi it sees a write one step later (tests/lib/test_sigreg.py::test_the_directions_are_drawn_anew_with_each_frame_only fails at line 194)."
+  ]
+ },
+ "vae-pc": {
+  "summary": "The M18 VAE is a ViT encoder, a reparameterized latent, a transformer decoder and a Gaussian output. It learns only through local energies, PC-ALM in a single chain (exp/video/vae/pc.py:1-46): inp (pc.Input) -> enc1..encE (pc.Layer over vit.Segmented(Stage)) -> latent (custom Node `Latent`, pc.py:118) -> dec1..decK (pc.Layer over modules.DecoderPart) -> out (custom Node `GaussOut`, pc.py:223). The network is `VAEPC` (pc.py:316-431). One `pc.TimeConstants(h=t.h, lam=t.lam, r=t.r)` serves every node (pc.py:345). The defaults in exp/video/schema/run.py:28-32 are h=4e-3, lam=2e-3, r=4e-3, period 2 ms and frame 1/30 s. Every pc.Layer gets `learn_interval=conf.time.learn_interval` and `cuda_graph=conf.ctl.cuda_graph and conf.device.startswith(\"cuda\")` (pc.py:403-411). Latent and GaussOut run in eager mode, with no CUDA graph. One Optimizer from `make_optimizer(conf.optim_vision, conf.time.frame, modules)` (exp/video/dyn/nets.py:41, with scale=\"fan_in\" from exp/lib/optim.fan_ins) is bound separately by each node (pc.py:438-451). The decoder is cut with `mods.decoder.parts(v.depth // v.nodes)` (pc.py:365, modules.py:124-145): blocks of the encoder's per-node depth go into each dec node, and the LayerNorm, last Linear and unpatchify go to the readout node GaussOut.\n\nHow the noise travels: the host draws u ~ U[0,1)^shape(x) and eps ~ N(0,I)^(B,T,d) each frame from one device Generator seeded with `conf.seed + NOISE_SEED(=13)` (program.py:86, 154, 216-218). This generator is saved in the resume state (program.py:285-289). `VAEPC.sample` (pc.py:416-431) packs x as `vision.whole(x)` (B,T,P_t+1), pixels/255 plus a token-id column (vit.py:584-593). It packs y as `cat([dequantize(x,u,256).flatten(1), eps.flatten(1)])`, so the target and the noise travel in the Activity's `y` with the very activity they belong to. Latent reads eps = y[:, P:] (pc.py:206). GaussOut reads target = y[:, :P] (pc.py:300). Both zero them for masked stacks, so NaN noise there cannot leak in.\n\nThe latent's energy: Latent holds r and lam of z (B,T,d). It sends z = mu + exp(l/2)*eps and g_in = d/dh[ -(z . delta) + (B/n) * sum_valid KL(mu, l) ], computed with one local autograd from a detached leaf (pc.py:200-220). The KL is `exp.lib.elbo.gauss_kl` (elbo.py:86-89). It never learns (`learn_interval=math.inf`, pc.py:162-164) and sends a KLStats message (pc.py:72-83).\n\nThe likelihood: GaussOut's energy is (B/n) * sum_valid gauss_nll(y, yhat, log_sigma) (pc.py:298-313). Here gauss_nll = 0.5*||y-yhat||^2*exp(-2 log_sigma) + P*(log_sigma + 0.5 ln 2pi) (exp/lib/elbo.py:92-98), with one learned scalar `LogSigma` (modules.py:250-259). sigma starts at sqrt(ae.sigma0_sq), and with fan-in 1 it steps by eta. y = (x+u)/256 is the dequantized target (elbo.py:74-77), and bpd = nll/(P ln2) + 8 (elbo.py:101-107). GaussOut learns readout+log_sigma by g_theta/B when its LearnClock says so and some stack counts (pc.py:277-296). The per-node B/n weighting makes g_theta/B equal BP's mean -ELBO over the valid stacks.\n\n`build_vae` (modules.py:325-357) widens the encoder's last Linear to 2d. The mu rows are the AE's LeCun rows. The ln s^2 rows are 0, so s^2 = 1 at init. The decoder is `TokenDecoder` (modules.py:61-145): embed Linear(token_dim->dim) plus fixed sincos_3d, then `depth` pre-norm Blocks, LayerNorm and Linear to tubelet pixels, then unpatchify and unstandardize. Its init follows the vit rule. It is built under seed+DECODER_SEED(=11).\n\nThe BP twin `VAEBP` (bp.py:243-338) and `elbo_terms` (vae/elbo.py:49-63) define the same loss in one node. Under the old mujou, tests/video/vae/test_pc.py used a float64 hand-composed oracle `_oracle` (test_pc.py:72-97) to check three things. At a fixed point lam = -dE/dh and r = 0 (test_pc.py:150-195; schedule-independent via step(dt,*nodes)). At learn_interval 29 ms (the 15th tree-order step) every node's g_theta/B equals BP's gradient to 1e-9; at 27 ms only enc1 is off (test_pc.py:198-268). PC matched VAEBP's stats and RMSProp weights (test_pc.py:271-351).\n\nI ran these on the new mujou in the scratchpad, with mujou.testing stubbed to run_manually and no repo files edited. 8 of 25 fail (test_pc TestStepFifteen x3, TestAgainstVAEBP x2, TestLatent x2, and tests/lib/test_host.py::test_it_returns_the_prediction_of_the_frame_written). With Latent patched to relax first, enc1 matches BP to 2e-16 at 31 ms (Jacobi step 16 = 2*hops, hops = 8). At 29 ms only enc1 is off. The unpatched Latent needs 33 ms (one extra step).",
+  "files": [
+   {
+    "path": "exp/video/vae/pc.py",
+    "lines": 452,
+    "role": "Latent and GaussOut nodes, the VAEPC network (chain of pc.Input/pc.Layer/Latent/pc.Layer/GaussOut), sample() packing of x, target and eps, build_vae_pc_net",
+    "port": "port-simplified",
+    "why": "This is the core to carry over. Latent.on_update (182-198) must relax before computing delta and g_in to match the new pc.Layer. The decoder cut parts(v.depth // v.nodes) (365) must become a fixed decoder node count. The docstrings' step arithmetic (36-45, 137) is tree-order. Drop the Segmented wrapper for a single view."
+   },
+   {
+    "path": "exp/video/vae/modules.py",
+    "lines": 368,
+    "role": "TokenDecoder and its DecoderPart node cuts, LogSigma, VAEModules (posterior/code/code_shape/head), build_ae/build_vae (head widened to 2d, ln s^2 rows 0)",
+    "port": "port-simplified",
+    "why": "Decoder, likelihood parameter and VAE init are tested (test_modules.py). Rebuild without build_ae/build_vision's JEPA baggage. The decoder must not depend on encoder size (plan: same decoder for S/M/L, ViT and ResNet), so TokenDecoder needs a token-shaped code from both encoders or a new light decoder."
+   },
+   {
+    "path": "exp/video/vae/elbo.py",
+    "lines": 63,
+    "role": "elbo_terms(mods,x,u,eps) -> ELBOTerms(nll,kl,sq,mu): BP's -ELBO at the current weights",
+    "port": "port-as-is",
+    "why": "Small. It is the in-graph oracle for PC gradients (test_bp_elbo_terms_is_the_oracles_loss) and the evaluation's fixed-noise ELBO."
+   },
+   {
+    "path": "exp/video/vae/loss.py",
+    "lines": 48,
+    "role": "LEVELS, target x/256, ae_loss, batch_loss (mean over valid), stack_mse_sums",
+    "port": "port-simplified",
+    "why": "Keep batch_loss and stack_mse_sums (the reconstruction-error metric). ae_loss and target belong to the AE stage only."
+   },
+   {
+    "path": "exp/video/vae/bp.py",
+    "lines": 382,
+    "role": "AEBP/VAEBP single-node BP learners and their nets; VAESample, VAEStats",
+    "port": "drop",
+    "why": "V runs no BP learners. The BP oracle in tests should be elbo_terms or the float64 _oracle plus a hand optimizer step, not a BP node. Keep at most as a test-only reference for the TestAgainstVAEBP stats and RMSProp comparisons."
+   },
+   {
+    "path": "exp/video/vae/program.py",
+    "lines": 311,
+    "role": "AE/VAE online and bench loop: source of stacks (stream/shuffle/pool/iid), noise generator, Host.show_all of out.stats and latent.kl, stream.jsonl accumulation, resume state",
+    "port": "reference-only",
+    "why": "The noise-drawing pattern (154, 216-218), the PC show path (220-229) and the resume of the noise generator (285-289) are what to copy. The AE/BP branches, sampling variants and the mujou.testing.run call (164) go."
+   },
+   {
+    "path": "exp/video/vae/measures.py",
+    "lines": 260,
+    "role": "stack_mse against the mean stack, held-out stacks, VAEMeasures (bpd, kl, sigma*, sigma_gap, kl quantiles) with fixed EVAL_NOISE_SEED",
+    "port": "reference-only",
+    "why": "Belongs to the evaluation subsystem. It reads mods.posterior, decoder and log_sigma, so the port must keep those names."
+   },
+   {
+    "path": "exp/video/vae/eval.py",
+    "lines": 236,
+    "role": "posthoc AEEval: EncoderEval lines of code=mu, own_recon/own_recon_blur, pictures",
+    "port": "reference-only",
+    "why": "Belongs to the posthoc subsystem. Its code is VAEModules.code = mu."
+   },
+   {
+    "path": "exp/lib/elbo.py",
+    "lines": 149,
+    "role": "dequantize, dequant_var, gauss_kl, gauss_nll (scalar log_sigma), bits_per_dim, sigma_gap, ppca_fit/ppca_nll",
+    "port": "port-as-is",
+    "why": "Already in exp/lib with oracle tests (tests/lib/test_elbo.py). exp/vision imports it unchanged."
+   },
+   {
+    "path": "exp/lib/host.py",
+    "lines": 91,
+    "role": "Host.show/show_all: write, step frame/period times, return the first message per watched port whose time equals the write",
+    "port": "port-simplified",
+    "why": "The working tree already imports ManualRun from mujou (line 12). Still to fix: the docstring (3-5) is tree-order, and the first write at t=0 collides with the initial zero activity time Timestamp(0) (see pitfalls). It also needs a guard that a frame has at least 2*hops steps."
+   },
+   {
+    "path": "exp/lib/cuda_graph.py",
+    "lines": 100,
+    "role": "Replayed / graphed_vjp: CUDA-graph replay for custom nodes",
+    "port": "reference-only",
+    "why": "Latent and GaussOut are eager today (pc.py:324-326). Use this if bench shows them as the bottleneck at B=1."
+   },
+   {
+    "path": "exp/video/jepa/vit.py",
+    "lines": 763,
+    "role": "Block, PackedEmbed, Stage, Segmented, Encoder, sincos_3d, patchify_tubelets, _init_, VisionModules.whole/tokens, build_vision (also predictor, masks, projector, decoders of JEPA)",
+    "port": "port-simplified",
+    "why": "Only Block, PackedEmbed (or a plain patch embed), Stage, sincos_3d, patchify_tubelets, the init rule and whole() are needed. With one view, Segmented(stage,(T,)) equals stage(x) with no segments. Drop Embed, Predictor, PackedPredictor, Projector, ZPredictor, PixelDecoder, BroadcastDecoder, the target encoder and build_vision's masks.token_keep and context_masks dependency."
+   },
+   {
+    "path": "exp/video/diag/m18_pc_grad.py",
+    "lines": 273,
+    "role": "GradRecorder (73-100): an Optimizer that records the g_theta/B each node stepped by",
+    "port": "port-simplified",
+    "why": "An essential test helper. Move it into tests or lib. Its module imports mujou.testing (line 54), so importing GradRecorder from here now fails."
+   },
+   {
+    "path": "tests/video/vae/test_pc.py",
+    "lines": 479,
+    "role": "Oracle tests: fixed point lam = -dE/dh (any schedule), step-N exactness vs float64 BP grads, masked stack adds nothing, PC vs VAEBP stats/RMSProp, Latent hand derivatives and reset, build checks, locality grep",
+    "port": "port-simplified",
+    "why": "These are the oracles to carry over. Switch to mujou.run_manually and update the counts: AT_15=29e-3 becomes 31e-3 (Jacobi step 16 = 2*hops), and AT_14=27e-3 becomes 29e-3. Verified: enc1 rel err 2e-16 at 31 ms, 0.985 at 29 ms, with the rest 2e-16. TestLatent must step twice or use step(dt, inp, latent), and must compute the expected delta after relax_."
+   },
+   {
+    "path": "tests/video/vae/test_elbo.py",
+    "lines": 69,
+    "role": "elbo_terms against torch.distributions; same noise gives the same loss",
+    "port": "port-as-is",
+    "why": "A theory oracle with no stepping."
+   },
+   {
+    "path": "tests/video/vae/test_modules.py",
+    "lines": 291,
+    "role": "unpatchify inverse, decoder parts compose to forward with shared params, init rules, build_vae starts as the AE with s^2=1, log_sigma steps by eta",
+    "port": "port-simplified",
+    "why": "Follow the new decoder and encoder shapes."
+   },
+   {
+    "path": "tests/video/vae/test_bp.py",
+    "lines": 183,
+    "role": "AEBP/VAEBP one-frame and clock tests",
+    "port": "drop",
+    "why": "No BP learner in V."
+   },
+   {
+    "path": "tests/video/vae/test_program.py",
+    "lines": 333,
+    "role": "end-to-end runs, resume equality, PC vs BP rows at learn_interval 0.029, posthoc reads mu",
+    "port": "reference-only",
+    "why": "Resume-equals-uninterrupted is worth recreating for the vision loop. The PC-vs-BP equality needs learn_interval 0.031 and a BP run, which V does not keep."
+   },
+   {
+    "path": "tests/lib/test_elbo.py",
+    "lines": 278,
+    "role": "Closed-form KL/NLL/bpd/pPCA oracles for exp/lib/elbo.py",
+    "port": "port-as-is",
+    "why": "Already lib. Unaffected by mujou."
+   },
+   {
+    "path": "tests/lib/test_host.py",
+    "lines": 87,
+    "role": "Host grid, first-message, resume-grid tests",
+    "port": "port-simplified",
+    "why": "test_it_returns_the_prediction_of_the_frame_written fails under Jacobi because of the t=0 time collision."
+   },
+   {
+    "path": "tests/video/packed.py",
+    "lines": 122,
+    "role": "packed_conf / stacks / smooth_tours test fixtures",
+    "port": "reference-only",
+    "why": "Rewrite for exp/vision's config."
+   },
+   {
+    "path": "mujou/src/mujou/pc/layer.py",
+    "lines": 351,
+    "role": "pc.Layer: tick, reset, read g, relax_, then vjp with the relaxed delta and send g_in (244-258, 268-282); cuda_graph",
+    "port": "reference-only",
+    "why": "The order Latent must mirror."
+   }
+  ],
+  "apis": [
+   "class Latent(Node): def __init__(self, *, act_spec: DictSpec[Activity], tau: pc.TimeConstants, device: Device = \"cpu\") -> None  # exp/video/vae/pc.py:150",
+   "class GaussOut(Node): def __init__(self, module: DecoderPart, likelihood: LogSigma, *, act_spec: DictSpec[Activity], tau: pc.TimeConstants, optimizer: Optimizer, learn_interval: float | None, device: Device = \"cpu\") -> None  # pc.py:252",
+   "class VAEPC(mujou.Network): def __init__(self, mods: VAEModules, *, conf: RunConf, optimizer: Optimizer) -> None; attrs prev (=inp.prev), stats (=out.stats, NLLStats), kl (=latent.stats, KLStats), tau, names  # pc.py:338",
+   "def VAEPC.sample(self, x: Tensor, u: Tensor, eps: Tensor, mask: Tensor, reset: Tensor) -> pc.msg.Sample  # pc.py:416",
+   "def build_vae_pc_net(conf: RunConf) -> VAEPC  # pc.py:434",
+   "class KLStats(TypedDict): kl: Tensor; n: Tensor; time: Timestamp / class NLLStats(TypedDict): nll: Tensor; log_sigma: Tensor; n: Tensor; time: Timestamp  # pc.py:72-105",
+   "def _count(valid: Tensor, like: Tensor) -> tuple[Tensor, Tensor]  # (n, B/n), pc.py:110",
+   "def elbo_terms(mods: VAEModules, x: Tensor, u: Tensor, eps: Tensor) -> ELBOTerms  # exp/video/vae/elbo.py:49; ELBOTerms(nll, kl, sq, mu).loss = nll + kl.sum(1)",
+   "def dequantize(x: Tensor, u: Tensor, levels: int = LEVELS) -> Tensor  # exp/lib/elbo.py:74",
+   "def gauss_kl(mu: Tensor, logvar: Tensor) -> Tensor  # elbo.py:86",
+   "def gauss_nll(y: Tensor, mean: Tensor, log_sigma: Tensor) -> Tensor  # elbo.py:92",
+   "def bits_per_dim(nll: float | Tensor, dims: int, levels: int = LEVELS) -> float | Tensor  # elbo.py:101",
+   "def sigma_gap(sigma_star_sq: float, sigma_sq: float, dims: int) -> float  # elbo.py:110",
+   "def batch_loss(losses: Tensor, valid: Tensor) -> Tensor  # exp/video/vae/loss.py",
+   "class TokenDecoder(nn.Module): def __init__(self, *, token_dim: int, dim: int, heads: int, depth: int, grid3: tuple[int, int, int], patch: int, tubelet: int, channels: int, mean: float, std: float) -> None; def parts(self, per: int) -> list[DecoderPart]  # modules.py:61,124",
+   "class DecoderPart(nn.Module): def __init__(self, decoder: TokenDecoder, blocks: list[nn.Module], *, first: bool = False, readout: bool = False) -> None  # modules.py:148",
+   "class LogSigma(nn.Module): def __init__(self, sigma_sq: float) -> None  # modules.py:250",
+   "@dataclass class VAEModules: vision, decoder, likelihood; named(), parameters(), log_sigma, head, code_shape -> (T, d), posterior(stacks) -> (mu, logvar), code(stacks) -> mu  # modules.py:262-322",
+   "def build_vae(conf: RunConf, *, seed: int) -> VAEModules  # modules.py:325",
+   "class Stage(nn.Module): def __init__(self, blocks: list[Block], dim: int, *, embed: Embed | PackedEmbed | None = None, norm: bool = False, out: int | None = None) -> None  # vit.py:273",
+   "class Segmented(nn.Module): def __init__(self, stage: Stage, segments: Sequence[int]) -> None  # vit.py:304",
+   "class Block(nn.Module): def __init__(self, dim: int, heads: int) -> None; forward(x, segments=None)  # vit.py:168",
+   "class PackedEmbed(nn.Module): def __init__(self, *, patch_dim: int, dim: int, grid3: tuple[int, int, int], mean: float = 0.0, std: float = 1.0) -> None  # vit.py:246",
+   "def VisionModules.whole(self, chunks: Tensor) -> Tensor  # (n, T, P_t + 1), vit.py:584",
+   "class Host(Stateful): def __init__(self, run: ManualRun, *, frame: float, period: float) -> None; def show_all(self, writes: Mapping[Port[Any, Any], Any], watches: Sequence[Port[Any, Any] | MultiPort[Any, Any]]) -> tuple[list[Any], Timestamp]  # exp/lib/host.py:28,62",
+   "def make_optimizer(c: OptimConf, frame: float, modules: Sequence[torch.nn.Module] = ()) -> Optimizer  # exp/video/dyn/nets.py:41",
+   "class GradRecorder(pc.optim.Optimizer)  # exp/video/diag/m18_pc_grad.py:73",
+   "mujou: def run_manually[P: Port[Any, Any]](root: Node | Network, *, timer: VirtualTimer | None = None, inputs: Mapping[P, Message] | None = None, state: Mapping[str, Any] | None = None, workers: int | None = None) -> ManualRun  # mujou/src/mujou/execution.py:694",
+   "mujou: def ManualRun.step(self, dt: float, *nodes: Node) -> None  # execution.py:563 (no nodes = Jacobi; nodes = Gauss-Seidel in the given order)",
+   "mujou: def relax_(r: torch.Tensor, lam: torch.Tensor, g: torch.Tensor, dt: float, tau: TimeConstants, relaxer: BoundRelaxer | None = None) -> None  # mujou/src/mujou/pc/functional.py:173",
+   "mujou: pc.Layer(module, *, act_spec, tau, optimizer, relaxer=Euler(), learn_interval, period=None, max_dt=None, device=\"cpu\", cuda_graph=False)  # mujou/src/mujou/pc/layer.py:204"
+  ],
+  "mujou_coupling": "Imports of mujou.testing in this subsystem (the module is gone):\n- exp/video/vae/program.py:45 `import mujou.testing`, :47 `from mujou.testing import ManualRun`, :164 `self._run: ManualRun = mujou.testing.run(self.net, state=state)`. Replace with `mujou.run_manually(self.net, state=state)` and `from mujou import ManualRun`.\n- exp/lib/host.py:12: already changed in the working tree to `from mujou import ManualRun`. Its docstring at :3-5 still says \"mujou.testing.run ... updates every node once, in the order of the tree\". show_all at :79 calls `self.run.step(self._period)`, which is now Jacobi.\n- exp/video/diag/m18_pc_grad.py:54 `import mujou.testing` (and :130). Importing GradRecorder from it raises ModuleNotFoundError.\n- tests/video/vae/test_pc.py:9, 160, 183, 213, 291, 296, 329, 330, 395, 424 use mujou.testing.run. tests/video/vae/test_bp.py:8, 63 and tests/lib/test_host.py:4, 36, 45, 55, 68, 80 do too.\n- 24 files across exp/ and tests/ import mujou.testing in total, so `just test` breaks until the frozen exp/video tests are migrated or excluded.\n\npc.* use in this subsystem:\n- pc.TimeConstants(h,lam,r) (pc.py:345)\n- pc.Input(x=, y=, period=, batch=, device=) (pc.py:353-360)\n- pc.Layer(..., learn_interval=, cuda_graph=) (pc.py:403-411); the API is unchanged.\n- pc.clock.LearnClock.of(tau, period=, learn_interval=) (pc.py:162, 265)\n- pc.functional.relax_(r, lam, g, dt, tau) (pc.py:195); still valid, since relaxer is now an optional 6th argument.\n- pc.msg.activity_spec, pc.msg.Sample, pc.msg.rows (pc.py:172, 426, 187-191)\n- Optimizer.bind and step_ (pc.py:270, 296)\n- ManualRun.step(dt, *nodes) for the schedule test (test_pc.py:190); still valid, as Gauss-Seidel.\n\nWhat must change for mujou origin/main:\n(1) Latent.on_update (pc.py:182-198) computes delta and g_in BEFORE relax_. That is the old pc.Layer order. pc.Layer now does tick/reset -> g = sum(next.recv()) -> relax_ -> delta = where(mask, r+lam, 0) -> vjp -> send g_in -> send mu (layer.py:244-258, 268-282), and the mujou docs (docs/en/topics/pc.md:229) require custom nodes to relax first. Without that change, Latent costs one extra step per round trip. I verified this in the scratchpad: unpatched, enc1 is exact only at 33 ms; patched, at 31 ms. The docstrings at pc.py:129-140 (\"delta before the update\") must change too. GaussOut keeps no r or lam, so it needs no reorder.\n(2) Step arithmetic (pc.py:36-45). Under tree order the forward reached out in the write's step and the k-th node from the output had credit after step 2k, so the first exact step was 15 = 29 ms. Under Jacobi plus relax-first, inp sends in step 1 and node i receives in step i+1, so out (hops = E + K + 2 = 8) first sees the write at step 9. The k-th constrained node from the output then has exact credit at step 9+k. enc1 (k=7) gets it at step 16 = 2*hops, which is 32 ms after the write. Any learn_interval in (30, 32] ms, e.g. 31e-3, makes every node learn once by BP's exact gradient. At 29 ms only enc1 is off.\n(3) Host and frame budget. The first frame of 1/30 s has floor(16.67) = 16 steps, so 2*hops <= 16 is the hard limit at the M18 layout. With learn_interval 33 ms, frame 0 learns nothing (verified: 85 params missing). A fixed node count for V must be chosen together with frame/period: frame/period >= 2*hops, plus margin.\n(4) Tests. TestLatent (test_pc.py:371-434) assumed the latent sees the write in the same step, which now takes 2 Jacobi steps. Its hand-derivative check at :410-417 sets r=delta, lam=0 and steps; with relax-first the used delta is the relaxed one, which is exactly -g = 0 under the defaults. TestStepFifteen moves AT_15/AT_14 to 31e-3/29e-3. test_program.py:269, 295, 313 move from learn_interval 0.029 to 0.031.\n(5) Jacobi runs nodes in parallel on worker threads, so nodes must share no mutable Python objects. Here they share only read-only objects: the decoder's `pos` buffer, the bound method `decoder.stacks`, and the Optimizer config with its fan_in dict (state is per binding, exp/lib/optim.py:183-200, 384-396). GradRecorder writes one shared dict and list from several threads.",
+  "pitfalls": [
+   "Host t=0 collision (exp/lib/host.py:79-85). The initial zero Activity and pc.Input's no-write message carry time Timestamp(ns=0) (mujou pc/input.py:82), and the first host write at t=0 also has time 0. So show_all accepts the zero placeholder from step 1 as 'the first message of this write'. Verified: out.stats has time==written with nll=0, n=0 at steps 1-8, and the real nll arrives at step 9. This breaks TestAgainstVAEBP.test_the_first_stats_are_vaebps (0.0 vs 37361) and tests/lib/test_host.py::test_it_returns_the_prediction_of_the_frame_written. Fixes: step once before the first write, or also require that the message was sent after the write (read_with_time), or ignore n==0. The M18 program hid this because frame 0 is not counted (program.py:21-22, 194-195).",
+   "Latent must relax before computing delta and g_in (pc.py:182-198 vs mujou pc/layer.py:244-258). Otherwise exactness moves from step 2*hops to 2*hops+1, and the node silently disagrees with the mujou docs.",
+   "Forward latency is now one hop per step: out sees a write at step hops+1, so with 8 hops nll/kl stats arrive at steps 9 and 6. learn_interval must be at least 2*hops*period (31 ms for 8 hops, 2 ms period) and the frame at least 2*hops steps. A 1/30 s frame has 16 or 17 steps (the first has 16), so the M18 layout sits exactly at the limit, and any extra node breaks exactness at 1/30 s. Choose node count, frame and learn_interval together, and keep hops identical across S/M/L and ViT/ResNet (as the plan intends).",
+   "The decoder's node cut is tied to the encoder size: VAEPC uses mods.decoder.parts(v.depth // v.nodes) (pc.py:365), and TokenDecoder blocks have the encoder's width v.dim and heads (modules.py:226-237). Under S/M/L defined as layers per node, the decoder's node count and width would change with model size. Decouple them, with a fixed K decoder nodes and fixed decoder width.",
+   "In tests, GradRecorder (m18_pc_grad.py:73-100) mutates one shared dict and an `elapsed` list from every node. Under Jacobi these run concurrently: dict writes to distinct keys are fine in free-threaded CPython, but the order of `elapsed` is nondeterministic. Do not assert on it.",
+   "The noise must travel in y with the activity (pc.py:6-12, 416-431). Do not hand eps or u to Latent/GaussOut through a side port, or Jacobi's staggered frames would pair the wrong noise with an activity. y has P + T*d values per stack: at 64x64, 8 frames, RGB, P = 98304, sent through every node each step.",
+   "Masked stacks: Latent and GaussOut zero eps and target for mask=False stacks before autograd (pc.py:206-208, 300-302) because 0*NaN gives NaN. The tests write NaN noise there on purpose (test_pc.py:219). Keep both the guard and the test.",
+   "Energies are weighted by B/n (pc.py:110-115, 210-218, 304-308) so that g_theta/B equals BP's mean over valid stacks. A frame with no valid stack gives n=0, so the weight uses clamp(min=1) and the energy is 0. GaussOut skips learning when no stack counts (pc.py:283).",
+   "Unit mismatch: the encoder input whole() uses x/255 (vit.py:589), while the target is (x+u)/256 (elbo.py:74-77, loss.py LEVELS). Keep it, documented, or unify it deliberately.",
+   "build_vae sets the ln s^2 rows and bias of the widened head to exactly 0 (modules.py:342-355), so s^2=1 for every stack at init. The test checks that these rows still receive nonzero BP gradient (test_pc.py:234-236). A new ResNet head must follow the same convention if the 'versus initialization' metrics are to be comparable.",
+   "Exact BP-vs-PC equality of RMSProp updates must mask the key part of qkv.bias (test_pc.py:108-118, 347-348): its exact gradient is 0, so RMSProp steps by the sign of rounding there.",
+   "Latent and GaussOut run eager autograd (pc.py:324-326); only pc.Layer gets cuda_graph. At B=1 with a 98k-value readout, GaussOut may dominate the step. exp/lib/cuda_graph.Replayed exists if bench shows that.",
+   "Segmented(stage, (T,)) with a single segment equals plain stage(x) (vit.py:179-201, 299-311). The JEPA packing and the token-id column in whole() can be simplified for a pure VAE. PackedEmbed reads ids as detached constants, so enc1's g_in to pc.Input has a zero id column.",
+   "build_vision (vit.py:655-763) also draws the JEPA predictor and needs vision.context_masks (via masks.token_keep). Porting it as-is drags in exp/video/jepa/masks.py and changes the RNG stream if pieces are removed. Accept new initial weights rather than replicate M18's.",
+   "The fixed-point test at 60 Jacobi steps still passes (it needs about 17). test_other_schedules (step(dt, *nodes)) still passes. Keep both: they are schedule-independent oracles."
+  ]
+ }
+}

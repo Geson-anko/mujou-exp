@@ -1,7 +1,6 @@
 import math
 
 import mujou.pc as pc
-import mujou.testing
 import pytest
 import torch
 
@@ -162,7 +161,7 @@ class TestSIGRegNode:
         net = _SIGRegNet()
         g = torch.Generator().manual_seed(6)
         zs = torch.randn(14, D, generator=g)
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             for k in range(len(zs)):
                 run.write({net.z_in.prev: _sample(zs[k], reset=k == 0)})
                 for _ in range(16):
@@ -182,15 +181,19 @@ class TestSIGRegNode:
                     torch.testing.assert_close(node.buffer[:6], zs[:6])
 
     def test_the_directions_are_drawn_anew_with_each_frame_only(self):
+        """Under Jacobi steps the write reaches the node after two hops
+        (z_in, then sigreg): the directions change only once it arrives."""
         net = _SIGRegNet()
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             run.write({net.z_in.prev: _sample(torch.ones(D))})
-            run.step(TAU.period)
+            for _ in range(4):
+                run.step(TAU.period)
             first = net.sigreg.directions.clone()
             run.step(TAU.period)
             assert torch.equal(net.sigreg.directions, first)
             run.write({net.z_in.prev: _sample(torch.ones(D))})
-            run.step(TAU.period)
+            for _ in range(4):
+                run.step(TAU.period)
             assert not torch.equal(net.sigreg.directions, first)
         torch.testing.assert_close(first.norm(dim=1), torch.ones(8))
 
@@ -201,7 +204,7 @@ class TestEvery:
         frame k, those before it."""
         net = _SIGRegNet(every=3)
         zs = torch.arange(10.0)[:, None].expand(10, D).contiguous()
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             for k in range(len(zs)):
                 run.write({net.z_in.prev: _sample(zs[k], reset=k == 0)})
                 for _ in range(16):
@@ -320,7 +323,7 @@ class TestBatch:
         net = _SIGRegNet(streams=b)
         g = torch.Generator().manual_seed(10)
         zs = torch.randn(12, b, D, generator=g)
-        with mujou.testing.run(net) as run:
+        with mujou.run_manually(net) as run:
             for k in range(len(zs)):
                 mask = torch.tensor([True, True, k != 7])
                 sample = pc.msg.Sample(

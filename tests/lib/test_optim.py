@@ -1,12 +1,12 @@
 import math
 
 import mujou.pc as pc
-import mujou.testing
 import pytest
 import torch
 from mujou.pc.optim import Optimizer
 from torch import nn
 
+import mujou
 from exp.lib.optim import (
     AdamDirection,
     Grafted,
@@ -171,7 +171,7 @@ def test_a_chain_learns_with_it():
     before = {k: v.clone() for k, v in before.items()}
     yes = torch.tensor(True)
     sample = pc.msg.Sample(x=torch.ones(3), y=torch.ones(1), mask=yes, reset=yes)
-    with mujou.testing.run(net, inputs={net.prev: sample}) as run:
+    with mujou.run_manually(net, inputs={net.prev: sample}) as run:
         for _ in range(20):
             run.step(tau.period, net.input, *net.layers, net.output)
     after = net.layers[0].module.state_dict()

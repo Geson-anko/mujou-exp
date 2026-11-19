@@ -1,0 +1,6 @@
+# @package _global_
+# A run whose numbers go to the README: the posthoc evaluation
+# (python -m exp.vision.eval) also writes the rows of the test stacks.
+phase: confirm
+ctl:
+  eval_test: true

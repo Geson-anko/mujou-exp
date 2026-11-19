@@ -1,0 +1,6 @@
+# @package optim
+# mujou.pc.optim.SGD(tau, tau_m): the momentum is the first moment over tau_m s.
+# tau as sgd.yaml's (1e5 stayed finite on v0/base).
+kind: sgd_momentum
+tau: 1.0e5
+tau_m: 1.0

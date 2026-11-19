@@ -1,0 +1,30 @@
+# @package _global_
+# A run small enough for the tests on a CPU: 32 x 32, 2 frames, a 1 s stream.
+name: v0/tiny
+program: vae
+task: online
+tags: [v0, tiny]
+data:
+  tours:
+    size: 32
+    frames: 2
+model:
+  latent: 8
+  width: 16
+  heads: 2
+  resnet_channels: [4, 4, 4, 4]
+  decoder_channels: [8, 8, 4, 4, 4]
+optim:
+  # P = 6144 values a stack, 16 times fewer than v0/base: sgd's step stays
+  # finite from about 1e3 (1e4 in the tests)
+  tau: 1.0e4
+measure:
+  duration: 1.0
+  ckpt_times: [0.0, 0.5, 1.0]
+  every: 0.5
+  clips: 4
+  windows: 1
+  posthoc_seeds: 1
+ctl:
+  log_every: 0.5
+  resume_every: 0.5

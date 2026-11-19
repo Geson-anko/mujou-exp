@@ -1,0 +1,7 @@
+# @package optim
+# mujou.pc.optim.SGD(tau): no momentum. tau is searched in factors of 10. The
+# energies sum over the P = 3nHW values of a stack, so the step scales with P:
+# on v0/base (P = 98304), 1e4 and below diverged in the first frames of
+# synthetic stacks, 1e5 stayed finite (2026-11-18, CPU, 150 frames).
+kind: sgd
+tau: 1.0e5

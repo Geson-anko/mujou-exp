@@ -38,6 +38,9 @@ addopts = [
     "--color=yes",
     "--durations=10",
     "--strict-markers",
+    # exp/video is frozen at the tag video-final (mujou 7a8b72e); its code
+    # needs the removed mujou.testing and tree-order steps.
+    "--ignore=tests/video",
 ]
 markers = [
     "slow: long-running training checks (deselect with -m 'not slow')",
@@ -56,6 +59,9 @@ exclude = [
     ".fleet",
     ".fleet-nas",
     "tools/sweep/.venv",
+    # Frozen at the tag video-final (mujou 7a8b72e).
+    "exp/video",
+    "tests/video",
 ]
 reportImplicitOverride = true
 
