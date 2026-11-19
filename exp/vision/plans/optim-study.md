@@ -102,6 +102,19 @@ $d$ は SGD・RMSProp では $g$、AdamW では $\hat m$。$\hat v$ は射影の
 - coord check（`python -m exp.vision.coord_check`）: 幅 128・256・512・1024 で最初の 10 秒（100 フレーム）を学び、各ノードの出力の RMS と、その初期値からの変化を 0・10・50・100 フレームで出す。μP では幅によらず、SP では幅とともに変わるはず
 - PC-ALM の確かめ: 幅 128 と 512 でも、各ノードの勾配が BP の勾配と一致すること（`tests/vision/test_pc.py` と同じ形）
 
+### 実装の記録（OGD・幅と μP・coord check、2026-11-19）
+
+- OGD は `exp/lib/ogd.py` の `OGD(base, n, every)`。base は `pc.optim` の `SGD`（momentum なし）・`RMSProp`・`AdamW` で、その更新を同じ演算の順で書き直した。記憶が空の最初の歩は base とビット単位で一致し、モーメントは射影の後も base と一致する（テストで確かめた）。設定は `optim.ogd_n`（0 で無効、sgd・rmsprop・adamw だけ）と `optim.ogd_every`（既定 1.0。`ogd_n` = 0 では既定のまま）
+- 保持の規則は `GradStats` と同じ（ノード自身の時刻、$kP$ に最も近い歩、最初の歩で 1 回）。保持する勾配はパラメータの dtype（fp32）で、ViT-S では 16 本 × 8.29M × 4 B = 0.53 GB。$G^\top P G$（$k \times k$）の固有値分解は CPU の float64 で解く
+- `grad_stats` の $\rho_s$ の固有値分解も CPU に移した。mini-00 の smoke で、CUDA の linalg の遅延ロードが複数のノードのスレッドで同時に走り、`lazy wrapper should be called at most once` で落ちていたため
+- `model.heads` の既定を `None`（幅 / 64、`ModelConf.head_count`）にした。`__post_init__` で書き戻すと、OmegaConf が schema の既定値を作るときに 4 に固まるため、値は property で読む。v0/tiny のように `heads` を書いた設定はそのまま
+- `model.scale_decoder=true` で、デコーダのチャネルを幅 / 256 倍にする（整数にならなければ拒む）。GroupNorm の群の数は `gcd(チャネル, 32)` のままで、幅 128〜1024 で割り切れる（テストで確かめた）
+- `model.param=mup`（ViT だけ、ヘッドの次元 64 のときだけ、OGD とは併用しない）。学習率の倍率は `exp.vision.models.mup_lr`（パラメータを鍵にした表）を `exp/lib/optim.py` の `ScaledLR` に渡す。`ScaledLR` は倍率 $s$ ごとにパラメータを束ね、内側の optimizer の $\tau$ を $\tau / s$ にして bind する。モーメントの時定数は変えず、AdamW の weight decay は学習率と一緒に倍率がかかる。倍率がすべて 1 なら内側の optimizer そのものになる
+- μP の初期化は、幅 256 に錨を置いた「隠れ層の分散 $\propto 1/\text{fan\_in}$、出力の分散 $\propto 1/\text{fan\_in}^2$」と読んだ。いまの ViT のブロックの行列は幅によらず std 0.02（$1/\text{fan\_in}$ に比例しない）なので、μP では $k^{-1/2}$ 倍する。head（LeCun）・readout とデコーダの Conv（torch の既定）はもともと std $\propto \text{fan\_in}^{-1/2}$ なので、隠れ層の Conv はそのまま、出力の 2 つは $k^{-1/2}$ 倍する（幅 256 の std の $1/k$ になる）。SP は、いまの初期化のまま（ブロックは幅によらず std 0.02）
+- 幅 256 の μP は SP と同じ run になることを、初期値と RMSProp の 2 フレームの学習で、ビット単位で確かめた。幅 128・512 の μP でも、各ノードの勾配は BP の float64 の勾配と一致した
+- coord check（`exp/vision/coord_check.py`）は、最初のフレームのスタックを probe にして、各ノードのモジュールに通した出力（デコーダには $z = \mu$）の RMS と、0 フレーム目からの変化の RMS を出す。μP では、出力の側（enc4 の head、out）の初期の RMS は $k^{-1/2}$ で小さくなる（μP の初期化どおり）ので、判定は変化（delta）で読む
+- 手元の CPU で、合成のスタック（毎フレーム独立な乱数）で幅 128・256・512、20 フレームまで回すと、delta の傾きは SP で +0.15〜+0.78、μP の隠れ層（enc1〜3、dec1・dec2）で −0.03〜+0.15 だった。μP の出力の側は −0.4〜−0.5 で、学習の入力と probe が無相関なためと読んでいる（$\Delta W x$ が独立な符号の和になる）。実データ（フレームどうしが似ている）の GPU で確かめる
+
 ## V11・V12・V14 の腕・判定・予想
 
 [README の V11・V12・V14](../README.md) に書く（回す前に決めたこと）。V13 は V11 の勾配の計測を読んでから README に登録する。

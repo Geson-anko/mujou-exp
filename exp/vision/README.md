@@ -17,6 +17,12 @@ python -m exp.vision.bench --device cuda --frames 100
 python -m exp.vision.bench --device cuda --frames 100 --models vit_s optim=muon measure.grad_stats=true
 # 勾配の計測（measure.grad_stats=true の run の grad.jsonl）の集計
 python -m exp.vision.grad_table <run_dir> [...]
+# OGD（V13）: sgd・rmsprop・adamw の一歩を、ogd_every 秒ごとに保持した直近 ogd_n 個の勾配に直交させる
+just fleet submit --batch <b> +experiment=v0/base optim=rmsprop optim.tau=1e4 optim.ogd_n=16 optim.ogd_every=1 --seeds 0
+# 幅と μP（V14）: ヘッドの次元は 64、デコーダも幅 / 256 倍
+just fleet submit --batch <b> +experiment=v0/base optim=rmsprop model.width=512 model.scale_decoder=true model.param=mup --seeds 0
+# coord check（幅 128〜1024、SP と μP、RMSProp τ = 1e4、最初の 100 フレーム）。GPU のホストで
+just fleet x std-00 -- env MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data CUDA_VISIBLE_DEVICES=0 python -m exp.vision.coord_check --device cuda
 ```
 
 ## V0: 土台の確認（2026-11-18）
