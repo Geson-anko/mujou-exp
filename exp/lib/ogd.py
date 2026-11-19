@@ -19,8 +19,10 @@ with the unprojected $g$; AdamW's weight decay $\theta \leftarrow \theta (1 -
 \eta w)$ is applied outside the projection, first, as there. The
 pseudo-inverse drops the eigendirections of $G^\top P G$ whose eigenvalues are
 below ``RANK_FLOOR`` times the largest (consecutive gradients are alike), as
-``exp.lib.grad_stats.residual_share`` does; the $k \times k$ eigenproblem is
-solved on the CPU in float64.
+``exp.lib.grad_stats.residual_share`` does. $G^\top P G$ and $G^\top P d$
+are summed in float64 (``exp.lib.grad_stats.gram64``; in float32, sums over
+millions of values break the projection on nearly parallel kept gradients),
+and the $k \times k$ eigenproblem is solved on the CPU in float64.
 
 While nothing is kept (the first step) the step is the base's, bit for bit.
 
@@ -44,6 +46,8 @@ from typing import Any, override
 
 import torch
 from mujou.pc.optim import SGD, AdamW, BoundOptimizer, Optimizer, RMSProp
+
+from exp.lib.grad_stats import gram64
 
 __all__ = ["RANK_FLOOR", "OGD", "BoundOGD"]
 
@@ -189,8 +193,8 @@ class BoundOGD(BoundOptimizer):
         kept = self._kept[self._order()]  # (k, D)
         pd = d if metric is None else metric * d
         pk = kept if metric is None else kept * metric
-        coef = _pinv_solve(pk @ kept.T, kept @ pd).to(d)
-        step = pd - (kept.T @ coef if metric is None else pk.T @ coef)
+        coef = _pinv_solve(gram64(pk, kept), gram64(kept, pd[None])[:, 0]).to(d)
+        step = pd - pk.T @ coef
         for p, s in zip(self._params, _split(step, self._params), strict=True):
             p.sub_(s, alpha=eta)
 

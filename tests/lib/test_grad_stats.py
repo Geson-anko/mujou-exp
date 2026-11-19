@@ -35,6 +35,22 @@ class TestResidualShare:
         G = torch.stack([_f64(1, 2, 0), _f64(0, 1, 1)])
         assert residual_share(G, _f64(2, 5, 1)) == pytest.approx(0.0, abs=1e-12)
 
+    def test_nearly_parallel_rows_in_float32(self):
+        r"""Rows of cosine 0.9999 in float32, $D = 10^6$, and $g = a +
+        10^{-4} h$ nearly in their span: the share is the float64 one to
+        1e-3 (float32 sums of $GG^\top$ and $Gg$ miss it by 18%)."""
+        size, cos = 1_000_000, 0.9999
+        gen = torch.Generator().manual_seed(0)
+        a, b, h = (torch.randn(size, generator=gen) for _ in range(3))
+        b = b - (b @ a) / (a @ a) * a
+        b = b * (a.norm() / b.norm())
+        G = torch.stack([a, cos * a + math.sqrt(1 - cos**2) * b])
+        g = a + 1e-4 * h
+        q, _ = torch.linalg.qr(G.double().T)
+        r = g.double() - q @ (q.T @ g.double())
+        want = float(r.norm() / g.double().norm())
+        assert residual_share(G, g) == pytest.approx(want, rel=1e-3)
+
     @pytest.mark.cuda
     def test_many_threads_at_once_on_cuda_in_a_fresh_process(self):
         """The nodes' threads call it at once from the first step: in a fresh

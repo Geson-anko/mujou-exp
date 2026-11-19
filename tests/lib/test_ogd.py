@@ -136,6 +136,33 @@ class TestIdentityMetric:
         want = -DT * (_flat(h) - u * (u @ _flat(h)))
         torch.testing.assert_close(_flat(params) - before, want, rtol=1e-9, atol=1e-12)
 
+    def test_nearly_parallel_kept_gradients_in_float32(self):
+        r"""Kept $g_1$ and $g_2$ of cosine 0.9999 in float32, $D = 10^6$, and
+        a new gradient $g_1 + 10^{-3} h$ nearly in their span: the step is
+        the float64 reference $-\eta (I - QQ^\top) g$ to 1e-3 and $G^\top
+        \Delta$ is within 1e-6 of $\lVert G\rVert \lVert\Delta\rVert$ (with
+        float32 sums of $G^\top G$ and $G^\top g$: 1.6e-3 and 3e-4)."""
+        size, cos = 1_000_000, 0.9999
+        gen = torch.Generator().manual_seed(0)
+        a, b, h = (torch.randn(size, generator=gen) for _ in range(3))
+        b = b - (b @ a) / (a @ a) * a
+        b = b * (a.norm() / b.norm())
+        g2 = cos * a + math.sqrt(1 - cos**2) * b
+        g3 = a + 1e-3 * h
+        params = [torch.zeros(size)]
+        bound = OGD(base=SGD(tau=1.0), n=4, every=DT).bind(params)
+        bound.step_([a], DT)
+        bound.step_([g2], DT)
+        before = params[0].clone()
+        bound.step_([g3], DT)
+        got = (params[0] - before).double()
+        G = torch.stack([a, g2]).double()
+        q, _ = torch.linalg.qr(G.T)
+        want = -DT * (g3.double() - q @ (q.T @ g3.double()))
+        assert float((got - want).norm()) <= 1e-3 * float(want.norm())
+        scale = float(G.norm() * got.norm())
+        assert float((G @ got).abs().max()) <= 1e-6 * scale
+
 
 class TestKeeping:
     @staticmethod

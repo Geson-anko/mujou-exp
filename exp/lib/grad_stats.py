@@ -45,9 +45,25 @@ from typing import Any, override
 import torch
 from mujou.pc.optim import BoundOptimizer, Optimizer
 
-__all__ = ["GradStats", "residual_share"]
+__all__ = ["GradStats", "gram64", "residual_share"]
 
 RANK_FLOOR = 1e-6  # of the largest eigenvalue of G G^T: a direction to drop
+CHUNK = 1 << 18  # values of D per float64 product in gram64
+
+
+def gram64(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    r"""$a b^\top$ ``(k, m)`` of ``a`` ``(k, D)`` and ``b`` ``(m, D)``, summed
+    in float64 over chunks of ``CHUNK`` values of $D$, on the CPU.
+
+    The sums are of millions of values: in float32 they lose the small
+    differences of nearly parallel rows, and the projections built on them
+    are no longer orthogonal. The chunks bound the float64 copies to
+    $(k + m) \cdot$ ``CHUNK`` values.
+    """
+    out = torch.zeros(len(a), len(b), dtype=torch.float64, device=a.device)
+    for s in range(0, a.shape[1], CHUNK):
+        out += a[:, s : s + CHUNK].double() @ b[:, s : s + CHUNK].double().T
+    return out.cpu()
 
 
 def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
@@ -59,12 +75,16 @@ def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
     nearly parallel rows add no direction. Returns 1.0 when ``G`` spans
     nothing and NaN when $g = 0$.
 
+    $GG^\top$ and $Gg$ are summed in float64 (``gram64``). ``GradStats``
+    keeps its $G$ in ``store`` (bfloat16 by default): a $g$ equal to a kept
+    gradient is off its rounded copy by about bfloat16's precision, which
+    floors $\rho$ near 2e-3.
+
     The $k \times k$ eigenproblem is solved on the CPU, whatever the device
     of ``G``: the first ``eigh`` on CUDA loads torch's CUDA linalg lazily,
     which raises when two node threads do it at once.
     """
-    gram = (G @ G.T).double().cpu()
-    lam, vec = torch.linalg.eigh(gram)
+    lam, vec = torch.linalg.eigh(gram64(G, G))
     top = float(lam[-1]) if len(lam) else 0.0
     norm = float(torch.linalg.vector_norm(g))
     if top <= 0:
@@ -72,7 +92,7 @@ def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
     keep = lam > RANK_FLOOR * top
     v, lam = vec[:, keep], lam[keep]
     # P g = G^T V diag(1/lam) V^T G g, the projection on the rows' span
-    coef = v @ ((v.T @ (G @ g).double().cpu()) / lam)
+    coef = v @ ((v.T @ gram64(G, g[None])[:, 0]) / lam)
     r = g - G.T @ coef.to(g)
     return float(torch.linalg.vector_norm(r)) / norm if norm > 0 else math.nan
 
