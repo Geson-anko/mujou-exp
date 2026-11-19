@@ -97,8 +97,9 @@ import mujou
 from exp.lib.elbo import LEVELS, dequantize, gauss_kl, gauss_nll
 from exp.lib.grad_stats import BoundGradStats, GradStats
 from exp.lib.ogd import OGD
+from exp.lib.optim import ScaledLR
 from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
-from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion
+from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion, mup_lr
 from exp.vision.schema.optim import OptimConf
 from exp.vision.schema.run import RunConf
 from mujou import DictSpec, MultiPort, Node, Port, TensorSpec, TimestampSpec
@@ -426,14 +427,18 @@ def _base(c: OptimConf, tau: float) -> pc.optim.SGD | pc.optim.RMSProp | pc.opti
 def make_optimizers(conf: RunConf, mods: VAEModules) -> dict[str, Optimizer]:
     r"""The optimizer of each node of ``VAEPC`` by its name (``NODES``):
     ``make_optimizer`` of ``conf.optim``, of ``tau * dec_scale`` for the
-    decoder's (``DECODER``); with ``measure.grad_stats``, each wrapped in
+    decoder's (``DECODER``); in muP (``model.param``), in ``ScaledLR`` of
+    the rates of ``mup_lr``; with ``measure.grad_stats``, each wrapped in
     ``GradStats`` of its node, the parameters named as in their module
     (``ln_sigma`` for $\ln \sigma$)."""
     out: dict[str, Optimizer] = {}
     modules = _node_modules(mods)
+    rates = mup_lr(mods, conf.model) if conf.model.param == "mup" else None
     for name in NODES:
         scale = conf.optim.dec_scale if name in DECODER else 1.0
         opt = make_optimizer(conf.optim, scale=scale)
+        if rates is not None:
+            opt = ScaledLR(inner=opt, scale=rates)
         if conf.measure.grad_stats:
             names: dict[Tensor, str] = {
                 p: n for n, p in modules[name].named_parameters()

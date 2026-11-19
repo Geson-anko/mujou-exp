@@ -118,6 +118,8 @@ class RunConf:
             raise ValueError(f"device must be 'cpu' or 'cuda[:i]', not {self.device!r}")
         if not self.time.frame > 0:
             raise ValueError(f"time.frame must be > 0, not {self.time.frame}")
+        if self.model.param == "mup" and self.optim.ogd_n:
+            raise ValueError("model.param mup is not with OGD (optim.ogd_n > 0)")
         hops = self.model.enc_nodes + self.model.dec_nodes + 2  # latent, out
         check_learn_interval(self.time, hops)
         size = self.data.tours.size

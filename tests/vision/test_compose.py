@@ -30,7 +30,7 @@ class TestOverrides:
         assert (t.frames, t.stride, t.advance, c.data.streams) == (8, 1, 1, 1)
         assert (c.model.arch, c.model.size, c.model.latent) == ("vit", "S", 256)
         assert (c.model.enc_nodes, c.model.dec_nodes) == (4, 2)
-        assert (c.model.width, c.model.heads, c.model.patch) == (256, 4, 16)
+        assert (c.model.width, c.model.head_count, c.model.patch) == (256, 4, 16)
         assert (c.time.frame, c.time.h, c.time.lam, c.time.r) == (0.1, 4e-3, 2e-3, 4e-3)
         assert (c.optim.kind, c.optim.tau) == ("sgd", 1e5)  # stays finite
         assert c.time.learn_interval == 0.09
@@ -97,6 +97,47 @@ class TestOverrides:
             compose([BASE, "optim.ogd_n=4", "optim.ogd_every=0"])
         with pytest.raises(ValueError, match="ogd_n"):
             compose([BASE, "optim.ogd_n=-1"])
+
+    def test_the_heads_are_of_64_dimensions_by_default(self) -> None:
+        assert compose([BASE]).model.head_count == 4
+        assert compose([BASE, "model.width=512"]).model.head_count == 8
+        two = compose([BASE, "model.width=512", "model.heads=2"])
+        assert two.model.head_count == 2
+        with pytest.raises(ValueError, match="heads"):
+            compose([BASE, "model.width=96"])
+
+    def test_scale_decoder_scales_the_decoders_channels(self) -> None:
+        assert compose([BASE, "model.width=512"]).model.decoder_widths == [
+            256,
+            128,
+            64,
+            32,
+            32,
+        ]
+        c = compose([BASE, "model.width=128", "model.scale_decoder=true"])
+        assert c.model.decoder_widths == [128, 64, 32, 16, 16]
+        with pytest.raises(ValueError, match="decoder"):
+            compose(
+                [
+                    BASE,
+                    "model.width=64",
+                    "model.scale_decoder=true",
+                    "model.decoder_channels=[256,128,64,32,30]",
+                ]
+            )
+
+    def test_mup_is_of_the_vit_of_64_dimensional_heads(self) -> None:
+        assert (
+            compose([BASE, "model.param=mup", "model.width=512"]).model.param == "mup"
+        )
+        for bad in (
+            ["model=resnet_s", "model.param=mup"],
+            ["model.param=mup", "model.width=512", "model.heads=4"],
+            ["model.param=mup", "optim.ogd_n=4"],
+            ["model.param=mu"],
+        ):
+            with pytest.raises(ValueError, match="param"):
+                compose([BASE, *bad])
 
     def test_grad_stats_is_off_by_default(self) -> None:
         assert not compose([BASE]).measure.grad_stats
