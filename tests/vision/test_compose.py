@@ -6,6 +6,7 @@ from hydra import initialize_config_module
 from hydra.errors import ConfigCompositionException
 
 from exp.vision.compose import compose, from_dict, to_dict
+from exp.vision.schema.optim import MUP_KINDS
 
 BASE = "+experiment=v0/base"
 TINY = "+experiment=v0/tiny"
@@ -127,17 +128,26 @@ class TestOverrides:
             )
 
     def test_mup_is_of_the_vit_of_64_dimensional_heads(self) -> None:
-        assert (
-            compose([BASE, "model.param=mup", "model.width=512"]).model.param == "mup"
-        )
+        mup = [BASE, "optim=rmsprop", "model.param=mup"]
+        assert compose([*mup, "model.width=512"]).model.param == "mup"
         for bad in (
-            ["model=resnet_s", "model.param=mup"],
-            ["model.param=mup", "model.width=512", "model.heads=4"],
-            ["model.param=mup", "optim.ogd_n=4"],
-            ["model.param=mu"],
+            ["model=resnet_s"],
+            ["model.width=512", "model.heads=4"],
+            ["optim.ogd_n=4"],
         ):
             with pytest.raises(ValueError, match="param"):
-                compose([BASE, *bad])
+                compose([*mup, *bad])
+        with pytest.raises(ValueError, match="param"):
+            compose([BASE, "model.param=mu"])
+
+    @pytest.mark.parametrize("kind", MUP_KINDS)
+    def test_mup_takes_the_optimizers_of_adams_rules(self, kind: str) -> None:
+        assert compose([BASE, f"optim={kind}", "model.param=mup"]).optim.kind == kind
+
+    @pytest.mark.parametrize("kind", ["sgd", "sgd_momentum", "nesterov", "adadelta"])
+    def test_mup_refuses_the_other_optimizers(self, kind: str) -> None:
+        with pytest.raises(ValueError, match=f"mup .*Adam.*{kind}"):
+            compose([BASE, f"optim={kind}", "model.param=mup"])
 
     def test_grad_stats_is_off_by_default(self) -> None:
         assert not compose([BASE]).measure.grad_stats

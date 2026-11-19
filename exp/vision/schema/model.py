@@ -40,8 +40,8 @@ class ModelConf:
     (``head_count``). With ``scale_decoder`` the decoder's
     channels are ``decoder_channels`` times ``width / BASE_WIDTH``
     (``decoder_widths``). ``param`` is the parametrization (``PARAMS``):
-    ``"mup"`` is of the ViT only, with heads of ``HEAD_DIM``, and not with
-    OGD (``RunConf``)."""
+    ``"mup"`` is of the ViT only, with heads of ``HEAD_DIM``, of an
+    optimizer of ``MUP_KINDS`` and not with OGD (``RunConf``)."""
 
     arch: str = "vit"
     size: str = "S"

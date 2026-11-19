@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from exp.vision.schema._check import check_choice
 
-__all__ = ["OGD_KINDS", "OPTIMIZERS", "OptimConf"]
+__all__ = ["MUP_KINDS", "OGD_KINDS", "OPTIMIZERS", "OptimConf"]
 
 OPTIMIZERS = (
     "sgd",
@@ -26,6 +26,10 @@ _USED = {
     "weight_decay": (0.0, ("adamw", "muon")),
 }
 OGD_KINDS = ("sgd", "rmsprop", "adamw")  # of exp.lib.ogd.OGD's base
+# The kinds whose step does not scale with the gradient (normalized per
+# coordinate, or orthogonalized), of which model.param=mup's rules
+# (exp.vision.models.mup_lr, Adam's) are; SGD's muP is another.
+MUP_KINDS = ("rmsprop", "rmsprop_centered", "adamw", "muon", "rprop")
 
 
 @dataclass(kw_only=True)

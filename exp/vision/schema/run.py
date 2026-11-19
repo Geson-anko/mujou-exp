@@ -9,7 +9,7 @@ from exp.vision.schema._check import check_choice
 from exp.vision.schema.data import DataConf
 from exp.vision.schema.measure import MeasureConf
 from exp.vision.schema.model import ModelConf
-from exp.vision.schema.optim import OptimConf
+from exp.vision.schema.optim import MUP_KINDS, OptimConf
 
 __all__ = [
     "PHASES",
@@ -120,6 +120,11 @@ class RunConf:
             raise ValueError(f"time.frame must be > 0, not {self.time.frame}")
         if self.model.param == "mup" and self.optim.ogd_n:
             raise ValueError("model.param mup is not with OGD (optim.ogd_n > 0)")
+        if self.model.param == "mup" and self.optim.kind not in MUP_KINDS:
+            raise ValueError(
+                f"model.param mup has the rules of Adam-type optimizers "
+                f"{MUP_KINDS}, not of optim.kind {self.optim.kind!r}"
+            )
         hops = self.model.enc_nodes + self.model.dec_nodes + 2  # latent, out
         check_learn_interval(self.time, hops)
         size = self.data.tours.size
