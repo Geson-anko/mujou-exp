@@ -58,8 +58,12 @@ def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
     at least ``RANK_FLOOR`` times the largest (in float64): parallel or
     nearly parallel rows add no direction. Returns 1.0 when ``G`` spans
     nothing and NaN when $g = 0$.
+
+    The $k \times k$ eigenproblem is solved on the CPU, whatever the device
+    of ``G``: the first ``eigh`` on CUDA loads torch's CUDA linalg lazily,
+    which raises when two node threads do it at once.
     """
-    gram = (G @ G.T).double()
+    gram = (G @ G.T).double().cpu()
     lam, vec = torch.linalg.eigh(gram)
     top = float(lam[-1]) if len(lam) else 0.0
     norm = float(torch.linalg.vector_norm(g))
@@ -68,8 +72,8 @@ def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
     keep = lam > RANK_FLOOR * top
     v, lam = vec[:, keep], lam[keep]
     # P g = G^T V diag(1/lam) V^T G g, the projection on the rows' span
-    coef = v @ ((v.T @ (G @ g).double()) / lam)
-    r = g - G.T @ coef.to(g.dtype)
+    coef = v @ ((v.T @ (G @ g).double().cpu()) / lam)
+    r = g - G.T @ coef.to(g)
     return float(torch.linalg.vector_norm(r)) / norm if norm > 0 else math.nan
 
 

@@ -2,6 +2,8 @@
 rows are those of a small case computed by hand."""
 
 import math
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -32,6 +34,29 @@ class TestResidualShare:
     def test_g_in_the_span_keeps_nothing(self):
         G = torch.stack([_f64(1, 2, 0), _f64(0, 1, 1)])
         assert residual_share(G, _f64(2, 5, 1)) == pytest.approx(0.0, abs=1e-12)
+
+    @pytest.mark.cuda
+    def test_many_threads_at_once_on_cuda_in_a_fresh_process(self):
+        """The nodes' threads call it at once from the first step: in a fresh
+        process (no linalg of CUDA loaded yet) 8 threads released together all
+        get the share, none the error of torch's lazy load of its CUDA linalg
+        ("lazy wrapper should be called at most once")."""
+        code = """
+import threading, torch
+from exp.lib.grad_stats import residual_share
+G = torch.eye(3, device="cuda")[:2]
+g = torch.ones(3, device="cuda")
+gate, out = threading.Barrier(8), []
+def go():
+    gate.wait()
+    out.append(residual_share(G, g))
+ts = [threading.Thread(target=go) for _ in range(8)]
+for t in ts: t.start()
+for t in ts: t.join()
+assert len(out) == 8 and all(abs(x - 3 ** -0.5) < 1e-6 for x in out), out
+"""
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-2000:]
 
 
 def _hand() -> tuple[list[torch.Tensor], list[dict]]:
