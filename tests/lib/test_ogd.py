@@ -152,6 +152,19 @@ class TestIdentityMetric:
                 want = -eta * (flat - q @ (q.T @ flat))
             torch.testing.assert_close(got, want, rtol=1e-12, atol=1e-14)
 
+    def test_a_non_finite_gradient_makes_the_step_non_finite_not_raise(self):
+        """A diverging run: once one of 3 kept gradients holds an inf, the
+        parameters go non-finite (the loop then calls the run diverged) and
+        nothing raises (``eigh`` would, on their Gram matrix)."""
+        params = _params()
+        bound = OGD(base=SGD(tau=1.0), n=4, every=DT).bind(params)
+        g1, g2, h = _grads(3)
+        bound.step_(g1, DT)
+        bound.step_(g2, DT)
+        bound.step_([x.clone().fill_(math.inf) for x in g1], DT)
+        bound.step_(h, DT)
+        assert not torch.isfinite(_flat(params)).all()
+
     def test_parallel_kept_gradients_add_one_direction(self):
         """Kept g and 2 g (a Gram matrix of rank 1): the step is the gradient
         off g alone, finite."""

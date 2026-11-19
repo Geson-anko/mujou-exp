@@ -264,9 +264,12 @@ def _split(flat: torch.Tensor, like: Sequence[torch.Tensor]) -> list[torch.Tenso
 def _pinv_solve(gram: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
     r"""$M^{+} b$ of the symmetric $M$ ``gram`` ``(k, k)`` and ``rhs`` ``(k,)``
     in float64 on the CPU, dropping the eigenvalues below ``RANK_FLOOR``
-    times the largest (0 when $M$ has none > 0)."""
-    lam, vec = torch.linalg.eigh(gram.double().cpu())
+    times the largest (0 when $M$ has none > 0). A non-finite $M$ (a
+    diverging run) gives NaN, which ``eigh`` would raise on."""
     b = rhs.double().cpu()
+    if not bool(torch.isfinite(gram).all()):
+        return torch.full_like(b, math.nan)
+    lam, vec = torch.linalg.eigh(gram.double().cpu())
     top = float(lam[-1])
     if top <= 0:
         return torch.zeros_like(b)

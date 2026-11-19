@@ -82,9 +82,14 @@ def residual_share(G: torch.Tensor, g: torch.Tensor) -> float:
 
     The $k \times k$ eigenproblem is solved on the CPU, whatever the device
     of ``G``: the first ``eigh`` on CUDA loads torch's CUDA linalg lazily,
-    which raises when two node threads do it at once.
+    which raises when two node threads do it at once. A non-finite $G$ or
+    $g$ (a diverging run) gives NaN: ``eigh`` raises on a non-finite Gram
+    matrix.
     """
-    lam, vec = torch.linalg.eigh(gram64(G, G))
+    gram = gram64(G, G)
+    if not (bool(torch.isfinite(gram).all()) and bool(torch.isfinite(g).all())):
+        return math.nan
+    lam, vec = torch.linalg.eigh(gram)
     top = float(lam[-1]) if len(lam) else 0.0
     norm = float(torch.linalg.vector_norm(g))
     if top <= 0:

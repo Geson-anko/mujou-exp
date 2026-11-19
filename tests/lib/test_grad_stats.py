@@ -35,6 +35,17 @@ class TestResidualShare:
         G = torch.stack([_f64(1, 2, 0), _f64(0, 1, 1)])
         assert residual_share(G, _f64(2, 5, 1)) == pytest.approx(0.0, abs=1e-12)
 
+    @pytest.mark.parametrize("bad", [math.inf, math.nan])
+    def test_a_non_finite_kept_row_is_nan_not_raised(self, bad):
+        """A diverging run keeps a non-finite gradient: the share is NaN
+        (``eigh`` raises on such a Gram matrix of 3 or more rows)."""
+        G = torch.stack([_f64(1, 0, 0), _f64(0, bad, 0), _f64(0, 0, 1)])
+        assert math.isnan(residual_share(G, _f64(1, 1, 1)))
+
+    def test_a_non_finite_g_is_nan(self):
+        G = torch.stack([_f64(1, 0, 0)])
+        assert math.isnan(residual_share(G, _f64(1, math.inf, 0)))
+
     def test_nearly_parallel_rows_in_float32(self):
         r"""Rows of cosine 0.9999 in float32, $D = 10^6$, and $g = a +
         10^{-4} h$ nearly in their span: the share is the float64 one to
