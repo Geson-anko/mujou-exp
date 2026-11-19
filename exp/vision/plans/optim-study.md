@@ -93,10 +93,10 @@ $d$ は SGD・RMSProp では $g$、AdamW では $\hat m$。$\hat v$ は射影の
 - `model.width` を ViT の幅とし、ヘッドの次元を 64 に固定する（`heads = width / 64`）。ヘッドの次元が幅によらないので、注意の $1/\sqrt{d_{\mathrm{head}}}$ は変えなくてよい
 - デコーダのチャネル `decoder_channels` も `width / 256` 倍にする（`model.scale_decoder`、既定は V14 の run だけ true）
 - `model.param`: `sp`（既定、いまの初期化と学習率）か `mup`。基準の幅は 256 で、幅 256 の `mup` は `sp` と同じ run になる
-- μP（Adam 形の規則、Tensor Programs V の表 3。幅の比 $k = w / 256$）
+- μP（Adam 形の規則、Tensor Programs V の表 3。幅の比 $k = w / 256$。倍率は同じ幅の SP に対するもの）
   - 入力の側（パッチの埋め込み、デコーダの $z$ からの `Linear`）: 初期化も学習率も変えない
-  - 隠れ層（ViT のブロックの行列、デコーダの中間の Conv）: 初期化の分散 $\propto 1/\text{fan\_in}$（いまの初期化のまま）、学習率 $\times 1/k$
-  - 出力の側（エンコーダの $(\mu, \ell)$ への head、readout の Conv）: 初期化の標準偏差 $\times 1/k$、学習率 $\times 1/k$
+  - 隠れ層（ViT のブロックの行列、デコーダの中間の Conv）: 学習率 $\times 1/k$。ViT のブロックの行列は、SP では幅によらず std 0.02 で、$1/\text{fan\_in}$ の分散ではない。μP ではその std を $k^{-1/2}$ 倍する。デコーダの Conv は、もともと std $\propto \text{fan\_in}^{-1/2}$ なので変えない
+  - 出力の側（エンコーダの $(\mu, \ell)$ への head、readout の Conv）: 初期化の std $\times k^{-1/2}$（もともと std $\propto \text{fan\_in}^{-1/2}$ なので、幅 256 の std の $1/k$ になる）、学習率 $\times 1/k$
   - bias・LayerNorm・GroupNorm・$\ln\sigma$: 変えない
   - テンソルごとの学習率の倍率は、optimizer に渡す倍率の表で与える（`fan_ins` と同じ、パラメータを鍵にした辞書）
 - coord check（`python -m exp.vision.coord_check`）: 幅 128・256・512・1024 で最初の 10 秒（100 フレーム）を学び、各ノードの出力の RMS と、その初期値からの変化を 0・10・50・100 フレームで出す。μP では幅によらず、SP では幅とともに変わるはず
