@@ -1,6 +1,7 @@
 """The VAE of PC-ALM against BP's float64 gradient of the same mean -ELBO
 (the same weights, stacks and noise), under the host's Jacobi steps."""
 
+import dataclasses
 import inspect
 import math
 import re
@@ -16,6 +17,7 @@ import mujou
 from exp.lib.elbo import dequantize, gauss_kl, gauss_nll
 from exp.lib.grad_stats import GradStats
 from exp.lib.host import Host
+from exp.lib.ogd import OGD
 from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
 from exp.vision.models import Block, VAEModules, build_vae, early_fusion
 from exp.vision.pc import (
@@ -453,6 +455,26 @@ class TestMakeOptimizer:
     )
     def test_each_kind_of_the_zoo(self, conf, want):
         assert make_optimizer(conf) == want
+
+    @pytest.mark.parametrize(
+        ("conf", "base"),
+        [
+            (OptimConf(kind="sgd", tau=2.0), pc.optim.SGD(tau=2.0)),
+            (
+                OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0),
+                pc.optim.RMSProp(tau=2.0, tau_v=7.0),
+            ),
+            (
+                OptimConf(kind="adamw", tau=2.0, tau_m=0.5, tau_v=7.0),
+                pc.optim.AdamW(tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.0),
+            ),
+        ],
+    )
+    def test_ogd_wraps_the_base_of_the_scaled_tau(self, conf, base):
+        conf.ogd_n, conf.ogd_every = 16, 0.1
+        got = make_optimizer(conf, scale=3.0)
+        want = OGD(base=dataclasses.replace(base, tau=6.0), n=16, every=0.1)
+        assert got == want
 
     def test_scale_multiplies_tau(self):
         c = OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0)

@@ -96,6 +96,7 @@ from torch import Tensor
 import mujou
 from exp.lib.elbo import LEVELS, dequantize, gauss_kl, gauss_nll
 from exp.lib.grad_stats import BoundGradStats, GradStats
+from exp.lib.ogd import OGD
 from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
 from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion
 from exp.vision.schema.optim import OptimConf
@@ -376,23 +377,15 @@ class GaussOut(Node):
 def make_optimizer(c: OptimConf, *, scale: float = 1.0) -> Optimizer:
     """The optimizer of ``c`` with the time constant ``c.tau * scale`` of the
     parameters (every time constant in seconds of virtual time): of
-    ``mujou.pc.optim`` or ``exp.lib.optim_zoo``."""
+    ``mujou.pc.optim`` or ``exp.lib.optim_zoo``, in ``exp.lib.ogd.OGD``
+    with ``c.ogd_n`` > 0."""
     tau = c.tau * scale
     match c.kind:
-        case "sgd":
-            return pc.optim.SGD(tau=tau)
+        case "sgd" | "rmsprop" | "adamw":
+            base = _base(c, tau)
+            return OGD(base=base, n=c.ogd_n, every=c.ogd_every) if c.ogd_n else base
         case "sgd_momentum":
             return pc.optim.SGD(tau=tau, tau_m=c.tau_m)
-        case "rmsprop":
-            return pc.optim.RMSProp(tau=tau, tau_v=c.tau_v, eps=c.eps)
-        case "adamw":
-            return pc.optim.AdamW(
-                tau=tau,
-                tau_m=c.tau_m,
-                tau_v=c.tau_v,
-                eps=c.eps,
-                weight_decay=c.weight_decay,
-            )
         case "nesterov":
             return Nesterov(tau=tau, tau_m=c.tau_m)
         case "rmsprop_centered":
@@ -404,6 +397,24 @@ def make_optimizer(c: OptimConf, *, scale: float = 1.0) -> Optimizer:
         case kind:
             assert kind == "muon"  # OptimConf checks the choice
             return Muon(
+                tau=tau,
+                tau_m=c.tau_m,
+                tau_v=c.tau_v,
+                eps=c.eps,
+                weight_decay=c.weight_decay,
+            )
+
+
+def _base(c: OptimConf, tau: float) -> pc.optim.SGD | pc.optim.RMSProp | pc.optim.AdamW:
+    """The optimizer of ``mujou.pc.optim`` of the kinds OGD takes."""
+    match c.kind:
+        case "sgd":
+            return pc.optim.SGD(tau=tau)
+        case "rmsprop":
+            return pc.optim.RMSProp(tau=tau, tau_v=c.tau_v, eps=c.eps)
+        case kind:
+            assert kind == "adamw"  # make_optimizer's match
+            return pc.optim.AdamW(
                 tau=tau,
                 tau_m=c.tau_m,
                 tau_v=c.tau_v,

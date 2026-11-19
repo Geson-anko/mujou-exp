@@ -137,6 +137,21 @@ class TestOptimizers:
         after = list(online.net.mods.decoder.parameters())
         assert any(not torch.equal(a, b) for a, b in zip(before, after, strict=True))
 
+    @pytest.mark.parametrize("kind", ["sgd", "rmsprop", "adamw"])
+    def test_a_tiny_run_with_ogd_stays_finite_and_learns(self, kind):
+        conf = compose([*TINY, f"optim={kind}", "optim.ogd_n=4", "optim.ogd_every=0.2"])
+        online = Online(conf, None, RandomStacks(conf))
+        before = [p.clone() for p in online.net.mods.decoder.parameters()]
+        try:
+            for _ in range(5):
+                online.advance()
+            row = online.log()
+        finally:
+            online.close()
+        assert all(v is not None and math.isfinite(v) for v in row.values())
+        after = list(online.net.mods.decoder.parameters())
+        assert any(not torch.equal(a, b) for a, b in zip(before, after, strict=True))
+
     def test_grad_stats_gives_a_row_a_second_for_every_node(self):
         conf = compose([*TINY, "optim=muon", "measure.grad_stats=true"])
         online = Online(conf, None, RandomStacks(conf))

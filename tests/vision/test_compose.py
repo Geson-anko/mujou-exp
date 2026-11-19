@@ -80,6 +80,24 @@ class TestOverrides:
         with pytest.raises(ValueError, match="dec_scale"):
             compose([BASE, "optim.dec_scale=0"])
 
+    def test_ogd_is_off_by_default_and_of_sgd_rmsprop_adamw(self) -> None:
+        assert compose([BASE]).optim.ogd_n == 0
+        for kind in ("sgd", "rmsprop", "adamw"):
+            c = compose([BASE, f"optim={kind}", "optim.ogd_n=16", "optim.ogd_every=1"])
+            assert (c.optim.ogd_n, c.optim.ogd_every) == (16, 1.0)
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim=muon", "optim.ogd_n=16"])
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim=sgd_momentum", "optim.ogd_n=16"])
+
+    def test_ogd_every_without_ogd_or_not_positive_fails(self) -> None:
+        with pytest.raises(ValueError, match="ogd_every"):
+            compose([BASE, "optim.ogd_every=10"])
+        with pytest.raises(ValueError, match="ogd_every"):
+            compose([BASE, "optim.ogd_n=4", "optim.ogd_every=0"])
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim.ogd_n=-1"])
+
     def test_grad_stats_is_off_by_default(self) -> None:
         assert not compose([BASE]).measure.grad_stats
         assert compose([BASE, "measure.grad_stats=true"]).measure.grad_stats
