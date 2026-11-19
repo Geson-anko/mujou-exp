@@ -1,7 +1,7 @@
 r"""Optimizers in time for the nodes, as ``pc.optim.Optimizer``: the direction
 of Adam with the step size of SGD (``Grafted(AdamDirection)``), RMSProp (the
 direction of Adam without the first moment, ``RMSPropDirection``), a warm-up of
-any optimizer (``Warmup``), and ``adam``, Adam of a learning rate per step as a
+any optimizer (``Warmup``), a learning rate per parameter (``ScaledLR``), and ``adam``, Adam of a learning rate per step as a
 ``pc.optim.AdamW`` (for fits by steps, such as the offline bound).
 
 ``StepAdamW`` counts steps rather than time: ``torch.optim.AdamW`` with the
@@ -22,11 +22,12 @@ $\eta / n$ of a matrix and $\eta$ of a vector, the per-layer rate of Adam under
 the spectral condition (muP; Yang, Simon & Bernstein 2023).
 """
 
+import dataclasses
 import math
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, override
+from typing import Any, cast, override
 
 import torch
 from mujou.pc.optim import AdamW, BoundOptimizer, Optimizer
@@ -41,6 +42,7 @@ __all__ = [
     "DECAYS",
     "Grafted",
     "RMSPropDirection",
+    "ScaledLR",
     "StepAdamW",
     "Warmup",
     "adam",
@@ -406,6 +408,88 @@ class _BoundWarmup(BoundOptimizer):
     def load_state_dict(self, state: Mapping[str, Any], /) -> None:
         self._t.copy_(state["t"])
         self._inner.load_state_dict(state["inner"])
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScaledLR(Optimizer):
+    r"""``inner`` with the learning rate of each parameter multiplied by its
+    ``scale`` $s$ (a table keyed by the parameters themselves, as
+    ``fan_ins``'s): the parameters of one $s$ are bound together to ``inner``
+    with ``tau / s`` (``dataclasses.replace``), so a step of a parameter is
+    that of ``inner`` of the learning rate $s \cdot \text{elapsed} / \tau$,
+    and its other time constants (the moments') stay. A decoupled weight
+    decay scales with it (AdamW's $\eta w$, as a per-group learning rate of
+    ``torch.optim.AdamW``). Per-layer learning rates, such as muP's
+    (``exp.vision.models.mup_lr``).
+
+    Bound to parameters of one $s = 1$, it is ``inner.bind`` itself (the same
+    steps and state, bit for bit). The groups' order is that of the first
+    parameter of each; within a group, the bound order.
+
+    Raises:
+        ValueError: ``inner`` is not a dataclass with a field ``tau``, a
+            scale is not finite and > 0, or binding a parameter ``scale``
+            does not hold.
+    """
+
+    inner: Optimizer
+    scale: Mapping[torch.Tensor, float] = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        fields = getattr(self.inner, "__dataclass_fields__", {})
+        if "tau" not in fields:
+            raise ValueError(
+                f"ScaledLR.inner needs a field tau, not {type(self.inner).__name__}"
+            )
+        if not all(0 < s < math.inf for s in self.scale.values()):
+            raise ValueError("ScaledLR: every scale must be finite and > 0")
+
+    @override
+    def bind(self, params: Iterable[torch.Tensor]) -> BoundOptimizer:
+        params = list(params)
+        missing = [tuple(p.shape) for p in params if p not in self.scale]
+        if missing:
+            raise ValueError(f"no scale for the parameters of shapes {missing}")
+        groups: dict[float, list[int]] = {}
+        for i, p in enumerate(params):
+            groups.setdefault(self.scale[p], []).append(i)
+        if list(groups) == [1.0]:
+            return self.inner.bind(params)
+        bound = []
+        for s, idx in groups.items():
+            inner = self.inner
+            if s != 1.0:
+                # a dataclass with tau (__post_init__)
+                tau = getattr(inner, "tau") / s
+                inner = dataclasses.replace(cast(Any, inner), tau=tau)
+            bound.append((idx, inner.bind([params[i] for i in idx])))
+        return _BoundGroups(len(params), bound)
+
+
+class _BoundGroups(BoundOptimizer):
+    """Each group of the parameters (their places) stepped by its own bound."""
+
+    def __init__(
+        self, count: int, groups: list[tuple[list[int], BoundOptimizer]]
+    ) -> None:
+        self._count = count
+        self._groups = groups
+
+    @override
+    def step_(self, grads: Sequence[torch.Tensor], elapsed: float) -> None:
+        if len(grads) != self._count:
+            raise ValueError(f"{len(grads)} gradients for {self._count} params")
+        for idx, bound in self._groups:
+            bound.step_([grads[i] for i in idx], elapsed)
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"groups": [bound.state_dict() for _, bound in self._groups]}
+
+    @override
+    def load_state_dict(self, state: Mapping[str, Any], /) -> None:
+        for (_, bound), saved in zip(self._groups, state["groups"], strict=True):
+            bound.load_state_dict(saved)
 
 
 def adam(

@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 import mujou.pc as pc
@@ -11,6 +12,7 @@ from exp.lib.optim import (
     AdamDirection,
     Grafted,
     RMSPropDirection,
+    ScaledLR,
     StepAdamW,
     Warmup,
     adam,
@@ -546,3 +548,75 @@ class TestPerTensorRate:
             bound.step_(gs, 0.03)
         for a, b in zip(plain, copies, strict=True):
             assert torch.equal(a, b)
+
+
+class TestScaledLR:
+    ADAMW = pc.optim.AdamW(tau=2.0, tau_m=0.3, tau_v=1.0, weight_decay=0.1)
+
+    @pytest.mark.parametrize(
+        "inner",
+        [pc.optim.SGD(tau=2.0), pc.optim.RMSProp(tau=2.0, tau_v=1.0), ADAMW],
+        ids=["sgd", "rmsprop", "adamw"],
+    )
+    def test_each_parameter_is_the_inner_of_tau_over_its_scale(self, inner):
+        """Scales 1, 0.5, 1: the first and the last move as ``inner`` bound to
+        them alone, the second as ``inner`` of ``tau / 0.5`` (learning rate x
+        0.5, AdamW's decay with it), bit for bit."""
+        params = _params((2, 3), (4,), (3,))
+        grads = _grads(params, 4)
+        got = [p.clone() for p in params]
+        scale = dict(zip(got, [1.0, 0.5, 1.0], strict=True))
+        bound = ScaledLR(inner=inner, scale=scale).bind(got)
+        for gs in grads:
+            bound.step_(gs, 0.03)
+        ones = [[gs[0], gs[2]] for gs in grads]
+        want_ones = _trajectory(inner, [params[0], params[2]], ones)
+        half = dataclasses.replace(inner, tau=inner.tau / 0.5)
+        (want_half,) = _trajectory(half, [params[1]], [[gs[1]] for gs in grads])
+        assert torch.equal(got[0], want_ones[0]) and torch.equal(got[2], want_ones[1])
+        assert torch.equal(got[1], want_half)
+
+    def test_sgds_step_is_scaled(self):
+        """SGD: a scale s moves a parameter by s times the step."""
+        (p,) = _params((5,))
+        (g,) = _grads([p], 1)
+        q = p.clone()
+        ScaledLR(inner=pc.optim.SGD(tau=2.0), scale={q: 0.25}).bind([q]).step_(g, 0.03)
+        torch.testing.assert_close(q - p, -0.25 * 0.03 / 2.0 * g[0])
+
+    def test_all_ones_is_the_inner_itself(self):
+        params = _params((2, 3), (4,))
+        inner = pc.optim.RMSProp(tau=2.0, tau_v=1.0)
+        bound = ScaledLR(inner=inner, scale=dict.fromkeys(params, 1.0)).bind(params)
+        assert type(bound) is type(inner.bind(params))
+
+    def test_a_resumed_copy_steps_as_the_original(self):
+        params = _params((2, 3), (4,))
+        opt = ScaledLR(
+            inner=self.ADAMW, scale=dict(zip(params, [1.0, 0.1], strict=True))
+        )
+        grads = _grads(params, 6)
+        bound = opt.bind(params)
+        for gs in grads[:3]:
+            bound.step_(gs, 0.03)
+        copy = [p.clone() for p in params]
+        other = ScaledLR(
+            inner=self.ADAMW, scale=dict(zip(copy, [1.0, 0.1], strict=True))
+        )
+        resumed = other.bind(copy)
+        resumed.load_state_dict(bound.state_dict())
+        for gs in grads[3:]:
+            bound.step_(gs, 0.03)
+            resumed.step_(gs, 0.03)
+        assert all(torch.equal(a, b) for a, b in zip(params, copy, strict=True))
+
+    def test_refused(self):
+        (p,) = _params((3,))
+        with pytest.raises(ValueError, match="scale"):
+            ScaledLR(inner=pc.optim.SGD(tau=1.0), scale={}).bind([p])
+        with pytest.raises(ValueError, match="scale"):
+            ScaledLR(inner=pc.optim.SGD(tau=1.0), scale={p: 0.0})
+        with pytest.raises(ValueError, match="tau"):
+            ScaledLR(
+                inner=Warmup(inner=pc.optim.SGD(tau=1.0), seconds=1.0), scale={p: 1.0}
+            )
