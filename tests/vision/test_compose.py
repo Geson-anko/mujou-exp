@@ -48,9 +48,37 @@ class TestOverrides:
         c = compose([BASE, f"model={arch}_{size}"])
         assert (c.model.arch, c.model.size) == (arch, size.upper())
 
-    @pytest.mark.parametrize("kind", ["sgd", "sgd_momentum", "rmsprop", "adamw"])
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "sgd",
+            "sgd_momentum",
+            "rmsprop",
+            "adamw",
+            "nesterov",
+            "rmsprop_centered",
+            "adadelta",
+            "rprop",
+            "muon",
+        ],
+    )
     def test_optimizer_group(self, kind: str) -> None:
         assert compose([BASE, f"optim={kind}"]).optim.kind == kind
+
+    @pytest.mark.parametrize(
+        ("kind", "key"),
+        [("rprop", "tau_m"), ("nesterov", "tau_v"), ("rprop", "eps")],
+    )
+    def test_a_setting_the_kind_does_not_use_fails(self, kind: str, key: str) -> None:
+        with pytest.raises(ValueError, match=key):
+            compose([BASE, f"optim={kind}", f"optim.{key}=3"])
+
+    def test_dec_scale_is_of_every_kind_and_positive(self) -> None:
+        assert (
+            compose([BASE, "optim=rprop", "optim.dec_scale=10"]).optim.dec_scale == 10
+        )
+        with pytest.raises(ValueError, match="dec_scale"):
+            compose([BASE, "optim.dec_scale=0"])
 
     def test_unknown_optimizer_fails_in_post_init(self) -> None:
         with pytest.raises(ValueError, match="foo"):

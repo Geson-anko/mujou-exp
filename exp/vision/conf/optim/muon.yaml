@@ -1,0 +1,9 @@
+# @package optim
+# exp.lib.optim_zoo.Muon: the matrices by Muon (match_rms_adamw), the rest by
+# AdamW, both of tau and the weight decay 0.01 (V11: tau 1e3, 1e4, 1e5).
+kind: muon
+tau: 1.0e4
+tau_m: 1.0
+tau_v: 30.0
+eps: 1.0e-8
+weight_decay: 0.01

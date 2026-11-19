@@ -15,6 +15,7 @@ from torch import Tensor
 import mujou
 from exp.lib.elbo import dequantize, gauss_kl, gauss_nll
 from exp.lib.host import Host
+from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
 from exp.vision.models import Block, VAEModules, build_vae, early_fusion
 from exp.vision.pc import (
     HOPS,
@@ -23,6 +24,7 @@ from exp.vision.pc import (
     GaussOut,
     Latent,
     make_optimizer,
+    make_optimizers,
 )
 from exp.vision.schema import OptimConf, RunConf, TimeConf
 from exp.vision.schema.run import check_learn_interval
@@ -31,6 +33,7 @@ from tests.vision.test_models import D, stacks, tiny
 
 FRAME = 0.1
 ARCHS = ["vit", "resnet"]
+NODES = ("enc1", "enc2", "enc3", "enc4", "dec1", "dec2", "out")
 
 
 def _conf(
@@ -153,6 +156,18 @@ class GradRecorder(pc.optim.Optimizer):
                 pass
 
         return _Bound()
+
+
+class _Binds(pc.optim.Optimizer):
+    """SGD that records the parameters of each binding (``bound``)."""
+
+    def __init__(self) -> None:
+        self.bound: list[list[Tensor]] = []
+
+    @override
+    def bind(self, params: Iterable[Tensor]) -> pc.optim.BoundOptimizer:
+        self.bound.append(list(params))
+        return pc.optim.SGD(tau=1.0).bind(self.bound[-1])
 
 
 def _constrained(net: VAEPC) -> list[Any]:
@@ -410,6 +425,88 @@ class TestMakeOptimizer:
     )
     def test_each_kind_is_mujous_optimizer_with_its_settings(self, conf, want):
         assert make_optimizer(conf) == want
+
+    @pytest.mark.parametrize(
+        ("conf", "want"),
+        [
+            (
+                OptimConf(kind="nesterov", tau=2.0, tau_m=0.5),
+                Nesterov(tau=2.0, tau_m=0.5),
+            ),
+            (
+                OptimConf(kind="rmsprop_centered", tau=2.0, tau_v=7.0, eps=1e-6),
+                RMSPropCentered(tau=2.0, tau_v=7.0, eps=1e-6),
+            ),
+            (
+                OptimConf(kind="adadelta", tau=0.1, tau_v=7.0, eps=1e-6),
+                Adadelta(tau=0.1, tau_v=7.0, eps=1e-6),
+            ),
+            (OptimConf(kind="rprop", tau=2.0), Rprop(tau=2.0)),
+            (
+                OptimConf(
+                    kind="muon", tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.01
+                ),
+                Muon(tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.01),
+            ),
+        ],
+    )
+    def test_each_kind_of_the_zoo(self, conf, want):
+        assert make_optimizer(conf) == want
+
+    def test_scale_multiplies_tau(self):
+        c = OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0)
+        assert make_optimizer(c, scale=10.0) == pc.optim.RMSProp(tau=20.0, tau_v=7.0)
+
+
+class TestNodeOptimizers:
+    def test_the_decoders_tau_is_scaled_and_the_rest_kept(self):
+        """``optim.dec_scale``: dec1, dec2 and out learn with tau * dec_scale,
+        the encoder with tau (latent has no parameters)."""
+        conf = _conf("vit")
+        conf.optim = OptimConf(kind="rmsprop", tau=1e3, tau_v=30.0, dec_scale=10.0)
+        opts = make_optimizers(conf)
+        assert sorted(opts) == sorted([*NODES])
+        for name, opt in opts.items():
+            want = 1e4 if name in ("dec1", "dec2", "out") else 1e3
+            assert opt == pc.optim.RMSProp(tau=want, tau_v=30.0), name
+
+    @pytest.mark.parametrize("arch", ARCHS)
+    def test_each_node_binds_its_own_optimizer(self, arch):
+        """Given a mapping, every node binds the optimizer of its name to its
+        own parameters (the readout's and ln sigma for out)."""
+        conf = _conf(arch)
+        mods = _mods(conf)
+        binds = {name: _Binds() for name in NODES}
+        VAEPC(mods, conf=conf, optimizer=binds)
+        parts = [*mods.encoder.parts, *mods.decoder.parts]
+        own = {
+            **{n: list(m.parameters()) for n, m in zip(NODES[:6], parts, strict=True)},
+            "out": [*mods.decoder.readout.parameters(), mods.likelihood.log_sigma],
+        }
+        for name in NODES:
+            got = [[id(p) for p in ps] for ps in binds[name].bound]
+            assert got == [[id(p) for p in own[name]]], name
+
+    def test_muons_matrices_are_the_linear_and_conv_weights(self):
+        """Muon takes the parameters of 2 or more dimensions for matrices: in
+        ViT-S and its decoder those are exactly the weights of the
+        ``nn.Linear`` and ``nn.Conv2d`` layers."""
+        from exp.vision.compose import compose
+
+        mods = build_vae(compose(["+experiment=v0/base"]), seed=0)
+        weights = {
+            m.weight
+            for module in mods.modules().values()
+            for m in module.modules()
+            if isinstance(m, torch.nn.Linear | torch.nn.Conv2d)
+        }
+        matrices = {
+            p
+            for module in mods.modules().values()
+            for p in module.parameters()
+            if p.ndim >= 2
+        }
+        assert matrices == weights
 
 
 def test_the_new_nodes_hold_no_cross_node_backward_or_grad():

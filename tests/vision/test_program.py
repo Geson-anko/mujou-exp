@@ -3,6 +3,7 @@ first logged loss against the float64 -ELBO of the noise it drew, its
 schedules, and a stopped-and-resumed run against one never stopped."""
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,25 @@ class TestOnline:
         """It is ``python -m exp.vision.eval`` (tests/vision/test_eval.py)."""
         with pytest.raises(ValueError, match="task"):
             compose([*TINY, "task=posthoc"])
+
+
+class TestOptimizers:
+    @pytest.mark.parametrize(
+        "kind", ["nesterov", "rmsprop_centered", "adadelta", "rprop", "muon"]
+    )
+    def test_a_tiny_run_of_each_kind_stays_finite_and_learns(self, kind):
+        conf = compose([*TINY, f"optim={kind}", "optim.dec_scale=10"])
+        online = Online(conf, None, RandomStacks(conf))
+        before = [p.clone() for p in online.net.mods.decoder.parameters()]
+        try:
+            for _ in range(5):
+                online.advance()
+            row = online.log()
+        finally:
+            online.close()
+        assert all(v is not None and math.isfinite(v) for v in row.values())
+        after = list(online.net.mods.decoder.parameters())
+        assert any(not torch.equal(a, b) for a, b in zip(before, after, strict=True))
 
 
 class TestResume:

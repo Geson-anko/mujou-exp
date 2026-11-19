@@ -1,0 +1,7 @@
+# @package optim
+# exp.lib.optim_zoo.RMSPropCentered(tau, tau_v, eps): the gradient over its
+# standard deviation; normalized as rmsprop.yaml's (V11: tau 1e3, 1e4, 1e5).
+kind: rmsprop_centered
+tau: 1.0e4
+tau_v: 30.0
+eps: 1.0e-8
