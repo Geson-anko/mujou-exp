@@ -1,6 +1,6 @@
 # vision: 単一ストリームから PC-ALM で VAE のエンコーダを学ぶ
 
-計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V10 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
+計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V10 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。V11〜V15（optimizer の研究）の結果は、図と表で読める [report-optim.html](report-optim.html) にまとめた。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
 
 ## 実行方法
 
@@ -1111,7 +1111,7 @@ run の id と全列は `python -m exp.vision.tables --stream runs/v15-speed` �
 
 ### 1 フレームの一歩ではなく、60 秒の変位で読む
 
-格子の $T_{\mathrm{enc}}$ = 300・$T_{\mathrm{dec}}$ = 300 秒（`5a45baf7`）は、1 フレームの一歩から測った速さ（enc2 500 秒、dec2 576 秒）が RMSProp $10^4$（同じ測り方で約 350 秒、590 秒）とほぼ同じなのに、$z$ をまったく読まなかった（−0.002、span 1.644）。V12 の読み「1 フレームの一歩から測った $T_{\mathrm{dec}}$ が 500 秒以上なら $z$ を読む」は、optimizer をまたぐと成り立たない。
+格子の $T_{\mathrm{enc}}$ = 300・$T_{\mathrm{dec}}$ = 300 秒（`5a45baf7`）は、1 フレームの一歩から測った速さ（enc2 500 秒、dec2 576 秒）が RMSProp $10^4$（同じ測り方で 340 秒、603 秒。V12 の表の 590 秒は、一歩を 2 桁に丸めた 1.7e-4 から求めた値）とほぼ同じなのに、$z$ をまったく読まなかった（−0.002、span 1.644）。V12 の読み「1 フレームの一歩から測った $T_{\mathrm{dec}}$ が 500 秒以上なら $z$ を読む」は、optimizer をまたぐと成り立たない。
 
 そこで、チェックポイント（60 秒ごと）から、重みが 60 秒で実際にどれだけ動いたか（正味の変位）を測った。モジュール（エンコーダ全体・デコーダ全体）の行列について $\lVert\theta(t+60) - \theta(t)\rVert / \lVert\theta(t)\rVert$ を、300〜1800 秒で平均した値である（以下、60 秒の変位）。
 
