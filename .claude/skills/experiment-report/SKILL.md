@@ -1,21 +1,26 @@
 ---
 name: experiment-report
-description: 実験の結果を、図と動画で読める 1 枚の HTML 資料（exp/<name>/report.html）にまとめる手順。手本は exp/video/report.html。データは runs/ から抜き出して埋め込み、外部ファイルなしでブラウザで開ける形にする。日本語の本文は必ず skill yomiyasu で推敲する。「レポートを作って」「結果を資料にまとめて」「report.html のような資料」「分かりやすい資料」と言われたときに参照する。
+description: 実験の結果を、図と動画で読める 1 枚の HTML 資料（exp/<name>/report.html）にまとめる手順。手本は exp/vision/report.html と exp/video/report.html。データは runs/ から抜き出して埋め込み、外部ファイルなしでブラウザで開ける形にする。日本語の本文は sonnet か haiku のサブエージェントに skill yomiyasu で推敲させる。「レポートを作って」「結果を資料にまとめて」「report.html のような資料」「分かりやすい資料」と言われたときに参照する。
 ---
 
 # 実験の結果を 1 枚の HTML 資料にまとめる
 
-実験の `README.md` は数字の記録で、読み手は実験した本人を想定している。この skill で作る `report.html` は、実験に関わっていない人が上から読んで「何をして、何が分かったか」を掴むための資料にする。手本は [exp/video/report.html](../../../exp/video/report.html)。迷ったらこれを開いて構成と書き方を真似る。
+実験の `README.md` は数字の記録で、読み手は実験した本人を想定している。この skill で作る `report.html` は、実験に関わっていない人が上から読んで「何をして、何が分かったか」を掴むための資料にする。**図と表を使い、順を追って体系的に書き、そのレポートだけで実験の全体（何を問い、どう調べ、何が分かり、何が棄却されたか）が分かる**ようにする。
 
-関連: skill [yomiyasu](../yomiyasu/SKILL.md)（日本語の推敲。**必須**）、skill `dataviz`（グラフの形と色を選ぶとき）。
+手本は次の 2 つ。迷ったら開いて構成と書き方を真似る。
+
+- [exp/vision/report.html](../../../exp/vision/report.html): 新しい手本。問いごとに節を分け、問い → 図 → 読み取りの順に進める書き方と、判定の表の例
+- [exp/video/report.html](../../../exp/video/report.html): 入力の動画をその場で再生できる作りと、段をまたぐ構成の例
+
+関連: skill [yomiyasu](../yomiyasu/SKILL.md)（日本語の推敲。**必須**。sonnet か haiku のサブエージェントに任せる）、skill `dataviz`（グラフの形と色を選ぶとき）。
 
 ## 守ること
 
 - **数字は `README.md`（とそこからリンクした `results/`）と `runs/` にあるものだけを使う**。資料のために新しく計算した値（比、平均など）は、元の数字と計算方法を図の説明に書く。推測で埋めない
 - **1 ファイルで完結させる**。データは `<script type="application/json" id="data">` に埋め込み、グラフは素の JavaScript と SVG で描く。外部から読むのは Google Fonts のスタイルシートだけにする（オフラインでもフォールバックのフォントで読める）
-- **生成スクリプトや抜き出した JSON は commit しない**。scratchpad に置く。commit するのは `report.html` と、`README.md` からのリンクだけ
+- **抜き出しと HTML 生成のスクリプトはリポジトリに置いて commit する**（`exp/<name>/report/`、または実験のコードの隣）。tmp や scratchpad だけに置かない（[memory/feedback_no_sources_in_tmp.md](../../../memory/feedback_no_sources_in_tmp.md)）。抜き出した大きな JSON は commit しなくてよい（スクリプトから作り直せるようにする）。commit するのは `report.html`、スクリプト、`README.md` からのリンク
 - 重い元データ（動画のフレーム全体、全ステップのログ）はそのまま埋め込まない。間引く、区間を切る、状態から描き直すなどで、ファイルを数 MB 以下に保つ（手本は約 300 KB）
-- **日本語の本文は書き終えたら必ず skill yomiyasu で推敲する**（手順 5）。yomiyasu を通していない資料を commit しない
+- **日本語の本文は書き終えたら、sonnet か haiku のサブエージェントに skill yomiyasu で推敲させる**（手順 5）。推敲を通していない資料を commit しない
 
 ## 構成
 
@@ -53,7 +58,8 @@ description: 実験の結果を、図と動画で読める 1 枚の HTML 資料�
 ## 文章
 
 - 読み手は「機械学習は分かるが、この実験は知らない人」。初出の用語（`preq`、`stop_target`、κ など）はその場で説明するか、「指標の読み方」に入れる
-- 文末は「です・ます」。1 文に 1 つのことを書く
+- 文体は文部科学省のホームページのように、平易で適切な日本語にする。直訳的な単語（「〜を持つ」「〜において」の多用など）と、凝った比喩を避ける。主語と述語を近くに置き、1 文に 1 つのことを書く。文末は「です・ます」（[memory/feedback_results_writing.md](../../../memory/feedback_results_writing.md)）
+- 資料全体は、問い、方法、結果、判定の順に 1 つずつ書く。節の途中から読んでも、図と表の説明だけで意味が分かるようにする
 - 結果の節では図の前に問いと条件、図の後に「図から何が言えるか」を数字つきで書く。図に描いていない主張を足さない
 - 不都合な結果（仮説の棄却、発散、未解決の課題）も同じ重さで書く
 
@@ -65,7 +71,7 @@ description: 実験の結果を、図と動画で読める 1 枚の HTML 資料�
 
 ### 2. データを抜き出す
 
-scratchpad に Python のスクリプトを書き、`runs/` から図に要る値だけを 1 つの JSON にまとめる。浮動小数点は有効数字 4〜5 桁に丸めてサイズを抑える。スクリプトは `uv run python` で動かす。
+リポジトリ内（`exp/<name>/report/` など）に Python のスクリプトを書き、`runs/` から図に要る値だけを 1 つの JSON にまとめる。浮動小数点は有効数字 4〜5 桁に丸めてサイズを抑える。スクリプトは `uv run python` で動かす。JSON は commit しなくてよい。
 
 ### 3. HTML を書く
 
@@ -79,10 +85,10 @@ scratchpad に Python のスクリプトを書き、`runs/` から図に要る�
 
 ### 5. yomiyasu で推敲する（必須）
 
-日本語の本文（リード文、カード、本文、図の説明、表の根拠）を skill yomiyasu で推敲する。Skill ツールで `yomiyasu` を呼び、HTML から抜き出した本文を渡し、推敲後の文を HTML に戻す。数字・コード・用語は変えない。推敲で意味が変わっていないかを、手順 4 と同じく `README.md` と突き合わせて確かめる。
+日本語の本文（リード文、カード、本文、図の説明、表の根拠）を、**sonnet か haiku のサブエージェント**に skill yomiyasu で推敲させる。書いたモデル（Opus）自身では推敲しない。Opus の日本語は直訳調で読みにくいためである。サブエージェントには、HTML から抜き出した本文と、上の「文章」の文体（文部科学省のホームページのような平易な日本語、直訳的な単語と凝った比喩を避ける、主語と述語を近くに、1 文 1 事項）を渡し、返ってきた文を HTML に戻す。数字・コード・用語は変えない。推敲で意味が変わっていないかを、手順 4 と同じく `README.md` と突き合わせて確かめる。
 
 ### 6. リンクして commit する
 
-`exp/<name>/README.md` の冒頭付近に、資料の範囲（どのマイルストーンか）と開き方を 1 文で書いてリンクする（手本: 「M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)」）。`just run` を通してから `docs(<name>): add a report page of ...` で commit する。
+`exp/<name>/README.md` の冒頭付近に、資料の範囲（どのマイルストーンか）と開き方を 1 文で書いてリンクする（手本: 「M6〜M10 の結果を、入力の動画とグラフで読める 1 枚のページにまとめたものが [report.html](report.html)」）。`just run` を通してから `docs(<name>): add a report page of ...` で commit する（スクリプトも同じ commit に含める）。
 
 資料を claude.ai で共有したいと言われたら、Artifact ツールで同じファイルを publish する。言われなければ publish しない。
