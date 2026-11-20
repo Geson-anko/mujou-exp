@@ -61,6 +61,7 @@ class TestOverrides:
             "adadelta",
             "rprop",
             "muon",
+            "angular",
         ],
     )
     def test_optimizer_group(self, kind: str) -> None:
@@ -68,7 +69,13 @@ class TestOverrides:
 
     @pytest.mark.parametrize(
         ("kind", "key"),
-        [("rprop", "tau_m"), ("nesterov", "tau_v"), ("rprop", "eps")],
+        [
+            ("rprop", "tau_m"),
+            ("nesterov", "tau_v"),
+            ("rprop", "eps"),
+            ("rmsprop", "vec_scale"),
+            ("muon", "tau_scalar"),
+        ],
     )
     def test_a_setting_the_kind_does_not_use_fails(self, kind: str, key: str) -> None:
         with pytest.raises(ValueError, match=key):

@@ -94,6 +94,7 @@ from mujou.types import Device
 from torch import Tensor
 
 import mujou
+from exp.lib.angular import Angular
 from exp.lib.elbo import LEVELS, dequantize, gauss_kl, gauss_nll
 from exp.lib.grad_stats import BoundGradStats, GradStats
 from exp.lib.ogd import OGD
@@ -395,6 +396,15 @@ def make_optimizer(c: OptimConf, *, scale: float = 1.0) -> Optimizer:
             return Adadelta(tau=tau, tau_v=c.tau_v, eps=c.eps)
         case "rprop":
             return Rprop(tau=tau)
+        case "angular":
+            return Angular(
+                tau=tau,
+                tau_m=c.tau_m,
+                tau_v=c.tau_v,
+                eps=c.eps,
+                vec_scale=c.vec_scale,
+                tau_scalar=c.tau_scalar,
+            )
         case kind:
             assert kind == "muon"  # OptimConf checks the choice
             return Muon(

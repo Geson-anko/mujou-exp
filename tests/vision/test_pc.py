@@ -14,6 +14,7 @@ import torch
 from torch import Tensor
 
 import mujou
+from exp.lib.angular import Angular
 from exp.lib.elbo import dequantize, gauss_kl, gauss_nll
 from exp.lib.grad_stats import GradStats
 from exp.lib.host import Host
@@ -494,6 +495,20 @@ class TestMakeOptimizer:
         got = make_optimizer(conf, scale=3.0)
         want = OGD(base=dataclasses.replace(base, tau=6.0), n=16, every=0.1)
         assert got == want
+
+    def test_angular_scales_tau_but_not_tau_scalar(self):
+        """``dec_scale`` slows the decoder's matrices and vectors, not its
+        $\\ln\\sigma$ (``tau_scalar``)."""
+        c = OptimConf(
+            kind="angular",
+            tau=300.0,
+            tau_m=0.5,
+            tau_v=7.0,
+            vec_scale=20.0,
+            tau_scalar=5e3,
+        )
+        want = Angular(tau=3000.0, tau_m=0.5, tau_v=7.0, vec_scale=20.0, tau_scalar=5e3)
+        assert make_optimizer(c, scale=10.0) == want
 
     def test_scale_multiplies_tau(self):
         c = OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0)

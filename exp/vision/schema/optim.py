@@ -16,14 +16,23 @@ OPTIMIZERS = (
     "adadelta",
     "rprop",
     "muon",
+    "angular",
 )
 # The time constants and settings of a kind: their defaults and the kinds that
 # use them (another kind must leave them, as a sweep of them would change nothing).
 _USED = {
-    "tau_m": (1.0, ("sgd_momentum", "adamw", "nesterov", "muon")),
-    "tau_v": (30.0, ("rmsprop", "adamw", "rmsprop_centered", "adadelta", "muon")),
-    "eps": (1e-8, ("rmsprop", "adamw", "rmsprop_centered", "adadelta", "muon")),
+    "tau_m": (1.0, ("sgd_momentum", "adamw", "nesterov", "muon", "angular")),
+    "tau_v": (
+        30.0,
+        ("rmsprop", "adamw", "rmsprop_centered", "adadelta", "muon", "angular"),
+    ),
+    "eps": (
+        1e-8,
+        ("rmsprop", "adamw", "rmsprop_centered", "adadelta", "muon", "angular"),
+    ),
     "weight_decay": (0.0, ("adamw", "muon")),
+    "vec_scale": (10.0, ("angular",)),
+    "tau_scalar": (1e4, ("angular",)),
 }
 OGD_KINDS = ("sgd", "rmsprop", "adamw")  # of exp.lib.ogd.OGD's base
 # The kinds whose step does not scale with the gradient (normalized per
@@ -34,14 +43,17 @@ MUP_KINDS = ("rmsprop", "rmsprop_centered", "adamw", "muon", "rprop")
 
 @dataclass(kw_only=True)
 class OptimConf:
-    """The optimizer of the nodes: ``"sgd"`` (``mujou.pc.optim.SGD(tau)``),
+    r"""The optimizer of the nodes: ``"sgd"`` (``mujou.pc.optim.SGD(tau)``),
     ``"sgd_momentum"`` (``SGD(tau, tau_m)``), ``"rmsprop"`` (``RMSProp(tau,
     tau_v, eps)``) or ``"adamw"`` of ``mujou.pc.optim``, or one of
     ``exp.lib.optim_zoo``: ``"nesterov"`` (``Nesterov(tau, tau_m)``),
     ``"rmsprop_centered"`` (``RMSPropCentered(tau, tau_v, eps)``),
     ``"adadelta"`` (``Adadelta(tau, tau_v, eps)``), ``"rprop"``
     (``Rprop(tau)``) or ``"muon"`` (``Muon(tau, tau_m, tau_v, eps,
-    weight_decay)``). All time constants are in seconds of virtual time;
+    weight_decay)``), or ``"angular"`` (``exp.lib.angular.Angular(tau, tau_m,
+    tau_v, eps, vec_scale, tau_scalar)``: ``tau`` is the seconds a matrix
+    takes to turn by a radian, ``tau_scalar`` that of $\ln\sigma$'s
+    RMSProp, which ``dec_scale`` leaves). All time constants are in seconds of virtual time;
     ``tau`` is that of the parameters (the learning rate is the time per
     ``tau``), ``tau_m`` that of the first moment, ``tau_v`` that of the
     second. The decoder's nodes (``dec1``, ``dec2``, ``out``) learn with
@@ -58,6 +70,8 @@ class OptimConf:
     tau_v: float = 30.0
     eps: float = 1e-8
     weight_decay: float = 0.0
+    vec_scale: float = 10.0  # angular's: its vectors' RMSProp is of vec_scale * tau
+    tau_scalar: float = 1e4  # angular's: its scalars' (ln sigma's) RMSProp
     dec_scale: float = 1.0  # of every kind
     ogd_n: int = 0  # 0: no OGD
     ogd_every: float = 1.0  # seconds; left at 1.0 without OGD

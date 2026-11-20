@@ -121,7 +121,7 @@ class TestOnline:
 
 class TestOptimizers:
     @pytest.mark.parametrize(
-        "kind", ["nesterov", "rmsprop_centered", "adadelta", "rprop", "muon"]
+        "kind", ["nesterov", "rmsprop_centered", "adadelta", "rprop", "muon", "angular"]
     )
     def test_a_tiny_run_of_each_kind_stays_finite_and_learns(self, kind):
         conf = compose([*TINY, f"optim={kind}", "optim.dec_scale=10"])
