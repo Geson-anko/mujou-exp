@@ -1169,3 +1169,42 @@ span が最も小さいのは (100, 3000) の 0.715 だが、`recon_blur` の条
 - RMSProp・AdamW が 1 つの $\tau$ で学べるのは、要素ごとに一歩を揃えるので、エンコーダとデコーダの変位がこの範囲に入るからだと読める。SGD は勾配の大きいデコーダだけが速く動くので、デコーダだけを遅くする必要がある
 - 速さを直接決める `angular` は、RMSProp より良くならなかった。勾配の移動平均の向きに進むと、同じ $\tau$ でも正味の変位が大きくなる
 - これまでの最小の span は、幅 256 で RMSProp $3 \cdot 10^4$ の 0.635、全体で幅 1024 の μP RMSProp $10^5$ の 0.587（どちらも 1 seed）
+
+## V16: 同じモデルを、ストリームでなく普通の VAE として学ぶ（回す前に決めたこと、2026-11-20）
+
+**背景**: V11〜V15 で最も span が小さかったのは、幅 1024・μP・RMSProp $\tau = 10^5$ の run（V14 の `b2006f0a-s0`、span 0.587、`recon_blur` 0.432）である。この値が、モデルそのものの限界なのか、ストリームと PC-ALM で学ぶことによる限界なのかは分かっていない。μP は今後も使う（ユーザーの判断、2026-11-20）。
+
+**問い**
+
+1. 同じモデルを、ランダムに選んだ stack のミニバッチで、BP と AdamW で学ぶと、span・after・`recon_blur`・描き戻した画像はどこまで良くなるか
+2. ストリームの run が見たのと同じ 1800 秒ぶんの stack だけで学んだ場合と、学習用の動画すべてで学んだ場合で、どう違うか
+
+**学び方**（`exp/vision/iid.py`）: モデルと初期値は `b2006f0a-s0` の `config.yaml` のまま（ViT-S、幅 1024、μP、`scale_decoder`、seed 0）。目的の式もストリームの run と同じ ELBO（学習する $\ln\sigma$、$y = (x+u)/256$、$z$ はサンプル）で、BP で微分する。
+
+- optimizer: AdamW（$\beta$ = 0.9・0.999、weight decay 0）。μP の規則で、隠れ層と出力の行列の学習率を幅 / 256 で割る（`mup_lr`）
+- 学習率: 最初の 1000 step で 0 から線形に上げ、60000 step で cosine で 0 まで下げる。勾配の clip はしない
+- batch: 100 stack。1 step 約 0.08 秒（4090）
+- stack の選び方: 一様に、重複を許して選ぶ
+  - `span`: ストリームの run の 1800 秒（18000 stack）。after は学習に使っていない場面になる
+  - `all`: 学習用の動画すべて（Zurich を除く 479350 フレーム）。after も学習のデータに含まれる
+- checkpoint の時刻: 見た stack の数 × 0.1 秒とする（1 step = 10 秒）。$t$ = 1800 秒は、ストリームの run が 1800 秒で見るのと同じ 18000 stack を見たところ（180 step で、学習率はまだ上がっている途中）。最後は 600000 秒（60000 step）
+- 評価: ストリームの run と同じ `stream_eval` と `z_use`
+
+**run**: `span`・`all` × 学習率 $\{10^{-4}, 3 \cdot 10^{-4}, 10^{-3}\}$、seed 0。6 本。出力は `runs/v16-iid/iid-<data>-lr<lr>-s0/`。
+
+```bash
+# std-0X の 4090 で（環境は fleet の run と同じ）
+export OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data
+python -m exp.vision.iid --config <b2006f0a-s0 の config.yaml> --data all --lr 3e-4 --steps 60000 --out <run_dir>
+python -m exp.vision.stream_eval <run_dir> && python -m exp.vision.z_use <run_dir>
+```
+
+**判定**: 学習率は、data ごとに最後の checkpoint の span が最小のものを選ぶ。それを `b2006f0a-s0` の 1800 秒と比べる。span の差が 0.07 未満なら区別しない（V11〜V15 と同じ）。画像（`posthoc_stream/<t>-span.png`）も目で比べる。
+
+**予想**
+
+- `all` の最小の span は 0.35 以下で、ストリームの 0.587 よりはっきり小さい
+- `all` の `recon_blur`（span）は 0.30 以下で、ストリームの 0.432 より小さい
+- `span` は、span が `all` より小さく、after が span より 0.1 以上大きい（同じ 1800 秒を何百回も見るので、覚えてしまう）
+- どの run もデコーダは $z$ を読む（`z_use` の差 > 0.2）
+- $t$ = 1800 秒（同じ 18000 stack）では、ストリームの run と区別できない。学習率が上がりきっていないので、参考にとどめる
