@@ -1,4 +1,4 @@
-"""Build ``exp/vision/report-optim.html``, the report of V11-V15, from the
+"""Build ``exp/vision/report-optim.html``, the report of V11-V16, from the
 runs and the page template ``optim.html.in`` next to this file.
 
 It reads, for each run of the batches ``BATCHES`` under ``runs/``: the
@@ -7,8 +7,11 @@ config, the stream evaluation (``posthoc_stream/summary.jsonl`` and
 row of ``z_use.jsonl``, the relative step of a frame of ``enc2`` and ``dec2``
 (``grad.jsonl``, 300 s on) and the 60 s drift of ``exp.vision.drift`` (one
 JSON line per run in ``--drift``, which needs the checkpoints on the NAS).
-The decoded images (``posthoc_stream/01800.0-span.png``) of ``IMAGES`` are
-shrunk by ``ffmpeg`` and embedded::
+V16 (``V16_RUNS``, the VAE of ``V16_STREAM`` learned the plain way by
+``exp.vision.iid``) adds the span and after of every checkpoint against the
+stacks seen ($t$ / ``time.frame``) and the last probes and ``z_use``
+(``v16_row``). The decoded images of ``IMAGES`` (``posthoc_stream/<t>-<group>.png``)
+are shrunk by ``ffmpeg`` and embedded::
 
     uv run python -m exp.vision.report.build_optim --drift runs/optim-drift.jsonl
 """
@@ -40,12 +43,25 @@ BATCHES = [
 ]
 # the V8 runs kept: RMSProp 1e4, the 3 seeds of the reference
 V8_KEEP = {"v0-base-142ba038-s0", "v0-base-142ba038-s1", "v0-base-142ba038-s2"}
+V16_STREAM = "v14-width/v0-base-b2006f0a-s0"
+V16_RUNS = [
+    f"v16-iid/iid-{d}-lr{lr}-s0"
+    for d in ("all", "span")
+    for lr in ("1e-4", "3e-4", "1e-3")
+]
+# key: (run, picture of posthoc_stream/)
 IMAGES = {
-    "sgd": "v11-zoo/v0-base-43ddd19d-s0",
-    "rms": "v11-zoo/v0-base-64ae5ffa-s0",
-    "sgd_dec100": "v12-dec/v0-base-dcbe054c-s0",
-    "ang_300_300": "v15-speed/v0-base-5a45baf7-s0",
-    "ang_1000_1000": "v15-speed/v0-base-0a32295e-s0",
+    "sgd": ("v11-zoo/v0-base-43ddd19d-s0", "01800.0-span.png"),
+    "rms": ("v11-zoo/v0-base-64ae5ffa-s0", "01800.0-span.png"),
+    "sgd_dec100": ("v12-dec/v0-base-dcbe054c-s0", "01800.0-span.png"),
+    "ang_300_300": ("v15-speed/v0-base-5a45baf7-s0", "01800.0-span.png"),
+    "ang_1000_1000": ("v15-speed/v0-base-0a32295e-s0", "01800.0-span.png"),
+    "v16_stream": (V16_STREAM, "01800.0-span.png"),
+    "v16_all_1800": ("v16-iid/iid-all-lr1e-3-s0", "01800.0-span.png"),
+    "v16_all": ("v16-iid/iid-all-lr3e-4-s0", "600000.0-span.png"),
+    "v16_all_after": ("v16-iid/iid-all-lr3e-4-s0", "600000.0-after.png"),
+    "v16_span": ("v16-iid/iid-span-lr3e-4-s0", "600000.0-span.png"),
+    "v16_span_after": ("v16-iid/iid-span-lr3e-4-s0", "600000.0-after.png"),
 }
 PLACEHOLDER = "/*__DATA__*/"
 
@@ -142,9 +158,36 @@ def run_row(run: Path, drift: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def image(run: Path) -> str:
-    """The 3 rows of the decoded images at 1800 s, half size, as a JPEG data
-    URI."""
+def v16_row(run: Path) -> dict[str, Any]:
+    """The span and after of every checkpoint of ``run`` against the stacks
+    seen, and its last probes of span and ``z_use``."""
+    conf = yaml.safe_load((run / "config.yaml").read_text())
+    frame = conf["time"]["frame"]
+    d = run / "posthoc_stream"
+    summ = sorted(_jsonl(d / "summary.jsonl"), key=lambda r: r["t"])
+    p = max(
+        (r for r in _jsonl(d / "probes.jsonl") if r["group"] == "span"),
+        key=lambda r: r["t"],
+    )
+    z = _jsonl(d / "z_use.jsonl")[-1]
+    iid = run / "iid.json"
+    return {
+        "id": run.name,
+        "data": json.loads(iid.read_text())["data"] if iid.exists() else "stream",
+        "lr": json.loads(iid.read_text())["lr"] if iid.exists() else None,
+        "stacks": [round(r["t"] / frame) for r in summ],
+        "span": [_r(r["span"]) for r in summ],
+        "after": [_r(r["after"]) for r in summ],
+        "t_last": summ[-1]["t"],
+        "rb": _r(p["recon_blur"]),
+        "dyn": _r(p["dyn_1/copy_1"]),
+        "zd": _r(z["span_shifted"] - z["span"]),
+    }
+
+
+def image(run: Path, picture: str) -> str:
+    """The 3 rows of the decoded images ``posthoc_stream/<picture>``, half
+    size, as a JPEG data URI."""
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "x.jpg"
         subprocess.run(
@@ -154,7 +197,7 @@ def image(run: Path) -> str:
                 "error",
                 "-y",
                 "-i",
-                str(run / "posthoc_stream" / "01800.0-span.png"),
+                str(run / "posthoc_stream" / picture),
                 "-vf",
                 "scale=iw/2:-1",
                 "-q:v",
@@ -181,7 +224,11 @@ def main() -> None:
             if b.startswith("v8") and run.name not in V8_KEEP:
                 continue
             runs.append(run_row(run, drift))
-    data = {"runs": runs, "img": {k: image(args.runs / v) for k, v in IMAGES.items()}}
+    data = {
+        "runs": runs,
+        "v16": [v16_row(args.runs / r) for r in [V16_STREAM, *V16_RUNS]],
+        "img": {k: image(args.runs / r, f) for k, (r, f) in IMAGES.items()},
+    }
     page = (HERE / "optim.html.in").read_text()
     if page.count(PLACEHOLDER) != 1:
         raise ValueError(f"the template must hold {PLACEHOLDER} once")
