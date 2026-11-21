@@ -9,7 +9,8 @@ and is read between units only: its evaluation reads the live modules
 (no copy). The loop decides when, from the ``Schedule`` the ``Built`` gives.
 After unit ``u`` (counted from 1) it, in this order:
 
-1. writes a line of ``stream.jsonl`` every ``log`` units (``Built.log``, the
+1. appends the lines of ``Built.rows`` to their files (``RECORDS``), then
+   writes a line of ``stream.jsonl`` every ``log`` units (``Built.log``, the
    one point where the program synchronizes with its device): ``{"t",
    "<unit>s", ...}``; a value that is not finite there is a divergence;
 2. evaluates ``"val"`` every ``evaluate`` units and at the last unit, and
@@ -60,9 +61,12 @@ from exp.lib.rundir import METRICS, EnvError, Exit, RunDir
 from exp.vision.compose import from_dict, to_dict
 from exp.vision.schema.run import RunConf
 
-__all__ = ["STATUS_EVERY", "Built", "Program", "Schedule", "every", "run"]
+__all__ = ["RECORDS", "STATUS_EVERY", "Built", "Program", "Schedule", "every", "run"]
 
 STATUS_EVERY = 30.0  # seconds of wall time between two heartbeats
+# The metrics files a program writes through Built.rows, beside METRICS: cut
+# back on resume as they are.
+RECORDS = ("grad.jsonl",)
 _SPLITS = ("val", "test")
 
 
@@ -124,6 +128,11 @@ class Built(Protocol):
     def log(self) -> dict[str, float | None]:
         """The values of a line of ``stream.jsonl`` since the last one (the
         prequential error), and reset the sums."""
+        ...
+
+    def rows(self) -> Mapping[str, list[dict[str, Any]]]:
+        """The lines of the program's own metrics files (``RECORDS``) made
+        in the unit just run, by file name, and forget them."""
         ...
 
     def evaluate(self, split: str) -> dict[str, float]:
@@ -271,7 +280,7 @@ def run(program: Program, job: Path, *, attempt: int) -> int:
     docstring). Exceptions do not escape: an ``EnvError`` gives
     ``Exit.ENV``, any other ``Exit.ERROR``, each with its traceback on
     stderr and the final ``state`` in ``status.json``."""
-    rd = RunDir(job.parent)
+    rd = RunDir(job.parent, metrics=(*METRICS, *RECORDS))
     status = _Status(rd, attempt)
     try:
         return _Loop(program, rd, status, attempt).run()
@@ -315,7 +324,7 @@ class _Loop:
         )
         tree = ckpt.load_resume(rd.root, group=job["group"])
         if tree is None:  # a fresh start: no lines of an earlier one
-            rd.truncate(dict.fromkeys(METRICS, 0))
+            rd.truncate(dict.fromkeys(rd.metrics, 0))
             u = 0
         else:
             rd.truncate(tree["offsets"])
@@ -372,6 +381,10 @@ class _Loop:
         run diverged, if it did."""
         s = built.schedule
         t = s.t(u)
+        for name, rows in built.rows().items():
+            out = self._rd.jsonl(name)
+            for row in rows:
+                out.append(row)
         if s.log and u % s.log == 0:
             values = built.log()
             self._stream.append({"t": t, f"{s.unit}s": u, **_clean(values)})
@@ -480,7 +493,8 @@ class _Loop:
                 self._last.get("val"), diverged=diverged is not None
             ),
             "metrics_sha256": {
-                name.removesuffix(".jsonl"): _sha256(rd.root / name) for name in METRICS
+                name.removesuffix(".jsonl"): _sha256(rd.root / name)
+                for name in rd.metrics
             },
             "peak": _peak(self._conf.device),
         }

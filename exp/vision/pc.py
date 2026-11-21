@@ -82,7 +82,8 @@ as these tests do.
 """
 
 import math
-from typing import TypedDict, override
+from collections.abc import Mapping
+from typing import Any, TypedDict, override
 
 import mujou.pc as pc
 import torch
@@ -93,17 +94,24 @@ from mujou.types import Device
 from torch import Tensor
 
 import mujou
+from exp.lib.angular import Angular
 from exp.lib.elbo import LEVELS, dequantize, gauss_kl, gauss_nll
-from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion
+from exp.lib.grad_stats import BoundGradStats, GradStats
+from exp.lib.ogd import OGD
+from exp.lib.optim import ScaledLR
+from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
+from exp.vision.models import LogSigma, VAEModules, build_vae, early_fusion, mup_lr
 from exp.vision.schema.optim import OptimConf
 from exp.vision.schema.run import RunConf
 from mujou import DictSpec, MultiPort, Node, Port, TensorSpec, TimestampSpec
 
 __all__ = [
+    "DECODER",
     "HOPS",
     "KL_STATS",
     "LEARN_INTERVAL",
     "NLL_STATS",
+    "NODES",
     "VAEPC",
     "GaussOut",
     "KLStats",
@@ -111,9 +119,12 @@ __all__ = [
     "NLLStats",
     "build_net",
     "make_optimizer",
+    "make_optimizers",
 ]
 
 HOPS = 8  # inp -> enc1..4 -> latent -> dec1..2 -> out
+NODES = ("enc1", "enc2", "enc3", "enc4", "dec1", "dec2", "out")  # that learn
+DECODER = ("dec1", "dec2", "out")  # of tau * optim.dec_scale
 LEARN_INTERVAL = 0.09  # module docstring: in (58, 100] ms at 0.1 s frames of 2 ms
 _SCALAR = TensorSpec(())
 
@@ -365,25 +376,93 @@ class GaussOut(Node):
         return [g_in, nll.detach().sum() / per, sq.sum() / per, n, *g_theta]
 
 
-def make_optimizer(c: OptimConf) -> Optimizer:
-    """The ``mujou.pc.optim`` optimizer of ``c`` (every time constant in
-    seconds of virtual time)."""
+def make_optimizer(c: OptimConf, *, scale: float = 1.0) -> Optimizer:
+    """The optimizer of ``c`` with the time constant ``c.tau * scale`` of the
+    parameters (every time constant in seconds of virtual time): of
+    ``mujou.pc.optim`` or ``exp.lib.optim_zoo``, in ``exp.lib.ogd.OGD``
+    with ``c.ogd_n`` > 0."""
+    tau = c.tau * scale
     match c.kind:
-        case "sgd":
-            return pc.optim.SGD(tau=c.tau)
+        case "sgd" | "rmsprop" | "adamw":
+            base = _base(c, tau)
+            return OGD(base=base, n=c.ogd_n, every=c.ogd_every) if c.ogd_n else base
         case "sgd_momentum":
-            return pc.optim.SGD(tau=c.tau, tau_m=c.tau_m)
-        case "rmsprop":
-            return pc.optim.RMSProp(tau=c.tau, tau_v=c.tau_v, eps=c.eps)
+            return pc.optim.SGD(tau=tau, tau_m=c.tau_m)
+        case "nesterov":
+            return Nesterov(tau=tau, tau_m=c.tau_m)
+        case "rmsprop_centered":
+            return RMSPropCentered(tau=tau, tau_v=c.tau_v, eps=c.eps)
+        case "adadelta":
+            return Adadelta(tau=tau, tau_v=c.tau_v, eps=c.eps)
+        case "rprop":
+            return Rprop(tau=tau)
+        case "angular":
+            return Angular(
+                tau=tau,
+                tau_m=c.tau_m,
+                tau_v=c.tau_v,
+                eps=c.eps,
+                vec_scale=c.vec_scale,
+                tau_scalar=c.tau_scalar,
+            )
         case kind:
-            assert kind == "adamw"  # OptimConf checks the choice
-            return pc.optim.AdamW(
-                tau=c.tau,
+            assert kind == "muon"  # OptimConf checks the choice
+            return Muon(
+                tau=tau,
                 tau_m=c.tau_m,
                 tau_v=c.tau_v,
                 eps=c.eps,
                 weight_decay=c.weight_decay,
             )
+
+
+def _base(c: OptimConf, tau: float) -> pc.optim.SGD | pc.optim.RMSProp | pc.optim.AdamW:
+    """The optimizer of ``mujou.pc.optim`` of the kinds OGD takes."""
+    match c.kind:
+        case "sgd":
+            return pc.optim.SGD(tau=tau)
+        case "rmsprop":
+            return pc.optim.RMSProp(tau=tau, tau_v=c.tau_v, eps=c.eps)
+        case kind:
+            assert kind == "adamw"  # make_optimizer's match
+            return pc.optim.AdamW(
+                tau=tau,
+                tau_m=c.tau_m,
+                tau_v=c.tau_v,
+                eps=c.eps,
+                weight_decay=c.weight_decay,
+            )
+
+
+def make_optimizers(conf: RunConf, mods: VAEModules) -> dict[str, Optimizer]:
+    r"""The optimizer of each node of ``VAEPC`` by its name (``NODES``):
+    ``make_optimizer`` of ``conf.optim``, of ``tau * dec_scale`` for the
+    decoder's (``DECODER``); in muP (``model.param``), in ``ScaledLR`` of
+    the rates of ``mup_lr``; with ``measure.grad_stats``, each wrapped in
+    ``GradStats`` of its node, the parameters named as in their module
+    (``ln_sigma`` for $\ln \sigma$)."""
+    out: dict[str, Optimizer] = {}
+    modules = _node_modules(mods)
+    rates = mup_lr(mods, conf.model) if conf.model.param == "mup" else None
+    for name in NODES:
+        scale = conf.optim.dec_scale if name in DECODER else 1.0
+        opt = make_optimizer(conf.optim, scale=scale)
+        if rates is not None:
+            opt = ScaledLR(inner=opt, scale=rates)
+        if conf.measure.grad_stats:
+            names: dict[Tensor, str] = {
+                p: n for n, p in modules[name].named_parameters()
+            }
+            names[mods.log_sigma] = "ln_sigma"
+            opt = GradStats(inner=opt, node=name, names=names)
+        out[name] = opt
+    return out
+
+
+def _node_modules(mods: VAEModules) -> dict[str, torch.nn.Module]:
+    """The module of each node of ``NODES`` (``out``'s readout)."""
+    parts = [*mods.encoder.parts, *mods.decoder.parts, mods.decoder.readout]
+    return dict(zip(NODES, parts, strict=True))
 
 
 class VAEPC(mujou.Network):
@@ -394,17 +473,22 @@ class VAEPC(mujou.Network):
 
     The ``pc.Layer`` nodes replay their updates from CUDA graphs with
     ``ctl.cuda_graph`` on CUDA (``latent`` and ``out`` do not). The messages
-    are of the modules' dtype. ``optimizer`` is bound by each node to its own
+    are of the modules' dtype. Each node binds its optimizer to its own
     parameters.
 
     Args:
         mods: The modules, on ``conf.device``.
         conf: The run: its time, streams, ``ctl.cuda_graph`` and device.
-        optimizer: The optimizer of every node.
+        optimizer: The optimizer of every node, or of each by its name
+            (``NODES``; ``make_optimizers``).
     """
 
     def __init__(
-        self, mods: VAEModules, *, conf: RunConf, optimizer: Optimizer
+        self,
+        mods: VAEModules,
+        *,
+        conf: RunConf,
+        optimizer: Optimizer | Mapping[str, Optimizer],
     ) -> None:
         super().__init__()
         t = conf.time
@@ -425,19 +509,24 @@ class VAEPC(mujou.Network):
         encoder = [(f"enc{i + 1}", m) for i, m in enumerate(mods.encoder.parts)]
         decoder = [(f"dec{i + 1}", m) for i, m in enumerate(mods.decoder.parts)]
         self.names = tuple(name for name, _ in encoder + decoder)
+        opts: Mapping[str, Optimizer] = (
+            dict.fromkeys(NODES, optimizer)
+            if isinstance(optimizer, Optimizer)
+            else optimizer
+        )
         for name, module in encoder:
-            spec, port = self._layer(name, module, spec, port, conf, optimizer, graph)
+            spec, port = self._layer(name, module, spec, port, conf, opts[name], graph)
         self.latent = Latent(act_spec=spec, tau=tau, device=dev)
         port.connect(self.latent.prev)
         spec, port = self.latent.act_spec, self.latent.next
         for name, module in decoder:
-            spec, port = self._layer(name, module, spec, port, conf, optimizer, graph)
+            spec, port = self._layer(name, module, spec, port, conf, opts[name], graph)
         self.out = GaussOut(
             mods.decoder.readout,
             mods.likelihood,
             act_spec=spec,
             tau=tau,
-            optimizer=optimizer,
+            optimizer=opts["out"],
             learn_interval=t.learn_interval,
             device=dev,
         )
@@ -473,6 +562,16 @@ class VAEPC(mujou.Network):
         port.connect(node.prev)
         return node.act_spec, node.next
 
+    def grad_rows(self) -> list[dict[str, Any]]:
+        """The rows of the nodes' ``GradStats`` since the last call, node by
+        node (none without them). Read between the steps of the run."""
+        rows: list[dict[str, Any]] = []
+        for name in NODES:
+            bound = getattr(self, name).optimizer
+            if isinstance(bound, BoundGradStats):
+                rows += bound.drain()
+        return rows
+
     def sample(
         self, x: Tensor, u: Tensor, eps: Tensor, mask: Tensor, reset: Tensor
     ) -> pc.msg.Sample:
@@ -493,6 +592,6 @@ class VAEPC(mujou.Network):
 
 def build_net(conf: RunConf) -> VAEPC:
     """The VAE of ``conf`` learned by PC-ALM: the modules of ``build_vae``
-    (seed ``conf.seed``) with the optimizer of ``conf.optim``."""
+    (seed ``conf.seed``) with the optimizers of ``make_optimizers``."""
     mods = build_vae(conf, seed=conf.seed)
-    return VAEPC(mods, conf=conf, optimizer=make_optimizer(conf.optim))
+    return VAEPC(mods, conf=conf, optimizer=make_optimizers(conf, mods))

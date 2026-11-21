@@ -37,7 +37,14 @@ from typing import override
 import torch
 from torch import Tensor, nn
 
-from exp.vision.schema.model import ARCHS, BLOCKS, DEC_NODES, ENC_NODES, ModelConf
+from exp.vision.schema.model import (
+    ARCHS,
+    BASE_WIDTH,
+    BLOCKS,
+    DEC_NODES,
+    ENC_NODES,
+    ModelConf,
+)
 from exp.vision.schema.run import RunConf
 
 __all__ = [
@@ -51,10 +58,13 @@ __all__ = [
     "PatchEmbed",
     "ResNetPart",
     "UpStage",
+    "ROLES",
     "VAEModules",
     "ViTPart",
     "build_vae",
     "early_fusion",
+    "mup_lr",
+    "mup_roles",
     "param_table",
     "sincos_2d",
 ]
@@ -210,7 +220,7 @@ def _vit_parts(m: ModelConf, *, channels: int, size: int) -> list[nn.Module]:
     tokens = (size // m.patch) ** 2
     parts: list[nn.Module] = []
     for i in range(ENC_NODES):
-        blocks = [Block(w, m.heads) for _ in range(k)]
+        blocks = [Block(w, m.head_count) for _ in range(k)]
         embed = (
             PatchEmbed(channels=channels, patch=m.patch, size=size, dim=w)
             if i == 0
@@ -374,7 +384,7 @@ class Decoder(nn.Module):
 
 
 def _decoder(m: ModelConf, *, channels: int, size: int) -> Decoder:
-    c = m.decoder_channels
+    c = m.decoder_widths
     grid = size // DOWN
     embed = nn.Linear(m.latent, c[0] * grid * grid)
     first = DecoderPart(
@@ -475,13 +485,109 @@ def build_vae(conf: RunConf, *, seed: int) -> VAEModules:
     with torch.no_grad():
         encoder.head.weight[m.latent :].zero_()
         encoder.head.bias[m.latent :].zero_()
-    dev = torch.device(conf.device)
-    return VAEModules(
-        encoder.to(dev),
-        decoder.to(dev),
-        LogSigma(m.sigma0_sq, learn=m.learn_sigma).to(dev),
-        frames=t.frames,
+    mods = VAEModules(
+        encoder, decoder, LogSigma(m.sigma0_sq, learn=m.learn_sigma), frames=t.frames
     )
+    if m.param == "mup":
+        _mup_init_(mods, m)
+    dev = torch.device(conf.device)
+    for module in mods.modules().values():
+        module.to(dev)
+    return mods
+
+
+# -- muP ------------------------------------------------------------------------
+
+ROLES = ("input", "hidden", "output", "vector")
+# The exponent e of the learning rate's k^e of each role (Adam's rules of muP,
+# Tensor Programs V, table 3, about BASE_WIDTH): k = width / BASE_WIDTH.
+_LR_EXPONENT = {"input": 0, "hidden": -1, "output": -1, "vector": 0}
+
+
+def _widths(m: ModelConf) -> tuple[float, float]:
+    """$k$ of the encoder and of the decoder (1 when it is not scaled)."""
+    k = m.width / BASE_WIDTH
+    return k, k if m.scale_decoder else 1.0
+
+
+def mup_roles(mods: VAEModules) -> dict[Tensor, str]:
+    r"""The role in muP (``ROLES``) of each parameter of the ViT's VAE, $\ln
+    \sigma$ included:
+
+    - ``"input"``: the matrices from a space of fixed size to the width (the
+      patch embedding, the decoder's ``Linear`` of $z$);
+    - ``"output"``: the matrices from the width to a fixed size (the
+      encoder's head to $(\mu, \ell)$, the readout);
+    - ``"hidden"``: the other matrices (the blocks' ``Linear``\ s, the
+      decoder's convs);
+    - ``"vector"``: the biases, the norms' gains and biases, $\ln \sigma$.
+
+    Raises:
+        ValueError: The encoder is not the ViT's.
+    """
+    first = mods.encoder.parts[0]
+    if not isinstance(first, ViTPart) or first.embed is None:
+        raise ValueError("muP's roles are of the ViT")
+    embed = next(m for m in mods.decoder.modules() if isinstance(m, nn.Linear))
+    inputs = {id(first.embed.proj.weight), id(embed.weight)}
+    outputs = {id(mods.encoder.head.weight), id(mods.decoder.readout.weight)}
+    matrices = {
+        id(m.weight)
+        for module in (mods.encoder, mods.decoder)
+        for m in module.modules()
+        if isinstance(m, nn.Linear | nn.Conv2d)
+    }
+    roles: dict[Tensor, str] = {}
+    for module in mods.modules().values():
+        for p in module.parameters():
+            i = id(p)
+            roles[p] = (
+                "input"
+                if i in inputs
+                else "output"
+                if i in outputs
+                else "hidden"
+                if i in matrices
+                else "vector"
+            )
+    return roles
+
+
+def mup_lr(mods: VAEModules, m: ModelConf) -> dict[Tensor, float]:
+    r"""The learning rate's multiplier of each parameter in muP
+    (``exp.lib.optim.ScaledLR``): $k^{-1}$ for the hidden and the output
+    matrices, 1 for the inputs and the vectors (``mup_roles``), $k$ the
+    width over ``BASE_WIDTH`` of the encoder's, and of the decoder's with
+    ``scale_decoder`` (1 without: its widths do not change). All 1 at
+    ``BASE_WIDTH``."""
+    k_enc, k_dec = _widths(m)
+    decoder = {id(p) for p in mods.decoder.parameters()}
+    return {
+        p: (k_dec if id(p) in decoder else k_enc) ** _LR_EXPONENT[role]
+        for p, role in mup_roles(mods).items()
+    }
+
+
+def _mup_init_(mods: VAEModules, m: ModelConf) -> None:
+    r"""Rescale SP's initial weights to muP's (about ``BASE_WIDTH``): the
+    hidden matrices of variance $\propto 1/\text{fan-in}$ and the output
+    matrices of variance $\propto 1/\text{fan-in}^2$, both equal to SP's at
+    ``BASE_WIDTH`` (so the output's std is that of ``BASE_WIDTH`` over $k$).
+
+    SP draws the ViT's hidden matrices of a fixed std (0.02, ``_init_vit``):
+    they are multiplied by $k^{-1/2}$. The head (LeCun) and the readout and
+    the decoder's convs (torch's default) are drawn of a std $\propto
+    \text{fan-in}^{-1/2}$ already: the hidden ones stay, the outputs are
+    multiplied by $k^{-1/2}$. The inputs and the vectors stay. A factor of 1
+    leaves a tensor as it is (no multiplication)."""
+    k_enc, k_dec = _widths(m)
+    decoder = {id(p) for p in mods.decoder.parameters()}
+    with torch.no_grad():
+        for p, role in mup_roles(mods).items():
+            k = k_dec if id(p) in decoder else k_enc
+            fixed_std = role == "hidden" and id(p) not in decoder  # the ViT's
+            if (role == "output" or fixed_std) and k != 1.0:
+                p.mul_(k**-0.5)
 
 
 def _count(module: nn.Module) -> int:

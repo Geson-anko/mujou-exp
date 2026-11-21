@@ -1,0 +1,5 @@
+# @package optim
+# exp.lib.optim_zoo.Rprop(tau): each element moves at most 1 / tau a second,
+# 0.1 / tau a frame (V11: tau 1e3, 1e4, 1e5).
+kind: rprop
+tau: 1.0e4

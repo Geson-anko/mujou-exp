@@ -7,8 +7,10 @@ needed)::
 
 Each row is the program's ``Online`` of ``+experiment=v0/base model=<arch>_<size>``
 with the overrides: ``--warmup`` frames (the CUDA graphs are recorded in the
-first), then ``--frames`` frames timed. The rows are printed as JSON lines,
-and written to ``--out`` as a JSON list.
+first), then ``--frames`` frames timed. ``--models vit_s,...`` keeps those
+rows only. The overrides may set the optimizer, so that each kind is timed
+(the row names it), e.g. ``--models vit_s optim=muon measure.grad_stats=true``.
+The rows are printed as JSON lines, and written to ``--out`` as a JSON list.
 """
 
 import argparse
@@ -67,8 +69,8 @@ def _sync(device: str) -> None:
 
 def bench(conf: RunConf, *, frames: int, warmup: int) -> dict[str, Any]:
     """Time ``frames`` frames of ``conf``'s ``Online`` after ``warmup``:
-    ``{"arch", "size", "units_s", "gpu_mem_mb"}`` (the peak allocated over
-    all the frames; 0 on the CPU)."""
+    ``{"arch", "size", "optim", "units_s", "gpu_mem_mb"}`` (the peak
+    allocated over all the frames; 0 on the CPU)."""
     dev = conf.device
     if dev.startswith("cuda"):
         torch.cuda.reset_peak_memory_stats(torch.device(dev))
@@ -76,10 +78,12 @@ def bench(conf: RunConf, *, frames: int, warmup: int) -> dict[str, Any]:
     try:
         for _ in range(warmup):
             online.advance()
+            online.rows()  # the gradient statistics, dropped
         _sync(dev)
         start = time.perf_counter()
         for _ in range(frames):
             online.advance()
+            online.rows()
         _sync(dev)
         wall = time.perf_counter() - start
     finally:
@@ -90,6 +94,7 @@ def bench(conf: RunConf, *, frames: int, warmup: int) -> dict[str, Any]:
     return {
         "arch": conf.model.arch,
         "size": conf.model.size,
+        "optim": conf.optim.kind,
         "units_s": frames / wall,
         "gpu_mem_mb": round(gpu, 1),
     }
@@ -104,12 +109,22 @@ def main(argv: Sequence[str] | None = None) -> list[dict[str, Any]]:
     ap.add_argument("--frames", type=int, default=50)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--experiment", default="v0/base")
+    ap.add_argument(
+        "--models", help="the models to time, e.g. vit_s,resnet_m (default: all)"
+    )
     ap.add_argument("--out", type=Path)
     ap.add_argument("overrides", nargs="*", help="hydra overrides of every row")
     args = ap.parse_args(argv)
     rows = []
+    every = [f"{arch}_{size.lower()}" for arch in ARCHS for size in BLOCKS]
+    models = every if args.models is None else args.models.split(",")
+    unknown = sorted(set(models) - set(every))
+    if unknown:
+        ap.error(f"unknown models {unknown}; of {every}")
     for arch in ARCHS:
         for size in BLOCKS:
+            if f"{arch}_{size.lower()}" not in models:
+                continue
             conf = compose(
                 [
                     f"+experiment={args.experiment}",

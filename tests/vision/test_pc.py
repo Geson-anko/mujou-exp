@@ -1,6 +1,7 @@
 """The VAE of PC-ALM against BP's float64 gradient of the same mean -ELBO
 (the same weights, stacks and noise), under the host's Jacobi steps."""
 
+import dataclasses
 import inspect
 import math
 import re
@@ -13,24 +14,32 @@ import torch
 from torch import Tensor
 
 import mujou
+from exp.lib.angular import Angular
 from exp.lib.elbo import dequantize, gauss_kl, gauss_nll
+from exp.lib.grad_stats import GradStats
 from exp.lib.host import Host
-from exp.vision.models import Block, VAEModules, build_vae, early_fusion
+from exp.lib.ogd import OGD
+from exp.lib.optim import ScaledLR
+from exp.lib.optim_zoo import Adadelta, Muon, Nesterov, RMSPropCentered, Rprop
+from exp.vision.models import Block, VAEModules, build_vae, early_fusion, mup_lr
 from exp.vision.pc import (
     HOPS,
     LEARN_INTERVAL,
     VAEPC,
     GaussOut,
     Latent,
+    build_net,
     make_optimizer,
+    make_optimizers,
 )
 from exp.vision.schema import OptimConf, RunConf, TimeConf
 from exp.vision.schema.run import check_learn_interval
 from mujou import TensorSpec
-from tests.vision.test_models import D, stacks, tiny
+from tests.vision.test_models import D, stacks, tiny, wide
 
 FRAME = 0.1
 ARCHS = ["vit", "resnet"]
+NODES = ("enc1", "enc2", "enc3", "enc4", "dec1", "dec2", "out")
 
 
 def _conf(
@@ -38,10 +47,13 @@ def _conf(
     learn_interval: float = LEARN_INTERVAL,
     b: int = 2,
     learn_sigma: bool = True,
+    width: int | None = None,
 ) -> RunConf:
     """The tiny run with ``learn_interval`` set after RunConf's check: these
-    tests probe intervals outside its window (30 ms, inf) on purpose."""
-    conf = tiny(arch, streams=b)
+    tests probe intervals outside its window (30 ms, inf) on purpose. With
+    ``width``, the ViT of that width in muP (``test_models.wide``)."""
+    conf = tiny(arch, streams=b) if width is None else wide(width)
+    conf.data.streams = b
     conf.time = TimeConf(learn_interval=learn_interval)
     conf.model.learn_sigma = learn_sigma
     return conf
@@ -155,6 +167,18 @@ class GradRecorder(pc.optim.Optimizer):
         return _Bound()
 
 
+class _Binds(pc.optim.Optimizer):
+    """SGD that records the parameters of each binding (``bound``)."""
+
+    def __init__(self) -> None:
+        self.bound: list[list[Tensor]] = []
+
+    @override
+    def bind(self, params: Iterable[Tensor]) -> pc.optim.BoundOptimizer:
+        self.bound.append(list(params))
+        return pc.optim.SGD(tau=1.0).bind(self.bound[-1])
+
+
 def _constrained(net: VAEPC) -> list[Any]:
     """The nodes with r and lam, from the input: enc1-4, latent, dec1-2."""
     enc = [getattr(net, n) for n in net.names if n.startswith("enc")]
@@ -168,6 +192,7 @@ def _frames(
     valid: Tensor | None = None,
     frames: int = 2,
     learn_sigma: bool = True,
+    width: int | None = None,
 ) -> tuple[VAEModules, GradRecorder, list[tuple[dict, dict]]]:
     """``frames`` frames of different stacks shown by the host, reset in the
     first only (the next start from the r and lam the first left, as in a
@@ -176,7 +201,7 @@ def _frames(
     NaN: it must add nothing."""
     b = 2 if valid is None else len(valid)
     valid = torch.ones(b, dtype=torch.bool) if valid is None else valid
-    conf = _conf(arch, learn_interval, b, learn_sigma)
+    conf = _conf(arch, learn_interval, b, learn_sigma, width)
     mods = _mods(conf)
     rec = GradRecorder()
     net = VAEPC(mods, conf=conf, optimizer=rec)
@@ -232,6 +257,19 @@ class TestBPGradient:
             assert mods.log_sigma not in pcs
             assert set(pcs) == set(mods.parameters())
             _assert_bps(mods, pcs, bps)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("width", [128, 512])
+def test_every_node_learns_by_bps_gradient_at_other_widths(width):
+    """The ViT of width 128 and 512 in muP (heads of 64, the decoder scaled):
+    each node's g_theta / B is still BP's float64 gradient, in both frames."""
+    mods, _, frames = _frames("vit", LEARN_INTERVAL, width=width)
+    block = next(m for m in mods.encoder.modules() if isinstance(m, Block))
+    assert block.qkv.in_features == width
+    for pcs, bps in frames:
+        assert set(pcs) == set(mods.parameters())
+        _assert_bps(mods, pcs, bps)
 
 
 class TestCreditArrival:
@@ -410,6 +448,166 @@ class TestMakeOptimizer:
     )
     def test_each_kind_is_mujous_optimizer_with_its_settings(self, conf, want):
         assert make_optimizer(conf) == want
+
+    @pytest.mark.parametrize(
+        ("conf", "want"),
+        [
+            (
+                OptimConf(kind="nesterov", tau=2.0, tau_m=0.5),
+                Nesterov(tau=2.0, tau_m=0.5),
+            ),
+            (
+                OptimConf(kind="rmsprop_centered", tau=2.0, tau_v=7.0, eps=1e-6),
+                RMSPropCentered(tau=2.0, tau_v=7.0, eps=1e-6),
+            ),
+            (
+                OptimConf(kind="adadelta", tau=0.1, tau_v=7.0, eps=1e-6),
+                Adadelta(tau=0.1, tau_v=7.0, eps=1e-6),
+            ),
+            (OptimConf(kind="rprop", tau=2.0), Rprop(tau=2.0)),
+            (
+                OptimConf(
+                    kind="muon", tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.01
+                ),
+                Muon(tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.01),
+            ),
+        ],
+    )
+    def test_each_kind_of_the_zoo(self, conf, want):
+        assert make_optimizer(conf) == want
+
+    @pytest.mark.parametrize(
+        ("conf", "base"),
+        [
+            (OptimConf(kind="sgd", tau=2.0), pc.optim.SGD(tau=2.0)),
+            (
+                OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0),
+                pc.optim.RMSProp(tau=2.0, tau_v=7.0),
+            ),
+            (
+                OptimConf(kind="adamw", tau=2.0, tau_m=0.5, tau_v=7.0),
+                pc.optim.AdamW(tau=2.0, tau_m=0.5, tau_v=7.0, weight_decay=0.0),
+            ),
+        ],
+    )
+    def test_ogd_wraps_the_base_of_the_scaled_tau(self, conf, base):
+        conf.ogd_n, conf.ogd_every = 16, 0.1
+        got = make_optimizer(conf, scale=3.0)
+        want = OGD(base=dataclasses.replace(base, tau=6.0), n=16, every=0.1)
+        assert got == want
+
+    def test_angular_scales_tau_but_not_tau_scalar(self):
+        """``dec_scale`` slows the decoder's matrices and vectors, not its
+        $\\ln\\sigma$ (``tau_scalar``)."""
+        c = OptimConf(
+            kind="angular",
+            tau=300.0,
+            tau_m=0.5,
+            tau_v=7.0,
+            vec_scale=20.0,
+            tau_scalar=5e3,
+        )
+        want = Angular(tau=3000.0, tau_m=0.5, tau_v=7.0, vec_scale=20.0, tau_scalar=5e3)
+        assert make_optimizer(c, scale=10.0) == want
+
+    def test_scale_multiplies_tau(self):
+        c = OptimConf(kind="rmsprop", tau=2.0, tau_v=7.0)
+        assert make_optimizer(c, scale=10.0) == pc.optim.RMSProp(tau=20.0, tau_v=7.0)
+
+
+class TestNodeOptimizers:
+    def test_the_decoders_tau_is_scaled_and_the_rest_kept(self):
+        """``optim.dec_scale``: dec1, dec2 and out learn with tau * dec_scale,
+        the encoder with tau (latent has no parameters)."""
+        conf = _conf("vit")
+        conf.optim = OptimConf(kind="rmsprop", tau=1e3, tau_v=30.0, dec_scale=10.0)
+        opts = make_optimizers(conf, _mods(conf))
+        assert sorted(opts) == sorted([*NODES])
+        for name, opt in opts.items():
+            want = 1e4 if name in ("dec1", "dec2", "out") else 1e3
+            assert opt == pc.optim.RMSProp(tau=want, tau_v=30.0), name
+
+    def test_grad_stats_wraps_each_node_by_its_name(self):
+        conf = _conf("vit")
+        conf.measure.grad_stats = True
+        opts = make_optimizers(conf, _mods(conf))
+        for name, opt in opts.items():
+            assert isinstance(opt, GradStats) and opt.node == name
+            assert opt.inner == make_optimizer(conf.optim)
+
+    @pytest.mark.parametrize("arch", ARCHS)
+    def test_each_node_binds_its_own_optimizer(self, arch):
+        """Given a mapping, every node binds the optimizer of its name to its
+        own parameters (the readout's and ln sigma for out)."""
+        conf = _conf(arch)
+        mods = _mods(conf)
+        binds = {name: _Binds() for name in NODES}
+        VAEPC(mods, conf=conf, optimizer=binds)
+        parts = [*mods.encoder.parts, *mods.decoder.parts]
+        own = {
+            **{n: list(m.parameters()) for n, m in zip(NODES[:6], parts, strict=True)},
+            "out": [*mods.decoder.readout.parameters(), mods.likelihood.log_sigma],
+        }
+        for name in NODES:
+            got = [[id(p) for p in ps] for ps in binds[name].bound]
+            assert got == [[id(p) for p in own[name]]], name
+
+    def test_mup_scales_each_nodes_rates_by_the_table(self):
+        """``model.param=mup``: each node's optimizer is ``ScaledLR`` of the
+        kind's with ``mup_lr``'s rate of each of its parameters."""
+        conf = _conf("vit", width=512)
+        conf.optim = OptimConf(kind="rmsprop", tau=1e3, tau_v=30.0)
+        mods = _mods(conf)
+        opts = make_optimizers(conf, mods)
+        table = mup_lr(mods, conf.model)
+        for opt in opts.values():
+            assert isinstance(opt, ScaledLR) and opt.inner == make_optimizer(conf.optim)
+            assert all(opt.scale[p] == r for p, r in table.items())
+
+    def test_at_the_base_width_mup_learns_as_sp_bit_for_bit(self):
+        """Width 256: two frames of RMSProp move every parameter of the muP
+        run exactly as those of the SP run."""
+        out = []
+        for param in ("sp", "mup"):
+            conf = wide(256, param)
+            conf.optim = OptimConf(kind="rmsprop", tau=1e2, tau_v=30.0)
+            net = build_net(conf)
+            host = Host(mujou.run_manually(net), frame=FRAME, period=net.tau.period)
+            try:
+                for k in range(2):
+                    x = stacks(2, seed=k)
+                    u, eps = _noise(x, seed=10 + k)
+                    ones = torch.ones(2, dtype=torch.bool)
+                    sample = net.sample(x, u, eps, ones, torch.full((2,), k == 0))
+                    host.show_all({net.prev: sample}, [net.stats, net.kl])
+            finally:
+                host.run.shutdown()
+            out.append(net.mods.parameters())
+        sp, mup = out
+        assert all(torch.equal(p, q) for p, q in zip(sp, mup, strict=True))
+        start = build_vae(wide(256), seed=0).parameters()
+        assert not all(torch.equal(p, q) for p, q in zip(start, sp, strict=True))
+
+    def test_muons_matrices_are_the_linear_and_conv_weights(self):
+        """Muon takes the parameters of 2 or more dimensions for matrices: in
+        ViT-S and its decoder those are exactly the weights of the
+        ``nn.Linear`` and ``nn.Conv2d`` layers."""
+        from exp.vision.compose import compose
+
+        mods = build_vae(compose(["+experiment=v0/base"]), seed=0)
+        weights = {
+            m.weight
+            for module in mods.modules().values()
+            for m in module.modules()
+            if isinstance(m, torch.nn.Linear | torch.nn.Conv2d)
+        }
+        matrices = {
+            p
+            for module in mods.modules().values()
+            for p in module.parameters()
+            if p.ndim >= 2
+        }
+        assert matrices == weights
 
 
 def test_the_new_nodes_hold_no_cross_node_backward_or_grad():

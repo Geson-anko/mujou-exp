@@ -30,3 +30,23 @@ def test_main_times_every_arch_and_size(tmp_path):
     ]
     assert all(r["units_s"] > 0 and r["gpu_mem_mb"] == 0.0 for r in rows)
     assert json.loads(out.read_text()) == rows
+
+
+def test_main_takes_the_models_and_the_optimizer(tmp_path):
+    """``--models`` picks the rows; the overrides set the optimizer of each,
+    which the row names."""
+    rows = bench.main(
+        [
+            "--frames",
+            "1",
+            "--warmup",
+            "1",
+            "--experiment",
+            "v0/tiny",
+            "--models",
+            "vit_s",
+            "optim=muon",
+            "measure.grad_stats=true",
+        ]
+    )
+    assert [(r["arch"], r["size"], r["optim"]) for r in rows] == [("vit", "S", "muon")]

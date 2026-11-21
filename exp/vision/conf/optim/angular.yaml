@@ -1,0 +1,11 @@
+# @package optim
+# exp.lib.angular.Angular (V15): a matrix turns by elapsed / tau of its norm
+# along its momentum (tau: seconds per radian); the vectors by RMSProp of
+# vec_scale * tau, ln sigma by RMSProp of tau_scalar (not scaled by dec_scale).
+kind: angular
+tau: 1000.0
+tau_m: 1.0
+tau_v: 30.0
+eps: 1.0e-8
+vec_scale: 10.0
+tau_scalar: 1.0e4

@@ -22,7 +22,9 @@ the resume checkpoint), and steps the run through the frame by
 ``tau.period``. It reads back the first $-\log p(y \mid z)$, squared error
 and $\ln \sigma$ of ``out`` and KL of ``latent`` made from this write (of the
 weights before they learned from it: prequential), added to the sums of
-``stream.jsonl`` over the frames with a stack that counts.
+``stream.jsonl`` over the frames with a stack that counts. With
+``measure.grad_stats`` the nodes' gradient statistics go to ``grad.jsonl``
+(``exp.lib.grad_stats``), collected after each frame.
 """
 
 import math
@@ -188,6 +190,10 @@ class Online:
             "sq": sq / n,
             "log_sigma": None if self._log_sigma is None else float(self._log_sigma),
         }
+
+    def rows(self) -> dict[str, list[dict[str, Any]]]:
+        rows = self.net.grad_rows()
+        return {"grad.jsonl": rows} if rows else {}
 
     def evaluate(self, split: str) -> dict[str, float]:
         assert self.measures is not None  # the schedule has no evaluations

@@ -1,0 +1,6 @@
+# @package optim
+# exp.lib.optim_zoo.Nesterov(tau, tau_m): sgd_momentum looked ahead; the step
+# of a constant gradient is SGD's, so tau as sgd.yaml's (V11: 1e4, 1e5, 1e6).
+kind: nesterov
+tau: 1.0e5
+tau_m: 1.0

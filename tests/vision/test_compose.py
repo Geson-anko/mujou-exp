@@ -6,6 +6,7 @@ from hydra import initialize_config_module
 from hydra.errors import ConfigCompositionException
 
 from exp.vision.compose import compose, from_dict, to_dict
+from exp.vision.schema.optim import MUP_KINDS
 
 BASE = "+experiment=v0/base"
 TINY = "+experiment=v0/tiny"
@@ -30,7 +31,7 @@ class TestOverrides:
         assert (t.frames, t.stride, t.advance, c.data.streams) == (8, 1, 1, 1)
         assert (c.model.arch, c.model.size, c.model.latent) == ("vit", "S", 256)
         assert (c.model.enc_nodes, c.model.dec_nodes) == (4, 2)
-        assert (c.model.width, c.model.heads, c.model.patch) == (256, 4, 16)
+        assert (c.model.width, c.model.head_count, c.model.patch) == (256, 4, 16)
         assert (c.time.frame, c.time.h, c.time.lam, c.time.r) == (0.1, 4e-3, 2e-3, 4e-3)
         assert (c.optim.kind, c.optim.tau) == ("sgd", 1e5)  # stays finite
         assert c.time.learn_interval == 0.09
@@ -48,9 +49,116 @@ class TestOverrides:
         c = compose([BASE, f"model={arch}_{size}"])
         assert (c.model.arch, c.model.size) == (arch, size.upper())
 
-    @pytest.mark.parametrize("kind", ["sgd", "sgd_momentum", "rmsprop", "adamw"])
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "sgd",
+            "sgd_momentum",
+            "rmsprop",
+            "adamw",
+            "nesterov",
+            "rmsprop_centered",
+            "adadelta",
+            "rprop",
+            "muon",
+            "angular",
+        ],
+    )
     def test_optimizer_group(self, kind: str) -> None:
         assert compose([BASE, f"optim={kind}"]).optim.kind == kind
+
+    @pytest.mark.parametrize(
+        ("kind", "key"),
+        [
+            ("rprop", "tau_m"),
+            ("nesterov", "tau_v"),
+            ("rprop", "eps"),
+            ("rmsprop", "vec_scale"),
+            ("muon", "tau_scalar"),
+        ],
+    )
+    def test_a_setting_the_kind_does_not_use_fails(self, kind: str, key: str) -> None:
+        with pytest.raises(ValueError, match=key):
+            compose([BASE, f"optim={kind}", f"optim.{key}=3"])
+
+    def test_dec_scale_is_of_every_kind_and_positive(self) -> None:
+        assert (
+            compose([BASE, "optim=rprop", "optim.dec_scale=10"]).optim.dec_scale == 10
+        )
+        with pytest.raises(ValueError, match="dec_scale"):
+            compose([BASE, "optim.dec_scale=0"])
+
+    def test_ogd_is_off_by_default_and_of_sgd_rmsprop_adamw(self) -> None:
+        assert compose([BASE]).optim.ogd_n == 0
+        for kind in ("sgd", "rmsprop", "adamw"):
+            c = compose([BASE, f"optim={kind}", "optim.ogd_n=16", "optim.ogd_every=1"])
+            assert (c.optim.ogd_n, c.optim.ogd_every) == (16, 1.0)
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim=muon", "optim.ogd_n=16"])
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim=sgd_momentum", "optim.ogd_n=16"])
+
+    def test_ogd_every_without_ogd_or_not_positive_fails(self) -> None:
+        with pytest.raises(ValueError, match="ogd_every"):
+            compose([BASE, "optim.ogd_every=10"])
+        with pytest.raises(ValueError, match="ogd_every"):
+            compose([BASE, "optim.ogd_n=4", "optim.ogd_every=0"])
+        with pytest.raises(ValueError, match="ogd_n"):
+            compose([BASE, "optim.ogd_n=-1"])
+
+    def test_the_heads_are_of_64_dimensions_by_default(self) -> None:
+        assert compose([BASE]).model.head_count == 4
+        assert compose([BASE, "model.width=512"]).model.head_count == 8
+        two = compose([BASE, "model.width=512", "model.heads=2"])
+        assert two.model.head_count == 2
+        with pytest.raises(ValueError, match="heads"):
+            compose([BASE, "model.width=96"])
+
+    def test_scale_decoder_scales_the_decoders_channels(self) -> None:
+        assert compose([BASE, "model.width=512"]).model.decoder_widths == [
+            256,
+            128,
+            64,
+            32,
+            32,
+        ]
+        c = compose([BASE, "model.width=128", "model.scale_decoder=true"])
+        assert c.model.decoder_widths == [128, 64, 32, 16, 16]
+        with pytest.raises(ValueError, match="decoder"):
+            compose(
+                [
+                    BASE,
+                    "model.width=64",
+                    "model.scale_decoder=true",
+                    "model.decoder_channels=[256,128,64,32,30]",
+                ]
+            )
+
+    def test_mup_is_of_the_vit_of_64_dimensional_heads(self) -> None:
+        mup = [BASE, "optim=rmsprop", "model.param=mup"]
+        assert compose([*mup, "model.width=512"]).model.param == "mup"
+        for bad in (
+            ["model=resnet_s"],
+            ["model.width=512", "model.heads=4"],
+            ["optim.ogd_n=4"],
+        ):
+            with pytest.raises(ValueError, match="param"):
+                compose([*mup, *bad])
+        with pytest.raises(ValueError, match="param"):
+            compose([BASE, "model.param=mu"])
+
+    @pytest.mark.parametrize("kind", MUP_KINDS)
+    def test_mup_takes_the_optimizers_of_adams_rules(self, kind: str) -> None:
+        assert compose([BASE, f"optim={kind}", "model.param=mup"]).optim.kind == kind
+
+    @pytest.mark.parametrize("kind", ["sgd", "sgd_momentum", "nesterov", "adadelta"])
+    def test_mup_refuses_the_other_optimizers(self, kind: str) -> None:
+        with pytest.raises(ValueError, match=f"mup .*Adam.*{kind}"):
+            compose([BASE, f"optim={kind}", "model.param=mup"])
+
+    def test_grad_stats_is_off_by_default(self) -> None:
+        assert not compose([BASE]).measure.grad_stats
+        assert compose([BASE, "measure.grad_stats=true"]).measure.grad_stats
 
     def test_unknown_optimizer_fails_in_post_init(self) -> None:
         with pytest.raises(ValueError, match="foo"):
