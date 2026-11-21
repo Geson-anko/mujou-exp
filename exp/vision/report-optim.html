@@ -308,7 +308,7 @@ table { border-top: 1px solid var(--rule); }
     <article class="finding">
       <div class="k">V16</div>
       <h3>普通の深層学習なら、同じモデルで span は 0.164 まで下がる</h3>
-      <p>ランダムに選んだ stack のミニバッチで、誤差逆伝播と AdamW を使って学ばせると、600 万 stack で span は 0.164 になり、描き戻した画像で場面を見分けられました。ストリームの run と同じ 1.8 万 stack の時点では、同じ程度（0.49〜0.61）でした。</p>
+      <p>ストリームを使わず、学習用の stack からランダムに選んだ 100 個ずつを使い、誤差逆伝播と AdamW で学ばせました。600 万 stack を見たところで span は 0.164 になり、描き戻した画像で場面を見分けられました。ストリームの run と同じ 1.8 万 stack を見た時点では、span は同じ程度でした（選んだ学習率で 0.509、0.607）。</p>
     </article>
   </div>
 </section>
@@ -599,16 +599,85 @@ table { border-top: 1px solid var(--rule); }
 </section>
 
 <section id="v16" aria-labelledby="h-v16">
-  <div class="sec-head"><div class="eyebrow">11 · V16</div><h2 id="h-v16">ストリームでなく、普通の深層学習で学ぶと</h2></div>
+  <div class="sec-head"><div class="eyebrow">11 · V16</div><h2 id="h-v16">普通の深層学習で学ぶと</h2></div>
   <div class="prose">
-    <p><b>問い</b>　V11〜V15 で最も <code>span</code> が小さかったのは、幅 1024・μP・RMSProp τ = 10<sup>5</sup> の run（0.587）です。この値は、モデルそのものの限界でしょうか。それとも、動画を 1 枚ずつ流して PC-ALM で学ぶことによる限界でしょうか。同じモデルを、ストリームを使わない普通の深層学習で学ばせて確かめました。</p>
-    <p><b>条件</b>　モデル・初期値・目的の式（ELBO）は、その run と同じです。学び方だけを変えました。</p>
+    <p><b>問い</b>　V11〜V15 で最も <code>span</code> が小さかったのは、幅 1024・μP・RMSProp τ = 10<sup>5</sup> の run で、値は 0.587 でした。この値が、モデルそのものの限界なのか、ストリームで学ぶことによる限界なのかを確かめます。そのために、同じモデルを、普通の深層学習のやり方で学ばせました。普通の深層学習とは、学習用のデータを手元に置き、そこからランダムに選んで何度も使う学び方です。</p>
+
+    <h3>ストリームの run と、普通の学習の違い</h3>
+    <p>この資料のこれまでの run（ストリームの run）と、V16 で行った普通の学習の違いを、次の表にまとめます。モデルの形、重みの初期値、目的の式（ELBO）は同じです。表の用語は、表のあとの「言葉の意味」で説明します。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>項目</th><th>ストリームの run</th><th>普通の学習（V16）</th></tr></thead>
+      <tbody>
+        <tr><td>stack の順序</td><td>動画の順に 1 つずつ届く</td><td>学習用の stack からランダムに選ぶ</td></tr>
+        <tr><td>同じ stack を見る回数</td><td>1 回だけ</td><td>何度も（全動画で平均 約 12 回、同じ区間で平均 約 330 回）</td></tr>
+        <tr><td>1 回の更新に使う stack</td><td>1 つ</td><td>100 個（ミニバッチ）</td></tr>
+        <tr><td>更新の回数</td><td>18000 回（1800 秒）</td><td>60000 回（60000 step）</td></tr>
+        <tr><td>見る stack の数</td><td>1.8 万</td><td>600 万</td></tr>
+        <tr><td>学習則</td><td>PC-ALM（各ノードが自分の誤差だけで学ぶ）</td><td>誤差逆伝播（モデル全体の誤差から、全部の重みの勾配を一度に求める）</td></tr>
+        <tr><td>optimizer</td><td>RMSProp（τ = 10<sup>5</sup>）</td><td>AdamW（学習率は「言葉の意味」の「学習率の予定」）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p>このように、V16 では学び方の多くの点を同時に変えています。そのため、V16 で分かるのは「ストリームで学ぶやり方全体」と「普通の学習」の差です。どの点が差を生んでいるかまでは分かりません。</p>
+
+    <h3>言葉の意味</h3>
+  </div>
+  <dl class="terms">
+    <dt>普通の学習</dt>
+    <dd>学習用のデータを手元に置き、そこからランダムに選んだデータで何度も重みを更新する、一般的な深層学習のやり方です。同じデータを何度も使えます。ストリームでは、届いたデータはその場で 1 回使うだけです。</dd>
+    <dt>ミニバッチ</dt>
+    <dd>1 回の更新に使うデータのまとまりです。V16 では 100 個の stack です。100 個の誤差の平均を小さくする向きに、重みを 1 回更新します。</dd>
+    <dt>step</dt>
+    <dd>ミニバッチ 1 つで重みを 1 回更新することです。1 step で 100 個の stack を見ます。</dd>
+    <dt>誤差逆伝播</dt>
+    <dd>出力の誤差から、モデルのすべての重みの勾配を、出力側から入力側へ順に計算する方法です。深層学習で普通に使われる方法です。ストリームの run の PC-ALM は、これを使わず、各ノードが隣と値と誤差をやり取りして、自分の重みだけを更新します。</dd>
+    <dt>ELBO</dt>
+    <dd>VAE の目的の式です。描き戻した画像と本物の差（再構成の誤差）と、<i>z</i> の分布を標準正規分布に近づける項からなります。ストリームの run と同じ式を使いました。</dd>
+    <dt>学習率の予定</dt>
+    <dd>普通の学習の学習率は、1 回の更新で重みを動かす量を決める数です（この資料のほかの節の τ とは表し方が違います）。最初の 1000 step で 0 から設定値まで直線的に上げ、その後 60000 step で 0 まで滑らかに下げます（cosine）。μP の規則に従い、層ごとに幅に合わせて調整します。</dd>
+    <dt>全動画・同じ区間</dt>
+    <dd>stack を選ぶ範囲です。<b>全動画</b>は、学習用の動画すべて（約 48 万 stack。評価用の Zurich の動画は除く）から選びます。<b>同じ区間</b>は、ストリームの run が 1800 秒で見たのと同じ 1.8 万 stack だけから選びます。同じ区間では、<code>after</code> の場面を学習に使いません。全動画では、<code>after</code> の場面も学習に使います。</dd>
+    <dt>見た stack の数</dt>
+    <dd>それまでに学習に使った stack の延べ数です。普通の学習では「step 数 × 100」です。ストリームの run では、1 秒に 10 個の stack を見るので「秒数 × 10」です。V16 では、ストリームの run と普通の学習を、見た stack の数をそろえて比べます。</dd>
+    <dt>過学習</dt>
+    <dd>学習に使ったデータの誤差は下がるのに、使っていないデータの誤差が下がらない、または上がることです。同じデータを何度も見て、そのデータだけを覚えてしまうと起こります。</dd>
+    <dt>判定の規則</dt>
+    <dd>回す前に決めた規則です。学習率は 3 点を試し、範囲ごとに、最後の <code>span</code> が最も小さいものを選びます。選んだ run を、ストリームの run の 1800 秒の値と比べます。これまでの節と同じく、差が 0.07 未満なら区別しません。</dd>
+  </dl>
+  <div class="prose">
+    <h3>条件</h3>
     <ul>
-      <li>学習用の stack から 100 個を一様にランダムに選んでミニバッチにし、誤差逆伝播と AdamW で学ばせます。学習率は最初の 1000 step で上げ、60000 step で 0 まで下げます。</li>
-      <li>stack を選ぶ範囲は 2 通りです。<code>all</code> は学習用の動画すべて（約 48 万フレーム）、<code>span</code> はストリームの run が 1800 秒で見たのと同じ 1.8 万 stack だけです。<code>span</code> では、after の場面を学習に使いません。</li>
-      <li>学習率は 10<sup>−4</sup>・3·10<sup>−4</sup>・10<sup>−3</sup> の 3 点です。6 本、seed 0。1 本の学習に 73〜87 分かかりました（RTX 4090）。</li>
-      <li>評価は、ストリームの run と同じ方法です。チェックポイントの時刻は「見た stack の数 × 0.1 秒」とし、ストリームの run が同じ数の stack を見た時刻とそろえました。最後のチェックポイントは 600 万 stack（60000 step）です。</li>
+      <li>範囲は、全動画と同じ区間の 2 通りです。学習率は 10<sup>−4</sup>・3·10<sup>−4</sup>・10<sup>−3</sup> の 3 点です。合わせて 6 本で、seed はどれも 0 です。</li>
+      <li>学習には、1 本あたり 73〜87 分かかりました（RTX 4090 1 枚）。</li>
+      <li>評価のやり方は、ストリームの run と同じです。指標は「実験の仕組み」の節で説明したものを使います。</li>
+      <li>学習の途中の重みは、見た stack の数が 1.8 万（ストリームの run の終わりと同じ）、6 万、18 万、60 万、180 万、600 万のときなどに保存し、それぞれを評価しました。</li>
     </ul>
+
+    <h3>結果 1　最後の値</h3>
+    <p>まず、学習を終えた時点（600 万 stack）の値を、ストリームの run の最後（1800 秒、1.8 万 stack）の値と比べます。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>run</th><th class="num">見た stack</th><th class="num">span</th><th class="num">after</th><th class="num">recon_blur</th><th class="num">dyn_1/copy_1</th><th class="num"><i>z</i> の差</th></tr></thead>
+      <tbody id="t-v16"></tbody>
+    </table>
+  </div>
+  <div class="prose small muted"><p>太字は、判定の規則で選んだ学習率の run です（全動画は 3·10<sup>−4</sup>、同じ区間は 10<sup>−3</sup>）。どちらも、同じ範囲のほかの学習率との差は 0.07 未満で、区別できません。</p></div>
+  <div class="prose">
+    <p><b>表から読めること</b></p>
+    <ul>
+      <li>全動画では、<code>span</code> が 0.164、<code>after</code> が 0.153 まで下がりました。ストリームの run（0.587、0.604）の約 4 分の 1 です。</li>
+      <li>同じ区間では、<code>span</code> は 0.074 まで下がりましたが、<code>after</code> は 0.374 にとどまりました。学習に使った場面だけがよく描ける、過学習の状態です。</li>
+      <li><i>z</i> の差は、どの run でも +1.65〜+1.87 で、デコーダは <i>z</i> を使っています。</li>
+      <li><code>recon_blur</code> は 0.35〜0.40 で、ストリームの run（0.432）との差は小さいままでした（結果 4 で扱います）。</li>
+      <li><code>dyn_1/copy_1</code> は 0.99〜1.10 で、ストリームの run（0.984）より良くなりませんでした。</li>
+    </ul>
+
+    <h3>結果 2　見た stack の数による変化</h3>
+    <p>次に、見た stack の数が増えるにつれて、誤差がどう下がったかを見ます。</p>
   </div>
   <div class="pair">
     <figure>
@@ -621,49 +690,56 @@ table { border-top: 1px solid var(--rule); }
     </figure>
   </div>
   <div class="prose small muted">
-    <p>横軸は見た stack の数（対数）、縦軸は誤差の比（対数、下ほど良い）です。緑がストリームの run（1.8 万 stack まで）、青が <code>all</code>、橙が <code>span</code> です。太い線が判定の規則で選んだ学習率（<code>all</code> は 3·10<sup>−4</sup>、<code>span</code> は 10<sup>−3</sup>）、細い線がほかの学習率です。縦の破線は、ストリームの run が 1800 秒で見る 1.8 万 stack の位置です。</p>
+    <p>横軸は見た stack の数、縦軸は誤差の比です（どちらも対数。下ほど良い）。緑がストリームの run（1.8 万 stack まで）、青が全動画、橙が同じ区間です。太い線は判定の規則で選んだ学習率、細い線はほかの学習率です。縦の破線は 1.8 万 stack の位置です。</p>
   </div>
-  <div class="tablewrap">
-    <table>
-      <thead><tr><th>run</th><th class="num">見た stack</th><th class="num">span</th><th class="num">after</th><th class="num">recon_blur</th><th class="num">dyn_1/copy_1</th><th class="num"><i>z</i> の差</th></tr></thead>
-      <tbody id="t-v16"></tbody>
-    </table>
-  </div>
-  <div class="prose small muted"><p>最後のチェックポイントの値です。ストリームの run は 1800 秒の値です。太字は判定の規則で選んだ学習率です。どちらも、同じ範囲のほかの学習率との差は 0.07 未満で、区別できません。</p></div>
   <div class="prose">
-    <p><b>図と表から読めること</b></p>
+    <p><b>図から読めること</b></p>
     <ul>
-      <li>普通の学習では、<code>all</code> の <code>span</code> が 0.164、<code>after</code> が 0.153 まで下がりました。ストリームの run（0.587、0.604）の約 4 分の 1 です。</li>
-      <li>ストリームの run と同じ 1.8 万 stack を見た時点では、普通の学習の <code>span</code> は 0.49〜1.42 で、選んだ学習率では 0.607（<code>all</code>）と 0.509（<code>span</code>）でした。ストリームの run（0.587）と同じ程度です。この時点の普通の学習は、まだ 180 step しか進んでいません。</li>
-      <li>6 万 stack で、普通の学習はストリームの run の 1800 秒の値を下回りました（0.36〜0.43）。</li>
-      <li>18 万 stack で、学習率 3·10<sup>−4</sup> と 10<sup>−3</sup> の <code>all</code> は誤差が一時的に大きく上がりました（1.982、0.922）。学習中の誤差もこのころ上がり、その後は元に戻りました。10<sup>−4</sup> では上がりませんでした。</li>
-      <li><code>span</code> は学習区間の誤差が 0.074 まで下がった一方、<code>after</code> は 0.374 で、60 万 stack より後は増え続けました。同じ 1.8 万 stack を何百回も見て、覚えてしまっています。</li>
-      <li><code>recon_blur</code> は、どの run でも 0.35〜0.40 にとどまり、ストリームの run（0.432）との差は小さいままでした。</li>
+      <li>1.8 万 stack の時点では、普通の学習の <code>span</code> は 0.49〜1.42 でした。選んだ学習率では、全動画が 0.607、同じ区間が 0.509 で、ストリームの run（0.587）と同じ程度です。</li>
+      <li>ただし、この時点の普通の学習は 180 step しか進んでおらず、学習率もまだ上げている途中です。ストリームの run は、同じ 1.8 万 stack で 18000 回更新しています。</li>
+      <li>6 万 stack で、普通の学習はストリームの run の最後の値を下回りました（0.36〜0.43）。</li>
+      <li>18 万 stack では、全動画の学習率 3·10<sup>−4</sup> と 10<sup>−3</sup> で、誤差が一時的に大きく上がりました（1.982、0.922）。学習中の誤差もこのころに上がり、その後は元に戻りました。学習率 10<sup>−4</sup> では上がりませんでした。</li>
+      <li>同じ区間の <code>after</code> は、60 万 stack を過ぎると増え続けました。学習に使った 1.8 万 stack を、それぞれ何百回も見たためです。</li>
     </ul>
+
+    <h3>結果 3　描き戻した画像</h3>
+    <p>数値だけでは、画像がどの程度きれいかが分かりません。そこで、描き戻した画像を並べて比べます。</p>
   </div>
   <figure>
     <div class="fig-title">描き戻した画像</div>
     <div class="seg" id="seg-v16" role="group" aria-label="run を選ぶ">
       <button type="button" data-key="v16_stream" aria-pressed="true">ストリーム、1.8 万 stack</button>
-      <button type="button" data-key="v16_all_1800" aria-pressed="false">普通の学習 all、1.8 万 stack</button>
-      <button type="button" data-key="v16_all" aria-pressed="false">all、600 万 stack</button>
-      <button type="button" data-key="v16_all_after" aria-pressed="false">all、600 万 stack（after）</button>
-      <button type="button" data-key="v16_span" aria-pressed="false">span、600 万 stack</button>
-      <button type="button" data-key="v16_span_after" aria-pressed="false">span、600 万 stack（after）</button>
+      <button type="button" data-key="v16_all_1800" aria-pressed="false">全動画、1.8 万 stack</button>
+      <button type="button" data-key="v16_all" aria-pressed="false">全動画、600 万 stack</button>
+      <button type="button" data-key="v16_all_after" aria-pressed="false">全動画、600 万 stack（after）</button>
+      <button type="button" data-key="v16_span" aria-pressed="false">同じ区間、600 万 stack</button>
+      <button type="button" data-key="v16_span_after" aria-pressed="false">同じ区間、600 万 stack（after）</button>
     </div>
     <div class="recon" id="r-v16" data-img="v16_stream" data-rows="本物（最後の 1 枚）|学習しているモデル|後から学んだデコーダ"></div>
-    <figcaption>学習区間（after と書いたものは学習区間の後）から等間隔に選んだ 10 個の stack です。1.8 万 stack の普通の学習は学習率 10<sup>−3</sup>、600 万 stack は 3·10<sup>−4</sup> の run です。ボタンで run を切り替えられます。</figcaption>
+    <figcaption>学習区間から等間隔に選んだ 10 個の stack です。「after」と書いたものは、学習区間の後から選びました。1 段目が本物、2 段目が学習したモデル自身の出力、3 段目が <code>recon_blur</code> を測るために後から学んだデコーダの出力です。普通の学習の 1.8 万 stack は学習率 10<sup>−3</sup>、600 万 stack は 3·10<sup>−4</sup> の run です。ボタンで run を切り替えられます。</figcaption>
   </figure>
   <div class="prose">
-    <p><b>画像から読めること</b></p>
+    <p><b>画像から読めること</b>（2 段目について）</p>
     <ul>
-      <li>ストリームの run の 2 段目は、どの場面もほぼ同じ灰色のぼやけで、場面を見分けられません。1.8 万 stack の普通の学習も同じです。</li>
-      <li><code>all</code> の 600 万 stack では、2 段目で場面を見分けられます。川と空、街路樹、道路、建物の輪郭と明るさの配置が合っています。人や看板などの細かいものはぼやけて消えます。after の場面でも同じ程度に描けます。</li>
-      <li><code>span</code> の 600 万 stack では、学習区間の画像で人・木・トラックまで形が分かります。after の画像は、色の合った断片が並び、別の場面の一部が混ざります。</li>
-      <li>3 段目（後から学んだデコーダ）は、どの run でも同じ程度のぼやけで、違いがほとんど見えません。<code>recon_blur</code> の差が小さいことと合っています。</li>
+      <li>ストリームの run では、どの場面もほぼ同じ灰色のぼやけになり、場面を見分けられません。1.8 万 stack の普通の学習も同じです。</li>
+      <li>全動画の 600 万 stack では、場面を見分けられます。川と空、街路樹、道路、建物の輪郭と、明るさの配置が合っています。人や看板などの細かいものは、ぼやけて消えます。学習区間の後の場面でも、同じ程度に描けます。</li>
+      <li>同じ区間の 600 万 stack では、学習区間の画像で、人・木・トラックまで形が分かります。一方、学習区間の後の画像では、色の合った断片が並び、別の場面の一部が混ざります。過学習の状態が、画像にも表れています。</li>
     </ul>
-    <p><b>分かったこと</b>　普通の深層学習で学べば、同じモデルでも <code>span</code> は 0.164 まで下がり、描き戻した画像で場面を見分けられます。ストリームの run の 0.587 は、モデルの限界ではありません。同じ 1.8 万 stack しか見ていない時点では、普通の学習もストリームの run と同じ程度でした。差の大部分は、見た stack の数（600 万と 1.8 万）によると読めます。ストリームを長く続けたときにどこまで近づくかは、まだ確かめていません。</p>
-    <p>モデル自身のデコーダの画像と <code>span</code> は大きく良くなったのに、<code>recon_blur</code> はほとんど下がりませんでした。<code>recon_blur</code> は、後から学ぶデコーダの側でそれ以上下がらなくなっていると考えられます。その場合、<code>recon_blur</code> は描き戻しのきれいさを表しません。後から学ぶ step を増やして確かめてはいません。</p>
+
+    <h3>結果 4　<code>recon_blur</code> がほとんど下がらなかったこと</h3>
+    <p><code>recon_blur</code> は、学習を止めたエンコーダの <i>z</i> から、別のデコーダを後から学ばせ、そのデコーダで描き戻したときの誤差です。上の画像の 3 段目がその出力です。</p>
+    <ul>
+      <li>3 段目は、どの run でも同じ程度のぼやけで、違いがほとんど見えません。<code>recon_blur</code> の値の差が小さいことと合っています。</li>
+      <li>2 段目（モデル自身のデコーダ）は大きく良くなったのに、3 段目は変わりませんでした。このことから、<code>recon_blur</code> は、後から学ぶデコーダの側で、それ以上下がらなくなっていると考えられます。</li>
+      <li>そうであれば、<code>recon_blur</code> は、描き戻した画像のきれいさを表しません。ただし、後から学ぶデコーダの学習を長くして確かめることは、まだしていません。</li>
+    </ul>
+
+    <h3>分かったこと</h3>
+    <ul>
+      <li>普通の学習で学べば、同じモデルでも <code>span</code> は 0.164 まで下がり、描き戻した画像で場面を見分けられます。ストリームの run の 0.587 は、モデルの限界ではありません。</li>
+      <li>見た stack の数が同じ 1.8 万の時点では、普通の学習もストリームの run と同じ程度でした。差の大部分は、見た stack の数（600 万と 1.8 万）によると読めます。</li>
+      <li>ストリームの run を 1800 秒より長く続けたとき、普通の学習の値にどこまで近づくかは、まだ確かめていません。</li>
+    </ul>
   </div>
 </section>
 
@@ -692,11 +768,11 @@ table { border-top: 1px solid var(--rule); }
         <tr><td class="mono">V15</td><td>デコーダの τ が 1000 秒以上、エンコーダの τ が 1000 秒以下の 9 本は <i>z</i> を使う</td><td><span class="chip ok">当たり</span></td><td class="small">+0.51〜+0.80</td></tr>
         <tr><td class="mono">V15</td><td>エンコーダの τ が 3000 秒でも学べる</td><td><span class="chip ng">外れ</span></td><td class="small">6 点とも学べない。4 点は条件 (4) で外れた</td></tr>
         <tr><td class="mono">V15</td><td>Angular の最小の <code>span</code> は、RMSProp と区別できない</td><td><span class="chip ng">外れ</span></td><td class="small">4 条件を満たす点の最小は 0.802 で、RMSProp（0.708）より悪い</td></tr>
-        <tr><td class="mono">V16</td><td><code>all</code> の最小の <code>span</code> は 0.35 以下で、ストリームの run（0.587）よりはっきり小さい</td><td><span class="chip ok">当たり</span></td><td class="small">0.164（3·10<sup>−4</sup>）</td></tr>
-        <tr><td class="mono">V16</td><td><code>all</code> の <code>recon_blur</code> は 0.30 以下</td><td><span class="chip ng">外れ</span></td><td class="small">0.401。ストリームの run（0.432）より小さいが、差は 0.031</td></tr>
-        <tr><td class="mono">V16</td><td><code>span</code> は覚えてしまい、<code>after</code> が <code>span</code> より 0.1 以上大きい</td><td><span class="chip ok">当たり</span></td><td class="small"><code>span</code> 0.074、<code>after</code> 0.374</td></tr>
+        <tr><td class="mono">V16</td><td>全動画の最小の <code>span</code> は 0.35 以下で、ストリームの run（0.587）よりはっきり小さい</td><td><span class="chip ok">当たり</span></td><td class="small">0.164（3·10<sup>−4</sup>）</td></tr>
+        <tr><td class="mono">V16</td><td>全動画の <code>recon_blur</code> は 0.30 以下</td><td><span class="chip ng">外れ</span></td><td class="small">0.401。ストリームの run（0.432）より小さいが、差は 0.031</td></tr>
+        <tr><td class="mono">V16</td><td>同じ区間では過学習が起き、<code>after</code> が <code>span</code> より 0.1 以上大きい</td><td><span class="chip ok">当たり</span></td><td class="small"><code>span</code> 0.074、<code>after</code> 0.374</td></tr>
         <tr><td class="mono">V16</td><td>どの run もデコーダは <i>z</i> を使う</td><td><span class="chip ok">当たり</span></td><td class="small"><i>z</i> の差 +1.65〜+1.87</td></tr>
-        <tr><td class="mono">V16</td><td>1.8 万 stack の時点では、ストリームの run と区別できない（参考）</td><td><span class="chip mid">一部</span></td><td class="small"><code>all</code> は 0.607 で当たり、<code>span</code> は 0.509 で 0.078 小さく、外れ</td></tr>
+        <tr><td class="mono">V16</td><td>1.8 万 stack の時点では、<code>span</code> がストリームの run と区別できない（参考）</td><td><span class="chip mid">一部</span></td><td class="small">全動画は 0.607 で当たり、同じ区間は 0.509 で 0.078 小さいため外れ</td></tr>
       </tbody>
     </table>
   </div>
@@ -712,7 +788,7 @@ table { border-top: 1px solid var(--rule); }
       <li><b>デコーダの 60 秒の変位を、直接決められるか。</b>決め手が分かったので、それを設定にする optimizer が考えられます。Angular は 1 フレームの一歩を決めたため、正味の動きは決められませんでした。</li>
       <li><b>原因と結果の区別。</b>60 秒の変位は、300〜1800 秒で測った量です。デコーダが <i>z</i> を使うかは、最初の数十秒で決まっているのかもしれません。<i>z</i> を使わないデコーダは今の場面を重みで追うので、重みがよく動く、という逆向きの関係もありえます。V15 では速さを設定で変えたので、その範囲では速さが原因と言えます。</li>
       <li><b>エンコーダが遅いと、なぜ条件 (4) で外れるのか。</b>エンコーダの 60 秒の変位が約 0.5% 以下の run で、<code>dyn_1/copy_1</code> が下がりませんでした。</li>
-      <li><b>ストリームを長く続けると、普通の学習に近づくか。</b>V16 では、見た stack の数が同じなら、ストリームの run と普通の学習は同じ程度でした。ストリームの run を 1800 秒より長く回して確かめます。</li>
+      <li><b>ストリームを長く続けると、普通の学習に近づくか。</b>V16 では、見た stack の数が同じなら、ストリームの run と普通の学習の <code>span</code> は同じ程度でした。ストリームの run を 1800 秒より長く回して確かめます。</li>
       <li><b><code>recon_blur</code> は何で決まっているか。</b>モデル自身の描き戻しが大きく良くなっても、<code>recon_blur</code> はほとんど下がりませんでした。後から学ぶデコーダの step を増やして確かめます。</li>
     </ul>
   </div>
@@ -1120,7 +1196,8 @@ function scatter(host, o) {
 (() => {
   const COLV = {stream: 'var(--s3)', all: 'var(--s1)', span: 'var(--s2)'};
   const BEST = {all: 3e-4, span: 1e-3};
-  const name = r => r.data === 'stream' ? 'ストリーム（RMSProp τ=1e5）' : `${r.data}、lr ${Number(r.lr).toExponential()}`;
+  const AREA = {all: '全動画', span: '同じ区間'};
+  const name = r => r.data === 'stream' ? 'ストリーム（RMSProp τ=1e5）' : `${AREA[r.data]}、学習率 ${Number(r.lr).toExponential()}`;
   const best = r => r.data === 'stream' || Math.abs(r.lr - BEST[r.data]) < 1e-12;
   const order = [...D.v16].sort((a, b) => best(a) - best(b));
   const fmtN = n => n >= 1e4 ? (n / 1e4).toLocaleString('ja-JP', {maximumFractionDigits: 1}) + ' 万' : n.toLocaleString('ja-JP');
@@ -1130,7 +1207,7 @@ function scatter(host, o) {
       r.stacks.forEach((n, i) => { if (n > 0) { xs.push(Math.log10(n)); ys.push(r[key][i]); } });
       return {label: name(r), color: COLV[r.data], xs, ys, width: best(r) ? 2.6 : 1.2, opacity: best(r) ? 1 : 0.5, marker: false};
     });
-    const lg = ['stream', 'all', 'span'].map(d => ({label: d === 'stream' ? 'ストリーム' : d === 'all' ? '普通の学習 all' : '普通の学習 span', color: COLV[d]}));
+    const lg = ['stream', 'all', 'span'].map(d => ({label: d === 'stream' ? 'ストリーム' : d === 'all' ? '普通の学習（全動画）' : '普通の学習（同じ区間）', color: COLV[d]}));
     lineChart(document.getElementById('c-v16-' + key), {series, width: 420, height: 300, xmin: 2.6, xmax: 6.9, ymin: 0.05, ymax: 8, log: true, nearest: true, xticks: [3, 4, 5, 6], yticks: [0.05, 0.1, 0.2, 0.5, 1, 2, 5], xfmt: x => fmtN(Math.round(10 ** x)), yfmt: v => v, xlabel: '見た stack の数', ylabel: key, vlines: [{x: Math.log10(18000), dash: '4 4', label: '1.8 万'}], legend: lg});
   }
   const tb = document.getElementById('t-v16');
