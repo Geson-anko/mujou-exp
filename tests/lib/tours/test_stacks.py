@@ -78,6 +78,49 @@ class TestStackedTourFrames:
         with pytest.raises(ValueError, match="positive"):
             StackedTourFrames(root, n=1, held_out="H", frames=2, stride=0, advance=1)
 
+    def test_unknown_layout_raises(self, root):
+        with pytest.raises(ValueError, match="layout"):
+            StackedTourFrames(
+                root, n=2, held_out="H", frames=1, stride=1, advance=1, layout="x"
+            )
+
+
+class TestChunkLayout:
+    """``layout="chunk"``: the k-th ``next()`` of n streams is the single
+    stream's next() calls k n .. k n + n - 1, in order (the oracle is the
+    stream of n = 1)."""
+
+    @pytest.mark.parametrize(
+        ("n", "frames", "stride", "advance"), [(4, 1, 1, 1), (3, 3, 2, 2)]
+    )
+    def test_the_chunk_is_the_single_streams_next_n_stacks(
+        self, root, n, frames, stride, advance
+    ):
+        kw = {"held_out": "H", "frames": frames, "stride": stride, "advance": advance}
+        chunk = StackedTourFrames(root, n=n, layout="chunk", **kw)
+        single = StackedTourFrames(root, n=1, **kw)
+        for k in range(15):  # past the loop of 21 frames at least once
+            stacks, ready, reset = chunk.next()
+            for i in range(n):
+                one, one_ready, _ = single.next()
+                assert torch.equal(stacks[i], one[0])
+                assert bool(ready[i]) == bool(one_ready[0])
+                # its previous stack is n advance frames back: reset when a
+                # video starts within them
+                g = ((k * n + i) * advance) % N
+                _, local = loop_frame(g)
+                assert bool(reset[i]) == (k == 0 or local < n * advance)
+
+    def test_state_dict_continues_exactly(self, root):
+        kw = {"n": 3, "held_out": "H", "frames": 2, "stride": 1, "advance": 1}
+        a = StackedTourFrames(root, layout="chunk", **kw)
+        for _ in range(4):
+            a.next()
+        b = StackedTourFrames(root, layout="chunk", **kw)
+        b.load_state_dict(a.state_dict())
+        for x, y in zip(a.next(), b.next(), strict=True):
+            assert torch.equal(x, y)
+
 
 class TestToursRoot:
     def test_env_var_names_the_parent_of_the_version(self, tmp_path, monkeypatch):

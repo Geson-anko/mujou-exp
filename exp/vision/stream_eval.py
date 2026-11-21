@@ -22,7 +22,9 @@ seconds, all of them ``past``; by the lead $(k - F)\Delta$ of a future unit
 ``next_0_10`` [0, 10), ``next_10_60``, ``next_60_300``, ``next_300_``, all of
 them ``future``. Whatever the checkpoint, ``span`` is the positions in the
 run's span and ``after`` those after it, so that two checkpoints compare on
-the same stacks.
+the same stacks; ``zurich`` is the ratio on the first stack of each of the
+held-out video's val windows (``eval.eval_splits``), $b$ of the same $m$,
+the stacks no run learns from.
 
 Prequential. ``stream.jsonl``'s ``sq`` of second $s$ is the mean $\lVert y -
 \hat y \rVert^2$ of the frames of $(s - 1, s]$, made before the weights
@@ -45,6 +47,13 @@ mean last frame of the fit pairs, blurred by ``measure.blur_sigma`` pixels;
 the held-out calib windows); ``rank`` of the first codes. The fit set is the
 same for every checkpoint, so the probes compare checkpoints, not data.
 
+A run of the layout ``"chunk"`` is read as the single stream it walks
+(``eval.stream_view``): every unit, time and frame above is of that stream,
+a checkpoint at $t$ after $F$ frames of a run of $B$ streams being at $tB$
+after $FB$ units. ``span`` (seconds) evaluates the span ``[0, span)`` in
+place of the run's (of its view), so that a run longer than its loop of
+videos is read on stacks it saw first in order.
+
 ``evaluate_stream`` writes ``<run_dir>/posthoc_stream/``: ``positions.json``
 (``k``, ``t`` seconds, ``base`` $b_k$, ``pre`` $p_k$ or null),
 ``matrix.jsonl`` (a row per checkpoint: ``t``, ``frame``, ``err`` $e_{T,k}$
@@ -55,7 +64,8 @@ ratio and ``n_<group>`` of each group and ``pre_<group>`` of the past ones),
 positions evenly spaced: the true last frames, the system's, the decoder's
 of seed 0)::
 
-    python -m exp.vision.stream_eval <run_dir> [--root <data>] [--fit-steps S]
+    python -m exp.vision.stream_eval <run_dir> [--root <data>] [--fit-steps S] \
+        [--span SECONDS] [--probe-at T,T,...]
 """
 
 import argparse
@@ -63,6 +73,7 @@ import json
 import math
 import statistics
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +103,7 @@ from exp.vision.eval import (
     eval_splits,
     fit_decoder,
     stacks_at,
+    stream_view,
 )
 from exp.vision.schema import RunConf
 
@@ -108,6 +120,7 @@ __all__ = [
     "groups",
     "main",
     "prequential",
+    "spanned",
     "stream_positions",
 ]
 
@@ -129,6 +142,15 @@ FUTURE_GROUPS = (
     ("next_60_300", 60.0, 300.0),
     ("next_300_", 300.0, math.inf),
 )
+
+
+def spanned(conf: RunConf, span: float | None) -> RunConf:
+    """``conf`` whose span is ``[0, span)`` (``measure.duration`` = ``span``,
+    its checkpoints left out), or ``conf`` itself for None."""
+    if span is None:
+        return conf
+    measure = replace(conf.measure, duration=span, ckpt_times=[], ckpt_every=0.0)
+    return replace(conf, measure=measure)
 
 
 def _units(conf: RunConf, seconds: float) -> int:
@@ -178,11 +200,15 @@ def groups(ks: Sequence[int], frame: int, dt: float) -> dict[str, list[int]]:
     return out
 
 
-def prequential(run_dir: Path, conf: RunConf, ks: Sequence[int]) -> list[float | None]:
+def prequential(
+    run_dir: Path, conf: RunConf, ks: Sequence[int], c: int = 1
+) -> list[float | None]:
     """$p_k$ (module docstring) of each unit of ``ks``: of the row of
-    ``stream.jsonl`` whose second $s$ holds it ($s = \\lfloor k\\Delta /
-    \\mathrm{log\\_every} \\rfloor + 1$ logs), null after the run's span or
-    without the row's ``sq``."""
+    ``stream.jsonl`` whose second $s$ holds it ($s = \\lfloor \\lfloor k/c
+    \\rfloor \\Delta / \\mathrm{log\\_every} \\rfloor + 1$ logs: the run
+    showed unit $k$ of its view at its frame $\\lfloor k/c \\rfloor$,
+    ``eval.stream_view``), null after the run's span or without the row's
+    ``sq``."""
     every = _units(conf, conf.ctl.log_every)
     t = conf.data.tours
     p = t.frames * 3 * t.size * t.size
@@ -195,7 +221,7 @@ def prequential(run_dir: Path, conf: RunConf, ks: Sequence[int]) -> list[float |
                 sq[round(r["t"] / conf.ctl.log_every)] = r["sq"]
     out: list[float | None] = []
     for k in ks:
-        v = sq.get(k // every + 1)
+        v = sq.get(k // c // every + 1)
         out.append(None if v is None else (256 / 255) ** 2 * v - p / (12 * 255**2))
     return out
 
@@ -220,6 +246,8 @@ class StreamEvaluator:
         fit_steps: The steps of each decoder's fit.
         past_every, future_every, future, probe_every, block: as the
             module's constants (seconds).
+        c: The stacks of ``conf`` a frame of the run showed (``conf`` is
+            the run's ``eval.stream_view``; 1 for a spread run).
     """
 
     def __init__(
@@ -235,6 +263,7 @@ class StreamEvaluator:
         future: float = FUTURE,
         probe_every: float = PROBE_EVERY,
         block: float = BLOCK,
+        c: int = 1,
     ) -> None:
         self._conf, self._out, self._fit_steps = conf, out, fit_steps
         self._dev = torch.device(conf.device)
@@ -252,7 +281,7 @@ class StreamEvaluator:
             float(((xc.to(self._dev).float() / 255 - self._mean_stack) ** 2).sum())
             for xc in self._x.split(1)
         ]
-        self.pre = prequential(run_dir, conf, self.ks)
+        self.pre = prequential(run_dir, conf, self.ks, c)
         # the probes' pairs: odd blocks fit, even blocks and after the span
         # evaluate
         p, b = _units(conf, probe_every), _units(conf, block)
@@ -262,6 +291,9 @@ class StreamEvaluator:
         after = range(span, span + _units(conf, future), _units(conf, future_every))
         self._after = self._pairs(root, list(after))
         self._zurich = eval_splits(conf, root)
+        n = conf.data.tours.frames
+        self._zx = self._zurich["val"][:, :n]  # the first stack of each window
+        self.zurich_base = self._sq_errors(lambda _: self._mean_stack, self._zx)
         last = self._fit[1][:, 0, -1]  # (m, C, H, W) u8: the fit pairs' last frames
         self._targets = last.to(self._dev)
         self._mean = last.double().mean(0).div(255).float().to(self._dev)
@@ -298,14 +330,24 @@ class StreamEvaluator:
         }
 
     @torch.no_grad()
-    def errors(self, code: VaeCode) -> list[float]:
-        """$e_{T,k}$ of each position for the VAE ``code``."""
+    def _sq_errors(self, recon: Callable[[Tensor], Tensor], x: Tensor) -> list[float]:
+        """$\\lVert x/255 - \\mathrm{recon}(x)\\rVert^2$ of each stack of ``x``
+        u8, ``recon`` of a batch of them on the device."""
         out: list[float] = []
-        for xc in self._x.split(BATCH):
-            x = xc.to(self._dev)
-            d = (code.decode(code.mu(x)) - x.float() / 255) ** 2
+        for xc in x.split(BATCH):
+            xd = xc.to(self._dev)
+            d = (recon(xd) - xd.float() / 255) ** 2
             out += d.double().flatten(1).sum(1).tolist()
         return out
+
+    def errors(self, code: VaeCode) -> list[float]:
+        """$e_{T,k}$ of each position for the VAE ``code``."""
+        return self._sq_errors(lambda x: code.decode(code.mu(x)), self._x)
+
+    def zurich(self, code: VaeCode) -> float:
+        """The ratio ``zurich`` (module docstring) of the VAE ``code``."""
+        err = self._sq_errors(lambda x: code.decode(code.mu(x)), self._zx)
+        return sum(err) / sum(self.zurich_base)
 
     def summary(self, err: Sequence[float], frame: int) -> dict[str, Any]:
         """The ratio and count of each group, and ``pre_`` of the past ones,
@@ -433,37 +475,45 @@ def evaluate_stream(
     out: Path | None = None,
     fit_steps: int = FIT_STEPS,
     spacing: Mapping[str, float] | None = None,
+    span: float | None = None,
+    probe_at: Sequence[float] = PROBE_AT,
 ) -> Path:
     """Evaluate every checkpoint ``ckpt/<t>.pt`` of the run in ``run_dir``
     (its ``config.yaml``; the VAE of ``build(conf)``, on ``conf.device``)
     in the order of ``t``, under ``provenance.configure_determinism``, into
-    ``out`` (``run_dir / OUT``; module docstring); the probes only at the
-    checkpoints of ``PROBE_AT`` and the last one. ``spacing`` passes the spacings of
-    ``StreamEvaluator`` by name. Returns ``out``.
+    ``out`` (``run_dir / OUT``; module docstring), on its ``eval.stream_view``
+    whose span is ``[0, span)`` (``spanned``); the probes only at the
+    checkpoints of ``probe_at`` (seconds of the view) and the last one.
+    ``spacing`` passes the spacings of ``StreamEvaluator`` by name. Returns
+    ``out``.
 
     Raises:
         FileNotFoundError: The run has no checkpoint.
     """
-    conf = from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+    run = from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+    view, c = stream_view(run)
+    conf = spanned(view, span)
     determinism = configure_determinism(conf.device)
     paths = sorted(run_dir.glob("ckpt/*.pt"), key=lambda p: float(p.stem))
     if not paths:
         raise FileNotFoundError(f"no checkpoint under {run_dir / 'ckpt'}")
-    times = [float(p.stem) for p in paths]
-    probe_at = [
-        t for t in times if t == times[-1] or any(abs(t - a) < 1e-6 for a in PROBE_AT)
+    times = [round(float(p.stem) * c, 6) for p in paths]  # of the view
+    probed = [
+        t for t in times if t == times[-1] or any(abs(t - a) < 1e-6 for a in probe_at)
     ]
     root = tours_root(conf.data.tours.data_version) if root is None else root
     out = run_dir / OUT if out is None else out
     ev = StreamEvaluator(
-        conf, run_dir, root, out, fit_steps=fit_steps, **(spacing or {})
+        conf, run_dir, root, out, fit_steps=fit_steps, c=c, **(spacing or {})
     )
     write_json(
         out / "config.json",
         ev.settings()
         | {
-            "probe_at": probe_at,
+            "probe_at": probed,
             "ckpts": [p.name for p in paths],
+            "stacks_per_frame": c,
+            "span": conf.measure.duration,
             "determinism": determinism,
         },
     )
@@ -478,15 +528,16 @@ def evaluate_stream(
     )
     for f in ("matrix.jsonl", "summary.jsonl", "probes.jsonl"):
         _write(out / f, [])
-    code = build(conf)
+    code = build(run)
     for path, at in zip(paths, times, strict=True):
         head = ckpt.load_eval(path, code.modules())
-        t, frame = head["t"], int(head["frame"])
+        t, frame = round(head["t"] * c, 6), int(head["frame"]) * c
         err = ev.errors(code)
         stamp = {"t": t, "frame": frame}
         _append(out / "matrix.jsonl", [stamp | {"err": err}])
-        _append(out / "summary.jsonl", [stamp | ev.summary(err, frame)])
-        if at in probe_at:
+        row = ev.summary(err, frame) | {"zurich": ev.zurich(code)}
+        _append(out / "summary.jsonl", [stamp | row])
+        if at in probed:
             rows = ev.probes(code, path.stem)
             _append(out / "probes.jsonl", [stamp | r for r in rows])
     return out
@@ -523,6 +574,13 @@ def main(argv: Sequence[str] | None = None) -> Path:
     ap.add_argument("run_dir", type=Path, help="the run's directory")
     ap.add_argument("--root", type=Path, help="the data (default: tours_root)")
     ap.add_argument("--fit-steps", type=int, default=FIT_STEPS, help="per decoder")
+    ap.add_argument("--span", type=float, help="seconds of the span (of the view)")
+    ap.add_argument(
+        "--probe-at",
+        type=_seconds,
+        default=PROBE_AT,
+        help="comma-separated seconds of the view (default: PROBE_AT)",
+    )
     args = ap.parse_args(argv)
     from exp.vision.models import build_vae  # the model, only for the shell
 
@@ -531,7 +589,14 @@ def main(argv: Sequence[str] | None = None) -> Path:
         lambda conf: build_vae(conf, seed=conf.seed),
         root=args.root,
         fit_steps=args.fit_steps,
+        span=args.span,
+        probe_at=args.probe_at,
     )
+
+
+def _seconds(text: str) -> tuple[float, ...]:
+    """``"1800,6000"`` as ``(1800.0, 6000.0)``."""
+    return tuple(float(x) for x in text.split(","))
 
 
 if __name__ == "__main__":

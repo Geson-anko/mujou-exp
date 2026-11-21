@@ -4,28 +4,32 @@ out): the oracles are the formulas of the module docstring."""
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
 import yaml
 
 from exp.lib import ckpt
+from exp.lib.tours.stacks import StackedTourFrames
 from exp.vision.compose import to_dict
-from exp.vision.eval import stacks_at
+from exp.vision.eval import stacks_at, stream_view
 from exp.vision.schema import DataConf, MeasureConf, ModelConf, RunConf, ToursConf
 from exp.vision.stream_eval import (
     StreamEvaluator,
     evaluate_stream,
     groups,
     prequential,
+    spanned,
     stream_positions,
 )
 from tests.vision.test_eval import SIZE, ColorCode, MixCode, N, random_tours
 
 DURATION = 3.0  # 30 frames of 0.1 s
 # 0.5 s past, 1 s future over 2 s, pairs every 0.1 s in blocks of 0.5 s
-EVERY = {
+EVERY: dict[str, Any] = {
     "past_every": 0.5,
     "future_every": 1.0,
     "future": 2.0,
@@ -221,6 +225,9 @@ class TestEvaluateStream:
         assert summary[2]["past"] == 0.0 and summary[2]["future"] == 0.0  # c = 0
         assert summary[0]["span"] == pytest.approx(1.0, rel=1e-5)
         assert summary[2]["span"] == summary[2]["after"] == 0.0
+        # the held-out stacks against the same mean stack: 1 at c = 1, 0 at c = 0
+        assert summary[0]["zurich"] == pytest.approx(1.0, rel=1e-5)
+        assert summary[2]["zurich"] == 0.0
         assert summary[2]["n_span"] == summary[2]["n_past"]  # all of it, at the end
         # 0 is in PROBE_AT, 3.0 is the last checkpoint, 1.0 is neither
         assert [(r["t"], r["group"]) for r in probes] == [
@@ -228,3 +235,148 @@ class TestEvaluateStream:
         ]
         settings = json.loads((out / "config.json").read_text())
         assert settings["probe_at"] == [0.0, DURATION]
+
+
+def chunk_conf(streams: int = 2) -> RunConf:
+    """The run of ``streams`` streams laid out ``"chunk"`` that walks the
+    single stream of ``conf_of()``: ``DURATION / streams`` seconds."""
+    base = conf_of()
+    return replace(
+        base,
+        data=replace(base.data, streams=streams, layout="chunk"),
+        measure=replace(
+            base.measure,
+            duration=DURATION / streams,
+            ckpt_times=[0.0, DURATION / streams],
+        ),
+    )
+
+
+def write_run(run: Path, conf: RunConf, m: torch.Tensor, c: int = 1) -> None:
+    """A run of ``conf`` whose checkpoints at $t / c$ (after $10t / c$
+    frames) hold ``MixCode`` of the mix 0 at $t$ = ``DURATION``, 1 at 0 and
+    0.5 at 1, saved out of order."""
+    run.mkdir()
+    (run / "config.yaml").write_text(yaml.safe_dump(to_dict(conf)))
+    saved = MixCode(m)
+    for t, mix in ((DURATION, 0.0), (0.0, 1.0), (1.0, 0.5)):
+        saved.net.c.data.fill_(mix)
+        ckpt.save_eval(
+            run,
+            program="vae",
+            group="g",
+            t=t / c,
+            frame=round(t / c / 0.1),
+            modules=saved.modules(),
+        )
+
+
+def outputs(out: Path) -> dict[str, object]:
+    """What ``evaluate_stream`` wrote but its settings."""
+    got: dict[str, object] = {
+        "positions": json.loads((out / "positions.json").read_text())
+    }
+    for name in ("matrix.jsonl", "summary.jsonl", "probes.jsonl"):
+        got[name] = [json.loads(x) for x in (out / name).read_text().splitlines()]
+    return got
+
+
+class TestChunkView:
+    """A run of the layout ``"chunk"`` is read as the single stream it walks
+    (``eval.stream_view``): the oracle is the run of one stream whose
+    checkpoints hold the same weights at ``streams`` times the time."""
+
+    def test_the_view_is_the_single_stream_over_c_times_the_duration(self):
+        view, c = stream_view(chunk_conf(3))
+        assert c == 3
+        assert (view.data.streams, view.data.layout) == (1, "spread")
+        assert view.measure.duration == pytest.approx(DURATION)
+        assert stream_view(conf_of()) == (conf_of(), 1)
+
+    def test_unit_k_of_the_view_is_slot_k_mod_c_of_frame_k_div_c(self, root):
+        conf, c = chunk_conf(), 2
+        t = conf.data.tours
+        run = StackedTourFrames(
+            root,
+            n=c,
+            held_out=t.held_out,
+            frames=t.frames,
+            stride=t.stride,
+            advance=t.advance,
+            layout="chunk",
+        )
+        shown = [run.next()[0] for _ in range(20)]  # frames 0..19
+        ks, x = stacks_at(stream_view(conf)[0], root, range(40))
+        assert ks  # some are kept
+        for k, xk in zip(ks, x, strict=True):
+            assert torch.equal(xk, shown[k // c][k % c])
+
+    def test_stacks_at_refuses_a_chunk_run(self, root):
+        with pytest.raises(ValueError, match="stream_view"):
+            stacks_at(chunk_conf(), root, [0])
+
+    def test_the_second_of_a_unit_is_that_of_its_frame(self, tmp_path):
+        """Unit k was shown at frame k // 2, of the second k // 2 // 10 + 1."""
+        rows = [{"t": 1.0, "sq": 1.0}, {"t": 2.0, "sq": 2.0}]
+        (tmp_path / "stream.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows)
+        )
+        view, c = stream_view(chunk_conf())
+        got = prequential(tmp_path, view, [0, 19, 20, 39, 40], c)
+        assert [g is None for g in got] == [False, False, False, False, True]
+        assert got[0] == got[1] and got[2] == got[3] and got[0] != got[2]
+
+    def test_a_chunk_run_is_evaluated_as_its_single_stream(self, root, tmp_path):
+        m = brute_mean_stack(root)
+        write_run(tmp_path / "one", conf_of(), m)
+        write_run(tmp_path / "chunk", chunk_conf(), m, c=2)
+        got = [
+            outputs(
+                evaluate_stream(
+                    tmp_path / name,
+                    lambda _: MixCode(m),
+                    root=root,
+                    fit_steps=FIT,
+                    spacing=EVERY,
+                )
+            )
+            for name in ("one", "chunk")
+        ]
+        assert got[0] == got[1]
+        settings = json.loads(
+            (tmp_path / "chunk" / "posthoc_stream" / "config.json").read_text()
+        )
+        assert settings["stacks_per_frame"] == 2
+        assert settings["probe_at"] == [0.0, DURATION]
+
+
+class TestSpan:
+    def test_span_is_the_run_of_that_duration(self, root, tmp_path):
+        """``span`` = 2 s reads a 3 s run as the run of 2 s would be read."""
+        m = brute_mean_stack(root)
+        short = replace(
+            conf_of(), measure=replace(conf_of().measure, duration=2.0, ckpt_times=[])
+        )
+        write_run(tmp_path / "long", conf_of(), m)
+        write_run(tmp_path / "short", short, m)
+        long_out = evaluate_stream(
+            tmp_path / "long",
+            lambda _: MixCode(m),
+            root=root,
+            fit_steps=FIT,
+            spacing=EVERY,
+            span=2.0,
+        )
+        short_out = evaluate_stream(
+            tmp_path / "short",
+            lambda _: MixCode(m),
+            root=root,
+            fit_steps=FIT,
+            spacing=EVERY,
+        )
+        assert outputs(long_out) == outputs(short_out)
+        assert json.loads((long_out / "config.json").read_text())["span"] == 2.0
+
+    def test_spanned_none_is_the_conf_itself(self):
+        assert spanned(conf_of(), None) is not None
+        assert spanned(conf_of(), None) == conf_of()

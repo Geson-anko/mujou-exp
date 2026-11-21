@@ -22,7 +22,7 @@ code in particular.
 ``evaluate_z_use`` writes ``<run_dir>/posthoc_stream/z_use.jsonl`` (a row per
 checkpoint of ``at``, default ``stream_eval.PROBE_AT`` and the last)::
 
-    python -m exp.vision.z_use <run_dir> [--root <data>]
+    python -m exp.vision.z_use <run_dir> [--root <data>] [--span S] [--at T,T,...]
 """
 
 import argparse
@@ -39,9 +39,15 @@ from exp.lib import ckpt
 from exp.lib.provenance import configure_determinism
 from exp.lib.tours.stacks import tours_root
 from exp.vision.compose import from_dict
-from exp.vision.eval import BATCH, VaeCode, stacks_at
+from exp.vision.eval import BATCH, VaeCode, stacks_at, stream_view
 from exp.vision.schema import RunConf
-from exp.vision.stream_eval import OUT, PAST_EVERY, PROBE_AT, stream_positions
+from exp.vision.stream_eval import (
+    OUT,
+    PAST_EVERY,
+    PROBE_AT,
+    spanned,
+    stream_positions,
+)
 
 __all__ = ["ZUse", "evaluate_z_use", "main", "shifted"]
 
@@ -102,30 +108,39 @@ def evaluate_z_use(
     root: Path | None = None,
     every: float = PAST_EVERY,
     at: Sequence[float] | None = None,
+    span: float | None = None,
 ) -> Path:
     """The rows of the checkpoints ``ckpt/<t>.pt`` of the run in ``run_dir``
     whose ``t`` is in ``at`` (default ``PROBE_AT`` and the last), in the
     order of ``t``, under ``provenance.configure_determinism``, into
-    ``posthoc_stream/z_use.jsonl``. Returns its path.
+    ``posthoc_stream/z_use.jsonl``, on the run's ``eval.stream_view`` whose
+    span is ``[0, span)`` (``stream_eval.spanned``): ``at``, ``t`` and
+    ``frame`` are of the view. Returns its path.
 
     Raises:
         FileNotFoundError: The run has no checkpoint.
     """
-    conf = from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+    run = from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+    view, c = stream_view(run)
+    conf = spanned(view, span)
     configure_determinism(conf.device)
     paths = sorted(run_dir.glob("ckpt/*.pt"), key=lambda p: float(p.stem))
     if not paths:
         raise FileNotFoundError(f"no checkpoint under {run_dir / 'ckpt'}")
-    last = float(paths[-1].stem)
-    wanted = [*PROBE_AT, last] if at is None else list(at)
-    paths = [p for p in paths if any(abs(float(p.stem) - a) < 1e-6 for a in wanted)]
+
+    def view_t(p: Path) -> float:
+        return round(float(p.stem) * c, 6)
+
+    wanted = [*PROBE_AT, view_t(paths[-1])] if at is None else list(at)
+    paths = [p for p in paths if any(abs(view_t(p) - a) < 1e-6 for a in wanted)]
     root = tours_root(conf.data.tours.data_version) if root is None else root
     z = ZUse(conf, root, every=every)
-    code = build(conf)
+    code = build(run)
     rows = []
     for path in paths:
         head = ckpt.load_eval(path, code.modules())
-        rows.append({"t": head["t"], "frame": int(head["frame"])} | z.row(code))
+        stamp = {"t": round(head["t"] * c, 6), "frame": int(head["frame"]) * c}
+        rows.append(stamp | z.row(code))
     out = run_dir / OUT / "z_use.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -141,11 +156,21 @@ def main(argv: Sequence[str] | None = None) -> Path:
     )
     ap.add_argument("run_dir", type=Path, help="the run's directory")
     ap.add_argument("--root", type=Path, help="the data (default: tours_root)")
+    ap.add_argument("--span", type=float, help="seconds of the span (of the view)")
+    ap.add_argument(
+        "--at",
+        type=lambda s: [float(x) for x in s.split(",")],
+        help="comma-separated seconds of the view (default: PROBE_AT and the last)",
+    )
     args = ap.parse_args(argv)
     from exp.vision.models import build_vae  # the model, only for the shell
 
     return evaluate_z_use(
-        args.run_dir, lambda conf: build_vae(conf, seed=conf.seed), root=args.root
+        args.run_dir,
+        lambda conf: build_vae(conf, seed=conf.seed),
+        root=args.root,
+        at=args.at,
+        span=args.span,
     )
 
 

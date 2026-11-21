@@ -13,7 +13,13 @@ from exp.vision.compose import to_dict
 from exp.vision.eval import stacks_at
 from exp.vision.z_use import ZUse, evaluate_z_use, shifted
 from tests.vision.test_eval import MixCode, random_tours
-from tests.vision.test_stream_eval import DURATION, brute_mean_stack, conf_of
+from tests.vision.test_stream_eval import (
+    DURATION,
+    brute_mean_stack,
+    chunk_conf,
+    conf_of,
+    write_run,
+)
 
 EVERY = 0.5  # span positions 0, 5, ..., 25; kept 5, 10, 15, 25
 
@@ -85,3 +91,33 @@ def test_evaluate_writes_a_row_per_chosen_checkpoint(root, tmp_path):
     assert rows[0]["span_shifted"] == pytest.approx(1.0, rel=1e-5)  # c = 1
     assert rows[1]["span"] == 0.0 and rows[1]["span_shifted"] > 0.0  # c = 0
     assert torch.isfinite(torch.tensor(rows[1]["span_mean_z"]))
+
+
+def test_a_chunk_run_gives_the_rows_of_its_single_stream(root, tmp_path):
+    """The oracle is the run of one stream (``eval.stream_view``)."""
+    m = brute_mean_stack(root)
+    write_run(tmp_path / "one", conf_of(), m)
+    write_run(tmp_path / "chunk", chunk_conf(), m, c=2)
+    rows = [
+        evaluate_z_use(
+            tmp_path / name,
+            lambda _: MixCode(m),
+            root=root,
+            every=EVERY,
+            at=(0.0, 1.0, DURATION),
+        ).read_text()
+        for name in ("one", "chunk")
+    ]
+    assert rows[0] == rows[1]
+    assert [json.loads(x)["t"] for x in rows[1].splitlines()] == [0.0, 1.0, DURATION]
+
+
+def test_span_takes_the_positions_of_that_span(root, tmp_path):
+    m = brute_mean_stack(root)
+    write_run(tmp_path / "run", conf_of(), m)
+    path = evaluate_z_use(
+        tmp_path / "run", lambda _: MixCode(m), root=root, every=EVERY, span=2.0
+    )
+    rows = [json.loads(x) for x in path.read_text().splitlines()]
+    # span positions 0, 5, 10, 15 below 2 s; kept 5, 10, 15
+    assert {r["n"] for r in rows} == {3}
