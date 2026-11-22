@@ -1,0 +1,797 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>長いストリーム</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one reading column of about 46em; figures widen to 60em. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #13171e;
+  --ink-2: #4b5462;
+  --ink-3: #6f7886;
+  --rule: #d7dce4;
+  --grid: #e6e9ee;
+  --accent: #2a78d6;
+  --monitor: #0d1015;
+  --monitor-ink: #c9d1dc;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --neutral: #9aa3af;
+  --good: #0a7d0a;
+  --bad: #c03434;
+  --warn: #9a6400;
+  --good-bg: #e3f3e3;
+  --bad-bg: #fbe5e5;
+  --warn-bg: #fbf0d9;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+    --rule: #2b313a; --grid: #232830; --accent: #3987e5; --monitor: #07090c; --monitor-ink: #c9d1dc;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+    --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+    --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+  --rule: #2b313a; --grid: #232830; --accent: #3987e5; --monitor: #07090c; --monitor-ink: #c9d1dc;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+  --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+  --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.85;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+.col { max-width: 46rem; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.35; margin: 0; }
+h1 { font-weight: 900; font-size: clamp(1.9rem, 5vw, 2.8rem); letter-spacing: 0.01em; }
+h2 { font-weight: 900; font-size: 1.55rem; }
+h3 { font-weight: 700; font-size: 1.1rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--grid); padding: 0.05em 0.35em; border-radius: 3px; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+section { display: flex; flex-direction: column; gap: 20px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-3); text-transform: uppercase; }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-top: 2px solid var(--ink); padding-top: 14px; }
+.prose { display: flex; flex-direction: column; gap: 14px; max-width: 46rem; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 0.88rem; }
+
+header.hero { padding-top: 48px; display: flex; flex-direction: column; gap: 18px; }
+.hero .lead { font-size: 1.12rem; max-width: 44rem; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-3); }
+.meta span b { color: var(--ink-2); font-weight: 500; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.9rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 14px; }
+.finding { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.finding .k { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); letter-spacing: 0.06em; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); line-height: 1.7; max-width: 46rem; }
+.fig-title { font-weight: 700; font-size: 0.95rem; }
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { font-family: var(--font-mono); fill: var(--ink-3); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.84rem; color: var(--ink-2); }
+.legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; }
+.duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 22px; }
+.duo > * { min-width: 0; }
+
+/* the video monitor */
+.monitor { background: var(--monitor); color: var(--monitor-ink); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.screens { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+.screen { display: flex; flex-direction: column; gap: 6px; }
+.screen .lab { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.05em; color: #8e98a6; }
+.screen canvas { width: 208px; height: 208px; max-width: 100%; border: 1px solid #27303b; display: block; }
+#pix { image-rendering: pixelated; }
+.readout { font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.75; color: #aeb8c5; display: flex; flex-direction: column; min-width: 12rem; }
+.readout b { color: #eef2f6; font-weight: 500; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls button { font: inherit; font-size: 0.84rem; background: #1b222b; color: #dbe2ea; border: 1px solid #343e4b; border-radius: 4px; padding: 5px 12px; cursor: pointer; }
+.controls button[aria-pressed="true"] { background: #2a78d6; border-color: #2a78d6; color: #fff; }
+.controls button:focus-visible, .controls input:focus-visible { outline: 2px solid #86b6ef; outline-offset: 2px; }
+.controls input[type=range] { flex: 1 1 10rem; accent-color: #3987e5; }
+.strip svg text { font-family: var(--font-mono); fill: #8e98a6; }
+
+/* timeline */
+ol.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-width: 46rem; }
+ol.timeline li { display: grid; grid-template-columns: 6.5rem 1fr; gap: 14px; padding: 12px 0; border-top: 1px solid var(--rule); }
+ol.timeline li:last-child { border-bottom: 1px solid var(--rule); }
+ol.timeline .when { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-3); padding-top: 3px; }
+ol.timeline .what { min-width: 0; }
+
+/* tables */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 0.88rem; width: 100%; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 700; color: var(--ink-2); font-size: 0.8rem; }
+td.num, th.num { text-align: right; }
+.chip { display: inline-block; font-size: 0.78rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.ok { background: var(--good-bg); color: var(--good); }
+.chip.ng { background: var(--bad-bg); color: var(--bad); }
+.chip.mid { background: var(--warn-bg); color: var(--warn); }
+
+/* status matrix */
+.matrix td, .matrix th { text-align: center; }
+.matrix th:first-child, .matrix td:first-child { text-align: left; }
+
+/* dot plot */
+.dots { display: flex; flex-direction: column; }
+.dots .row { display: grid; grid-template-columns: minmax(7rem, 12rem) 1fr 1fr; gap: 12px; align-items: center; min-height: 30px; border-bottom: 1px solid var(--grid); }
+.dots .row.head { border-bottom: 1px solid var(--rule); min-height: 0; padding-bottom: 6px; align-items: end; }
+.dots .row.group { border-bottom: none; padding-top: 12px; min-height: 0; }
+.dots .group span { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.dots .name { font-size: 0.84rem; line-height: 1.35; min-width: 0; }
+.dots .track { position: relative; height: 26px; min-width: 0; }
+.dots .track svg { width: 100%; height: 26px; display: block; overflow: visible; }
+.dots .axis { position: relative; height: 34px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-3); }
+.dots .axis span { position: absolute; bottom: 0; transform: translateX(-50%); white-space: nowrap; }
+.dots .axis .t { bottom: 16px; font-family: var(--font-body); font-size: 0.78rem; color: var(--ink-2); font-weight: 700; transform: none; left: 0; }
+.dots .fail { font-size: 0.76rem; color: var(--bad); font-weight: 700; line-height: 26px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px; }
+.tile .big { font-family: var(--font-mono); font-size: 1.7rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tile .sub { font-size: 0.84rem; color: var(--ink-2); }
+
+dl.terms { display: grid; grid-template-columns: minmax(7rem, 9rem) 1fr; gap: 10px 18px; margin: 0; max-width: 46rem; }
+dl.terms dt { font-family: var(--font-mono); font-size: 0.86rem; font-weight: 500; padding-top: 2px; }
+dl.terms dd { margin: 0; min-width: 0; }
+
+.diagram svg { display: block; width: 100%; height: auto; max-width: 46rem; }
+.diagram text { font-family: var(--font-body); fill: var(--ink); }
+.diagram .m { font-family: var(--font-mono); fill: var(--ink-3); }
+
+#tip { position: fixed; pointer-events: none; z-index: 20; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; font-family: var(--font-mono); font-size: 0.74rem; line-height: 1.55; box-shadow: 0 4px 14px rgba(0,0,0,0.12); max-width: 18rem; }
+pre.cmd { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.7; margin: 0; }
+@media (max-width: 560px) {
+  ol.timeline li { grid-template-columns: 1fr; gap: 2px; }
+  dl.terms { grid-template-columns: 1fr; gap: 2px 0; }
+  dl.terms dd { margin-bottom: 10px; }
+  .dots .row { grid-template-columns: 5.5rem 1fr 1fr; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+/* additions for exp/vision: the optimizer colors (SGD s1, momentum s2, RMSProp s3, AdamW s4) */
+:root { --s4: #6250d6; --shade: rgba(42, 120, 214, 0.07); --n-in: #eef1f5; --n-enc: #e3eefb; --n-lat: #fbeedd; --n-dec: #e2f4ec; --n-out: #e2f4ec; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --s4: #8a7cf0; --shade: rgba(57, 135, 229, 0.12); --n-in: #20252c; --n-enc: #1b2a3d; --n-lat: #3a2c18; --n-dec: #17332a; --n-out: #17332a; }
+}
+:root[data-theme="dark"] { --s4: #8a7cf0; --shade: rgba(57, 135, 229, 0.12); --n-in: #20252c; --n-enc: #1b2a3d; --n-lat: #3a2c18; --n-dec: #17332a; --n-out: #17332a; }
+.chart text, .diagram text { fill: var(--ink-2); font-family: var(--font-mono); }
+.chart text.lbl, .diagram text.lbl { fill: var(--ink-3); font-family: var(--font-body); }
+.diagram text { font-family: var(--font-body); fill: var(--ink); }
+.diagram text.m { font-family: var(--font-body); fill: var(--ink-3); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8rem; color: var(--ink-2); margin-bottom: 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend svg { flex: none; }
+h3.subhead { margin-top: 12px; }
+
+/* images with row labels */
+.recon { display: grid; grid-template-columns: 7.5rem 1fr; gap: 10px; align-items: stretch; }
+.recon .rows { display: grid; grid-template-rows: repeat(3, 1fr); font-size: 0.78rem; color: var(--ink-2); line-height: 1.35; }
+.recon .rows span { display: flex; align-items: center; border-top: 1px solid var(--rule); }
+.recon .rows span:first-child { border-top: none; }
+.recon img, .strip-row img { width: 100%; height: auto; display: block; border-radius: 3px; min-width: 0; }
+.strips { display: flex; flex-direction: column; gap: 10px; }
+.strip-row { display: grid; grid-template-columns: 7.5rem 1fr; gap: 10px; align-items: center; }
+.strip-row .lab { font-size: 0.84rem; font-weight: 700; line-height: 1.4; }
+
+/* segmented buttons and the slider */
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { font: inherit; font-size: 0.82rem; background: var(--panel); color: var(--ink-2); border: 1px solid var(--rule); border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg button:focus-visible, .controls-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.controls-row input[type=range] { flex: 1 1 12rem; accent-color: var(--accent); }
+
+/* dot plots: HTML dots on tracks */
+.dots { overflow-x: auto; }
+.dots .row { min-width: 34rem; }
+.dots .track { position: relative; height: 26px; }
+.dots .track .ref { position: absolute; top: 2px; bottom: 2px; border-left: 1px dashed var(--ink-3); }
+.dots .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--c); border: 2px solid var(--c); cursor: default; }
+.dots .dot.hollow { background: var(--panel); }
+.dots .dot.out { border-radius: 2px; }
+.dots .row > div:last-child { display: flex; align-items: center; }
+
+details.full { max-width: 60rem; }
+details.full summary { cursor: pointer; color: var(--accent); font-size: 0.92rem; }
+details.full table { font-size: 0.78rem; }
+details.full td, details.full th { padding: 6px 8px; white-space: nowrap; }
+.prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 560px) {
+  .recon, .strip-row { grid-template-columns: 4.6rem 1fr; gap: 6px; }
+  .recon .rows { font-size: 0.66rem; }
+}
+.chart .legend svg { width: 22px; height: 10px; display: inline-block; overflow: visible; }
+.dots .track, .dots .axis { margin: 0 14px; }
+@media (max-width: 560px) { .chart svg { min-width: 540px; } }
+/* column rules */
+th + th, td + td { border-left: 1px solid var(--rule); }
+table { border-top: 1px solid var(--rule); }
+.dots .track, .dots .axis { position: relative; }
+.dots .track::before, .dots .axis::before { content: ""; position: absolute; left: -8px; top: -3px; bottom: -3px; border-left: 1px solid var(--rule); }
+.dots .row.head .axis::before { top: -6px; bottom: -7px; }
+.dots .row > div:last-child { border-left: 1px solid var(--rule); padding-left: 8px; align-self: stretch; }
+.dots .row.group > span { border: none; }
+.grid15 { border-collapse: separate; border-spacing: 4px; width: 100%; min-width: 34rem; }
+.grid15 th { font-weight: 500; font-size: 0.82rem; color: var(--ink-2); text-align: center; background: none; border: 0; padding: 2px; }
+.grid15 td { border: 1px solid var(--rule); border-radius: 6px; padding: 6px 4px; text-align: center; vertical-align: middle; line-height: 1.35; }
+.grid15 td .s { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.98rem; font-weight: 500; }
+.grid15 td .z { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-2); display: block; }
+.grid15 td .v { font-size: 0.72rem; display: block; }
+.grid15 td.ok { outline: 2.5px solid var(--good); outline-offset: -2px; }
+.scatter svg { width: 100%; height: auto; display: block; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+</style>
+<style>
+.recon { grid-template-columns: 7.5rem 1fr; }
+.chunkfig text { font-family: var(--font-body); fill: var(--ink); font-size: 13px; }
+.chunkfig text.m { fill: var(--ink-3); font-size: 12px; }
+.chart .legend svg { min-width: 0; }
+</style>
+<body>
+<main>
+<header class="hero">
+  <div class="eyebrow">mujou-exp · exp/vision · V17 · 2026-11-21〜22</div>
+  <h1>流れ続ける動画を長く見せると、PC-ALM の VAE はどこまで良くなるか</h1>
+  <p class="lead">前の資料（<a href="report-optim.html">V11〜V16</a>）では、同じモデルを普通の深層学習で 600 万 stack 学ぶと、描き戻した画像で場面を見分けられるまで良くなりました。ストリームの run が見たのは 1.8 万 stack だけでした。この資料では、PC-ALM で 1 本のストリームを 480 万 stack まで見せた V17 の結果をまとめます。長く回すための学び方が、本来の 1 本のストリームの学び方（B = 1）とどれだけ違うかも、あわせて調べました。</p>
+  <div class="meta">
+    <span><b>学習則</b> PC-ALM（mujou）</span>
+    <span><b>mujou</b> 5aa3773</span>
+    <span><b>モデル</b> ViT-S・幅 1024・μP・RMSProp</span>
+    <span><b>run</b> 本番 3 本、比べる run 11 本</span>
+    <span><b>計算</b> RTX 4090 × 4、RTX 4060、RTX 5070 Ti</span>
+  </div>
+  <nav class="toc" aria-label="目次">
+    <a href="#findings">分かったこと</a>
+    <a href="#setup">実験の仕組み</a>
+    <a href="#path">進め方</a>
+    <a href="#check">B = 1 との比べ</a>
+    <a href="#ladder">まとめる stack の数</a>
+    <a href="#long">480 万 stack まで</a>
+    <a href="#images">描き戻した画像</a>
+    <a href="#verdict">予想の判定</a>
+    <a href="#next">次に</a>
+    <a href="#repro">再現</a>
+  </nav>
+</header>
+
+<section id="findings" aria-labelledby="h-findings">
+  <div class="sec-head"><div class="eyebrow">結論</div><h2 id="h-findings">分かったこと</h2></div>
+  <div class="findings">
+    <article class="finding">
+      <div class="k">本番</div>
+      <h3>長く見せると、span は 0.211 まで下がる</h3>
+      <p>480 万 stack を見たところで、span は 0.211 になりました。学習に一度も使わない Zurich の場面でも 0.177 まで下がりました。全動画を 1 周した後も下がり続け、忘れて悪くなる様子はありませんでした。描き戻した画像で場面を見分けられます。</p>
+    </article>
+    <article class="finding">
+      <div class="k">検証・追加の調査</div>
+      <h3>100 stack をまとめて学ぶと、B = 1 より遅い</h3>
+      <p>本番では、計算を速くするため、1 本のストリームの連続する 100 stack を 1 回にまとめて学びました。この学び方は、全動画の 1 周目のあいだ、B = 1 より span が 0.06〜0.12 大きくなりました。2 周目以降も約 0.04 大きいままでした。学習率を上げても、差は縮みませんでした。</p>
+    </article>
+    <article class="finding">
+      <div class="k">追加の調査</div>
+      <h3>10 stack なら、B = 1 とほぼ同じ</h3>
+      <p>まとめる数を 10 にして、時定数を 10 分の 1 にすると、全動画の 1 周（48000 秒）まで、B = 1 との差は 0.01 以内でした。長い 1 本のストリームを速く回すときは、この学び方が使えます。</p>
+    </article>
+    <article class="finding">
+      <div class="k">追加の調査</div>
+      <h3>seed による揺れは 0.025 以内</h3>
+      <p>B = 1 を 4 つの seed で回すと、span の幅は最大 0.025 でした。曲線の凸凹は 4 本ともそろっているので、seed ではなくそのとき見ている場面によるものです。</p>
+    </article>
+  </div>
+</section>
+
+<section id="setup" aria-labelledby="h-setup">
+  <div class="sec-head"><div class="eyebrow">1</div><h2 id="h-setup">実験の仕組み</h2></div>
+  <div class="prose">
+    <p>入力は、街を歩きながら撮った動画（Walking Tours）です。0.1 秒ごとの 8 枚の画像（64×64 ピクセル）を 1 組にしたものを stack と呼びます。Zurich を除く動画をつなぐと、全部で 47935 秒（約 48 万 stack）になります。モデルは前の資料と同じ VAE（ViT-S・幅 1024・μP・RMSProp）で、8 つのノードがそれぞれ自分の誤差で学びます。</p>
+    <p>本来の学び方は、1 本のストリームから 0.1 秒ごとに届く stack で、1 回ずつ学ぶことです（B = 1）。この学び方で 600 万 stack を見せると、2〜4 週間かかります。そこで本番では、1 本のストリームの連続する 100 stack（動画の 10 秒）を 1 回にまとめて学びました（<code>layout=chunk</code>）。見る順序は B = 1 と同じです。違うのは、10 秒ぶんの勾配を平均して、重みを 1 回だけ動かす点です。</p>
+  </div>
+  <figure class="diagram chunkfig">
+    <div class="fig-title">B = 1 と、連続する stack をまとめる学び方</div>
+    <svg viewBox="0 0 760 170" role="img" aria-label="B = 1 は stack ごとに更新し、c = 100 は 100 個の stack をまとめて 1 回更新する">
+      <text x="0" y="22">B = 1</text>
+      <g id="row-b1"></g>
+      <text x="0" y="92">c = 100（本番）</text>
+      <g id="row-c"></g>
+      <text class="m" x="120" y="160">→ 動画の時刻（1 マス = 1 stack = 0.1 秒）</text>
+    </svg>
+    <figcaption>上: B = 1 は、stack が 1 つ届くたびに重みを 1 回動かします（▲）。下: 本番は、連続する 100 stack を 1 回の batch にして、重みを 1 回だけ動かします。図では 100 を 6 に縮めて描いています。まとめる数を <i>c</i> と書きます。1 回の更新が動画の <i>c</i> 倍の時間を表すので、optimizer の時定数は B = 1 の <i>c</i> 分の 1 前後にします。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>時刻の表し方</h3>
+    <p>この資料の時刻は、どれも<b>動画の時刻</b>（1 本のストリームが歩いた秒数）です。stack の数は、動画の時刻の 10 倍です。例えば 480000 秒は 480 万 stack で、全動画を約 10 周したところです。<i>c</i> = 100 の run では、run の中の 1 秒が動画の 100 秒に当たります。</p>
+    <h3>指標の読み方</h3>
+    <p>誤差は、どれも「どの入力にも平均の stack を出したときの誤差」を 1 とする比です。1 を下回れば、平均の画像を出すより良いということです。</p>
+  </div>
+  <dl class="terms">
+    <dt><code>span</code></dt>
+    <dd>動画の 0〜6000 秒の場面から 4 秒ごとに stack を選び、学習しているモデル（エンコーダ → <i>z</i> → デコーダ）で描き戻したときの誤差です。<b>小さいほど良い</b>。全動画を何周もするので、場面は 0〜6000 秒に固定して比べます。</dd>
+    <dt><code>after</code></dt>
+    <dd>6000〜9000 秒の場面での同じ誤差です。2 周目からは、学習に使った場面になります。</dd>
+    <dt><code>zurich</code></dt>
+    <dd>学習に一度も使わない Zurich の動画での同じ誤差です。新しい場面でどれだけ描けるかを表します。</dd>
+    <dt><i>z</i> の差</dt>
+    <dd>デコーダが <i>z</i> を使っているかを調べる値です。各 stack を、その stack の <i>z</i> と、離れた別の場面の <i>z</i> の 2 通りで描き戻し、誤差の差をとります。<b>0.2 を超えれば <i>z</i> を使っている</b>とみなします。</dd>
+    <dt><i>d</i>(<i>t</i>)</dt>
+    <dd>同じ時刻 <i>t</i> での span の差（比べる run − B = 1）です。正なら、B = 1 より悪いということです。前の資料までと同じく、差が 0.07 より小さいものは区別しません。</dd>
+  </dl>
+</section>
+
+<section id="path" aria-labelledby="h-path">
+  <div class="sec-head"><div class="eyebrow">2</div><h2 id="h-path">進め方</h2></div>
+  <div class="prose">
+    <p>どの run も、回す前に、問い・判定の基準・予想を README に書きました。結果はその基準で判定しています。</p>
+  </div>
+  <ol class="timeline">
+    <li><div class="when">11-21</div><div class="what"><b>計画。</b>B = 1 で 600 万 stack は長すぎるので、連続する 100 stack をまとめる学び方を研究の依頼者が提案し、本番にしました。時定数 τ は 10<sup>3</sup>・3·10<sup>3</sup>・10<sup>4</sup> の 3 点で回し、B = 1（τ = 10<sup>5</sup>）と 6000 秒まで比べて選ぶことにしました。</div></li>
+    <li><div class="when">11-21</div><div class="what"><b>検証。</b>3 点とも、決めておいた合格の基準に届きませんでした。規則どおり、B = 1 に最も近い τ = 10<sup>3</sup> を本番として読み、「B = 1 の再現ではない」と明記しました。</div></li>
+    <li><div class="when">11-21〜22</div><div class="what"><b>追加の調査。</b>本番が走るあいだに、空いている GPU で、遅れの性質を調べました（seed の揺れ、τ を小さくした run、まとめる数 <i>c</i> = 10・30、B = 1 と <i>c</i> = 10 の長い run）。</div></li>
+    <li><div class="when">11-21 23 時</div><div class="what"><b>止める規則。</b>60000 秒から 180000 秒で span が 0.02 以上下がったので、3 本とも続けました。</div></li>
+    <li><div class="when">11-22</div><div class="what"><b>480 万 stack で止めました。</b>普通の学習（V16）とは場面の範囲が違い、直接比べられません。そのため、600 万 stack まで延ばす理由が薄いと研究の依頼者が判断しました。判定は 480000 秒の値で行いました。</div></li>
+  </ol>
+</section>
+
+<section id="check" aria-labelledby="h-check">
+  <div class="sec-head"><div class="eyebrow">3 · 検証</div><h2 id="h-check">まとめて学んでも、B = 1 と同じになるか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　連続する 100 stack をまとめて学ぶと、B = 1 と同じ速さで良くなるか。どの τ が B = 1 に最も近いか。</p>
+    <p><b>条件</b>　B = 1 は τ = 10<sup>5</sup> で 6000 秒、seed 0〜3（seed 1 は 48000 秒まで）。<i>c</i> = 100 は τ = 10<sup>3</sup>・3·10<sup>3</sup>・10<sup>4</sup>、seed 0。合格は、1800 秒と 6000 秒で |<i>d</i>| &lt; 0.07、かつ 6000 秒の <i>z</i> の差 &gt; 0.2 としました。</p>
+  </div>
+  <figure>
+    <div class="fig-title">動画の 6000 秒までの span（B = 1 と <i>c</i> = 100）</div>
+    <div class="chart" id="c-check"></div>
+    <figcaption>縦軸は対数です。B = 1 は 4 つの seed を細い線で描きました。4 本はほぼ重なります。<i>c</i> = 100 は τ ごとに色を変えました。触れると、その時刻の全系列の値が出ます。</figcaption>
+  </figure>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>run</th><th class="num">span 1800 秒</th><th class="num">span 6000 秒</th><th class="num"><i>d</i>(1800)</th><th class="num"><i>d</i>(6000)</th><th class="num">|<i>d</i>| の平均</th><th>判定</th></tr></thead>
+      <tbody>
+        <tr><td>B = 1（seed 0）</td><td class="num">0.588</td><td class="num">0.431</td><td></td><td></td><td></td><td></td></tr>
+        <tr><td><i>c</i> = 100、τ = 10<sup>3</sup></td><td class="num">0.773</td><td class="num">0.501</td><td class="num">+0.186</td><td class="num">+0.070</td><td class="num"><b>0.136</b></td><td><span class="chip ng">不合格</span>（本番として読む）</td></tr>
+        <tr><td><i>c</i> = 100、τ = 3·10<sup>3</sup></td><td class="num">0.800</td><td class="num">0.509</td><td class="num">+0.212</td><td class="num">+0.078</td><td class="num">0.167</td><td><span class="chip ng">不合格</span></td></tr>
+        <tr><td><i>c</i> = 100、τ = 10<sup>4</sup></td><td class="num">1.488</td><td class="num">0.628</td><td class="num">+0.901</td><td class="num">+0.197</td><td class="num">0.628</td><td><span class="chip ng">不合格</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>読めること</b>　3 点とも、序盤は B = 1 より遅れ、6000 秒にかけて差が縮みました。τ = 10<sup>3</sup> は 6000 秒で差 +0.070 まで近づきましたが、1800 秒では +0.186 遅れていました。|<i>d</i>| の平均は 10 点（600〜6000 秒）で求めました。B = 1 の 4 つの seed の幅は、どの時刻でも 0.025 以下でした。そのため、+0.186 の遅れは seed による揺れではありません。</p>
+  </div>
+</section>
+
+<section id="ladder" aria-labelledby="h-ladder">
+  <div class="sec-head"><div class="eyebrow">4 · 追加の調査</div><h2 id="h-ladder">遅れは何から来るか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　<i>c</i> = 100 の遅れは、1 回の更新が小さすぎるためか、それとも勾配を平均すること自体によるのか。</p>
+    <p><b>条件</b>　まとめる数 <i>c</i> を 10・30・100 にし、時定数は B = 1 の <i>c</i> 分の 1（線形）を基本にしました。<i>c</i> = 100 では、τ を 10<sup>3</sup> より小さくした run（100・300）も回しました。どれも動画の 6000 秒まで、seed 0 です（τ = 10<sup>3</sup> だけ seed 1 も回しました）。</p>
+  </div>
+  <div class="duo">
+    <figure>
+      <div class="fig-title">まとめる数 <i>c</i> と span</div>
+      <div class="chart" id="c-ladder"></div>
+    </figure>
+    <figure>
+      <div class="fig-title"><i>c</i> = 100 での τ と、B = 1 との差</div>
+      <div class="chart" id="c-tau"></div>
+    </figure>
+  </div>
+  <figure>
+    <figcaption>左: 灰色の細い線は B = 1 の 4 seed です。<i>c</i> = 10 は τ = 10<sup>4</sup>、<i>c</i> = 30 は τ = 3333、<i>c</i> = 100 は τ = 10<sup>3</sup> です。縦軸は対数です。右: 横軸は τ（対数）、縦軸は 600〜6000 秒の 10 点の |<i>d</i>| の平均で、<b>下ほど B = 1 に近い</b>。白抜きの点は τ = 10<sup>3</sup> の seed 1 です。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li>まとめる数が少ないほど、B = 1 に近づきます。|<i>d</i>| の平均は、<i>c</i> = 10 で 0.014、<i>c</i> = 30 で 0.045、<i>c</i> = 100 で 0.136 でした。1800 秒の差は、+0.004、+0.066、+0.186 です。</li>
+      <li><i>c</i> = 100 で τ を小さくする（1 回の更新を大きくする）と、差はかえって広がりました。1800 秒の差は、τ = 300 で +0.333、τ = 100 で +0.563 です。最も近いのは τ = 10<sup>3</sup> でした。</li>
+      <li>このことから、遅れは 1 回の更新の大きさではなく、10 秒ぶんの勾配を平均して 1 回だけ動かすこと自体によると考えられます。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="long" aria-labelledby="h-long">
+  <div class="sec-head"><div class="eyebrow">5 · 本番</div><h2 id="h-long">480 万 stack まで見せると</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　1 本のストリームを長く見せると、span はどこまで下がるか。1 周した後も下がり続けるか、それとも忘れて悪くなるか。</p>
+    <p><b>条件</b>　本番の <i>c</i> = 100 は 3 つの τ で 480000 秒まで。比べるために、B = 1（seed 1）を 48000 秒（約 1 周）まで、<i>c</i> = 10（τ = 10<sup>4</sup>）を 120000 秒まで回しました。普通の学習（V16、全動画、AdamW、学習率 3·10<sup>-4</sup>）を点線で添えましたが、span を測る場面の範囲が違う（V16 は 0〜1800 秒）ので、参考にとどめます。</p>
+  </div>
+  <div class="duo">
+    <figure>
+      <div class="fig-title"><code>span</code>（動画の 0〜6000 秒の場面）</div>
+      <div class="chart" id="c-long-span"></div>
+    </figure>
+    <figure>
+      <div class="fig-title"><code>zurich</code>（学習に使わない場面）</div>
+      <div class="chart" id="c-long-zurich"></div>
+    </figure>
+  </div>
+  <figure>
+    <figcaption>横軸は動画の時刻（対数）、縦軸は対数です。縦の点線は全動画の 1 周（47935 秒）です。B = 1 と <i>c</i> = 10 はほぼ重なります。V16 の点線は、見た stack の数の 10 分の 1 を時刻としました。V16 の 18000 秒の山は、学習中に誤差が一時的に上がった時点に当たったものです（前の資料を参照）。触れると、近い系列の値が出ます。</figcaption>
+  </figure>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>動画の時刻（秒）</th><th class="num">6000</th><th class="num">18000</th><th class="num">48000</th><th class="num">120000</th><th class="num">180000</th><th class="num">300000</th><th class="num">480000</th></tr></thead>
+      <tbody id="t-long"></tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li>本番（τ = 10<sup>3</sup>）の span は、6000 秒の 0.501 から、480000 秒の 0.211 まで下がりました。1 周目（48000 秒）を過ぎても下がり続け、48000 秒以降の 10 点で、それまでの最小の値を上回ったことはありません。</li>
+      <li>学習に使わない Zurich でも、0.547 から 0.177 まで下がりました。覚えた場面だけでなく、新しい場面でも誤差が下がっています。</li>
+      <li>B = 1 に近い <i>c</i> = 10 は、どの時刻でも本番より良い値でした。本番との差は、1 周目のあいだ 0.06〜0.12、60000 秒以降は 0.04〜0.06 です。本番の値は、B = 1 なら届く値より悪い側にあると考えられます。</li>
+      <li>480000 秒では、τ = 10<sup>3</sup> が 0.211、3·10<sup>3</sup> が 0.226、10<sup>4</sup> が 0.252 でした。10<sup>3</sup> と 3·10<sup>3</sup> の差は 0.07 未満で、区別しません。</li>
+      <li>480000 秒の <i>z</i> の差は +1.605 で、デコーダは <i>z</i> を使い続けています。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="images" aria-labelledby="h-images">
+  <div class="sec-head"><div class="eyebrow">6 · 画像</div><h2 id="h-images">描き戻した画像</h2></div>
+  <div class="prose">
+    <p>3 段は上から順に、元のフレーム、モデル自身のデコーダが描き戻したもの、評価のために後から当てはめたデコーダが描いたものです。span の場面から 10 枚を選びました。ボタンで時刻と run を切り替えます。</p>
+  </div>
+  <figure>
+    <div class="seg" id="seg-img" role="group" aria-label="画像の切り替え">
+      <button data-key="b1_6000" aria-pressed="false">B = 1・6000 秒</button>
+      <button data-key="c100_6000" aria-pressed="false"><i>c</i> = 100・6000 秒</button>
+      <button data-key="c100_18000" aria-pressed="false"><i>c</i> = 100・18000 秒</button>
+      <button data-key="b1_48000" aria-pressed="false">B = 1・48000 秒</button>
+      <button data-key="c10_120000" aria-pressed="false"><i>c</i> = 10・120000 秒</button>
+      <button data-key="c100_180000" aria-pressed="false"><i>c</i> = 100・180000 秒</button>
+      <button data-key="c100_480000" aria-pressed="true"><i>c</i> = 100・480000 秒</button>
+      <button data-key="c100_480000_after" aria-pressed="false"><i>c</i> = 100・480000 秒（after）</button>
+      <button data-key="v16_all" aria-pressed="false">参考: V16 普通の学習・600 万 stack</button>
+    </div>
+    <div class="recon" id="r-img" data-img="c100_480000" data-rows="元のフレーム|自身のデコーダ|当てはめたデコーダ"></div>
+    <figcaption><i>c</i> = 100 は τ = 10<sup>3</sup>、seed 0 です。V16 の画像は 0〜1800 秒の場面から選んだもので、ほかのボタンとは場面が違います。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b>　480000 秒の自身のデコーダの段では、場面を見分けられます。空と地面の境、運河と対岸の建物の帯、木と道路、夜空と屋根の影、通りに立つ人の影が描けています。窓や線路、人の輪郭はぼやけています。6000 秒では、明るさと色の配置がおおまかに合うだけでした。V16 の普通の学習の画像は、人や木の幹の形がさらにはっきりしています。</p>
+  </div>
+</section>
+
+<section id="verdict" aria-labelledby="h-verdict">
+  <div class="sec-head"><div class="eyebrow">7</div><h2 id="h-verdict">予想の判定</h2></div>
+  <div class="prose">
+    <p>予想と判定の基準は、どれも run を回す前に README に書きました。本番の判定は、止めた時点の 480000 秒の値で行いました。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>予想</th><th>判定</th><th>根拠</th></tr></thead>
+      <tbody>
+        <tr><td>本番 1. τ = 10<sup>3</sup> が合格し、B = 1 に最も近い</td><td><span class="chip ng">棄却</span></td><td>最も近いのは 10<sup>3</sup> だが、合格しなかった（<i>d</i>(1800) = +0.186）</td></tr>
+        <tr><td>本番 2. span は 1 周目の後も下がり、0.40 以下で、B = 1 の 6000 秒の値より 0.07 以上小さい。場面を見分けられる</td><td><span class="chip ok">支持</span></td><td>480000 秒で 0.211（B = 1 の 6000 秒は 0.431）。画像で場面を見分けられる</td></tr>
+        <tr><td>本番 3. zurich も 0.07 以上下がる</td><td><span class="chip ok">支持</span></td><td>0.547 → 0.177</td></tr>
+        <tr><td>本番 4. 48000 秒以降、span が最小値を 0.07 以上上回らない</td><td><span class="chip ok">支持</span></td><td>10 点で一度も上回らない</td></tr>
+        <tr><td>本番 5. 1800 秒以降、<i>z</i> の差は 0.2 を上回り、発散しない</td><td><span class="chip ok">支持</span></td><td>最小 +0.805（1800 秒）、480000 秒で +1.605</td></tr>
+        <tr><td>反証. 600000 秒の span が 0.50 を上回る</td><td><span class="chip ok">起きなかった</span></td><td>480000 秒で 0.211</td></tr>
+        <tr><td>追加 1. B = 1 の seed の幅は 0.10 未満で、<i>c</i> = 100 の遅れはそれより大きい</td><td><span class="chip ok">支持</span></td><td>幅は最大 0.025</td></tr>
+        <tr><td>追加 2. τ を小さくすると、序盤の遅れが縮む</td><td><span class="chip ng">棄却</span></td><td>1800 秒の差は τ = 300 で +0.333、100 で +0.563（10<sup>3</sup> は +0.186）</td></tr>
+        <tr><td>追加 3. <i>c</i> = 10 の遅れは、0 と <i>c</i> = 100 のあいだ</td><td><span class="chip ok">支持</span></td><td>+0.004</td></tr>
+        <tr><td>追加 4. 18000〜48000 秒で、本番は B = 1 と 0.07 以内</td><td><span class="chip ng">棄却</span></td><td>+0.096、+0.121、+0.055</td></tr>
+        <tr><td>追加 5. <i>c</i> = 30 の遅れは、<i>c</i> = 10 と <i>c</i> = 100 のあいだ</td><td><span class="chip ok">支持</span></td><td>+0.066</td></tr>
+        <tr><td>追加 6. <i>c</i> = 10 は 1 周まで B = 1 と 0.07 以内。本番は 18000 秒以降、<i>c</i> = 10 と 0.07 以内</td><td><span class="chip mid">前半のみ支持</span></td><td><i>c</i> = 10 と B = 1 の差は −0.008〜+0.001。本番と <i>c</i> = 10 の差は、18000〜48000 秒で +0.062〜+0.119</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="next" aria-labelledby="h-next">
+  <div class="sec-head"><div class="eyebrow">8</div><h2 id="h-next">次の実験で使うものと、残る課題</h2></div>
+  <div class="prose">
+    <ul>
+      <li><b>長い 1 本のストリームは、<i>c</i> = 10 で回します。</b>時定数を B = 1 の 10 分の 1 にすれば、B = 1 とほぼ同じに学べます。<i>c</i> = 100 は、B = 1 の代わりには使いません。</li>
+      <li><b>次は、検証する対象を VAE から JEPA に移します。</b>VAE では、ストリームの PC-ALM でも、長く見せれば場面を描けるまで学べることが分かりました。</li>
+      <li>B = 1 そのもの（または <i>c</i> = 10）を 480 万 stack まで回した値は、まだありません。本番の 0.211 は、それより悪い側の値です。</li>
+      <li>普通の学習（V16）と、同じ場面の範囲で比べてはいません。</li>
+      <li>std-03 の 4090 で、B = 100 の run が 3 回 <code>CUDA error: an illegal memory access</code> で落ちました。どれも別の run と GPU を分け合っていたときで、mini-00 では完走しました。原因は切り分けていません。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="repro" aria-labelledby="h-repro">
+  <div class="sec-head"><div class="eyebrow">付録</div><h2 id="h-repro">再現</h2></div>
+  <div class="prose">
+    <p>mujou は <code>5aa3773</code>、snapshot は <code>e605244269fa</code> です。判定の基準・予想・数字の詳細は <a href="README.md">README.md</a> の V17 にあります。計画は <a href="plans/long-stream.md">plans/long-stream.md</a> です。run の結果とチェックポイントは <code>runs/&lt;batch&gt;/</code> にあり、git には入れていません。この資料は <code>python -m exp.vision.report.build_long</code> で作りました。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>batch</th><th>中身</th><th>run</th></tr></thead>
+      <tbody>
+        <tr><td><code>v17-chunk</code></td><td>本番（<i>c</i> = 100、τ = 10<sup>3</sup>・3·10<sup>3</sup>・10<sup>4</sup>）</td><td class="num">49b81800・b28395b5・a44770fa</td></tr>
+        <tr><td><code>v17-b1</code></td><td>B = 1、seed 0、6000 秒</td><td class="num">e7f6713d</td></tr>
+        <tr><td><code>v17-b1-long</code></td><td>B = 1、seed 1、48000 秒</td><td class="num">7cdd64bd</td></tr>
+        <tr><td><code>v17-b1-seeds</code></td><td>B = 1、seed 2・3、6000 秒</td><td class="num">8ad53307</td></tr>
+        <tr><td><code>v17-chunk-x</code></td><td><i>c</i> = 100、τ = 100・300、τ = 10<sup>3</sup> の seed 1</td><td class="num">3c77cbb1・a9b990fa・3bce6481</td></tr>
+        <tr><td><code>v17-c10</code></td><td><i>c</i> = 10、τ = 3·10<sup>3</sup>・10<sup>4</sup></td><td class="num">dbc83e8e・b0bf3edc</td></tr>
+        <tr><td><code>v17-c30</code></td><td><i>c</i> = 30、τ = 3333</td><td class="num">85c3657f</td></tr>
+        <tr><td><code>v17-c10-long</code></td><td><i>c</i> = 10、τ = 10<sup>4</sup>、120000 秒</td><td class="num">966b62e1</td></tr>
+      </tbody>
+    </table>
+  </div>
+<pre class="cmd"># 共通の設定
+C="+experiment=v0/base model.width=1024 model.scale_decoder=true model.param=mup optim=rmsprop"
+# B = 1
+just fleet submit --batch v17-b1 $C optim.tau=1e5 measure.duration=6000 measure.ckpt_every=60 --seeds 0 --res 4090
+# 本番（c = 100）。checkpoint の一覧は README を参照
+just fleet submit --batch v17-chunk $C data.streams=100 data.layout=chunk optim.tau_v=0.3 measure.duration=6000 \
+  'measure.ckpt_times=[...]' --sweep optim.tau=1e3,3e3,1e4 --seeds 0 --res 4090
+# 評価（時刻は動画の時刻、span は 0〜6000 秒）
+python -m exp.vision.stream_eval &lt;run_dir&gt; --span 6000 --probe-at 0,1800,6000,18000,60000,180000,480000
+python -m exp.vision.z_use &lt;run_dir&gt; --span 6000 --at 0,1800,6000,18000,60000,180000,480000
+# 判定の表と、この資料
+uv run python -m exp.vision.results.v17.judge
+uv run python -m exp.vision.results.v17.extra
+uv run python -m exp.vision.report.build_long</pre>
+  <div class="prose">
+    <p class="small muted">この資料のために計算した値: |<i>d</i>| の平均は、600〜6000 秒の 10 点（600 秒ごと）の |<i>d</i>(<i>t</i>)| の単純平均で、B = 1 は seed 0 を使いました。</p>
+  </div>
+</section>
+</main>
+<div id="tip" hidden></div>
+<script type="application/json" id="data">/*__DATA__*/</script>
+<script>
+(() => {
+const D = JSON.parse(document.getElementById('data').textContent);
+const NS = 'http://www.w3.org/2000/svg';
+const tip = document.getElementById('tip');
+function showTip(ev, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = ev.clientY - h - 14;
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+}
+const hideTip = () => { tip.hidden = true; };
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) {
+    const v = attrs[k];
+    if ((k === 'fill' || k === 'stroke') && typeof v === 'string' && v.startsWith('var(')) e.style[k] = v;
+    else e.setAttribute(k, v);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const fmt = (v, d = 3) => v == null ? '—' : (+v).toFixed(d);
+const sup = s => s.replace(/1e(\d)/g, (_, k) => '10<sup>' + k + '</sup>');
+
+function legend(host, items) {
+  const lg = document.createElement('div'); lg.className = 'legend';
+  for (const it of items) {
+    const s = document.createElement('span');
+    const dash = it.dash ? `stroke-dasharray="${it.dash}"` : '';
+    s.innerHTML = `<svg width="22" height="10" aria-hidden="true"><line x1="1" x2="21" y1="5" y2="5" style="stroke:${it.color}" stroke-width="${it.width || 2.5}" ${dash}/></svg>${it.label}`;
+    lg.appendChild(s);
+  }
+  host.appendChild(lg);
+}
+
+// A line chart. o: {series: [{label, color, xs, ys, width, dash, opacity, marker}],
+// xmin, xmax, ymin, ymax, log (y), symlog (x, linthresh), xticks, yticks, xfmt, yfmt,
+// xlabel, ylabel, refs: [{y, label}], vlines: [{x, label}], shade: [x0, x1, label],
+// nearest (tooltip on the series nearest the pointer), legend: [{label, color, dash}]}
+let clipN = 0;
+function lineChart(host, o) {
+  host.innerHTML = '';
+  if (o.legend) legend(host, o.legend);
+  const W = o.width || 720, H = o.height || 270, m = {l: 50, r: 30, t: 24, b: 38};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': o.aria || ''});
+  host.appendChild(svg);
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const ty = v => o.log ? Math.log10(v) : v;
+  const lt = o.symlog || 10;
+  const tx = x => o.symlog ? Math.sign(x) * Math.log10(1 + Math.abs(x) / lt) : x;
+  const y0 = ty(o.ymin), y1 = ty(o.ymax), x0 = tx(o.xmin), x1 = tx(o.xmax);
+  const X = x => m.l + (tx(x) - x0) / (x1 - x0) * iw;
+  const Y = v => m.t + ih - (Math.min(Math.max(ty(v), y0), y1) - y0) / (y1 - y0) * ih;
+  const g = el('g', {}, svg);
+  if (o.shade) {
+    el('rect', {x: X(o.shade[0]), width: Math.max(0, X(o.shade[1]) - X(o.shade[0])), y: m.t, height: ih, fill: 'var(--shade)'}, g);
+    if (o.shade[2]) { const t = el('text', {x: X(o.shade[0]) + 6, y: m.t + 14, 'font-size': 11, class: 'lbl'}, g); t.textContent = o.shade[2]; }
+  }
+  for (const t of o.yticks) {
+    el('line', {x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: 'var(--grid)', 'stroke-width': 1}, g);
+    const e = el('text', {x: m.l - 8, y: Y(t) + 4, 'text-anchor': 'end', 'font-size': 11}, g);
+    e.textContent = o.yfmt ? o.yfmt(t) : t;
+  }
+  for (const t of o.xticks) {
+    const e = el('text', {x: X(t), y: H - m.b + 18, 'text-anchor': 'middle', 'font-size': 11}, g);
+    e.textContent = o.xfmt ? o.xfmt(t) : t;
+  }
+  el('line', {x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih, stroke: 'var(--ink-3)', 'stroke-width': 1}, g);
+  if (o.xlabel) { const t = el('text', {x: W - m.r, y: H - 3, 'text-anchor': 'end', 'font-size': 11, class: 'lbl'}, g); t.textContent = o.xlabel; }
+  if (o.ylabel) { const t = el('text', {x: m.l - 44, y: 12, 'font-size': 11, class: 'lbl'}, g); t.textContent = o.ylabel; }
+  for (const r of (o.refs || [])) {
+    el('line', {x1: m.l, x2: W - m.r, y1: Y(r.y), y2: Y(r.y), stroke: 'var(--ink-3)', 'stroke-width': 1, 'stroke-dasharray': '4 4'}, g);
+    if (r.label) { const t = el('text', {x: W - m.r, y: Y(r.y) - 5, 'text-anchor': 'end', 'font-size': 11, class: 'lbl'}, g); t.textContent = r.label; }
+  }
+  for (const v of (o.vlines || [])) {
+    el('line', {x1: X(v.x), x2: X(v.x), y1: m.t, y2: m.t + ih, stroke: v.color || 'var(--ink-2)', 'stroke-width': v.width || 1, 'stroke-dasharray': v.dash || ''}, g);
+    if (v.label) { const t = el('text', {x: X(v.x) + 5, y: m.t + 14, 'font-size': 11, class: 'lbl'}, g); t.textContent = v.label; }
+  }
+  const cid = 'clip' + (++clipN);
+  el('rect', {x: m.l, y: m.t - 6, width: iw, height: ih + 12}, el('clipPath', {id: cid}, el('defs', {}, svg)));
+  const plot = el('g', {'clip-path': `url(#${cid})`}, svg);
+  const paths = [];
+  for (const s of o.series) {
+    let d = '', pen = false;
+    s.xs.forEach((x, i) => {
+      const v = s.ys[i];
+      if (v == null || (o.log && v <= 0)) { pen = false; return; }
+      d += (pen ? 'L' : 'M') + X(x).toFixed(1) + ',' + Y(v).toFixed(1);
+      pen = true;
+    });
+    const p = el('path', {d, fill: 'none', stroke: s.color, 'stroke-width': s.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: s.opacity || 1, 'stroke-dasharray': s.dash || ''}, plot);
+    paths.push(p);
+    if (s.marker) s.xs.forEach((x, i) => { const v = s.ys[i]; if (v != null) el('circle', {cx: X(x), cy: Y(v), r: 4.5, fill: s.ok && !s.ok[i] ? 'var(--panel)' : s.color, stroke: s.color, 'stroke-width': 2}, plot); });
+  }
+  const cross = el('line', {y1: m.t, y2: m.t + ih, stroke: 'var(--ink-3)', 'stroke-width': 1, visibility: 'hidden'}, svg);
+  const hit = el('rect', {x: m.l, y: m.t, width: iw, height: ih, fill: 'transparent'}, svg);
+  let hl = null;
+  const near = (s, x) => { let bi = -1, bd = Infinity; s.xs.forEach((xx, i) => { if (s.ys[i] == null) return; const dd = Math.abs(tx(xx) - tx(x)); if (dd < bd) { bd = dd; bi = i; } }); return bi; };
+  hit.addEventListener('pointermove', ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W, py = (ev.clientY - r.top) / r.height * H;
+    const tv = x0 + (px - m.l) / iw * (x1 - x0);
+    const x = o.symlog ? Math.sign(tv) * lt * (10 ** Math.abs(tv) - 1) : tv;
+    if (o.nearest) {
+      let best = null, bd = Infinity;
+      o.series.forEach((s, j) => { const i = near(s, x); if (i < 0) return; const dd = Math.abs(Y(s.ys[i]) - py) + Math.abs(X(s.xs[i]) - px) * 0.2; if (dd < bd) { bd = dd; best = [j, i]; } });
+      if (!best) return;
+      const [j, i] = best, s = o.series[j];
+      if (hl !== null) { paths[hl].setAttribute('stroke-width', o.series[hl].width || 2); paths[hl].setAttribute('opacity', o.series[hl].opacity || 1); }
+      paths[j].setAttribute('stroke-width', 3.5); paths[j].setAttribute('opacity', 1); hl = j;
+      cross.setAttribute('x1', X(s.xs[i])); cross.setAttribute('x2', X(s.xs[i])); cross.setAttribute('visibility', 'visible');
+      showTip(ev, `<b>${o.xfmt ? o.xfmt(s.xs[i]) : s.xs[i]}</b><br><span style="color:${s.color}">●</span> ${sup(s.label)}: ${fmt(s.ys[i], o.digits || 3)}`);
+      return;
+    }
+    const rows = []; let bx = null;
+    for (const s of o.series) {
+      if (s.noTip) continue;
+      const i = near(s, x); if (i < 0) continue;
+      bx = bx ?? s.xs[i];
+      rows.push(`<span style="color:${s.color}">●</span> ${sup(s.label)}: ${fmt(s.ys[i], o.digits || 3)}`);
+    }
+    if (bx == null) return;
+    cross.setAttribute('x1', X(bx)); cross.setAttribute('x2', X(bx)); cross.setAttribute('visibility', 'visible');
+    showTip(ev, `<b>${o.xfmt ? o.xfmt(bx) : bx}</b><br>` + rows.join('<br>'));
+  });
+  hit.addEventListener('pointerleave', () => {
+    cross.setAttribute('visibility', 'hidden'); hideTip();
+    if (hl !== null) { paths[hl].setAttribute('stroke-width', o.series[hl].width || 2); paths[hl].setAttribute('opacity', o.series[hl].opacity || 1); hl = null; }
+  });
+}
+
+// ---- V17 ----
+const R = D.runs;
+const b1s = R.filter(r => r.c === 1).sort((a, b) => a.seed - b.seed);
+const b1s0 = b1s.find(r => r.seed === 0);
+const b1long = R.find(r => r.batch === 'v17-b1-long');
+const c100 = tau => R.find(r => r.batch === 'v17-chunk' && Math.abs(r.tau - tau) < 1e-6);
+const val = (r, key, t) => { const i = r.t.findIndex(x => Math.abs(x - t) < 1e-6); return i < 0 ? null : r[key][i]; };
+const upto = (r, key, tmax) => { const xs = [], ys = []; r.t.forEach((t, i) => { if (t <= tmax + 1e-6) { xs.push(t); ys.push(r[key][i]); } }); return {xs, ys}; };
+const logs = (r, key) => { const xs = [], ys = []; r.t.forEach((t, i) => { if (t > 0 && r[key][i] != null) { xs.push(Math.log10(t)); ys.push(r[key][i]); } }); return {xs, ys}; };
+const CHECK_T = Array.from({length: 10}, (_, i) => 600 * (i + 1));
+const meanAbsD = r => { const ds = CHECK_T.map(t => { const a = val(r, 'span', t), b = val(b1s0, 'span', t); return a == null || b == null ? null : Math.abs(a - b); }).filter(x => x != null); return ds.length ? ds.reduce((s, x) => s + x, 0) / ds.length : null; };
+const TAUC = {1000: 'var(--s1)', 3000: 'var(--s2)', 10000: 'var(--s4)'};
+const tauL = t => ({100: '100', 300: '300', 1000: '10³', 3000: '3·10³', 3333: '3333', 10000: '10⁴'})[Math.round(t)] || String(t);
+const b1Series = (tmax) => b1s.map(r => ({label: `B = 1 seed ${r.seed}`, color: 'var(--neutral)', width: 1.2, ...upto(r, 'span', tmax)}));
+
+// the chunk diagram
+(() => {
+  const NS2 = 'http://www.w3.org/2000/svg';
+  const mk = (tag, a, p) => { const e = document.createElementNS(NS2, tag); for (const k in a) e.setAttribute(k, a[k]); p.appendChild(e); return e; };
+  const x0 = 120, w = 30, gap = 4, n = 18;
+  const g1 = document.getElementById('row-b1'), g2 = document.getElementById('row-c');
+  for (let i = 0; i < n; i++) {
+    const x = x0 + i * (w + gap);
+    mk('rect', {x, y: 8, width: w, height: 22, rx: 3, style: 'fill:var(--n-enc);stroke:var(--rule)'}, g1);
+    mk('path', {d: `M${x + w / 2 - 5},48 L${x + w / 2 + 5},48 L${x + w / 2},40 Z`, style: 'fill:var(--s3)'}, g1);
+    const c = Math.floor(i / 6);
+    mk('rect', {x, y: 78, width: w, height: 22, rx: 3, style: `fill:${['var(--n-enc)', 'var(--n-lat)', 'var(--n-dec)'][c]};stroke:var(--rule)`}, g2);
+  }
+  for (let c = 0; c < 3; c++) {
+    const xa = x0 + c * 6 * (w + gap), xb = xa + 6 * (w + gap) - gap;
+    mk('path', {d: `M${xa},106 L${xa},112 L${xb},112 L${xb},106`, style: 'fill:none;stroke:var(--ink-3)'}, g2);
+    const xm = (xa + xb) / 2;
+    mk('path', {d: `M${xm - 5},130 L${xm + 5},130 L${xm},122 Z`, style: 'fill:var(--s1)'}, g2);
+  }
+})();
+
+// ---- check ----
+(() => {
+  const series = [...b1Series(6000), ...[1000, 3000, 10000].map(t => ({label: `c = 100、τ = ${tauL(t)}`, color: TAUC[t], width: 2.4, ...upto(c100(t), 'span', 6000)}))];
+  lineChart(document.getElementById('c-check'), {series, xmin: 0, xmax: 6000, ymin: 0.3, ymax: 2.5, log: true, xticks: [0, 1200, 2400, 3600, 4800, 6000], yticks: [0.3, 0.4, 0.5, 0.7, 1, 1.5, 2], yfmt: v => v, xfmt: x => x + ' 秒', xlabel: '動画の時刻', ylabel: 'span', refs: [{y: 1, label: '平均の画像'}], legend: [{label: 'B = 1（4 seed）', color: 'var(--neutral)', width: 1.2}, ...[1000, 3000, 10000].map(t => ({label: `c = 100、τ = ${tauL(t)}`, color: TAUC[t]}))]});
+})();
+
+// ---- ladder ----
+(() => {
+  const c10 = R.find(r => r.batch === 'v17-c10' && r.tau === 10000);
+  const c30 = R.find(r => r.batch === 'v17-c30');
+  const arms = [[c10, 'c = 10、τ = 10⁴', 'var(--s3)'], [c30, 'c = 30、τ = 3333', 'var(--s4)'], [c100(1000), 'c = 100、τ = 10³', 'var(--s1)']];
+  const series = [...b1Series(6000), ...arms.map(([r, l, c]) => ({label: l, color: c, width: 2.4, ...upto(r, 'span', 6000)}))];
+  lineChart(document.getElementById('c-ladder'), {series, width: 420, height: 300, xmin: 0, xmax: 6000, ymin: 0.35, ymax: 1.3, log: true, xticks: [0, 2000, 4000, 6000], yticks: [0.4, 0.5, 0.7, 1], yfmt: v => v, xfmt: x => x + ' 秒', xlabel: '動画の時刻', ylabel: 'span', legend: [{label: 'B = 1', color: 'var(--neutral)', width: 1.2}, ...arms.map(([, l, c]) => ({label: l, color: c}))]});
+  const s0 = R.filter(r => r.c === 100 && r.seed === 0 && r.t.some(t => t <= 6000)).sort((a, b) => a.tau - b.tau);
+  const s1 = R.filter(r => r.c === 100 && r.seed === 1);
+  const series2 = [
+    {label: 'c = 100（seed 0）', color: 'var(--s1)', marker: true, xs: s0.map(r => Math.log10(r.tau)), ys: s0.map(meanAbsD)},
+    {label: 'c = 100、τ = 10³（seed 1）', color: 'var(--s1)', marker: true, width: 0.001, ok: s1.map(() => false), xs: s1.map(r => Math.log10(r.tau)), ys: s1.map(meanAbsD)},
+  ];
+  lineChart(document.getElementById('c-tau'), {series: series2, width: 420, height: 300, xmin: 1.85, xmax: 4.15, ymin: 0, ymax: 0.7, xticks: [2, 2.5, 3, 3.5, 4], yticks: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7], xfmt: x => ({2: '100', 2.5: '300', 3: '10³', 3.5: '3·10³', 4: '10⁴'})[Math.round(x * 2) / 2], xlabel: 'τ', ylabel: '|d| の平均', refs: [{y: meanAbsD(c10), label: 'c = 10'}, {y: meanAbsD(c30), label: 'c = 30'}], nearest: true, legend: [{label: 'c = 100', color: 'var(--s1)'}]});
+})();
+
+// ---- long ----
+(() => {
+  const c10l = R.find(r => r.batch === 'v17-c10-long');
+  const lab = {1000: '本番 c = 100、τ = 10³', 3000: 'c = 100、τ = 3·10³', 10000: 'c = 100、τ = 10⁴'};
+  const TL = {1000: '1000', 6000: '6000', 48000: '4.8 万', 480000: '48 万'};
+  const T = Object.keys(TL).map(t => Math.log10(+t));
+  const tf = x => TL[Math.round(10 ** x)] || Math.round(10 ** x).toLocaleString('ja-JP');
+  for (const key of ['span', 'zurich']) {
+    const series = [
+      ...[1000, 3000, 10000].map(t => ({label: lab[t], color: TAUC[t], width: t === 1000 ? 2.8 : 1.4, opacity: t === 1000 ? 1 : 0.7, ...logs(c100(t), key)})),
+      {label: 'c = 10、τ = 10⁴', color: 'var(--s3)', width: 2.2, ...logs(c10l, key)},
+      {label: 'B = 1（seed 1）', color: 'var(--ink-2)', width: 1.6, dash: '6 3', ...logs(b1long, key)},
+    ];
+    if (key === 'span') series.push({label: '参考: V16 普通の学習（0〜1800 秒の場面）', color: 'var(--ink-3)', width: 1.4, dash: '2 4', ...logs(D.v16, 'span')});
+    const lg = series.map(s => ({label: s.label, color: s.color, dash: s.dash}));
+    lineChart(document.getElementById('c-long-' + key), {series, width: 420, height: 320, xmin: Math.log10(500), xmax: Math.log10(6.5e5), ymin: 0.12, ymax: 1.6, log: true, nearest: true, xticks: T, yticks: [0.15, 0.2, 0.3, 0.5, 0.7, 1, 1.5], yfmt: v => v, xfmt: x => tf(x) + ' 秒', xlabel: '動画の時刻', ylabel: key, vlines: [{x: Math.log10(47935), dash: '4 4', label: '1 周'}], legend: lg});
+  }
+  const TS = [6000, 18000, 48000, 120000, 180000, 300000, 480000];
+  const rows = [[c100(1000), '本番 c = 100、τ = 10³'], [c100(3000), 'c = 100、τ = 3·10³'], [c100(10000), 'c = 100、τ = 10⁴'], [c10l, 'c = 10、τ = 10⁴'], [b1long, 'B = 1（seed 1）']];
+  document.getElementById('t-long').innerHTML = rows.map(([r, l]) => `<tr><td>${l}</td>${TS.map(t => { const v = val(r, 'span', t); return `<td class="num">${v == null ? '' : fmt(v)}</td>`; }).join('')}</tr>`).join('');
+})();
+
+// ---- images ----
+function setRecon(box, key) {
+  box.dataset.img = key;
+  let img = box.querySelector('img');
+  if (!img) {
+    const labs = document.createElement('div'); labs.className = 'rows';
+    for (const t of box.dataset.rows.split('|')) { const s = document.createElement('span'); s.textContent = t; labs.appendChild(s); }
+    box.appendChild(labs);
+    img = document.createElement('img'); box.appendChild(img);
+  }
+  img.src = D.img[key]; img.alt = box.dataset.rows.replace(/\|/g, '、') + 'の 3 段';
+}
+(() => {
+  const b = document.getElementById('r-img'); setRecon(b, b.dataset.img);
+  document.querySelectorAll('#seg-img button').forEach(x => x.addEventListener('click', () => {
+    document.querySelectorAll('#seg-img button').forEach(y => y.setAttribute('aria-pressed', y === x ? 'true' : 'false'));
+    setRecon(b, x.dataset.key);
+  }));
+})();
+})();
+</script>
+</html>
