@@ -13,6 +13,11 @@ TINY = "+experiment=v0/tiny"
 
 
 class TestOverrides:
+    def test_the_layout_is_spread_or_chunk(self) -> None:
+        assert compose([BASE, "data.layout=chunk"]).data.layout == "chunk"
+        with pytest.raises(ValueError, match="data.layout"):
+            compose([BASE, "data.layout=x"])
+
     def test_the_base_preset_is_the_spec_of_v0(self) -> None:
         c = compose([BASE])
         assert (c.program, c.task, c.name, c.phase) == (
@@ -29,6 +34,7 @@ class TestOverrides:
             10.0,
         )
         assert (t.frames, t.stride, t.advance, c.data.streams) == (8, 1, 1, 1)
+        assert c.data.layout == "spread"
         assert (c.model.arch, c.model.size, c.model.latent) == ("vit", "S", 256)
         assert (c.model.enc_nodes, c.model.dec_nodes) == (4, 2)
         assert (c.model.width, c.model.head_count, c.model.patch) == (256, 4, 16)

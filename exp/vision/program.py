@@ -70,7 +70,8 @@ class Measures(Protocol):
 
 def tour_streams(conf: RunConf) -> StackStreams:
     """The stream of ``conf``: ``data.streams`` streams of stacks of Walking
-    Tours (``data.tours``) without its held-out video. For ``"online"`` it
+    Tours (``data.tours``) without its held-out video, laid out by
+    ``data.layout``. For ``"online"`` it
     first checks that the held-out video has the windows of the posthoc
     evaluation (``eval.check_splits``), so that a run that could not be
     evaluated fails before it runs, not after.
@@ -90,6 +91,7 @@ def tour_streams(conf: RunConf) -> StackStreams:
         frames=t.frames,
         stride=t.stride,
         advance=t.advance,
+        layout=conf.data.layout,
     )
 
 

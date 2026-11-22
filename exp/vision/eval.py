@@ -82,6 +82,7 @@ import json
 import math
 import statistics
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -131,6 +132,7 @@ __all__ = [
     "main",
     "recent_stacks",
     "stacks_at",
+    "stream_view",
     "stream_windows",
 ]
 
@@ -297,7 +299,16 @@ def stacks_at(conf: RunConf, root: Path, ks: Sequence[int]) -> tuple[list[int], 
     Returns:
         The kept ``k`` in the order of ``ks`` and their stacks u8 ``(r, n, 3,
         S, S)`` (CPU), ``r`` possibly 0.
+
+    Raises:
+        ValueError: ``conf`` is of the layout ``"chunk"``, whose stream 0 is
+            not the single stream (read its ``stream_view``).
     """
+    if conf.data.layout != "spread":
+        raise ValueError(
+            f"stacks_at reads a spread run, not data.layout {conf.data.layout!r}: "
+            "pass its stream_view"
+        )
     t = conf.data.tours
     stream = StackedTourFrames(
         root,
@@ -317,6 +328,31 @@ def stacks_at(conf: RunConf, root: Path, ks: Sequence[int]) -> tuple[list[int], 
     if not stacks:
         return [], torch.empty(0, t.frames, 3, t.size, t.size, dtype=torch.uint8)
     return kept, torch.stack(stacks)
+
+
+def stream_view(conf: RunConf) -> tuple[RunConf, int]:
+    r"""The single stream that a run of ``conf`` walks, as a run of its own,
+    and $c$, the stacks of that stream a frame of the run shows.
+
+    A ``"spread"`` run is read on its stream 0 (``stacks_at``): ``conf``
+    and 1. A ``"chunk"`` run of $B$ streams shows at its $k$-th frame the
+    single stream's units $kB, \dots, kB + B - 1$ (``StackedTourFrames``),
+    so it is read as the run of ``data.streams`` = 1 over $B$ times its
+    ``measure.duration`` (its checkpoints left out): its checkpoint at $t$
+    after $F$ frames has learned that stream's units $< FB$, at the time
+    $tB$ of the view; $c = B$.
+    """
+    if conf.data.layout == "spread":
+        return conf, 1
+    c = conf.data.streams
+    data = replace(conf.data, streams=1, layout="spread")
+    measure = replace(
+        conf.measure,
+        duration=conf.measure.duration * c,
+        ckpt_times=[],
+        ckpt_every=0.0,
+    )
+    return replace(conf, data=data, measure=measure), c
 
 
 def _stacks(windows: Tensor, n: int) -> Tensor:

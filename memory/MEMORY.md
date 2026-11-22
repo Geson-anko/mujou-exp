@@ -26,6 +26,7 @@
 - [exp/vision で V0 から](project_vision_restart.md) — 2026-11-18、M18 の後に基礎を詰め直す。PC-ALM だけの VAE、ViT/ResNet の S・M・L、時定数の momentum、run_manually
 - [optimizer の研究](project_optim_study.md) — 2026-11-19、V11〜V14 でストリームで学べる最適な optimizer を探す。t を含む式は外す、Adam 系は AdamW、OGD の間隔は秒、μP は幅だけ、mujou への PR は性能が出たものだけ
 - [μP と普通の VAE の上限](project_mup_and_iid_reference.md) — 2026-11-20、μP は今後も使う。V16 でストリームの最良のモデルを、ランダムな stack と BP で学び、上限の目安にする
+- [V17 の後は JEPA へ](project_v17_to_jepa.md) — 2026-11-22、VAE の検証は V17（480 万 stack で span 0.211）で締めくくり、次は JEPA。長い単一ストリームは c = 10 の chunk で回す
 
 ## feedback
 
