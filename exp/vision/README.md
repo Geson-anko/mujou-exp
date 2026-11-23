@@ -1858,3 +1858,90 @@ zurich の値。V16 と V17 は同じ評価（6000 組の当てはめ）に通�
 ### V19 に進めるか
 
 **進めない。** 事前に決めた規則 5 を、選んだ設定の seed 0 と 1 のどちらも満たさなかった。計画（各段の判定が外れたら次の段に進まず原因を調べる）に従い、V19（ストリーム）には進まない。V18 は「i.i.d. なミニバッチでも、射影の後の z は、学習が進むほど probe で悪くなる」という結果で止める。次は「次に疑うもの」の 1（射影の前の $h$ の probe）を先に行い、その結果を見てユーザーと進め方を決める。
+
+### 診断（回す前に決めたこと、2026-11-23）
+
+学習は回し直さない。NAS にある V18 の checkpoint に評価を足し、不合格の原因を 3 つの問いで切り分ける。予想と読み方は、結果を見てから変えない。コードは `exp/vision/jepa_diag.py`（コマンドは `tokens`・`sigreg`・`imagenette` の 3 つ）。Imagenette の線形 probe は `exp/video/diag/imagenette.py` から `exp/lib/metrics.py` の `probe_accuracy` に移した（手順は同じ）。
+
+**問い**
+
+1. 射影の前の表現 $h$（エンコーダの最後の LayerNorm の出力。16 トークン × 1024 次元で、射影 $P$ の入力）は、$z$ より probe でよいか。LeJEPA は射影の前の backbone を評価する。$h$ は 2 通りに読む。`h_flat` は平らにした 16384 次元、`h_mean` はトークンの平均の 1024 次元である。どちらも $z$ と同じ後から学ぶデコーダと線形の動力学（`StreamEvaluator.probes`、6000 組）に通す
+2. Imagenette の線形 probe（M17 の A と同じ手順。ridge の one-hot 回帰で、penalty は train の最後の 5 分の 1 で選ぶ。val の 3925 枚の正解率で、偶然は 10%）で、学習前・V18 の各 checkpoint・V16 と V17 の VAE の $\mu$・`color` を比べる。V18 の表現は `h_mean` と $z$
+3. zurich の `sigreg_zurich`（長い run の 60000 step で 21〜32。`sigreg_heldin` は 1.2）は、Zurich の分布のずれによるのか、評価の標本の相関（val の 1024 窓は、Zurich の中ほど約 22 分に平均 1.3 秒おきに並ぶ）による偏りなのか
+
+**問い 1 のやり方**（`jepa_diag tokens`）
+
+- 長い run の 4 本で、step 0（学習前）・6000・20000・60000 の checkpoint を評価する。表現は `z`・`h_mean`・`h_flat` の 3 つ。`z` も同じ評価器で測り直し、`posthoc_jepa` の値を再現するか確かめる（テストでは、同じ checkpoint の `jepa_eval` の値と一致する）
+- `h_flat` の重さ（導出）: 線形の動力学は float64 の $D \times D$ 行列（$D$ = 16384 で 1 つ 2.15 GB）を、`select_alpha` で同時に 4 つまで（$C_{00}$・$C_{01}$・LU 分解・$A$）、`errors` の白色化でさらに 2 つ持つ。符号（当てはめの 6000 組 × 2 で 0.79 GB ほか）と、デコーダの最初の層 `Linear(16384, 8192)` と Adam の状態（約 2.1 GB）を足すと、ピークは約 13 GB の見込みである（実測していない）。計算は、LU 分解が $\frac23 D^3$、$D$ 本の右辺の解が $2D^3$ で、ridge の 10 個の値で約 $1.2 \times 10^{14}$ flop。4090 の float64（約 1.3 TFLOPS）で 1 checkpoint あたり 2〜5 分になる。4090（24 GB）には載るので、`h_flat` はそのまま評価する。4060（8 GB）には載らない。4090 でもメモリが足りなければ、その事実を書く。そのうえで、動力学を双対の形 $A^\top = X_0^\top (X_0 X_0^\top + \alpha I)^{-1} X_1$（中心化した当てはめの符号 $X_0, X_1$ は $n \times D$、$n \approx 6000 < D$。push-through の恒等式で、同じ $A$ になる）で $n \times n$ の解に書き直す
+- 次元の偏り: デコーダの容量と動力学の自由度は次元とともに増える（「次元の偏り」）。そのため、`h_flat`（16384）は同じ `h_flat` の step どうし（学習前を含む）でだけ比べ、`z` との比較は参考にとどめる。`h_mean` は `z` と同じ 1024 次元なので、`z` と公平に比べられる
+
+**問い 2 のやり方**（`jepa_diag imagenette`）
+
+- データは M17 の `prep` の出力（128 px、std-01 の `/data/geson/mujou-exp/.fleet/imagenette/u8/{train,val}.pt`、train 9469 枚、val 3925 枚）。2 × 2 の画素の平均で 64 px に縮め（`shrink`、四捨五入して u8）、同じ画像を 8 枚並べた stack（`still_stacks`）にして early fusion に通す
+- この入力の扱いが妥当な理由: early fusion のパッチ埋め込みは 24 チャネル（8 枚 × 3）の線形写像なので、同じ画像を 8 枚並べると、重みを 8 枚分足した 1 枚の画像の埋め込み $(\sum_f W_f) x$ になる。WT の stack は 0.8 秒の 8 枚で、隣のフレームどうしはよく似ている（M17 の画素の相関は 0.1 秒で 0.89）。止まった stack は、学習の分布の「動きのない端」にあたる。最後の 1 枚だけに画像を置いて残りを 0 にする案は、学習のどの stack とも違うので採らない。画像の内容（物が中央にある写真）は WT と違う。そのため、正解率の絶対値は M17 の A（128 px、64 トークン、学習前 40.7%）と比べず、同じ入力の符号どうしで比べる
+- 符号: `color`（パッチごとの平均の色、384 次元）、`v16`・`v17`（物差しと同じ checkpoint、256 次元）、長い run の 4 本の全 checkpoint（step 0〜60000 の 9 個）の `h_mean` と `z`
+- 閾値: val の 3925 枚の正解率の差の標準誤差は、最大で $\sqrt{2 \cdot 0.25 / 3925}$ = 1.13 ポイント（$p$ = 0.5、独立とみた上限）。その 2 倍を切り上げて $\delta_a$ = 2.3 ポイントとする
+
+**問い 3 のやり方**（`jepa_diag sigreg`）
+
+- Zurich（38996 フレーム、10 fps で 65 分）の全体に、1 秒（10 フレーム）おきに stack を置く（3899 個）。その先頭の $Pn$ 個を、同じ標本のまま 2 通りの $n$ 個の組に分ける（`partition`、$P = \lfloor 3899 / n \rfloor$）。`consec` は隣り合う $n$ 個（1 秒おき）、`spaced` は $P$ 個おき（$n$ = 128 で 30 秒おき、$n$ = 1024 で 3 秒おき）である。どちらも同じ標本を 1 回ずつ使うので、周辺の分布は同じで、組の中の相関だけが違う。$S$ は評価と同じ 1024 本の方向で、組ごとの平均をとる
+- $n$ = 128 は学習の batch と同じで、`sigreg_heldin`（学習の動画から i.i.d. に引いた 128 stack の 16 batch）とそのまま比べられる。$n$ = 1024 は val と同じ大きさで、held-in の 8 batch をつないだ 1024 個（2 組）とも並べる。Zurich の中では、$n$ = 128 の 30 秒おきが最大の間隔である。M17 の白色化した相関は、学習前の平らなトークンでは 25.6 秒で 0.0013 で、$1/(n-1)$ = 0.0079 を下回った。一方、pool した $z$ では 0.064 で下回らなかった。V18 の $z$ がどちらに近いかは分からない。そこで、間隔をあけた組に残る相関も、次の式で見積もる
+- 式との照合: Fable さんの $E\,S = S_0 + \frac1N \sum_{i \ne j} G(\rho_{ij})$ を、平均 $m$・分散 $s^2$ が 0・1 でない射影に広げた式（`exp.lib.sigreg.expected_epps_pulley`。同じ 17 点の台形則で、ガウス過程の $E\,S$ を閉じた形で出す。$m$ = 0、$s^2$ = 1 では Fable さんの式になり、モンテカルロとも合う）を使う。方向ごとに、グリッドの射影の平均・分散・自己共分散 $c(l)$（FFT で求める）を入れて、`pred`（相関を入れた値）と `pred_iid`（相関を 0 にした値）を出す。`pred - pred_iid` が相関による偏りの予測、`pred_iid - S_0` がガウスの 2 次までで見た分布のずれの予測、実測と `pred` の差は高次（ガウスでない形）と見積もりの誤差である
+- 長い run の 4 本で、全 checkpoint を評価する
+
+**予想**（判定は 60000 step、4 本）
+
+問い 1
+
+1. `init`（step 0）の zurich の `recon_blur` は、`h_flat` が 0.15〜0.22（`z` の 0.223 は `h_flat` の線形写像なので、それ以下）、`h_mean` が 0.30〜0.42（位置の配置を捨てる）
+2. 60000 step の `h_mean` は、同じ step の `z` より $\delta_r$ を超えて小さい（4 本とも）
+3. `h_flat` も 6000 step から 60000 step にかけて悪くなる。ただし、その上がり幅は `z` の上がり幅（+0.12〜+0.18）の半分未満である（3 本以上）。損失の勾配が $h$ に直接かかるのは、標的側の射影 $P$（1024 → 64）と、文脈側の予測器の入口（1024 → 256）の行空間の成分だけで、トークンあたり 1024 次元のうち最大 320 次元である。残りの成分は学習前の特徴に近く残るとみる
+
+問い 2
+
+4. `init` の `h_mean` と `z` は 25〜40%、`color` は 20〜35%、`v16`・`v17` は 25〜40%
+5. 60000 step の `h_mean` と `init` の `h_mean` の差は −3〜+8 ポイント（M17 のマスクした view は、拡張なしで +7〜+15 だった。V18 は WT で学ぶので、Imagenette への移りはそれより小さいとみる）。学習した step では、`z` は `h_mean` より低い
+
+問い 3
+
+6. 相関が主因である。$n$ = 128 で、`consec` − `spaced` は `spaced` − `heldin` より大きい（4 本とも）
+7. `consec` − `spaced` の実測は、式の予測 $(\texttt{pred} - \texttt{pred\_iid})_{\mathrm{consec}} - (\texttt{pred} - \texttt{pred\_iid})_{\mathrm{spaced}}$ と ±30% で合う
+8. $n$ = 1024 の `consec` は、val の `sigreg_zurich` と ±30% で合う（同じ相関の組み方）
+
+**読み方**
+
+問い 1（`recon_blur` の閾値は V18 と同じ $\delta_r$、比べる 2 つの 4 seed の標準誤差の規則を含む。`dyn_1/copy_1` は $\delta_d$ = 0.02）
+
+- 情報は射影で捨てられ、エンコーダは保っている: `h_flat` の `recon_blur` が 6000 step から 60000 step で $\delta_r$ を超えて上がらない（3 本以上）。かつ `h_mean` が同じ step の `z` より $\delta_r$ を超えて小さい。このとき、V18 の評価の位置（$z$）が LeJEPA の評価の位置と違ったことが不合格の主因の候補になる。V18 の判定を $h$ でやり直すかは、ユーザーが決める
+- エンコーダ自身が失う: `h_flat` も $\delta_r$ を超えて上がる（3 本以上）。このときは、目的の式の設計（予測の標的が stop-gradient のない $z$、$N$ = 128 の SIGReg の弱さ）を第一の説明とする
+- どちらでもない（4 本が割れる）: 割れたことを書き、判定しない
+- `h_flat` の学習前（step 0）との比較と `dyn_1/copy_1` は並べるだけにする
+
+問い 2（$\delta_a$ = 2.3 ポイント）
+
+- 意味の情報を学んだ: `h_mean` が `init` より $\delta_a$ を超えて高い
+- 学習とともに失った: 60000 step の `h_mean` が 6000 step より $\delta_a$ を超えて低い
+- 問い 1 と組み合わせる。WT の `recon_blur` が悪くなるのに Imagenette の probe が上がるなら、JEPA は画素の情報を捨てて意味の情報に寄せている。このとき、画素の描き戻しを主にした V18 の合格の基準が、JEPA の学んだものを測っていないことになる。基準を変えるかはユーザーが決める。両方が悪くなるなら、表現そのものが悪くなっている
+
+問い 3（$n$ = 128、60000 step）
+
+- $A$ = `consec` − `spaced`（同じ標本で、相関の分）、$B$ = `spaced` − `heldin`（同じ $n$ で、Zurich と学習の分布の差。`spaced` に残る相関の分は、その組の `pred` − `pred_iid` で見積もる）
+- $A > B$ なら相関が主因、$B > A$ なら分布のずれが主因とする。$A$ が式の予測と ±30% で合えば、Fable さんの式で相関の偏りを説明できる。合わなければ、ガウスでない形か $c(l)$ の見積もりの誤差による。どちらによるかは、実測と `pred` の差から読む
+- 分布のずれが主因なら、$z$ は Zurich で学習の分布から外れている。問い 1 の probe の悪化と同じ向きの証拠として読む。相関が主因なら、`sigreg_zurich` は評価の組み方による値で、表現の診断に使えない。そのことを書き、V19 以降の評価では間隔をあけた組の値に替える
+
+**実行**（std-00〜03 の 4090。Imagenette は std-01 にしかないので、`imagenette` は std-01 で走らせる。出力は NAS の run の下の `posthoc_diag/` と `runs/v18-diag/imagenette/` で、`./runs/` には ckpt を除いて置く）
+
+```bash
+export OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data
+R=/nas/geson/mujou-exp/runs/v18-long
+# 問い 1 と 3（run ごとに 1 枚の 4090）
+python -m exp.vision.jepa_diag tokens $R/v18-long-lr1e-4-lam0.5-r0.25-s0 --steps 0,6000,20000,60000
+python -m exp.vision.jepa_diag sigreg $R/v18-long-lr1e-4-lam0.5-r0.25-s0
+# 問い 2（std-01）
+python -m exp.vision.jepa_diag imagenette --data /data/geson/mujou-exp/.fleet/imagenette/u8 \
+    --out /nas/geson/mujou-exp/runs/v18-diag/imagenette --runs $R/v18-long-* \
+    --v16 /nas/geson/mujou-exp/runs/v16-iid/iid-all-lr3e-4-s0/ckpt/600000.0.pt \
+    --v17 /nas/geson/mujou-exp/runs/v17-chunk/v0-base-49b81800-s0/ckpt/04800.0.pt
+```
+
+出力: `tokens` は `posthoc_diag/tokens.jsonl`（checkpoint・符号・group ごとの行）と、`<t>-<符号>-{zurich,span}.png`。`sigreg` は `posthoc_diag/sigreg.jsonl` で、checkpoint ごとに `consec`・`spaced`（$n$ = 128・1024）・`val`・`heldin`（128・1024）の行がある。列は `sigreg`・`sigreg_sd`・`pred`・`pred_iid`・`rho`（隣の組の相関、方向の平均）・`spacing`（フレーム）。`imagenette` は `imagenette.jsonl`（符号ごとの `acc`）。どれも設定と provenance を `*.json` に残す。画像（`h_flat` と `z` の描き戻し）は、数値と並べて目で見る。
