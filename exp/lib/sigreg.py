@@ -17,6 +17,7 @@ __all__ = [
     "T_POINTS",
     "ecf_sums",
     "epps_pulley",
+    "expected_epps_pulley",
     "insert_",
     "sigreg",
     "sigreg_from_sums",
@@ -84,6 +85,40 @@ def sigreg_from_sums(
     phi = torch.exp(-(t**2) / 2)
     err = ((re - phi) ** 2 + im**2) * phi
     return (n * torch.trapezoid(err, t, dim=-1)).mean()
+
+
+def expected_epps_pulley(
+    mean: torch.Tensor,
+    var: torch.Tensor,
+    cov: torch.Tensor,
+    pairs: torch.Tensor,
+    n: int,
+    t: torch.Tensor = T_POINTS,
+) -> torch.Tensor:
+    r"""The expectation of ``epps_pulley`` (the same rule on ``t``) of ``n``
+    jointly Gaussian samples $x_1 .. x_n$ of each of $M$ projections: each
+    $x_i \sim N(m, s^2)$ (``mean``, ``var`` ``(M,)``), the ordered pairs $i
+    \ne j$ of covariance $c_l$ (``cov`` ``(L, M)``) ``pairs[l]`` in number
+    (``(L,)``), the other ordered pairs independent. Returns ``(M,)``.
+
+    With $E e^{it(x_i - x_j)} = e^{-t^2 (s^2 - c_{ij})}$ and $E e^{itx_i} =
+    e^{itm - t^2 s^2 / 2}$, $n E \lvert \hat\varphi(t) - e^{-t^2/2}
+    \rvert^2 = 1 + \frac1n \sum_{i \ne j} e^{-t^2 (s^2 - c_{ij})} - 2n
+    \cos(tm) e^{-t^2 (1 + s^2)/2} + n e^{-t^2}$, integrated against
+    $e^{-t^2/2}$. For $m = 0$, $s^2 = 1$ and the exact integral it is
+    $S_0 + \frac1n \sum_{i \ne j} G(\rho_{ij})$, $G(\rho) =
+    \sqrt{2\pi/(3 - 2\rho)} - \sqrt{2\pi/3}$, $S_0 = G(1)$ (Fable's,
+    ``memory/agents/fable/temporal-sigreg.md`` 1.3); with no correlated
+    pair, the i.i.d. samples of $N(m, s^2)$."""
+    t = t.to(mean)
+    t2 = t**2  # (T,)
+    s2 = var[:, None]  # (M, 1)
+    rest = n * (n - 1) - pairs.sum()  # the independent ordered pairs
+    paired = (pairs[:, None, None] * torch.exp(-t2 * (s2 - cov[..., None]))).sum(0)
+    paired = paired + rest * torch.exp(-t2 * s2)  # (M, T)
+    cross = torch.cos(t * mean[:, None]) * torch.exp(-t2 * (1 + s2) / 2)
+    err = 1 + paired / n - 2 * n * cross + n * torch.exp(-t2)  # (M, T)
+    return torch.trapezoid(err * torch.exp(-t2 / 2), t, dim=-1)
 
 
 def insert_(

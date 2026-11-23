@@ -113,6 +113,7 @@ __all__ = [
     "participation",
     "pixels",
     "token_r2",
+    "vae_at",
 ]
 
 OUT = "posthoc_jepa"
@@ -411,7 +412,7 @@ def evaluate_run(
     return out
 
 
-def _vae_at(path: Path, device: str) -> Code:
+def vae_at(path: Path, device: str) -> Code:
     """The VAE of the checkpoint ``path`` (its run's ``config.yaml`` two
     levels up) on ``device``."""
     d = yaml.safe_load((path.parent.parent / "config.yaml").read_text())
@@ -458,7 +459,7 @@ def evaluate_yardsticks(
     }
     for name, path in (("v16", v16), ("v17", v17)):
         if path is not None:
-            codes[name] = _vae_at(path, conf.device)
+            codes[name] = vae_at(path, conf.device)
     _start(
         out,
         ev.settings()

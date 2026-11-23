@@ -3,7 +3,7 @@ import math
 import pytest
 import torch
 
-from exp.lib.metrics import bootstrap_se, effective_rank, probe_r2
+from exp.lib.metrics import bootstrap_se, effective_rank, probe_accuracy, probe_r2
 
 
 class TestEffectiveRank:
@@ -70,3 +70,21 @@ def test_effective_rank_is_that_of_the_eigenvalues_of_the_covariance():
         p = p[p > 1e-12]
         expected = float(torch.exp(-(p * p.log()).sum()))
         assert effective_rank(z) == pytest.approx(expected, rel=1e-9)
+
+
+class TestProbeAccuracy:
+    def test_linearly_separable_classes_are_read_without_error(self):
+        """Three classes at the corners of a simplex, 100 times further apart
+        than their spread: the least-squares one-hot readout separates them."""
+        g = torch.Generator().manual_seed(0)
+        y = torch.arange(3).repeat(200)
+        centres = 10 * torch.eye(3, 4)
+        f = centres[y] + 0.1 * torch.randn(600, 4, generator=g)
+        assert probe_accuracy(f[:400], y[:400], f[400:], y[400:], 3) == 1.0
+
+    def test_features_without_the_label_are_at_chance(self):
+        g = torch.Generator().manual_seed(1)
+        y = torch.arange(4).repeat(500)
+        f = torch.randn(2000, 4, generator=g)
+        acc = probe_accuracy(f[:1000], y[:1000], f[1000:], y[1000:], 4)
+        assert abs(acc - 0.25) < 4 * math.sqrt(0.25 * 0.75 / 1000)

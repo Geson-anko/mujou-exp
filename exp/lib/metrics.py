@@ -1,8 +1,17 @@
 """Metrics of representations, on tensors."""
 
 import torch
+from torch import nn
 
-__all__ = ["bootstrap_se", "effective_rank", "probe_r2"]
+__all__ = [
+    "PROBE_RIDGES",
+    "bootstrap_se",
+    "effective_rank",
+    "probe_accuracy",
+    "probe_r2",
+]
+
+PROBE_RIDGES = (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  # of probe_accuracy, times n
 
 
 def effective_rank(z: torch.Tensor) -> float:
@@ -39,6 +48,42 @@ def probe_r2(
     resid = ((b @ w - test_y.double()) ** 2).sum(0)
     total = ((test_y.double() - test_y.double().mean(0)) ** 2).sum(0)
     return (1 - resid / total).float()
+
+
+def probe_accuracy(
+    f_train: torch.Tensor,
+    y_train: torch.Tensor,
+    f_val: torch.Tensor,
+    y_val: torch.Tensor,
+    classes: int,
+) -> float:
+    """The accuracy on val of the ridge regression of the one-hot labels from
+    the standardized features (with a bias), its penalty (``PROBE_RIDGES``
+    times the samples) chosen by the accuracy on the last fifth of train,
+    then fit on all of train (M17's linear probe of Imagenette)."""
+    mu, sd = f_train.mean(0), f_train.std(0).clamp(min=1e-8)
+
+    def design(f: torch.Tensor) -> torch.Tensor:
+        z = (f.double() - mu) / sd
+        return torch.cat([z, torch.ones(len(z), 1, dtype=z.dtype)], 1)
+
+    def fit(x: torch.Tensor, y: torch.Tensor, alpha: float) -> torch.Tensor:
+        t = nn.functional.one_hot(y, classes).double()
+        a = x.T @ x + alpha * len(x) * torch.eye(x.shape[1], dtype=x.dtype)
+        return torch.linalg.solve(a, x.T @ t)
+
+    x, xv = design(f_train), design(f_val)
+    cut = len(x) * 4 // 5
+    perm = torch.randperm(len(x), generator=torch.Generator().manual_seed(0))
+    fit_i, hold_i = perm[:cut], perm[cut:]
+    scores = []
+    for alpha in PROBE_RIDGES:
+        w = fit(x[fit_i], y_train[fit_i], alpha)
+        acc = (x[hold_i] @ w).argmax(1).eq(y_train[hold_i]).double().mean()
+        scores.append(float(acc))
+    best = PROBE_RIDGES[max(range(len(PROBE_RIDGES)), key=lambda i: scores[i])]
+    w = fit(x, y_train, best)
+    return float((xv @ w).argmax(1).eq(y_val).double().mean())
 
 
 def bootstrap_se(
