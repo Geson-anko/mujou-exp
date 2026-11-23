@@ -1,0 +1,535 @@
+r"""The evaluation of V18 (``plans/jepa.md``, 「評価」): the JEPA's runs and
+the yardsticks, each code a function from a stack to a vector, through the
+same probes and the same statistics.
+
+Probes (``stream_eval.StreamEvaluator.probes`` on the span ``[0, span)``,
+``SPAN`` = 6000 s as V17 by default): the decoders learned afterwards and the linear
+dynamics fit on the pairs of the span's odd 10-second blocks; ``recon_blur``,
+``dyn_1/copy_1`` and ``rank`` of span, after and zurich. The JEPA's code is
+the target side's flat $z$ (``JEPAModules.mu``; the modules are the code).
+Pictures
+``<name>-zurich.png`` and ``<name>-span.png`` (the true last frames and the
+decoder's of seed 0).
+
+Statistics of a code (``CodeStats.of``), on the first stack of each of the
+held-out video's val windows ($N$ = 1024) unless said:
+
+- ``sigreg_zurich``: $S$ (``exp.lib.sigreg.sigreg``) of their codes along
+  ``EVAL_DIRECTIONS`` fixed directions (``EVAL_DIRECTION_SEED``), beside
+  that of as many $N(0, I)$ samples (``_gauss``) and of a constant code
+  (``_const``) along the same directions;
+- ``sigreg_heldin``: the mean $S$ of ``HELDIN_BATCHES`` batches of
+  ``HELDIN_BATCH`` stacks drawn uniformly from the training units
+  (``iid.Units`` of ``"all"``, ``HELDIN_SEED``; the same stacks for every
+  code), the scale of the training's $S$, with ``_gauss`` and ``_const``;
+- ``z_var``: the mean over the coordinates of their variance;
+- ``participation``: the participation ratio $r_2$ of their covariance
+  (``participation``), the $r_2$ of SIGReg's excess (``plans/jepa.md``);
+- of a code made of tokens, ``rho_in`` (``jepa.rho_in``) and ``token_r2``
+  (``token_r2``, fit on the probes' fit stacks): 1 for every code of the
+  derivation's stack-constant family $z_{n,p} = A_p h(x_n)$, whatever the
+  invertible $A_p$, where ``rho_in`` is 0 for $A_p = I$ only.
+
+Of a run's checkpoint also (``CodeStats.pred``): ``pred``, $L_{\mathrm{pred}}$
+under ``EVAL_MASKS`` masks of $F_k$ a stack (``EVAL_MASK_SEED``), and
+``pred_triv``, the same with each hidden $z_p$ guessed by its position's mean
+over the probes' fit stacks; ``pred_ratio`` = ``pred`` / ``pred_triv``;
+``pred_triv_calib`` and ``pred_ratio_calib``, the same with the means over
+the held-out video's calib windows (no shift of domain).
+
+The yardsticks (``evaluate_yardsticks``): ``init``, the JEPA at step 0;
+``init<latent>``, the PCA of ``init``'s $z$ to the VAE's ``model.latent``
+(256) dimensions; ``color``, the mean of each patch's pixels of each channel
+($T \times 3n$ = 384; ``ColorCode``); ``pca``, the pixel PCA of
+``PCA_COMPONENTS`` components of the fit stacks (flattened $3n \times H
+\times W$, ``eval.PCA_SEED``); ``v16`` and ``v17``, the $\mu$ of VAE
+checkpoints (``--v16``, ``--v17``; their run's ``config.yaml`` two levels
+up).
+
+``evaluate_run`` writes ``<run_dir>/posthoc_jepa/`` (``config.json``,
+``jepa.jsonl`` a row per checkpoint, ``probes.jsonl`` a row per probed
+checkpoint and group, the pictures); ``evaluate_yardsticks`` writes
+``<out>/posthoc_jepa/`` of the same files, a row per code (``code``)::
+
+    python -m exp.vision.jepa_eval <run_dir> [--probe-steps 2000,6000]
+    python -m exp.vision.jepa_eval --yardsticks [--config <config.yaml>] \
+        --v16 <ckpt> --v17 <ckpt> --out runs/v18-jepa/yardsticks
+"""
+
+import argparse
+import json
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Self
+
+import torch
+import yaml
+from torch import Tensor, nn
+
+from exp.lib import ckpt, pca
+from exp.lib.provenance import configure_determinism
+from exp.lib.rundir import write_json
+from exp.lib.sigreg import sigreg
+from exp.lib.tours.stacks import tours_root
+from exp.vision.compose import from_dict
+from exp.vision.eval import BATCH, FIT_STEPS, PCA_SEED
+from exp.vision.iid import Units
+from exp.vision.jepa import (
+    JEPAModules,
+    build_jepa,
+    directions,
+    draw_masks,
+    mask_family,
+    predict,
+    rho_in,
+    take,
+)
+from exp.vision.jepa_iid import v16_config
+from exp.vision.models import build_vae, early_fusion
+from exp.vision.schema import RunConf
+from exp.vision.stream_eval import Code, StreamEvaluator, append_jsonl, spanned
+
+__all__ = [
+    "EVAL_DIRECTIONS",
+    "EVAL_DIRECTION_SEED",
+    "EVAL_MASKS",
+    "EVAL_MASK_SEED",
+    "HELDIN_BATCH",
+    "HELDIN_BATCHES",
+    "HELDIN_SEED",
+    "OUT",
+    "PCA_COMPONENTS",
+    "PICTURES",
+    "PROBE_STEPS",
+    "SPAN",
+    "TOKEN_RIDGE",
+    "CodeStats",
+    "ColorCode",
+    "PCACode",
+    "evaluate_run",
+    "evaluate_yardsticks",
+    "main",
+    "participation",
+    "pixels",
+    "token_r2",
+]
+
+OUT = "posthoc_jepa"
+PICTURES = ("zurich", "span")
+PROBE_STEPS = (2000, 6000)  # the steps a run is probed at (and its last)
+SPAN = 6000.0  # seconds of the probes' span: about 6000 fit pairs (V17's)
+EVAL_MASKS, EVAL_MASK_SEED = 8, 37  # masks a stack for pred, from seed + this
+EVAL_DIRECTIONS, EVAL_DIRECTION_SEED = 1024, 41
+HELDIN_BATCHES, HELDIN_BATCH, HELDIN_SEED = 16, 128, 43
+GAUSS_SEED = 47  # added to the seed: the N(0, I) samples of the references
+PCA_COMPONENTS = 1024
+TOKEN_RIDGE = 1e-3  # token_r2's ridge, relative to the mean variance of z_p
+
+
+class ColorCode:
+    """The mean of each ``patch`` x ``patch`` patch's pixels of each of the
+    $3n$ channels of the stacks (``early_fusion``, ``x / 255``): tokens
+    ``(B, T, 3n)`` in row-major positions, $z$ ``(B, T 3n)``."""
+
+    def __init__(self, patch: int) -> None:
+        self._patch = patch
+
+    def modules(self) -> Mapping[str, nn.Module]:
+        return {}
+
+    def tokens(self, x: Tensor) -> Tensor:
+        images = early_fusion(x)
+        b, c, h, w = images.shape
+        p = self._patch
+        means = images.reshape(b, c, h // p, p, w // p, p).mean((3, 5))
+        return means.flatten(2).transpose(1, 2)
+
+    def mu(self, x: Tensor) -> Tensor:
+        return self.tokens(x).flatten(1)
+
+
+def pixels(x: Tensor) -> Tensor:
+    """The stacks u8 ``(B, n, 3, H, W)`` flattened in ``x / 255``: ``(B, n 3
+    H W)``."""
+    return x.flatten(1).float() / 255
+
+
+class PCACode:
+    """The PCA (``exp.lib.pca``) of features $f$ of the stacks (``pixels``,
+    or another code's ``mu``): $z = (f(x) - \\mu) W^\\top$."""
+
+    def __init__(
+        self, features: Callable[[Tensor], Tensor], mean: Tensor, comps: Tensor
+    ) -> None:
+        self._features, self._mean, self._comps = features, mean, comps
+
+    @classmethod
+    @torch.no_grad()
+    def fit(
+        cls,
+        features: Callable[[Tensor], Tensor],
+        stacks: Tensor,
+        d: int,
+        *,
+        gen: torch.Generator,
+        device: str,
+    ) -> Self:
+        """The PCA of ``d`` components (``pca.fit_pca``) of ``features`` of
+        the stacks u8 ``(m, n, 3, H, W)``, on ``device``."""
+        f = _encode(features, stacks, torch.device(device))
+        return cls(features, *pca.fit_pca(f, d, gen=gen))
+
+    def modules(self) -> Mapping[str, nn.Module]:
+        return {}
+
+    def mu(self, x: Tensor) -> Tensor:
+        return pca.encode(self._features(x), self._mean, self._comps)
+
+
+def _encode(fn: Callable[[Tensor], Tensor], x: Tensor, dev: torch.device) -> Tensor:
+    """``fn`` of the stacks u8 ``x`` (CPU), ``BATCH`` at a time on ``dev``."""
+    return torch.cat([fn(c.to(dev)).float() for c in x.split(BATCH)])
+
+
+def participation(z: Tensor) -> Tensor:
+    r"""The participation ratio $r_2 = (\mathrm{tr}\,\Sigma)^2 /
+    \mathrm{tr}\,\Sigma^2$ of the codes ``(N, D)``, $\Sigma$ their sample
+    covariance: $D$ for isotropic codes, 1 for codes on a line. The sample's
+    is biased low, about $N D / (N + D)$ for $N(0, I_D)$. A 0-d float64
+    tensor."""
+    u = z.double() - z.double().mean(0)
+    g = u @ u.T  # (N, N): tr Sigma and tr Sigma^2 up to the same factors
+    return g.trace().square() / g.square().sum()
+
+
+def token_r2(fit: Tensor, held: Tensor, ridge: float = TOKEN_RIDGE) -> Tensor:
+    r"""The mean over the ordered pairs of positions $p \ne q$ of the $R^2$ on
+    the tokens ``held`` ``(N, T, d)`` of the ridge regression of $z_q$ on
+    $z_p$ (with an intercept) fit on the tokens ``fit`` ``(m, T, d)``.
+
+    With $x_p$ the fit's $z_p$ less their mean $\bar z_p$, $W_{pq} = (X_p^\top
+    X_p + \alpha_p I)^{-1} X_p^\top X_q$, $\alpha_p$ = ``ridge`` x
+    $\mathrm{tr}(X_p^\top X_p) / d$, $\hat z_q = (z_p - \bar z_p) W_{pq} +
+    \bar z_q$, and $R^2_{pq} = 1 - \sum_n \lVert z_{n,q} - \hat z_{n,q}
+    \rVert^2 / \sum_n \lVert z_{n,q} - \langle z_q \rangle \rVert^2$ (the
+    held tokens' mean). About 1 when every token is a linear function of
+    any other, as $z_{n,p} = A_p h(x_n)$ for any invertible $A_p$; about 0
+    for tokens independent of each other. A 0-d float64 tensor."""
+    f, h = fit.double(), held.double()
+    t, d = f.shape[1:]
+    mean = f.mean(0)  # (T, d)
+    x = (f - mean).flatten(1)  # (m, T d)
+    c = (x.T @ x).reshape(t, d, t, d).permute(0, 2, 1, 3)  # (p, q, d, d): X_p^T X_q
+    gram = c.diagonal(dim1=0, dim2=1).permute(2, 0, 1)  # (p, d, d)
+    alpha = ridge * gram.diagonal(dim1=1, dim2=2).sum(-1) / d  # (p,)
+    eye = torch.eye(d, dtype=f.dtype, device=f.device)
+    w = torch.linalg.solve((gram + alpha[:, None, None] * eye)[:, None], c)
+    z_hat = torch.einsum("npi,pqij->npqj", h - mean, w) + mean  # (N, p, q, d)
+    err = (z_hat - h[:, None]).square().sum((0, 3))  # (p, q)
+    total = (h - h.mean(0)).square().sum((0, 2))  # (q,)
+    off = ~torch.eye(t, dtype=torch.bool, device=f.device)
+    return (1 - err / total)[off].mean()
+
+
+class CodeStats:
+    """The statistics of codes (module docstring) for the run ``conf`` on the
+    stacks of the evaluator ``ev`` and of the training units at ``root``.
+
+    Args:
+        conf: The run's config (its seed and device).
+        root: The prepared Walking Tours.
+        ev: The probes' evaluator, whose fit and zurich stacks are used.
+        heldin_batches, heldin_batch: The held-in batches and their stacks.
+    """
+
+    def __init__(
+        self,
+        conf: RunConf,
+        root: Path,
+        ev: StreamEvaluator,
+        *,
+        heldin_batches: int = HELDIN_BATCHES,
+        heldin_batch: int = HELDIN_BATCH,
+    ) -> None:
+        self._seed, self._dev = conf.seed, torch.device(conf.device)
+        self._zx, self._fit = ev.zurich_stacks, ev.fit_stacks
+        self._calib = ev.zurich_calib_stacks
+        units = Units(conf, root, "all", seed=conf.seed + HELDIN_SEED)
+        self._heldin = [units.draw(heldin_batch) for _ in range(heldin_batches)]
+        self._refs: dict[int, dict[str, float]] = {}
+
+    def _dirs(self, d: int) -> Tensor:
+        gen = torch.Generator().manual_seed(self._seed + EVAL_DIRECTION_SEED)
+        return directions(EVAL_DIRECTIONS, d, gen).to(self._dev)
+
+    def _references(self, d: int) -> dict[str, float]:
+        """$S$ of $N(0, I)$ samples and of a constant code, as many as the
+        zurich stacks and as the held-in batches, along ``_dirs(d)``."""
+        if d not in self._refs:
+            a = self._dirs(d)
+            gen = torch.Generator().manual_seed(self._seed + GAUSS_SEED)
+
+            def s(z: Tensor) -> float:
+                return float(sigreg(z.to(self._dev), z[:0].to(self._dev), a))
+
+            n, b = len(self._zx), len(self._heldin[0])
+            gauss = [s(torch.randn(b, d, generator=gen)) for _ in self._heldin]
+            self._refs[d] = {
+                "sigreg_zurich_gauss": s(torch.randn(n, d, generator=gen)),
+                "sigreg_zurich_const": s(torch.zeros(n, d)),
+                "sigreg_heldin_gauss": sum(gauss) / len(gauss),
+                "sigreg_heldin_const": s(torch.zeros(b, d)),
+            }
+        return self._refs[d]
+
+    @torch.no_grad()
+    def of(self, code: Code) -> dict[str, float]:
+        """``sigreg_zurich``, ``sigreg_heldin``, ``z_var`` (with the
+        references), ``participation`` and, of a code with ``tokens``,
+        ``rho_in`` and ``token_r2``."""
+        z = _encode(code.mu, self._zx, self._dev)  # (N, D)
+        a = self._dirs(z.shape[1])
+        held = [
+            float(sigreg(zb, zb[:0], a))
+            for zb in (_encode(code.mu, x, self._dev) for x in self._heldin)
+        ]
+        row = {
+            "sigreg_zurich": float(sigreg(z, z[:0], a)),
+            "sigreg_heldin": sum(held) / len(held),
+            "z_var": float(z.var(0).mean()),
+            "participation": float(participation(z)),
+        }
+        row |= self._references(z.shape[1])
+        tokens = getattr(code, "tokens", None)  # of a code made of tokens
+        if tokens is not None:
+            held = _encode(tokens, self._zx, self._dev)  # (N, T, d)
+            row["rho_in"] = float(rho_in(held))
+            fit = _encode(tokens, self._fit, self._dev)
+            row["token_r2"] = float(token_r2(fit, held))
+        return row
+
+    @torch.no_grad()
+    def pred(self, mods: JEPAModules, k: int) -> dict[str, float]:
+        """``pred``, ``pred_triv``, ``pred_ratio`` and those of the calib
+        windows (module docstring) of the JEPA ``mods`` under masks hiding
+        ``k``."""
+        z_bar = _encode(mods.tokens, self._fit, self._dev).mean(0)  # (T, d)
+        z_cal = _encode(mods.tokens, self._calib, self._dev).mean(0)  # (T, d)
+        t = len(z_bar)
+        family = mask_family(k, round(t**0.5)).to(self._dev)
+        gen = torch.Generator().manual_seed(self._seed + EVAL_MASK_SEED)
+        masks = draw_masks(family, EVAL_MASKS * len(self._zx), gen)
+        masks = masks.reshape(EVAL_MASKS, len(self._zx), t)
+        err = triv = cal = 0.0
+        for i, x in enumerate(self._zx.split(BATCH)):
+            images = early_fusion(x.to(self._dev))
+            tokens = mods.proj(mods.encoder(images))  # (b, T, d)
+            for mask in masks[:, i * BATCH : i * BATCH + len(x)]:
+                z_hat, hide = predict(mods, images, mask)
+                target = take(tokens, hide)
+                err += float((z_hat - target).double().square().sum())
+                triv += float((z_bar[hide] - target).double().square().sum())
+                cal += float((z_cal[hide] - target).double().square().sum())
+        count = EVAL_MASKS * len(self._zx) * k * z_bar.shape[1]
+        pred, pred_triv, pred_cal = err / count, triv / count, cal / count
+        return {
+            "pred": pred,
+            "pred_triv": pred_triv,
+            "pred_ratio": pred / pred_triv,
+            "pred_triv_calib": pred_cal,
+            "pred_ratio_calib": pred / pred_cal,
+        }
+
+
+def _start(out: Path, settings: Mapping[str, Any]) -> None:
+    """``out/config.json`` of ``settings``, empty ``jepa.jsonl`` and
+    ``probes.jsonl``."""
+    out.mkdir(parents=True, exist_ok=True)
+    write_json(out / "config.json", dict(settings))
+    for f in ("jepa.jsonl", "probes.jsonl"):
+        (out / f).write_text("")
+
+
+def evaluate_run(
+    run_dir: Path,
+    *,
+    root: Path | None = None,
+    span: float = SPAN,
+    probe_steps: Sequence[int] = PROBE_STEPS,
+    fit_steps: int = FIT_STEPS,
+    spacing: Mapping[str, float] | None = None,
+    heldin: tuple[int, int] = (HELDIN_BATCHES, HELDIN_BATCH),
+) -> Path:
+    """Evaluate every checkpoint of the JEPA run in ``run_dir`` (its
+    ``config.yaml`` and ``jepa.json``) in the order of ``t``, under
+    ``configure_determinism``, into ``run_dir / OUT`` (module docstring):
+    the statistics of every checkpoint, the probes of the steps of
+    ``probe_steps`` and of the last one, on the span ``[0, span)``.
+    ``spacing`` passes the spacings of ``StreamEvaluator`` by name and
+    ``heldin`` the held-in batches and their stacks. Returns the directory.
+
+    Raises:
+        FileNotFoundError: The run has no checkpoint.
+    """
+    conf = from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+    settings = json.loads((run_dir / "jepa.json").read_text())
+    view = spanned(conf, span)
+    determinism = configure_determinism(conf.device)
+    paths = sorted(run_dir.glob("ckpt/*.pt"), key=lambda p: float(p.stem))
+    if not paths:
+        raise FileNotFoundError(f"no checkpoint under {run_dir / 'ckpt'}")
+    root = tours_root(conf.data.tours.data_version) if root is None else root
+    out = run_dir / OUT
+    ev = StreamEvaluator(
+        view, run_dir, root, out, fit_steps=fit_steps, c=1, **(spacing or {})
+    )
+    stats = CodeStats(view, root, ev, heldin_batches=heldin[0], heldin_batch=heldin[1])
+    _start(
+        out,
+        ev.settings()
+        | {
+            "span": view.measure.duration,
+            "probe_steps": list(probe_steps),
+            "ckpts": [p.name for p in paths],
+            "eval_masks": EVAL_MASKS,
+            "eval_directions": EVAL_DIRECTIONS,
+            "heldin": list(heldin),
+            "determinism": determinism,
+        },
+    )
+    mods = build_jepa(conf, seed=conf.seed)
+    for path in paths:
+        head = ckpt.load_eval(path, mods.modules())
+        step = int(head["frame"]) // settings["batch"]
+        stamp = {"t": head["t"], "step": step}
+        row = stamp | stats.of(mods) | stats.pred(mods, settings["k"])
+        append_jsonl(out / "jepa.jsonl", [row])
+        if step in probe_steps or path == paths[-1]:
+            rows = ev.probes(mods, path.stem, PICTURES)
+            append_jsonl(out / "probes.jsonl", [stamp | r for r in rows])
+    return out
+
+
+def _vae_at(path: Path, device: str) -> Code:
+    """The VAE of the checkpoint ``path`` (its run's ``config.yaml`` two
+    levels up) on ``device``."""
+    d = yaml.safe_load((path.parent.parent / "config.yaml").read_text())
+    conf = replace(from_dict(d), device=device)
+    mods = build_vae(conf, seed=conf.seed)
+    ckpt.load_eval(path, mods.modules())
+    return mods
+
+
+def evaluate_yardsticks(
+    conf: RunConf,
+    out_dir: Path,
+    *,
+    root: Path | None = None,
+    v16: Path | None = None,
+    v17: Path | None = None,
+    span: float = SPAN,
+    fit_steps: int = FIT_STEPS,
+    spacing: Mapping[str, float] | None = None,
+    heldin: tuple[int, int] = (HELDIN_BATCHES, HELDIN_BATCH),
+    pca_components: int = PCA_COMPONENTS,
+) -> Path:
+    """Evaluate the yardsticks (module docstring) of the JEPA of ``conf``
+    into ``out_dir / OUT``: ``init``, ``color``, ``pca`` and those of ``v16``
+    and ``v17`` given. Arguments as ``evaluate_run``'s. Returns the
+    directory."""
+    view = spanned(conf, span)
+    determinism = configure_determinism(conf.device)
+    root = tours_root(conf.data.tours.data_version) if root is None else root
+    out = out_dir / OUT
+    ev = StreamEvaluator(
+        view, out_dir, root, out, fit_steps=fit_steps, c=1, **(spacing or {})
+    )
+    stats = CodeStats(view, root, ev, heldin_batches=heldin[0], heldin_batch=heldin[1])
+    gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
+    init = build_jepa(conf, seed=conf.seed)
+    fit, latent = ev.fit_stacks, conf.model.latent
+    codes: dict[str, Code] = {
+        "init": init,
+        # init's z in as many dimensions as the VAE's mu
+        f"init{latent}": PCACode.fit(init.mu, fit, latent, gen=gen, device=conf.device),
+        "color": ColorCode(conf.model.patch),
+        "pca": PCACode.fit(pixels, fit, pca_components, gen=gen, device=conf.device),
+    }
+    for name, path in (("v16", v16), ("v17", v17)):
+        if path is not None:
+            codes[name] = _vae_at(path, conf.device)
+    _start(
+        out,
+        ev.settings()
+        | {
+            "span": view.measure.duration,
+            "codes": list(codes),
+            "v16": None if v16 is None else str(v16),
+            "v17": None if v17 is None else str(v17),
+            "pca_components": pca_components,
+            "eval_directions": EVAL_DIRECTIONS,
+            "heldin": list(heldin),
+            "determinism": determinism,
+        },
+    )
+    for name, code in codes.items():
+        append_jsonl(out / "jepa.jsonl", [{"code": name} | stats.of(code)])
+        rows = ev.probes(code, name, PICTURES)
+        append_jsonl(out / "probes.jsonl", [{"code": name} | r for r in rows])
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> Path:
+    """``python -m exp.vision.jepa_eval``: ``evaluate_run`` of a run, or
+    with ``--yardsticks`` ``evaluate_yardsticks``. Returns the directory."""
+    ap = argparse.ArgumentParser(
+        prog="python -m exp.vision.jepa_eval",
+        description="Evaluate the checkpoints of a JEPA run, or the yardsticks.",
+    )
+    ap.add_argument("run_dir", type=Path, nargs="?", help="the run's directory")
+    ap.add_argument("--yardsticks", action="store_true")
+    ap.add_argument("--config", type=Path, help="yardsticks: (default v16_config)")
+    ap.add_argument("--v16", type=Path, help="yardsticks: a VAE checkpoint")
+    ap.add_argument("--v17", type=Path, help="yardsticks: a VAE checkpoint")
+    ap.add_argument("--out", type=Path, help="yardsticks: the output directory")
+    ap.add_argument("--device", default="cuda", help="yardsticks: the device")
+    ap.add_argument("--root", type=Path, help="the data (default: tours_root)")
+    ap.add_argument(
+        "--span", type=float, default=SPAN, help="seconds of the span (default: SPAN)"
+    )
+    ap.add_argument("--fit-steps", type=int, default=FIT_STEPS, help="per decoder")
+    ap.add_argument(
+        "--probe-steps",
+        type=lambda s: tuple(int(x) for x in s.split(",")),
+        default=PROBE_STEPS,
+        help="comma-separated steps (default: PROBE_STEPS; the last always)",
+    )
+    args = ap.parse_args(argv)
+    if not args.yardsticks:
+        if args.run_dir is None:
+            ap.error("give a run_dir, or --yardsticks")
+        return evaluate_run(
+            args.run_dir,
+            root=args.root,
+            span=args.span,
+            probe_steps=args.probe_steps,
+            fit_steps=args.fit_steps,
+        )
+    if args.out is None:
+        ap.error("--yardsticks needs --out")
+    d = v16_config() if args.config is None else yaml.safe_load(args.config.read_text())
+    d["device"] = args.device
+    return evaluate_yardsticks(
+        from_dict(d),
+        args.out,
+        root=args.root,
+        v16=args.v16,
+        v17=args.v17,
+        span=args.span,
+        fit_steps=args.fit_steps,
+    )
+
+
+if __name__ == "__main__":
+    print(main())
