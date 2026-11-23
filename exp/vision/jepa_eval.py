@@ -1,15 +1,22 @@
-r"""The evaluation of V18 (``plans/jepa.md``, 「評価」): the JEPA's runs and
-the yardsticks, each code a function from a stack to a vector, through the
-same probes and the same statistics.
+r"""The evaluation of V18 and V18b (``plans/jepa.md``, 「評価」 of V18 and
+V18b): the JEPA's runs and the yardsticks, each code a function from a stack
+to a vector, through the same probes and the same statistics.
 
 Probes (``stream_eval.StreamEvaluator.probes`` on the span ``[0, span)``,
 ``SPAN`` = 6000 s as V17 by default): the decoders learned afterwards and the linear
 dynamics fit on the pairs of the span's odd 10-second blocks; ``recon_blur``,
-``dyn_1/copy_1`` and ``rank`` of span, after and zurich. The JEPA's code is
-the target side's flat $z$ (``JEPAModules.mu``; the modules are the code).
-Pictures
+``dyn_1/copy_1`` and ``rank`` of span, after and zurich. Pictures
 ``<name>-zurich.png`` and ``<name>-span.png`` (the true last frames and the
 decoder's of seed 0).
+
+The codes of a run's checkpoint (``arm_codes``, by default ``ARM_CODES`` of
+its SIGReg's data point): ``z`` (or ``zflat``), the target side's flat $z$
+(``JEPAModules.mu``; the modules are the code); ``zpca``, the PCA of $z$ on
+the probes' fit stacks to ``ZPCA_DIM`` dimensions (``eval.PCA_SEED``; V18b's
+arm M, whose $z$ has 16384); and the codes of ``TokenCode``: ``zbar``
+($\bar z$), and of $h$, the encoder's tokens after its last ``LayerNorm``,
+``h_mean``, ``h_flat`` and ``h_pool`` (their means over each block of the
+coarse grid, ``jepa.COARSE_GRID``).
 
 Statistics of a code (``CodeStats.of``), on the first stack of each of the
 held-out video's val windows ($N$ = 1024) unless said:
@@ -30,34 +37,43 @@ held-out video's val windows ($N$ = 1024) unless said:
   derivation's stack-constant family $z_{n,p} = A_p h(x_n)$, whatever the
   invertible $A_p$, where ``rho_in`` is 0 for $A_p = I$ only.
 
-Of a run's checkpoint also (``CodeStats.pred``): ``pred``, $L_{\mathrm{pred}}$
-under ``EVAL_MASKS`` masks of $F_k$ a stack (``EVAL_MASK_SEED``), and
-``pred_triv``, the same with each hidden $z_p$ guessed by its position's mean
-over the probes' fit stacks; ``pred_ratio`` = ``pred`` / ``pred_triv``;
-``pred_triv_calib`` and ``pred_ratio_calib``, the same with the means over
-the held-out video's calib windows (no shift of domain).
+Of a run's checkpoint also, in the row of each of its codes:
+(``CodeStats.pred``) ``pred``, $L_{\mathrm{pred}}$ under ``EVAL_MASKS`` masks
+of $F_k$ a stack (``EVAL_MASK_SEED``) spread to the run's grid
+(``jepa.expand_masks``), and ``pred_triv``, the same with each hidden $z_p$
+guessed by its position's mean over the probes' fit stacks; ``pred_ratio`` =
+``pred`` / ``pred_triv``; ``pred_triv_calib`` and ``pred_ratio_calib``, the
+same with the means over the held-out video's calib windows (no shift of
+domain); (``drift``) ``embed_drift`` and ``block_drift``, how far the
+encoder's matrices moved from the run's step 0.
 
-The yardsticks (``evaluate_yardsticks``): ``init``, the JEPA at step 0;
-``init<latent>``, the PCA of ``init``'s $z$ to the VAE's ``model.latent``
-(256) dimensions; ``color``, the mean of each patch's pixels of each channel
-($T \times 3n$ = 384; ``ColorCode``); ``pca``, the pixel PCA of
-``PCA_COMPONENTS`` components of the fit stacks (flattened $3n \times H
+The yardsticks (``evaluate_yardsticks``) of V18's grid: ``init``, the JEPA
+at step 0; ``init<latent>``, the PCA of ``init``'s $z$ to the VAE's
+``model.latent`` (256) dimensions; ``color``, the mean of each patch's pixels
+of each channel ($T \times 3n$ = 384; ``ColorCode``); ``pca``, the pixel PCA
+of ``PCA_COMPONENTS`` components of the fit stacks (flattened $3n \times H
 \times W$, ``eval.PCA_SEED``); ``v16`` and ``v17``, the $\mu$ of VAE
 checkpoints (``--v16``, ``--v17``; their run's ``config.yaml`` two levels
-up).
+up). Of a finer grid (``--patch 4``, V18b's): ``init_f``, arm F's step 0 (its
+$z$ of V18's $D$, $d = G^2 \cdot$ ``TOKEN_DIM`` / $T$); ``init_m``,
+``init_m_zbar`` and ``init_m_zflat``, arm M's ``zpca``, ``zbar`` and ``z`` at
+step 0; ``color<patch>``; and ``v16``, ``v17`` given.
 
 ``evaluate_run`` writes ``<run_dir>/posthoc_jepa/`` (``config.json``,
-``jepa.jsonl`` a row per checkpoint, ``probes.jsonl`` a row per probed
-checkpoint and group, the pictures); ``evaluate_yardsticks`` writes
-``<out>/posthoc_jepa/`` of the same files, a row per code (``code``)::
+``jepa.jsonl`` a row per checkpoint and code, ``probes.jsonl`` a row per
+probed checkpoint, code and group, the pictures ``<t>-<code>-*.png``);
+``evaluate_yardsticks`` writes ``<out>/posthoc_jepa/`` of the same files, a
+row per code (``code``)::
 
-    python -m exp.vision.jepa_eval <run_dir> [--probe-steps 2000,6000]
+    python -m exp.vision.jepa_eval <run_dir> [--probe-steps 2000,6000] \
+        [--codes z,h_mean]
     python -m exp.vision.jepa_eval --yardsticks [--config <config.yaml>] \
-        --v16 <ckpt> --v17 <ckpt> --out runs/v18-jepa/yardsticks
+        [--patch 4] --v16 <ckpt> --v17 <ckpt> --out runs/v18-jepa/yardsticks
 """
 
 import argparse
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -76,21 +92,28 @@ from exp.vision.compose import from_dict
 from exp.vision.eval import BATCH, FIT_STEPS, PCA_SEED
 from exp.vision.iid import Units
 from exp.vision.jepa import (
+    COARSE_GRID,
+    TOKEN_DIM,
     JEPAModules,
     build_jepa,
     directions,
     draw_masks,
+    expand_masks,
+    mask_expansion,
     mask_family,
     predict,
     rho_in,
+    sigreg_points,
     take,
 )
 from exp.vision.jepa_iid import v16_config
-from exp.vision.models import build_vae, early_fusion
+from exp.vision.models import Block, PatchEmbed, build_vae, early_fusion
 from exp.vision.schema import RunConf
 from exp.vision.stream_eval import Code, StreamEvaluator, append_jsonl, spanned
 
 __all__ = [
+    "ARM_CODES",
+    "CODES",
     "EVAL_DIRECTIONS",
     "EVAL_DIRECTION_SEED",
     "EVAL_MASKS",
@@ -103,10 +126,16 @@ __all__ = [
     "PICTURES",
     "PROBE_STEPS",
     "SPAN",
+    "TOKEN_POOLS",
     "TOKEN_RIDGE",
+    "ZPCA_DIM",
     "CodeStats",
     "ColorCode",
     "PCACode",
+    "TokenCode",
+    "arm_codes",
+    "build_run_jepa",
+    "drift",
     "evaluate_run",
     "evaluate_yardsticks",
     "main",
@@ -126,6 +155,11 @@ HELDIN_BATCHES, HELDIN_BATCH, HELDIN_SEED = 16, 128, 43
 GAUSS_SEED = 47  # added to the seed: the N(0, I) samples of the references
 PCA_COMPONENTS = 1024
 TOKEN_RIDGE = 1e-3  # token_r2's ridge, relative to the mean variance of z_p
+ZPCA_DIM = 1024  # zpca's dimensions: the D of V18's z, of the arms' codes
+TOKEN_POOLS = ("z", "zbar", "h_mean", "h_flat", "h_pool")  # of TokenCode
+CODES = ("zflat", "zpca", *TOKEN_POOLS)  # of arm_codes
+# a run's codes by its SIGReg's data point: the judged code first (V18b)
+ARM_CODES = {"flat": ("z", "h_mean"), "mean": ("zpca", "zbar", "zflat", "h_mean")}
 
 
 class ColorCode:
@@ -148,6 +182,45 @@ class ColorCode:
 
     def mu(self, x: Tensor) -> Tensor:
         return self.tokens(x).flatten(1)
+
+
+class TokenCode:
+    r"""The code of the stacks by the JEPA ``mods`` of ``pool``
+    (``TOKEN_POOLS``): ``"z"`` the target side's $z$ (``JEPAModules.mu``),
+    ``"zbar"`` its mean token $\bar z$ ``(B, d)``; of $h$ ``(B, T, w)``, the
+    encoder's tokens after its last ``LayerNorm`` (the input of the
+    projection), ``"h_mean"`` their mean over the positions ``(B, w)``,
+    ``"h_flat"`` them flattened ``(B, T w)`` and ``"h_pool"`` the means of
+    each $s \times s$ block of the grid $g = s G$ (``jepa.mask_expansion``),
+    the coarse grid's tokens flattened ``(B, G^2 w)`` (``h_flat`` for $s$ =
+    1).
+
+    Raises:
+        ValueError: ``pool`` is not of ``TOKEN_POOLS``.
+    """
+
+    def __init__(self, mods: JEPAModules, pool: str) -> None:
+        if pool not in TOKEN_POOLS:
+            raise ValueError(f"pool is one of {TOKEN_POOLS}, not {pool!r}")
+        self._mods, self._pool = mods, pool
+
+    def modules(self) -> Mapping[str, nn.Module]:
+        return self._mods.modules()
+
+    def mu(self, x: Tensor) -> Tensor:
+        if self._pool == "z":
+            return self._mods.mu(x)
+        if self._pool == "zbar":
+            return sigreg_points(self._mods.tokens(x), "mean")
+        h = self._mods.encoder(early_fusion(x))  # (B, T, w)
+        if self._pool == "h_mean":
+            return h.mean(1)
+        if self._pool == "h_flat":
+            return h.flatten(1)
+        b, t, w = h.shape
+        g = COARSE_GRID
+        s = mask_expansion(math.isqrt(t))
+        return h.reshape(b, g, s, g, s, w).mean((2, 4)).flatten(1)
 
 
 def pixels(x: Tensor) -> Tensor:
@@ -216,21 +289,95 @@ def token_r2(fit: Tensor, held: Tensor, ridge: float = TOKEN_RIDGE) -> Tensor:
     \rVert^2 / \sum_n \lVert z_{n,q} - \langle z_q \rangle \rVert^2$ (the
     held tokens' mean). About 1 when every token is a linear function of
     any other, as $z_{n,p} = A_p h(x_n)$ for any invertible $A_p$; about 0
-    for tokens independent of each other. A 0-d float64 tensor."""
+    for tokens independent of each other. The solve of each $p$ is made
+    once and applied to every $q$ at once. A 0-d float64 tensor."""
     f, h = fit.double(), held.double()
     t, d = f.shape[1:]
     mean = f.mean(0)  # (T, d)
-    x = (f - mean).flatten(1)  # (m, T d)
-    c = (x.T @ x).reshape(t, d, t, d).permute(0, 2, 1, 3)  # (p, q, d, d): X_p^T X_q
-    gram = c.diagonal(dim1=0, dim2=1).permute(2, 0, 1)  # (p, d, d)
-    alpha = ridge * gram.diagonal(dim1=1, dim2=2).sum(-1) / d  # (p,)
-    eye = torch.eye(d, dtype=f.dtype, device=f.device)
-    w = torch.linalg.solve((gram + alpha[:, None, None] * eye)[:, None], c)
-    z_hat = torch.einsum("npi,pqij->npqj", h - mean, w) + mean  # (N, p, q, d)
-    err = (z_hat - h[:, None]).square().sum((0, 3))  # (p, q)
+    x = f - mean  # (m, T, d)
+    xf = x.flatten(1)  # (m, T d)
+    u = h - mean  # (N, T, d): z less the fit's means
     total = (h - h.mean(0)).square().sum((0, 2))  # (q,)
-    off = ~torch.eye(t, dtype=torch.bool, device=f.device)
-    return (1 - err / total)[off].mean()
+    eye = torch.eye(d, dtype=f.dtype, device=f.device)
+    r2 = torch.zeros((), dtype=f.dtype, device=f.device)
+    for p in range(t):
+        xp = x[:, p]  # (m, d)
+        gram = xp.T @ xp
+        alpha = ridge * gram.trace() / d
+        w = torch.linalg.solve(gram + alpha * eye, xp.T @ xf)  # (d, T d): W_pq
+        err = (u[:, p] @ w - u.flatten(1)).square()  # (N, T d)
+        r = 1 - err.reshape(-1, t, d).sum((0, 2)) / total  # (q,)
+        r2 = r2 + r.sum() - r[p]
+    return r2 / (t * (t - 1))
+
+
+def drift(init: nn.Module, now: nn.Module) -> dict[str, float]:
+    r"""How far the encoder ``now`` moved from ``init`` (the same modules):
+    $\lVert W - W_0 \rVert_F / \lVert W_0 \rVert_F$ of the patch embedding's
+    matrix (``embed_drift``) and of the matrices of the ``Block``\ s joined
+    (``block_drift``)."""
+
+    def matrices(enc: nn.Module) -> tuple[list[Tensor], list[Tensor]]:
+        embed = [m.proj.weight for m in enc.modules() if isinstance(m, PatchEmbed)]
+        blocks = [
+            m.weight
+            for b in enc.modules()
+            if isinstance(b, Block)
+            for m in b.modules()
+            if isinstance(m, nn.Linear)
+        ]
+        return embed, blocks
+
+    def rel(w0: Sequence[Tensor], w: Sequence[Tensor]) -> float:
+        num = sum(
+            float((b - a).double().square().sum()) for a, b in zip(w0, w, strict=True)
+        )
+        den = sum(float(a.double().square().sum()) for a in w0)
+        return math.sqrt(num / den)
+
+    (e0, b0), (e1, b1) = matrices(init), matrices(now)
+    with torch.no_grad():
+        return {"embed_drift": rel(e0, e1), "block_drift": rel(b0, b1)}
+
+
+def build_run_jepa(conf: RunConf, settings: Mapping[str, Any]) -> JEPAModules:
+    """The JEPA of a run of ``conf`` and its ``jepa.json`` ``settings`` (its
+    $d$, V18's ``TOKEN_DIM`` where not recorded), at its step 0."""
+    return build_jepa(
+        conf, seed=conf.seed, token_dim=settings.get("token_dim", TOKEN_DIM)
+    )
+
+
+def arm_codes(
+    mods: JEPAModules,
+    names: Sequence[str],
+    fit: Tensor,
+    *,
+    seed: int,
+    device: str,
+    zpca_dim: int = ZPCA_DIM,
+) -> dict[str, Code]:
+    r"""The codes ``names`` (``CODES``; module docstring) of the JEPA
+    ``mods``: ``z`` and ``zflat`` the modules themselves, ``zpca`` the PCA of
+    ``zpca_dim`` components of their $z$ on the stacks ``fit`` (from ``seed +
+    eval.PCA_SEED``), the others ``TokenCode``\ s.
+
+    Raises:
+        ValueError: A name is not of ``CODES``.
+    """
+    unknown = [n for n in names if n not in CODES]
+    if unknown:
+        raise ValueError(f"the codes are of {CODES}, not {unknown}")
+    codes: dict[str, Code] = {}
+    for name in names:
+        if name in ("z", "zflat"):
+            codes[name] = mods
+        elif name == "zpca":
+            gen = torch.Generator().manual_seed(seed + PCA_SEED)
+            codes[name] = PCACode.fit(mods.mu, fit, zpca_dim, gen=gen, device=device)
+        else:
+            codes[name] = TokenCode(mods, name)
+    return codes
 
 
 class CodeStats:
@@ -311,17 +458,18 @@ class CodeStats:
         return row
 
     @torch.no_grad()
-    def pred(self, mods: JEPAModules, k: int) -> dict[str, float]:
+    def pred(self, mods: JEPAModules, k: int, expand: int = 1) -> dict[str, float]:
         """``pred``, ``pred_triv``, ``pred_ratio`` and those of the calib
-        windows (module docstring) of the JEPA ``mods`` under masks hiding
-        ``k``."""
+        windows (module docstring) of the JEPA ``mods`` under masks of the
+        coarse grid hiding ``k``, spread by ``expand`` (``jepa.expand_masks``)
+        to the JEPA's grid."""
         z_bar = _encode(mods.tokens, self._fit, self._dev).mean(0)  # (T, d)
         z_cal = _encode(mods.tokens, self._calib, self._dev).mean(0)  # (T, d)
         t = len(z_bar)
-        family = mask_family(k, round(t**0.5)).to(self._dev)
+        family = mask_family(k, COARSE_GRID).to(self._dev)
         gen = torch.Generator().manual_seed(self._seed + EVAL_MASK_SEED)
         masks = draw_masks(family, EVAL_MASKS * len(self._zx), gen)
-        masks = masks.reshape(EVAL_MASKS, len(self._zx), t)
+        masks = expand_masks(masks, expand).reshape(EVAL_MASKS, len(self._zx), t)
         err = triv = cal = 0.0
         for i, x in enumerate(self._zx.split(BATCH)):
             images = early_fusion(x.to(self._dev))
@@ -332,7 +480,7 @@ class CodeStats:
                 err += float((z_hat - target).double().square().sum())
                 triv += float((z_bar[hide] - target).double().square().sum())
                 cal += float((z_cal[hide] - target).double().square().sum())
-        count = EVAL_MASKS * len(self._zx) * k * z_bar.shape[1]
+        count = EVAL_MASKS * len(self._zx) * expand**2 * k * z_bar.shape[1]
         pred, pred_triv, pred_cal = err / count, triv / count, cal / count
         return {
             "pred": pred,
@@ -361,12 +509,15 @@ def evaluate_run(
     fit_steps: int = FIT_STEPS,
     spacing: Mapping[str, float] | None = None,
     heldin: tuple[int, int] = (HELDIN_BATCHES, HELDIN_BATCH),
+    codes: Sequence[str] | None = None,
+    zpca_dim: int = ZPCA_DIM,
 ) -> Path:
     """Evaluate every checkpoint of the JEPA run in ``run_dir`` (its
     ``config.yaml`` and ``jepa.json``) in the order of ``t``, under
     ``configure_determinism``, into ``run_dir / OUT`` (module docstring):
-    the statistics of every checkpoint, the probes of the steps of
-    ``probe_steps`` and of the last one, on the span ``[0, span)``.
+    the statistics of every checkpoint's ``codes`` (``arm_codes``; by default
+    ``ARM_CODES`` of the run's SIGReg's data point), the probes of the steps
+    of ``probe_steps`` and of the last one, on the span ``[0, span)``.
     ``spacing`` passes the spacings of ``StreamEvaluator`` by name and
     ``heldin`` the held-in batches and their stacks. Returns the directory.
 
@@ -386,6 +537,9 @@ def evaluate_run(
         view, run_dir, root, out, fit_steps=fit_steps, c=1, **(spacing or {})
     )
     stats = CodeStats(view, root, ev, heldin_batches=heldin[0], heldin_batch=heldin[1])
+    sigreg_on = settings.get("sigreg_on", "flat")  # V18's runs: flat
+    expand = settings.get("expand", 1)
+    names = list(ARM_CODES[sigreg_on] if codes is None else codes)
     _start(
         out,
         ev.settings()
@@ -393,22 +547,42 @@ def evaluate_run(
             "span": view.measure.duration,
             "probe_steps": list(probe_steps),
             "ckpts": [p.name for p in paths],
+            "codes": names,
+            "token_dim": settings.get("token_dim", TOKEN_DIM),
+            "sigreg_on": sigreg_on,
+            "expand": expand,
+            "zpca_dim": zpca_dim,
             "eval_masks": EVAL_MASKS,
             "eval_directions": EVAL_DIRECTIONS,
             "heldin": list(heldin),
             "determinism": determinism,
         },
     )
-    mods = build_jepa(conf, seed=conf.seed)
+    mods = build_run_jepa(conf, settings)
+    init = build_run_jepa(conf, settings)  # the weights of step 0
     for path in paths:
         head = ckpt.load_eval(path, mods.modules())
         step = int(head["frame"]) // settings["batch"]
         stamp = {"t": head["t"], "step": step}
-        row = stamp | stats.of(mods) | stats.pred(mods, settings["k"])
-        append_jsonl(out / "jepa.jsonl", [row])
-        if step in probe_steps or path == paths[-1]:
-            rows = ev.probes(mods, path.stem, PICTURES)
-            append_jsonl(out / "probes.jsonl", [stamp | r for r in rows])
+        shared = stats.pred(mods, settings["k"], expand)
+        shared |= drift(init.encoder, mods.encoder)
+        probed = step in probe_steps or path == paths[-1]
+        found = arm_codes(
+            mods,
+            names,
+            ev.fit_stacks,
+            seed=conf.seed,
+            device=conf.device,
+            zpca_dim=zpca_dim,
+        )
+        for name, code in found.items():
+            row = stamp | {"code": name} | stats.of(code) | shared
+            append_jsonl(out / "jepa.jsonl", [row])
+            if probed:
+                rows = ev.probes(code, f"{path.stem}-{name}", PICTURES)
+                append_jsonl(
+                    out / "probes.jsonl", [stamp | {"code": name} | r for r in rows]
+                )
     return out
 
 
@@ -434,11 +608,17 @@ def evaluate_yardsticks(
     spacing: Mapping[str, float] | None = None,
     heldin: tuple[int, int] = (HELDIN_BATCHES, HELDIN_BATCH),
     pca_components: int = PCA_COMPONENTS,
+    zpca_dim: int = ZPCA_DIM,
 ) -> Path:
     """Evaluate the yardsticks (module docstring) of the JEPA of ``conf``
-    into ``out_dir / OUT``: ``init``, ``color``, ``pca`` and those of ``v16``
-    and ``v17`` given. Arguments as ``evaluate_run``'s. Returns the
-    directory."""
+    into ``out_dir / OUT``: of V18's grid ``init``, ``color``, ``pca``; of a
+    finer grid those of the arms F and M at step 0 and ``color<patch>``; and
+    those of ``v16`` and ``v17`` given. Arguments as ``evaluate_run``'s.
+    Returns the directory.
+
+    Raises:
+        ValueError: Arm F's $d$ is not a whole number of at least 1.
+    """
     view = spanned(conf, span)
     determinism = configure_determinism(conf.device)
     root = tours_root(conf.data.tours.data_version) if root is None else root
@@ -448,15 +628,43 @@ def evaluate_yardsticks(
     )
     stats = CodeStats(view, root, ev, heldin_batches=heldin[0], heldin_batch=heldin[1])
     gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
-    init = build_jepa(conf, seed=conf.seed)
     fit, latent = ev.fit_stacks, conf.model.latent
-    codes: dict[str, Code] = {
-        "init": init,
-        # init's z in as many dimensions as the VAE's mu
-        f"init{latent}": PCACode.fit(init.mu, fit, latent, gen=gen, device=conf.device),
-        "color": ColorCode(conf.model.patch),
-        "pca": PCACode.fit(pixels, fit, pca_components, gen=gen, device=conf.device),
-    }
+    grid = conf.data.tours.size // conf.model.patch
+    extra: dict[str, Any] = {}
+    if mask_expansion(grid) == 1:  # V18's
+        init = build_jepa(conf, seed=conf.seed)
+        codes: dict[str, Code] = {
+            "init": init,
+            # init's z in as many dimensions as the VAE's mu
+            f"init{latent}": PCACode.fit(
+                init.mu, fit, latent, gen=gen, device=conf.device
+            ),
+            "color": ColorCode(conf.model.patch),
+            "pca": PCACode.fit(
+                pixels, fit, pca_components, gen=gen, device=conf.device
+            ),
+        }
+    else:  # V18b's arms: F of V18's D, M of V18's d
+        d_f, rest = divmod(COARSE_GRID**2 * TOKEN_DIM, grid * grid)
+        if d_f < 1 or rest:
+            raise ValueError(f"arm F's d of {grid * grid} tokens is not whole")
+        arm_m = arm_codes(
+            build_jepa(conf, seed=conf.seed),
+            ("zpca", "zbar", "zflat"),
+            fit,
+            seed=conf.seed,
+            device=conf.device,
+            zpca_dim=zpca_dim,
+        )
+        codes = {"init_f": build_jepa(conf, seed=conf.seed, token_dim=d_f)}
+        codes |= {
+            "init_m": arm_m["zpca"],
+            "init_m_zbar": arm_m["zbar"],
+            "init_m_zflat": arm_m["zflat"],
+            f"color{conf.model.patch}": ColorCode(conf.model.patch),
+        }
+        extra = {"token_dims": {"init_f": d_f, "init_m": TOKEN_DIM}}
+        extra["zpca_dim"] = zpca_dim
     for name, path in (("v16", v16), ("v17", v17)):
         if path is not None:
             codes[name] = vae_at(path, conf.device)
@@ -469,10 +677,12 @@ def evaluate_yardsticks(
             "v16": None if v16 is None else str(v16),
             "v17": None if v17 is None else str(v17),
             "pca_components": pca_components,
+            "patch": conf.model.patch,
             "eval_directions": EVAL_DIRECTIONS,
             "heldin": list(heldin),
             "determinism": determinism,
-        },
+        }
+        | extra,
     )
     for name, code in codes.items():
         append_jsonl(out / "jepa.jsonl", [{"code": name} | stats.of(code)])
@@ -491,6 +701,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
     ap.add_argument("run_dir", type=Path, nargs="?", help="the run's directory")
     ap.add_argument("--yardsticks", action="store_true")
     ap.add_argument("--config", type=Path, help="yardsticks: (default v16_config)")
+    ap.add_argument("--patch", type=int, help="yardsticks: instead of the config's")
     ap.add_argument("--v16", type=Path, help="yardsticks: a VAE checkpoint")
     ap.add_argument("--v17", type=Path, help="yardsticks: a VAE checkpoint")
     ap.add_argument("--out", type=Path, help="yardsticks: the output directory")
@@ -506,6 +717,11 @@ def main(argv: Sequence[str] | None = None) -> Path:
         default=PROBE_STEPS,
         help="comma-separated steps (default: PROBE_STEPS; the last always)",
     )
+    ap.add_argument(
+        "--codes",
+        type=lambda s: tuple(s.split(",")),
+        help="a run: comma-separated codes (default: ARM_CODES of its run)",
+    )
     args = ap.parse_args(argv)
     if not args.yardsticks:
         if args.run_dir is None:
@@ -516,11 +732,14 @@ def main(argv: Sequence[str] | None = None) -> Path:
             span=args.span,
             probe_steps=args.probe_steps,
             fit_steps=args.fit_steps,
+            codes=args.codes,
         )
     if args.out is None:
         ap.error("--yardsticks needs --out")
     d = v16_config() if args.config is None else yaml.safe_load(args.config.read_text())
     d["device"] = args.device
+    if args.patch is not None:
+        d["model"]["patch"] = args.patch
     return evaluate_yardsticks(
         from_dict(d),
         args.out,

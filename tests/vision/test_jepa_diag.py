@@ -1,8 +1,9 @@
 """``exp.vision.jepa_diag`` on the tiny synthetic Walking Tours of
-``test_jepa_eval``: h by a forward built by hand, the groups and their lags
-by hand, the autocovariance by its sum, the images by hand, and the three
-commands end to end on a tiny run, whose shared parts reproduce
-``jepa_eval``'s rows."""
+``test_jepa_eval``: the groups and their lags by hand, the autocovariance by
+its sum, the images by hand, and the three commands end to end on tiny runs
+(of V18's grid, and of arm M on a finer one), whose shared parts reproduce
+``jepa_eval``'s rows. The codes of $h$ (``TokenCode``) are tested with
+``jepa_eval``."""
 
 import math
 from dataclasses import replace
@@ -12,9 +13,7 @@ import torch
 
 from exp.lib import ckpt
 from exp.lib.png import read_png
-from exp.vision.jepa import TokenEncoder, build_jepa
 from exp.vision.jepa_diag import (
-    TokenCode,
     autocov,
     evaluate_imagenette,
     evaluate_sigreg,
@@ -26,9 +25,9 @@ from exp.vision.jepa_diag import (
     still_stacks,
 )
 from exp.vision.jepa_eval import evaluate_run
-from exp.vision.models import ViTPart, build_vae
+from exp.vision.models import build_vae
 from exp.vision.schema import RunConf
-from tests.vision.test_eval import SIZE, N
+from tests.vision.test_eval import SIZE
 from tests.vision.test_jepa_eval import (
     FIT,
     HELDIN,
@@ -39,33 +38,6 @@ from tests.vision.test_jepa_eval import (
     tiny_run,
 )
 from tests.vision.test_stream_eval import EVERY
-
-
-class TestTokenCode:
-    def test_h_is_the_last_layer_norm_of_a_forward_by_hand(self):
-        conf = conf_of()
-        mods = build_jepa(conf, seed=3)
-        g = torch.Generator().manual_seed(0)
-        x = torch.randint(256, (3, N, 3, SIZE, SIZE), generator=g, dtype=torch.uint8)
-        assert isinstance(mods.encoder, TokenEncoder)
-        parts = [p for p in mods.encoder.parts if isinstance(p, ViTPart)]
-        embed, norm = parts[0].embed, parts[-1].norm
-        assert embed is not None and norm is not None
-        h = embed(x.reshape(3, N * 3, SIZE, SIZE).float() / 255)
-        for part in parts:
-            for block in part.blocks:
-                h = block(h)
-        h = norm(h)  # (3, T, w)
-        with torch.no_grad():
-            got = {p: TokenCode(mods, p).mu(x) for p in ("z", "h_mean", "h_flat")}
-            torch.testing.assert_close(got["h_flat"], h.flatten(1))
-            torch.testing.assert_close(got["h_mean"], h.mean(1))
-            # h is the projection's input: z_p = P h_p, flattened
-            torch.testing.assert_close(got["z"], mods.proj(h).flatten(1))
-
-    def test_an_unknown_pool_is_refused(self):
-        with pytest.raises(ValueError, match="pool"):
-            TokenCode(build_jepa(conf_of(), seed=0), "h_max")
 
 
 class TestGroups:
@@ -132,7 +104,11 @@ class TestCommands:
         assert all(math.isfinite(r["recon_blur"]) for r in zurich)
         # the same decoders and dynamics as jepa_eval's for z
         ref = evaluate_run(run, probe_steps=(0,), heldin=HELDIN, **kw)
-        want = {(r["step"], r["group"]): r for r in jsonl(ref / "probes.jsonl")}
+        want = {
+            (r["step"], r["group"]): r
+            for r in jsonl(ref / "probes.jsonl")
+            if r["code"] == "z"
+        }
         for r in rows:
             if r["code"] == "z" and r["group"] != "after":
                 w = want[r["step"], r["group"]]
@@ -140,6 +116,18 @@ class TestCommands:
                 assert r["dyn_1/copy_1"] == pytest.approx(w["dyn_1/copy_1"], rel=1e-6)
         assert read_png(out / "00000.8-h_flat-zurich.png").shape[0] == 2 * (
             2 * SIZE + 2
+        )
+
+    def test_tokens_of_arm_m_on_a_finer_grid(self, root, tmp_path):  # noqa: F811
+        run = tiny_run(root, tmp_path, "--patch", "2", "--sigreg-on", "mean")
+        kw = {"root": root, "span": SPAN, "fit_steps": FIT, "spacing": EVERY}
+        out = evaluate_tokens(run, steps=(4,), pools=("h_pool", "zbar"), **kw)
+        rows = jsonl(out / "tokens.jsonl")
+        assert [(r["code"], r["group"]) for r in rows] == [
+            (c, g) for c in ("h_pool", "zbar") for g in ("span", "after", "zurich")
+        ]
+        assert all(
+            math.isfinite(r["recon_blur"]) for r in rows if r["group"] != "after"
         )
 
     def test_tokens_refuses_a_step_without_a_checkpoint(self, root, tmp_path):  # noqa: F811
@@ -177,7 +165,7 @@ class TestCommands:
             spacing=EVERY,
             heldin=HELDIN,
         )
-        want = {r["step"]: r for r in jsonl(ref / "jepa.jsonl")}
+        want = {r["step"]: r for r in jsonl(ref / "jepa.jsonl") if r["code"] == "z"}
         for r in rows:
             if r["set"] == "val":
                 assert r["sigreg"] == pytest.approx(
@@ -190,6 +178,9 @@ class TestCommands:
 
     def test_imagenette_rows(self, root, tmp_path):  # noqa: F811
         run = tiny_run(root, tmp_path)
+        arm_m = tiny_run(
+            root, tmp_path, "--patch", "2", "--sigreg-on", "mean", name="m"
+        )
         g = torch.Generator().manual_seed(0)
         data = tmp_path / "inet"
         data.mkdir()
@@ -211,15 +202,20 @@ class TestCommands:
             modules=build_vae(conf, seed=5).modules(),
         )
         out = evaluate_imagenette(
-            data, tmp_path / "out", conf=conf, runs=[run], v16=path, side=SIZE
+            data, tmp_path / "out", conf=conf, runs=[run, arm_m], v16=path, side=SIZE
         )
         rows = jsonl(out / "imagenette.jsonl")
-        assert [(r.get("step"), r["code"]) for r in rows] == [
-            (None, "color"),
-            (None, "v16"),
-            (0, "h_mean"),
-            (0, "z"),
-            (4, "h_mean"),
-            (4, "z"),
+        # the flat arm's h_mean and z; arm M's h_mean and zbar
+        assert [(r.get("run"), r.get("step"), r["code"]) for r in rows] == [
+            (None, None, "color"),
+            (None, None, "v16"),
+            ("run", 0, "h_mean"),
+            ("run", 0, "z"),
+            ("run", 4, "h_mean"),
+            ("run", 4, "z"),
+            ("m", 0, "h_mean"),
+            ("m", 0, "zbar"),
+            ("m", 4, "h_mean"),
+            ("m", 4, "zbar"),
         ]
         assert all(0 <= r["acc"] <= 1 for r in rows)

@@ -104,9 +104,13 @@ class Run:
         self.k = int(conf["k"])
         self.train = _jsonl(path / "train.jsonl")
         post = path / "posthoc_jepa"
-        self.stats = {r["step"]: r for r in _jsonl(post / "jepa.jsonl")}
+        # z's rows: V18b's evaluation adds a row per code (V18's have none)
+        z = [r for r in _jsonl(post / "jepa.jsonl") if r.get("code", "z") == "z"]
+        self.stats = {r["step"]: r for r in z}
         self.probes = {
-            (r["step"], r["group"]): r for r in _jsonl(post / "probes.jsonl")
+            (r["step"], r["group"]): r
+            for r in _jsonl(post / "probes.jsonl")
+            if r.get("code", "z") == "z"
         }
 
     def finished(self) -> bool:

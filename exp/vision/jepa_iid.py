@@ -1,15 +1,21 @@
-r"""V18: the JEPA (``exp.vision.jepa``) learned by backpropagation and AdamW
-on batches of stacks drawn at random (``plans/jepa.md``, 「学習」), the
-JEPA's counterpart of V16 (``exp.vision.iid``).
+r"""V18 and V18b: the JEPA (``exp.vision.jepa``) learned by backpropagation
+and AdamW on batches of stacks drawn at random (``plans/jepa.md``, 「学習」 of
+V18 and V18b), the JEPA's counterpart of V16 (``exp.vision.iid``).
 
 The model is ``build_jepa`` of the run's config (``--config``, a
-``config.yaml``; by default V16's, ``v16_config``). A step draws ``--batch``
-stacks uniformly with replacement from every unit of the training videos
-(``iid.Units`` of ``"all"``, from ``seed + iid.DRAW_SEED``), a mask of
-$F_k$ for each ($k$ = ``--mask-ratio`` x $T$, ``jepa.mask_family``; from
-``seed + MASK_SEED``) and ``--directions`` unit directions (from ``seed +
-DIRECTION_SEED``, the same for the batch), and descends $(1 - \lambda)
-L_{\mathrm{pred}} + \lambda S$ (``jepa.jepa_terms``, $\lambda$ = ``--lam``).
+``config.yaml``; by default V16's, ``v16_config``), its ``model.patch`` set
+by ``--patch`` (V18b's 4; the grid $g$ = size / patch, $T = g^2$), $d$ =
+``--token-dim`` and ``--checkpoint-blocks`` (``jepa.TokenEncoder``). A step
+draws ``--batch`` stacks uniformly with replacement from every unit of the
+training videos (``iid.Units`` of ``"all"``, from ``seed + iid.DRAW_SEED``),
+a mask of $F_k$ of the coarse grid for each ($k$ = ``--mask-ratio`` x
+$G^2$, ``jepa.mask_family``; from ``seed + MASK_SEED``) spread to the grid
+$g = s G$ (``jepa.expand_masks``; $s^2 k$ positions) and ``--directions``
+unit directions of $\mathbb{R}^{D_S}$ (from ``seed + DIRECTION_SEED``, the
+same for the batch; $D_S = T d$ of the flat $z$, or $d$ of $\bar z$ by
+``--sigreg-on``), and descends $(1 - \lambda) L_{\mathrm{pred}} + \lambda
+S$ (``jepa.jepa_terms``, $\lambda$ = ``--lam``). The defaults (the config's
+patch, $d$ = 64, ``flat``) are V18's run, the same computation.
 
 AdamW ($\beta$ = 0.9, 0.999, eps 1e-8, no weight decay, no clipping), a
 group per learning-rate multiplier of ``jepa_mup_lr`` (muP; all 1 in SP); the
@@ -24,8 +30,10 @@ batch 128). The checkpoints are at the steps of ``ckpt_steps``.
 settings and ``provenance.of_diagnosis``'s record of the code and the host),
 ``train.jsonl`` (a row every ``--log-every`` steps: the means
 since the last row of ``loss``, ``pred``, ``sigreg``, ``grad_norm`` and the
-batch's ``z_var`` (the mean over the coordinates of $z$ of their variance)
-and ``rho_in`` (``jepa.rho_in``); ``lr``, ``sec`` since the start) and
+batch's ``z_var`` (the mean over the coordinates of $z$ of their variance),
+``rho_in`` (``jepa.rho_in``) and ``zbar_var`` (that of $\bar z$); ``lr``,
+``sec`` since the start, and on CUDA ``max_mem``, the peak of the memory
+allocated, GiB) and
 ``ckpt/<t>.pt`` (``program`` ``"jepa"``; ``encoder``, ``proj``,
 ``predictor``). A non-finite mean stops the run (``FloatingPointError``)::
 
@@ -51,20 +59,25 @@ from exp.lib.tours.stacks import tours_root
 from exp.vision.compose import from_dict, to_dict
 from exp.vision.iid import DRAW_SEED, Units, lr_at
 from exp.vision.jepa import (
+    COARSE_GRID,
     PRED_BLOCKS,
     PRED_WIDTH,
     PREDICTOR_SEED,
     PROJ_SEED,
+    SIGREG_ON,
     TOKEN_DIM,
     JEPAModules,
     build_jepa,
     directions,
     draw_masks,
+    expand_masks,
     hidden_count,
     jepa_mup_lr,
     jepa_terms,
+    mask_expansion,
     mask_family,
     rho_in,
+    sigreg_points,
 )
 from exp.vision.schema import ModelConf, OptimConf, RunConf
 from exp.vision.schema.model import HEAD_DIM
@@ -138,29 +151,48 @@ def train(
     warmup: int,
     directions_count: int = DIRECTIONS,
     log_every: int = 100,
+    token_dim: int = TOKEN_DIM,
+    sigreg_on: str = "flat",
+    checkpoint_blocks: bool = False,
 ) -> None:
-    """Learn ``build_jepa(conf)`` as the module docstring says, into ``out``.
+    """Learn ``build_jepa(conf, token_dim=token_dim)`` as the module docstring
+    says, into ``out``.
 
     Raises:
-        ValueError: ``mask_ratio`` hides no whole number of tokens in ``[1,
-            T - 1]`` (``hidden_count``), or ``lam`` is not in ``[0, 1]``.
+        ValueError: ``mask_ratio`` hides no whole number of the coarse grid's
+            positions in ``[1, G^2 - 1]`` (``hidden_count``), the grid is no
+            whole multiple of the coarse one (``mask_expansion``), ``lam`` is
+            not in ``[0, 1]`` or ``sigreg_on`` not of ``SIGREG_ON``.
         FloatingPointError: A mean of ``train.jsonl`` is not finite.
     """
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must be in [0, 1], not {lam}")
+    if sigreg_on not in SIGREG_ON:
+        raise ValueError(f"sigreg_on is one of {SIGREG_ON}, not {sigreg_on!r}")
     dev = torch.device(conf.device)
     grid = conf.data.tours.size // conf.model.patch
-    k = hidden_count(mask_ratio, grid * grid)
-    family = mask_family(k, grid).to(dev)
+    s = mask_expansion(grid)
+    k = hidden_count(mask_ratio, COARSE_GRID * COARSE_GRID)
+    family = mask_family(k, COARSE_GRID).to(dev)
+    tokens_count = grid * grid
+    d = tokens_count * token_dim if sigreg_on == "flat" else token_dim  # D_S
     stamps = ckpt_steps(steps)
     seed = conf.seed
     settings: dict[str, Any] = {
         "mask_ratio": mask_ratio,
         "k": k,
-        "tokens": grid * grid,
+        "tokens": tokens_count,
         "family": len(family),
+        "patch": conf.model.patch,
+        "grid": grid,
+        "coarse_grid": COARSE_GRID,
+        "expand": s,
+        "k_fine": s * s * k,
         "lam": lam,
-        "token_dim": TOKEN_DIM,
+        "token_dim": token_dim,
+        "sigreg_on": sigreg_on,
+        "sigreg_dim": d,
+        "checkpoint_blocks": checkpoint_blocks,
         "directions": directions_count,
         "predictor": {
             "width": PRED_WIDTH,
@@ -189,7 +221,9 @@ def train(
     settings["provenance"] = {k: v for k, v in prov.items() if k != "settings"}
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.yaml").write_text(yaml.safe_dump(to_dict(conf), sort_keys=False))
-    mods = build_jepa(conf, seed=seed)
+    mods = build_jepa(
+        conf, seed=seed, token_dim=token_dim, checkpoint_blocks=checkpoint_blocks
+    )
     opt = _optimizer(mods, conf, lr)
     params = mods.parameters()
     units = Units(conf, root, "all", seed=seed + DRAW_SEED)
@@ -197,7 +231,6 @@ def train(
     (out / "jepa.json").write_text(json.dumps(settings, indent=1))
     mask_gen = torch.Generator().manual_seed(seed + MASK_SEED)
     dir_gen = torch.Generator(device=dev).manual_seed(seed + DIRECTION_SEED)
-    d = grid * grid * TOKEN_DIM
 
     def save(step: int) -> None:
         frame = step * batch
@@ -210,7 +243,7 @@ def train(
             modules=mods.modules(),
         )
 
-    keys = ("loss", "pred", "sigreg", "grad_norm", "z_var", "rho_in")
+    keys = ("loss", "pred", "sigreg", "grad_norm", "z_var", "rho_in", "zbar_var")
     acc = torch.zeros(len(keys), dtype=torch.float64, device=dev)
     start, n = time.monotonic(), 0
     log = (out / "train.jsonl").open("w")
@@ -221,11 +254,11 @@ def train(
                 save(step)
             x = nxt.result().to(dev, non_blocking=True)
             nxt = pool.submit(units.draw, batch)
-            mask = draw_masks(family, batch, mask_gen)
+            mask = expand_masks(draw_masks(family, batch, mask_gen), s)
             dirs = directions(directions_count, d, dir_gen)
             for g in opt.param_groups:
                 g["lr"] = lr_at(step, lr=lr, warmup=warmup, steps=steps) * g["mult"]
-            terms = jepa_terms(mods, x, mask, dirs, lam)
+            terms = jepa_terms(mods, x, mask, dirs, lam, sigreg_on)
             opt.zero_grad(set_to_none=True)
             terms["loss"].backward()
             norm = torch.nn.utils.clip_grad_norm_(params, math.inf)
@@ -233,6 +266,7 @@ def train(
             tokens = terms["tokens"]
             row = [terms[k].detach() for k in ("loss", "pred", "sigreg")]
             row += [norm.detach(), tokens.flatten(1).var(0).mean(), rho_in(tokens)]
+            row += [sigreg_points(tokens, "mean").var(0).mean()]
             acc += torch.stack([r.double() for r in row])
             n += 1
             if (step + 1) % log_every == 0 or step + 1 == steps:
@@ -244,6 +278,8 @@ def train(
                     "lr": lr_at(step, lr=lr, warmup=warmup, steps=steps),
                     "sec": time.monotonic() - start,
                 }
+                if dev.type == "cuda":
+                    rec["max_mem"] = torch.cuda.max_memory_allocated(dev) / 2**30
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
                 acc.zero_()
@@ -264,6 +300,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--directions", type=int, default=DIRECTIONS, help="M")
+    ap.add_argument("--patch", type=int, help="instead of the config's model.patch")
+    ap.add_argument("--token-dim", type=int, default=TOKEN_DIM, help="d")
+    ap.add_argument(
+        "--sigreg-on", choices=SIGREG_ON, default="flat", help="SIGReg's data point"
+    )
+    ap.add_argument(
+        "--checkpoint-blocks",
+        action="store_true",
+        help="compute the encoder's blocks again in the backward (less memory)",
+    )
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--seed", type=int, help="instead of the config's")
     ap.add_argument("--device", default="cuda")
@@ -274,6 +320,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     d["device"] = args.device
     if args.seed is not None:
         d["seed"] = args.seed
+    if args.patch is not None:
+        d["model"]["patch"] = args.patch
     conf = from_dict(d)
     root = tours_root(conf.data.tours.data_version) if args.root is None else args.root
     train(
@@ -288,6 +336,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         warmup=args.warmup,
         directions_count=args.directions,
         log_every=args.log_every,
+        token_dim=args.token_dim,
+        sigreg_on=args.sigreg_on,
+        checkpoint_blocks=args.checkpoint_blocks,
     )
 
 

@@ -1,7 +1,9 @@
 """``exp.vision.jepa``: the mask family against a brute force of another
-construction, the context side blind to the hidden patches, the loss by hand
-and its gradient on the target side, SIGReg's values of the derivation
-(``plans/jepa.md``), and muP's roles against the VAE's."""
+construction, its expansion to a finer grid against the pixels it hides, the
+context side blind to the hidden patches, the loss by hand and its gradient
+on the target side, SIGReg's values of the derivation (``plans/jepa.md``,
+V18 and V18b) and its data point, activation checkpointing against the plain
+forward, and muP's roles against the VAE's."""
 
 import itertools
 import math
@@ -14,20 +16,24 @@ from torch import Tensor, nn
 
 from exp.lib.sigreg import sigreg
 from exp.vision.jepa import (
+    COARSE_GRID,
     TOKEN_DIM,
     JEPAModules,
     Predictor,
     build_jepa,
     directions,
     draw_masks,
+    expand_masks,
     hidden_count,
     jepa_mup_lr,
     jepa_mup_roles,
     jepa_terms,
+    mask_expansion,
     mask_family,
     mask_index,
     predict,
     rho_in,
+    sigreg_points,
     take,
 )
 from exp.vision.models import build_vae, early_fusion, mup_lr
@@ -42,19 +48,22 @@ FAMILY = {
 }
 
 
-def conf_of(width: int = 512, param: str = "mup") -> RunConf:
-    """Stacks of 2 frames of 16 px, patch 4: the 4 x 4 grid of V18."""
+def conf_of(
+    width: int = 512, param: str = "mup", *, size: int = 16, patch: int = 4
+) -> RunConf:
+    """Stacks of 2 frames of 16 px, patch 4: the 4 x 4 grid of V18 (64 px and
+    patch 4: the 16 x 16 grid of V18b)."""
     return RunConf(
         name="test",
-        data=DataConf(tours=ToursConf(size=16, frames=2)),
-        model=ModelConf(width=width, patch=4, param=param),
+        data=DataConf(tours=ToursConf(size=size, frames=2)),
+        model=ModelConf(width=width, patch=patch, param=param),
         optim=OptimConf(kind="rmsprop"),
     )
 
 
-def stacks(b: int, seed: int = 0) -> Tensor:
+def stacks(b: int, seed: int = 0, size: int = 16) -> Tensor:
     g = torch.Generator().manual_seed(seed)
-    return torch.randint(256, (b, 2, 3, 16, 16), generator=g, dtype=torch.uint8)
+    return torch.randint(256, (b, 2, 3, size, size), generator=g, dtype=torch.uint8)
 
 
 # -- the brute force: rectangles as products of cyclic intervals ----------------
@@ -164,6 +173,65 @@ class TestMasks:
             hidden_count(r, 16)
 
 
+def pixel_mask(mask: Tensor, grid: int, side: int = 64) -> Tensor:
+    """The pixels ``(side, side)`` hidden by ``mask`` ``(grid^2,)``, each
+    position a square of ``side / grid`` px, by the pixels' coordinates."""
+    cell = side // grid
+    ys, xs = torch.meshgrid(torch.arange(side), torch.arange(side), indexing="ij")
+    return mask[(ys // cell) * grid + xs // cell]
+
+
+class TestExpandedMasks:
+    """V18b: V18's masks of the 4 x 4 grid drawn and spread to the 16 x 16
+    grid of patch 4 (``plans/jepa.md``, 「マスク」)."""
+
+    FINE, S = 16, 4
+
+    @pytest.mark.parametrize("k", sorted(FAMILY))
+    def test_every_mask_hides_the_same_pixels_as_v18s(self, k):
+        family = mask_family(k, GRID)
+        fine = expand_masks(family, self.S)
+        assert fine.shape == (len(family), self.FINE**2)
+        assert (fine.sum(1) == self.S**2 * k).all()
+        for coarse, spread in zip(family, fine, strict=True):
+            assert torch.equal(pixel_mask(coarse, GRID), pixel_mask(spread, self.FINE))
+
+    @pytest.mark.parametrize("k", sorted(FAMILY))
+    def test_each_fine_position_is_covered_by_k_f_over_16_masks(self, k):
+        family = mask_family(k, GRID)
+        want = k * len(family) // (GRID * GRID)
+        got = expand_masks(family, self.S).sum(0)
+        assert got.tolist() == [want] * self.FINE**2  # P(hidden) = k / 16 exactly
+
+    def test_the_same_draws_hide_the_same_pixels_at_patch_4_and_16(self):
+        family = mask_family(8, GRID)
+        coarse = draw_masks(family, 64, torch.Generator().manual_seed(5))
+        fine = expand_masks(
+            draw_masks(family, 64, torch.Generator().manual_seed(5)), self.S
+        )
+        for a, b in zip(expand_masks(coarse, 1), fine, strict=True):
+            assert torch.equal(pixel_mask(a, GRID), pixel_mask(b, self.FINE))
+
+    def test_one_is_the_identity(self):
+        family = mask_family(4, GRID)
+        assert torch.equal(expand_masks(family, 1), family)
+
+    @pytest.mark.parametrize(("k", "visible"), [(4, 192), (8, 128), (12, 64)])
+    def test_the_visible_and_hidden_positions_of_the_fine_grid(self, k, visible):
+        mask = expand_masks(masks(3, k), self.S)
+        keep, hide = mask_index(mask)
+        assert keep.shape == (3, visible) and hide.shape == (3, 256 - visible)
+
+    @pytest.mark.parametrize(("grid", "s"), [(4, 1), (8, 2), (16, 4)])
+    def test_the_expansion_of_a_grid(self, grid, s):
+        assert mask_expansion(grid) == s
+
+    @pytest.mark.parametrize("grid", [2, 6, 10])
+    def test_a_grid_of_no_whole_expansion_is_refused(self, grid):
+        with pytest.raises(ValueError, match="grid"):
+            mask_expansion(grid)
+
+
 class TestModules:
     def test_the_encoder_is_build_vaes_without_the_head(self):
         conf = conf_of()
@@ -193,6 +261,51 @@ class TestModules:
         assert a.shape == (3, 8, 64)
         assert torch.equal(a, b)
         assert not torch.equal(*full)  # the target side does see them
+
+    def test_at_patch_4_the_context_side_does_not_see_the_hidden_patches(self):
+        mods = build_jepa(conf_of(width=64, size=64, patch=4), seed=0)
+        x = stacks(3, size=64)
+        mask = expand_masks(masks(3, 8, seed=1), COARSE_GRID)
+        keep, _ = mask_index(mask)
+        y = x.clone()
+        for n in range(3):  # new pixels in every hidden patch (4 x 4 px)
+            for p in mask[n].nonzero()[:, 0].tolist():
+                i, j = divmod(p, 16)
+                y[n, :, :, 4 * i : 4 * i + 4, 4 * j : 4 * j + 4] = (
+                    255 - x[n, :, :, 4 * i : 4 * i + 4, 4 * j : 4 * j + 4]
+                )
+        with torch.no_grad():
+            a = mods.encoder(early_fusion(x), keep)
+            b = mods.encoder(early_fusion(y), keep)
+            full = mods.encoder(early_fusion(x)), mods.encoder(early_fusion(y))
+        assert a.shape == (3, 128, 64)
+        assert torch.equal(a, b)
+        assert not torch.equal(*full)  # the target side does see them
+
+    def test_the_arms_f_and_m_start_from_the_same_encoder(self):
+        conf = conf_of(width=64, size=64, patch=4)
+        f = build_jepa(conf, seed=2, token_dim=4)
+        m = build_jepa(conf, seed=2, token_dim=64)
+        got, want = f.encoder.state_dict(), m.encoder.state_dict()
+        assert set(got) == set(want)
+        assert all(torch.equal(got[k], want[k]) for k in want)
+        assert f.proj.out_features == 4 and m.proj.out_features == 64
+        assert isinstance(f.predictor, Predictor)
+        assert f.predictor.out.out_features == 4
+        assert f.predictor.pos.shape == (256, 256)  # sincos_2d((16, 16), 256)
+
+    def test_checkpointing_the_blocks_gives_the_same_loss_and_gradients(self):
+        x, mask = stacks(4), masks(4, 8)
+        dirs = directions(16, 16 * TOKEN_DIM, torch.Generator().manual_seed(2))
+        out = []
+        for flag in (False, True):
+            mods = build_jepa(conf_of(width=64), seed=0, checkpoint_blocks=flag)
+            loss = jepa_terms(mods, x, mask, dirs, 0.5)["loss"]
+            grads = torch.autograd.grad(loss, mods.parameters())
+            out.append((loss, grads))
+        (la, ga), (lb, gb) = out
+        assert torch.equal(la, lb)
+        assert all(torch.equal(a, b) for a, b in zip(ga, gb, strict=True))
 
     def test_mup_draws_the_outputs_k_to_the_minus_half_of_sp(self):
         sp, mu = build_jepa(conf_of(param="sp"), seed=0), build_jepa(conf_of(), seed=0)
@@ -243,18 +356,19 @@ class TestMuP:
 
 
 class StackMean(nn.Module):
-    """An encoder whose every token is the stack's mean pixel times a
-    learned vector: constant within a stack."""
+    """An encoder whose every token of ``tokens`` is the stack's mean pixel
+    times a learned vector: constant within a stack."""
 
-    def __init__(self, width: int) -> None:
+    def __init__(self, width: int, tokens: int = 16) -> None:
         super().__init__()
         self.v = nn.Parameter(
             torch.randn(width, generator=torch.Generator().manual_seed(0))
         )
+        self._t = tokens
 
     @override
     def forward(self, images: Tensor, keep: Tensor | None = None) -> Tensor:
-        t = 16 if keep is None else keep.shape[1]
+        t = self._t if keep is None else keep.shape[1]
         m = images.mean((1, 2, 3))[:, None, None]
         return (m * self.v).expand(-1, t, -1)
 
@@ -397,6 +511,112 @@ class TestSIGRegOfTheDerivation:
             return h.expand(-1, 16, -1).reshape(self.N, self.D)
 
         assert self.mean_s(draw) == pytest.approx(1.55, abs=0.15)
+
+
+class Table(nn.Module):
+    """An encoder whose ``tokens`` tokens of the $n$-th stack of a batch are
+    all $h_n$, the $n$-th row of the table ``h`` ``(N, w)``: the stack-constant
+    family K3 of any $h$."""
+
+    def __init__(self, h: Tensor, tokens: int) -> None:
+        super().__init__()
+        self.h = nn.Parameter(h)
+        self._t = tokens
+
+    @override
+    def forward(self, images: Tensor, keep: Tensor | None = None) -> Tensor:
+        t = self._t if keep is None else keep.shape[1]
+        return self.h[: len(images), None].expand(-1, t, -1)
+
+
+class TestSIGRegDataPoint:
+    """V18b's arms (``plans/jepa.md``, 「自明な解の導出」): SIGReg of the flat
+    $z$ (F, P16) or of the mean token $\bar z$ (M), at N = 128, T = 256,
+    M = 1024."""
+
+    N, M, T = 128, 1024, 256
+    HEALTHY = math.sqrt(2 * math.pi) - math.sqrt(2 * math.pi / 3)  # N(0, I)'s
+
+    def test_the_data_points_of_flat_and_mean(self):
+        z = torch.randn(3, 5, 2, generator=torch.Generator().manual_seed(0))
+        assert torch.equal(sigreg_points(z, "flat"), z.flatten(1))
+        assert torch.allclose(sigreg_points(z, "mean"), z.mean(1))
+        with pytest.raises(ValueError, match="sigreg_on"):
+            sigreg_points(z, "max")
+
+    def test_mean_takes_sigreg_of_the_mean_token_by_hand(self):
+        mods = build_jepa(conf_of(width=64), seed=0)
+        x, mask = stacks(4), masks(4, 8)
+        dirs = directions(32, TOKEN_DIM, torch.Generator().manual_seed(2))
+        flat_dirs = directions(32, 16 * TOKEN_DIM, torch.Generator().manual_seed(2))
+        lam = 0.3
+        with torch.no_grad():
+            got = jepa_terms(mods, x, mask, dirs, lam, sigreg_on="mean")
+            flat = jepa_terms(mods, x, mask, flat_dirs, lam)
+            z_bar = mods.proj(mods.encoder(early_fusion(x))).mean(1)  # (B, d)
+            s = float(sigreg(z_bar, z_bar[:0], dirs))
+        assert float(got["sigreg"]) == pytest.approx(s, rel=1e-6)
+        assert torch.equal(got["pred"], flat["pred"])  # the data point alone differs
+        assert float(got["loss"]) == pytest.approx(
+            (1 - lam) * float(got["pred"]) + lam * s, rel=1e-6
+        )
+
+    def test_the_gradient_of_mean_is_the_same_at_every_position(self):
+        # S_M depends on z_bar alone: dS/dz_{n,p} = (1/T) dS/dz_bar_n for every p
+        g = torch.Generator().manual_seed(0)
+        z = torch.randn(16, 8, 4, generator=g, dtype=torch.float64, requires_grad=True)
+        dirs = directions(32, 4, g).double()
+        pts = sigreg_points(z, "mean")
+        (gz,) = torch.autograd.grad(sigreg(pts, pts[:0], dirs), [z])
+        zb = z.detach().mean(1).requires_grad_()
+        (gb,) = torch.autograd.grad(sigreg(zb, zb[:0], dirs), [zb])
+        assert torch.allclose(gz, (gb / 8)[:, None].expand_as(gz), rtol=1e-10)
+        assert gz.abs().max() > 0
+
+    def test_k3_predicts_exactly_and_meets_the_gaussian_value_under_mean(self):
+        h = torch.randn(self.N, TOKEN_DIM, generator=torch.Generator().manual_seed(3))
+        proj = nn.Linear(TOKEN_DIM, TOKEN_DIM)
+        with torch.no_grad():
+            proj.weight.copy_(torch.eye(TOKEN_DIM))
+            proj.bias.zero_()
+        mods = JEPAModules(Table(h, self.T), proj, Copy(proj))
+        mask = expand_masks(masks(self.N, 8), COARSE_GRID)
+        dirs = directions(self.M, TOKEN_DIM, torch.Generator().manual_seed(4))
+        with torch.no_grad():
+            got = jepa_terms(mods, stacks(self.N), mask, dirs, 0.5, sigreg_on="mean")
+            s_h = float(sigreg(h, h[:0], dirs))  # S of the Gaussian h itself
+        assert float(got["pred"]) == pytest.approx(0.0, abs=1e-12)
+        assert float(got["sigreg"]) == pytest.approx(s_h, rel=1e-5)
+        assert float(got["loss"]) == pytest.approx(0.5 * s_h, rel=1e-5)
+
+    def mean_s(self, draw, on: str, reps: int = 4) -> float:
+        g = torch.Generator().manual_seed(7)
+        total = 0.0
+        for _ in range(reps):
+            pts = sigreg_points(draw(g), on)
+            total += float(sigreg(pts, pts[:0], directions(self.M, pts.shape[1], g)))
+        return total / reps
+
+    def k3(self, d: int):
+        def draw(g: torch.Generator) -> Tensor:
+            return torch.randn(self.N, 1, d, generator=g).expand(-1, self.T, -1)
+
+        return draw
+
+    def test_k3_under_mean_is_the_healthy_value(self):
+        assert self.mean_s(self.k3(TOKEN_DIM), "mean") == pytest.approx(
+            self.HEALTHY, abs=0.1
+        )
+
+    def test_k3_under_flat_at_d_4_is_about_8_4(self):
+        # Sigma = (1 1^T) x I_4 of rank 4 in D = 1024: excess 7.3, penalized
+        assert self.mean_s(self.k3(4), "flat") == pytest.approx(8.37, abs=0.3)
+
+    def test_independent_tokens_under_mean_are_about_51_5(self):
+        def draw(g: torch.Generator) -> Tensor:
+            return torch.randn(self.N, self.T, TOKEN_DIM, generator=g)
+
+        assert self.mean_s(draw, "mean") == pytest.approx(51.5, abs=1.0)
 
 
 class TestRhoIn:

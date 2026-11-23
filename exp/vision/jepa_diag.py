@@ -4,12 +4,15 @@ on the checkpoints of the runs, without learning again. Three commands:
 - ``tokens`` (question 1): the probes of ``stream_eval.StreamEvaluator``
   (``recon_blur``, ``dyn_1/copy_1``, ``rank`` of span, after and zurich,
   ``jepa_eval.SPAN`` by default) of a run's checkpoints through the codes
-  of ``TokenCode``: ``z`` (the code of V18's evaluation), and of $h$, the
-  encoder's tokens after its last ``LayerNorm`` ($T \times w$, the input of
-  the projection $P$; LeJEPA evaluates there), ``h_mean`` (their mean over
-  the positions, $w$) and ``h_flat`` (flattened in row-major positions, $T
-  w$). Into ``<run_dir>/posthoc_diag/``: ``tokens.json``, ``tokens.jsonl``
-  (a row per checkpoint, code and group) and the pictures ``<t>-<code>-
+  of ``jepa_eval.TokenCode``: by default (``POOLS``) ``z`` (the code of
+  V18's evaluation), and of $h$, the encoder's tokens after its last
+  ``LayerNorm`` ($T \times w$, the input of the projection $P$; LeJEPA
+  evaluates there), ``h_mean`` (their mean over the positions, $w$) and
+  ``h_flat`` (flattened in row-major positions, $T w$); or ``h_pool``
+  (V18b's patch 4: the means of $h$ over each block of the coarse grid,
+  $16 w$ as ``h_flat`` of patch 16) and ``zbar``. Into
+  ``<run_dir>/posthoc_diag/``: ``tokens.json``, ``tokens.jsonl`` (a row per
+  checkpoint, code and group) and the pictures ``<t>-<code>-
   {zurich,span}.png``.
 - ``sigreg`` (question 3): $S$ (``exp.lib.sigreg.sigreg``) of $z$ along the
   directions of ``jepa_eval.CodeStats`` on stacks of the held-out video in
@@ -31,9 +34,10 @@ on the checkpoints of the runs, without learning again. Three commands:
   probe_accuracy``) of Imagenette (``exp/video/diag/imagenette.py``'s
   ``prep``, ``<data>/{train,val}.pt``) of each code, an image shrunk to
   ``IMAGE_SIDE`` (``shrink``) and repeated into a still stack of the run's
-  $n$ frames (``still_stacks``): ``h_mean`` and ``z`` of the runs'
-  checkpoints, ``color`` (``jepa_eval.ColorCode``) and the $\mu$ of VAE
-  checkpoints. Into ``<out>/``: ``imagenette.json``, ``imagenette.jsonl`` (a
+  $n$ frames (``still_stacks``): ``IMAGENETTE_POOLS`` of the runs'
+  checkpoints by their SIGReg's data point (``h_mean`` and ``z``, of arm M
+  ``h_mean`` and ``zbar``), ``color`` (``jepa_eval.ColorCode``) and the
+  $\mu$ of VAE checkpoints. Into ``<out>/``: ``imagenette.json``, ``imagenette.jsonl`` (a
   row per code)::
 
     python -m exp.vision.jepa_diag tokens <run_dir> [--steps 0,6000,20000,60000] \
@@ -64,7 +68,7 @@ from exp.lib.video_io import U8Reader
 from exp.vision.compose import from_dict
 from exp.vision.eval import BATCH, FIT_STEPS, eval_splits
 from exp.vision.iid import Units
-from exp.vision.jepa import JEPAModules, build_jepa, directions
+from exp.vision.jepa import JEPAModules, directions
 from exp.vision.jepa_eval import (
     EVAL_DIRECTION_SEED,
     EVAL_DIRECTIONS,
@@ -74,10 +78,11 @@ from exp.vision.jepa_eval import (
     PICTURES,
     SPAN,
     ColorCode,
+    TokenCode,
+    build_run_jepa,
     vae_at,
 )
 from exp.vision.jepa_iid import v16_config
-from exp.vision.models import early_fusion
 from exp.vision.schema import RunConf
 from exp.vision.stream_eval import Code, StreamEvaluator, append_jsonl, spanned
 
@@ -106,8 +111,8 @@ __all__ = [
 ]
 
 OUT = "posthoc_diag"
-POOLS = ("z", "h_mean", "h_flat")
-IMAGENETTE_POOLS = ("h_mean", "z")
+POOLS = ("z", "h_mean", "h_flat")  # the default codes of tokens
+IMAGENETTE_POOLS = {"flat": ("h_mean", "z"), "mean": ("h_mean", "zbar")}
 DIAG_STEPS = (0, 6000, 20000, 60000)  # the default steps of tokens
 GRID_STEP = 10  # video frames between the grid's stacks: 1 s at 10 fps
 GROUP_SIZES = (128, 1024)  # n of sigreg's groups: the training's batch, val's
@@ -118,41 +123,24 @@ IMAGE_SIDE = 64
 # -- codes and checkpoints -------------------------------------------------------
 
 
-class TokenCode:
-    r"""The code of the stacks by the JEPA ``mods`` of ``pool`` (``POOLS``):
-    ``"z"`` the target side's $z$ (``JEPAModules.mu``); of $h$ ``(B, T,
-    w)``, the encoder's tokens after its last ``LayerNorm`` (the input of
-    the projection), ``"h_mean"`` their mean over the positions ``(B, w)``
-    and ``"h_flat"`` them flattened ``(B, T w)``.
-
-    Raises:
-        ValueError: ``pool`` is not of ``POOLS``.
-    """
-
-    def __init__(self, mods: JEPAModules, pool: str) -> None:
-        if pool not in POOLS:
-            raise ValueError(f"pool is one of {POOLS}, not {pool!r}")
-        self._mods, self._pool = mods, pool
-
-    def modules(self) -> Mapping[str, nn.Module]:
-        return self._mods.modules()
-
-    def mu(self, x: Tensor) -> Tensor:
-        if self._pool == "z":
-            return self._mods.mu(x)
-        h = self._mods.encoder(early_fusion(x))  # (B, T, w)
-        return h.mean(1) if self._pool == "h_mean" else h.flatten(1)
-
-
 def _conf(run_dir: Path) -> RunConf:
     return from_dict(yaml.safe_load((run_dir / "config.yaml").read_text()))
+
+
+def _settings_of(run_dir: Path) -> dict[str, Any]:
+    return json.loads((run_dir / "jepa.json").read_text())
+
+
+def _jepa(run_dir: Path, conf: RunConf) -> JEPAModules:
+    """The JEPA of the run in ``run_dir`` of ``conf`` (its $d$)."""
+    return build_run_jepa(conf, _settings_of(run_dir))
 
 
 def run_ckpts(run_dir: Path) -> dict[int, Path]:
     """The checkpoints of the JEPA run in ``run_dir`` by their step (``t``
     over ``time.frame`` frames, over ``jepa.json``'s batch), in order."""
     conf = _conf(run_dir)
-    batch = json.loads((run_dir / "jepa.json").read_text())["batch"]
+    batch = _settings_of(run_dir)["batch"]
     paths = sorted(run_dir.glob("ckpt/*.pt"), key=lambda p: float(p.stem))
     return {round(float(p.stem) / conf.time.frame) // batch: p for p in paths}
 
@@ -219,7 +207,7 @@ def evaluate_tokens(
     settings |= {"codes": list(pools), "determinism": determinism}
     write_json(out / "tokens.json", _settings(**settings))
     (out / "tokens.jsonl").write_text("")
-    mods = build_jepa(conf, seed=conf.seed)
+    mods = _jepa(run_dir, conf)
     for step in chosen:
         path = ckpts[step]
         head = ckpt.load_eval(path, mods.modules())
@@ -438,7 +426,7 @@ def evaluate_sigreg(
         ),
     )
     (out / "sigreg.jsonl").write_text("")
-    mods = build_jepa(conf, seed=conf.seed)
+    mods = _jepa(run_dir, conf)
     for s in chosen:
         head = ckpt.load_eval(ckpts[s], mods.modules())
         stamp = {"t": head["t"], "step": s}
@@ -490,8 +478,9 @@ def evaluate_imagenette(
 ) -> Path:
     """The linear probe of Imagenette at ``data`` (module docstring) of
     ``color`` (of ``conf``'s patch), ``v16`` and ``v17`` given, and
-    ``IMAGENETTE_POOLS`` of the checkpoints of ``steps`` (by default all) of
-    each of ``runs``, on ``conf.device``, into ``out``. Returns ``out``."""
+    ``IMAGENETTE_POOLS`` (of each run's SIGReg's data point) of the
+    checkpoints of ``steps`` (by default all) of each of ``runs``, on
+    ``conf.device``, into ``out``. Returns ``out``."""
     dev = torch.device(conf.device)
     determinism = configure_determinism(conf.device)
     split = {s: torch.load(data / f"{s}.pt") for s in ("train", "val")}
@@ -534,11 +523,12 @@ def evaluate_imagenette(
             write({"code": name}, vae_at(path, conf.device))
     for run in runs:
         rc = replace(_conf(run), device=conf.device)
-        mods = build_jepa(rc, seed=rc.seed)
+        mods = _jepa(run, rc)
+        pools = IMAGENETTE_POOLS[_settings_of(run).get("sigreg_on", "flat")]
         ckpts = run_ckpts(run)
         for s in _pick(ckpts, steps, ()):
             head = ckpt.load_eval(ckpts[s], mods.modules())
-            for pool in IMAGENETTE_POOLS:
+            for pool in pools:
                 row = {"run": run.name, "step": s, "t": head["t"], "code": pool}
                 write(row, TokenCode(mods, pool))
     return out

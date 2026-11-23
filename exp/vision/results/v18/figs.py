@@ -34,14 +34,14 @@ def _series(run: Path) -> tuple[list[float], list[float], list[float], dict]:
     rows = [
         r
         for r in _jsonl(run / "posthoc_jepa/probes.jsonl")
-        if r["group"] == "zurich" and r["step"] > 0
+        if r["group"] == "zurich" and r["step"] > 0 and r.get("code", "z") == "z"
     ]
     rows.sort(key=lambda r: r["step"])
     x = [r["step"] * batch / 1e6 for r in rows]
     pred = {
         r["step"] * batch / 1e6: r["pred_ratio"]
         for r in _jsonl(run / "posthoc_jepa/jepa.jsonl")
-        if r["step"] > 0
+        if r["step"] > 0 and r.get("code", "z") == "z"
     }
     return x, [r["recon_blur"] for r in rows], [r["dyn_1/copy_1"] for r in rows], pred
 

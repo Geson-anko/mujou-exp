@@ -1,6 +1,7 @@
 """``exp.vision.jepa_iid`` on the tiny synthetic Walking Tours of
 ``test_eval`` (videos A, B, C of 20 frames, H held out; stacks of 2 frames of
-16 px, patch 4: the 4 x 4 grid of V18)."""
+16 px, patch 4: the 4 x 4 grid of V18; patch 1: the 16 x 16 grid of V18b's
+patch 4 at 64 px). The defaults reproduce the values of V18's code."""
 
 import json
 import math
@@ -105,6 +106,78 @@ class TestOptimizer:
         assert seen == len(mods.parameters())
         # width 128 = 256 / 2: hidden 2; P and embed (outputs of the width) 2
         assert {g["mult"] for g in opt.param_groups} == {1.0, 2.0}
+
+
+# train.jsonl of run(..., "--steps", "2", "--batch", "4", "--log-every", "1")
+# by V18's code (commit 3bf4998, before V18b's arguments), on the CPU
+V18_ROWS = (
+    {"loss": 3.26409912109375, "pred": 2.3266332149505615, "sigreg": 4.201564788818359},
+    {
+        "loss": 2.873110294342041,
+        "pred": 2.6075186729431152,
+        "sigreg": 3.138702154159546,
+    },
+)
+V18_WEIGHT_SUM = 3424.9473013582033  # of the last checkpoint's modules
+
+
+class TestV18Defaults:
+    def test_the_defaults_give_v18s_losses_and_weights(self, root, tmp_path):
+        out = run(
+            root, tmp_path, "r", "--steps", "2", "--batch", "4", "--log-every", "1"
+        )
+        for got, want in zip(rows(out), V18_ROWS, strict=True):
+            for k, v in want.items():
+                assert got[k] == pytest.approx(v, rel=1e-5), k
+        w = torch.load(ckpt.eval_path(out, 0.8), weights_only=True)["modules"]
+        total = sum(float(v.double().sum()) for m in w.values() for v in m.values())
+        assert total == pytest.approx(V18_WEIGHT_SUM, rel=1e-6)
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["patch"] == 4 and settings["grid"] == 4
+        assert settings["expand"] == 1 and settings["k_fine"] == settings["k"] == 8
+        assert settings["token_dim"] == 64 and settings["sigreg_on"] == "flat"
+        assert settings["sigreg_dim"] == 1024 and not settings["checkpoint_blocks"]
+
+
+class TestV18bArms:
+    """The arms of V18b on the grid 16 x 16 (patch 1 at 16 px): F (d 4, flat)
+    and M (d 64, mean)."""
+
+    @pytest.mark.parametrize(
+        ("d", "on", "dim"), [("4", "flat", 1024), ("64", "mean", 64)]
+    )
+    def test_the_arm_is_recorded_in_the_config_and_settings(
+        self, root, tmp_path, d, on, dim
+    ):
+        extra = ("--patch", "1", "--token-dim", d, "--sigreg-on", on)
+        out = run(root, tmp_path, "r", "--steps", "2", "--batch", "4", *extra)
+        conf = from_dict(yaml.safe_load((out / "config.yaml").read_text()))
+        assert conf.model.patch == 1
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["patch"] == 1 and settings["grid"] == 16
+        assert settings["coarse_grid"] == 4 and settings["expand"] == 4
+        assert settings["k"] == 8 and settings["k_fine"] == 128
+        assert settings["tokens"] == 256 and settings["family"] == 436
+        assert settings["token_dim"] == int(d) and settings["sigreg_on"] == on
+        assert settings["sigreg_dim"] == dim
+        got = rows(out)
+        keys = ("loss", "pred", "sigreg", "z_var", "rho_in", "zbar_var")
+        assert all(math.isfinite(r[k]) for r in got for k in keys)
+        mods = build_jepa(conf, seed=0, token_dim=int(d))
+        head = ckpt.load_eval(ckpt.eval_path(out, 0.8), mods.modules())
+        assert head["frame"] == 8
+
+    def test_checkpointing_the_blocks_gives_the_same_run(self, root, tmp_path):
+        base = ("--steps", "2", "--batch", "4", "--log-every", "1", "--patch", "2")
+        a = run(root, tmp_path, "a", *base)
+        b = run(root, tmp_path, "b", *base, "--checkpoint-blocks")
+        strip = [{k: v for k, v in r.items() if k != "sec"} for r in rows(a)]
+        assert strip == [{k: v for k, v in r.items() if k != "sec"} for r in rows(b)]
+        assert json.loads((b / "jepa.json").read_text())["checkpoint_blocks"]
+
+    def test_a_grid_of_no_whole_expansion_is_refused(self, root, tmp_path):
+        with pytest.raises(ValueError, match="grid"):
+            run(root, tmp_path, "r", "--steps", "1", "--patch", "8")
 
 
 class TestTrain:
