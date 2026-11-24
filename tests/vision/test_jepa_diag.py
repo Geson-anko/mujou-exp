@@ -219,3 +219,31 @@ class TestCommands:
             ("m", 4, "zbar"),
         ]
         assert all(0 <= r["acc"] <= 1 for r in rows)
+
+
+def test_imagenette_rows_of_a_v18c_run(root, tmp_path):  # noqa: F811
+    run = tiny_run(
+        root,
+        tmp_path,
+        *("--patch", "2", "--token-dim", "16", "--proj", "fixed"),
+        *("--sigreg-on", "mix"),
+    )
+    g = torch.Generator().manual_seed(0)
+    data = tmp_path / "inet"
+    data.mkdir()
+    for split, count in (("train", 30), ("val", 10)):
+        x = torch.randint(256, (count, 3, SIZE, SIZE), generator=g)
+        item = {"x": x.to(torch.uint8), "y": torch.arange(count) % 2}
+        torch.save(item | {"classes": ["a", "b"]}, data / f"{split}.pt")
+    conf: RunConf = replace(conf_of(), device="cpu")
+    out = evaluate_imagenette(
+        data, tmp_path / "out", conf=conf, runs=[run], steps=(4,), side=SIZE
+    )
+    rows = jsonl(out / "imagenette.jsonl")
+    # V18c's h_mean and z (= W vec(t))
+    assert [(r.get("step"), r["code"]) for r in rows] == [
+        (None, "color"),
+        (4, "h_mean"),
+        (4, "z"),
+    ]
+    assert all(0 <= r["acc"] <= 1 for r in rows)
