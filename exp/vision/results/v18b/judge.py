@@ -7,8 +7,11 @@ Reads ``runs/v18b-screen/<run>/`` (``jepa.json``, ``train.jsonl`` and
 the rules registered before the runs, as they are: the usable pairs per arm,
 the collapses K1-K3 per arm, the pass at step 6000, the pending rule of the
 first stage, the choice of each arm's best, the second-stage list and, once
-the second stage is in, the setting and the long runs of each arm. Prints
-markdown tables; ``--json`` also writes the numbers::
+the second stage is in, the setting and the long runs of each arm. Once the
+long runs are in ``runs/v18b-long/``, it also applies rule 5, reads question 1
+(H-coarse against H-target) against V18's two long runs of P16
+(``runs/v18-long``, ``runs/v18-diag``) and names the token setting for V18c.
+Prints markdown tables; ``--json`` also writes the numbers::
 
     uv run python -m exp.vision.results.v18b.judge [--runs runs] [--json out.json]
 """
@@ -25,7 +28,10 @@ from exp.vision.results.v18.judge import (
     LEARNED,
     METRICS,
     Code,
+    Run as V18Run,
     delta,
+    judge_long as v18_judge_long,
+    usable_pairs as v18_usable_pairs,
     yardsticks as read_yardsticks,
 )
 
@@ -36,6 +42,8 @@ FIRST_R = 0.5
 SECOND_R = (0.25, 0.75)
 V18_BEST = (1e-4, 0.5)  # P16's setting whose runs V18 already has
 V18_LONG = (1e-4, 0.5, 0.25)  # the setting of V18's two long runs
+P16_LONG = ("v18-long-lr1e-4-lam0.5-r0.25-s0", "v18-long-lr1e-4-lam0.5-r0.25-s1")
+POOL_STEPS = (0, 6000, 20000, LONG_STEPS)  # h_pool (F, M) and h_flat (P16)
 
 
 @dataclass(frozen=True)
@@ -119,7 +127,9 @@ class Run:
         self.path = path
         self.name = path.name
         conf = json.loads((path / "jepa.json").read_text())
-        self.arm = ARMS[self.name.split("-")[1]]
+        # V18's runs, reused for P16, predate the keys "patch" and "sigreg_on"
+        patch, on = conf.get("patch", 16), conf.get("sigreg_on", "flat")
+        self.arm = ARMS["p16" if patch == 16 else "m" if on == "mean" else "f"]
         self.lr = float(conf["lr"])
         self.lam = float(conf["lam"])
         self.r = float(conf["mask_ratio"])
@@ -351,6 +361,235 @@ def course(run: Run) -> list[dict[str, Any]]:
     return out
 
 
+def pooled(diag: Path, code: str) -> dict[int, Code]:
+    """The zurich probe of ``code`` (``h_pool`` or ``h_flat``) per step, from
+    ``jepa_diag tokens`` (``posthoc_diag/tokens.jsonl``)."""
+    return {
+        int(x["step"]): Code({}, x)
+        for x in _jsonl(diag / "tokens.jsonl")
+        if x["code"] == code and x["group"] == "zurich"
+    }
+
+
+def pool_summary(pool: dict[int, Code]) -> dict[str, Any]:
+    """The pooled code's recon_blur at each step and its change from 6000 and
+    from 0 to the last step, with the threshold of each comparison."""
+    out: dict[str, Any] = {
+        f"recon_blur_{s}": pool[s]["recon_blur"] for s in POOL_STEPS if s in pool
+    }
+    out |= {f"dyn_{s}": pool[s]["dyn_1/copy_1"] for s in POOL_STEPS if s in pool}
+    last = pool.get(LONG_STEPS)
+    for start in (0, 6000):
+        first = pool.get(start)
+        if first is None or last is None:
+            continue
+        out[f"change_{start}"] = last["recon_blur"] - first["recon_blur"]
+        out[f"change_{start}_threshold"] = delta("recon_blur", first, last)
+    return out
+
+
+def judge_long(run: Run, ys: dict[str, Code]) -> dict[str, Any]:
+    """Rule 5 on a long run of F or M, with question 1's Delta (the judge
+    code's zurich recon_blur at the last step minus that at step 6000) and
+    whether training went on (pred_ratio_calib fell from step 6000)."""
+    row = judge(run, ys)
+    row["seed"] = int(run.name.rsplit("-s", 1)[1])
+    arm = run.arm
+    six, last = run.code(arm.judge, 6000), run.code(arm.judge, run.steps)
+    if six is None or last is None or "recon_blur" not in row:
+        row["rule5"] = False
+        return row
+    row["recon_blur_6000"] = six["recon_blur"]
+    row["dyn_6000"] = six["dyn_1/copy_1"]
+    row["delta_long"] = last["recon_blur"] - six["recon_blur"]
+    row["delta_long_threshold"] = delta("recon_blur", six, last)
+    row["rule5"] = row["passed"] and -row["delta_long"] > row["delta_long_threshold"]
+    row["calib_6000"] = run.stat(arm.judge, 6000, "pred_ratio_calib")
+    row["learned_on"] = row["pred_ratio_calib"] < row["calib_6000"]
+    row["pool"] = pool_summary(pooled(run.path / "posthoc_diag", "h_pool"))
+    return row
+
+
+def p16_long(runs: Path) -> list[dict[str, Any]]:
+    """V18's two long runs of P16 under V18's rule 5 (P16's rules are V18's),
+    with the same quantities as :func:`judge_long`, ``h_flat`` in place of
+    ``h_pool`` and the Imagenette probe of V18's diagnosis."""
+    ys = read_yardsticks(runs / "v18-baselines")
+    pairs = v18_usable_pairs(ys)
+    acc = {
+        (x["run"], x["step"], x["code"]): float(x["acc"])
+        for x in _jsonl(runs / "v18-diag/v18-diag/imagenette/imagenette.jsonl")
+        if "run" in x
+    }
+    out = []
+    for name in P16_LONG:
+        run = V18Run(runs / "v18-long" / name, last=LONG_STEPS)
+        row = v18_judge_long(run, ys, pairs)
+        row["arm"] = "p16"
+        row["dyn_6000"] = run.probes[(6000, "zurich")]["dyn_1/copy_1"]
+        row["delta_long"] = row["recon_blur"] - row["recon_blur_6000"]
+        row["delta_long_threshold"] = row["recon_drop_delta"]
+        row["calib_6000"] = float(run.stats[6000]["pred_ratio_calib"])
+        row["learned_on"] = row["pred_ratio_calib"] < row["calib_6000"]
+        diag = runs / "v18-diag/v18-long" / name / "posthoc_diag"
+        row["pool"] = pool_summary(pooled(diag, "h_flat"))
+        row["img_h_mean_0"] = acc.get((name, 0, "h_mean"))
+        row["img_h_mean"] = acc.get((name, LONG_STEPS, "h_mean"))
+        out.append(row)
+    return out
+
+
+def question1(f: list[dict[str, Any]], p16: list[dict[str, Any]]) -> dict[str, Any]:
+    """Question 1 as registered: each seed of F is read against half of P16's
+    mean Delta; the reading holds only when both seeds fall in one class."""
+    d_p16 = sum(x["delta_long"] for x in p16) / len(p16)
+    classes = []
+    for x in f:
+        d, t = x["delta_long"], x["delta_long_threshold"]
+        if not x["learned_on"]:
+            classes.append("not learned")
+        elif d <= t:
+            classes.append("H-coarse")
+        elif d < 0.5 * d_p16:
+            classes.append("partly H-coarse")
+        else:
+            classes.append("H-target")
+    verdict = classes[0] if len(set(classes)) == 1 else "split"
+    return {
+        "delta_p16": d_p16,
+        "half": 0.5 * d_p16,
+        "seeds": classes,
+        "verdict": verdict,
+    }
+
+
+def v18c_candidate(arms: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """The token setting handed to V18c: among the arms with no collapsed
+    long run, the least seed-mean recon_blur at the last step; within
+    delta_r of it the least seed-mean dyn_1/copy_1; within delta_d of that
+    the largest seed-mean Imagenette h_mean."""
+
+    def mean(rows: list[dict[str, Any]], key: str) -> float:
+        return sum(float(x[key]) for x in rows) / len(rows)
+
+    pool = {
+        a: {
+            "recon_blur": mean(rows, "recon_blur"),
+            "dyn_1/copy_1": mean(rows, "dyn_1/copy_1"),
+            "img_h_mean": mean(rows, "img_h_mean"),
+        }
+        for a, rows in arms.items()
+        if rows and not any(x["collapsed"] for x in rows)
+    }
+    if not pool:
+        return {"means": pool, "candidate": None}
+    best = min(v["recon_blur"] for v in pool.values())
+    near = {
+        a: v for a, v in pool.items() if v["recon_blur"] - best <= DELTA["recon_blur"]
+    }
+    dyn = min(v["dyn_1/copy_1"] for v in near.values())
+    near = {
+        a: v
+        for a, v in near.items()
+        if v["dyn_1/copy_1"] - dyn <= DELTA["dyn_1/copy_1"]
+    }
+    top = max(near, key=lambda a: near[a]["img_h_mean"])
+    return {"means": pool, "candidate": top}
+
+
+def long_course(run: Run) -> list[dict[str, Any]]:
+    """The long run's checkpoints by stacks seen: the training means, the
+    JEPA numbers of the arm's codes, the zurich probes where they were taken,
+    h_pool's zurich recon_blur and the Imagenette probes."""
+    arm = run.arm
+    batch = int(json.loads((run.path / "jepa.json").read_text())["batch"])
+    pool = pooled(run.path / "posthoc_diag", "h_pool")
+    out = []
+    for step in sorted({s for c, s in run.stats if c == arm.judge}):
+        t = run.train_at(step)
+        z = run.probes.get((arm.judge, step, "zurich"))
+        span = run.probes.get((arm.judge, step, "span"))
+        out.append(
+            {
+                "step": step,
+                "stacks": step * batch,
+                "lr": t.get("lr"),
+                "train_pred": t.get("pred"),
+                "train_sigreg": t.get("sigreg"),
+                "pred_ratio_calib": run.stat(arm.judge, step, "pred_ratio_calib"),
+                "sigreg_heldin": run.stat(arm.sigreg, step, "sigreg_heldin"),
+                "token_r2": run.stat(arm.tokens, step, "token_r2"),
+                "rho_in": run.stat(arm.tokens, step, "rho_in"),
+                "embed_drift": run.stat(arm.judge, step, "embed_drift"),
+                "block_drift": run.stat(arm.judge, step, "block_drift"),
+                "recon_blur": None if z is None else z["recon_blur"],
+                "dyn_1/copy_1": None if z is None else z["dyn_1/copy_1"],
+                "copy_1": None if z is None else z["copy_1"],
+                "rank": None if z is None else z["rank"],
+                "span_recon_blur": None if span is None else span["recon_blur"],
+                "h_pool": pool[step]["recon_blur"] if step in pool else None,
+                "img_h_mean": run.acc.get((step, "h_mean")),
+                "img_z": run.acc.get((step, "z")),
+                "img_zbar": run.acc.get((step, "zbar")),
+            }
+        )
+    return out
+
+
+def print_long(rows: list[dict[str, Any]], p16: list[dict[str, Any]]) -> None:
+    print("\n## long runs (zurich): rule 5 and question 1\n")
+    print(
+        "| run | K1 | K2 | K3 | recon_blur 6000 | 60000 | Δ | δ | dyn 6000"
+        " | 60000 | calib 6000 | 60000 | pool 0 | 6000 | 60000 | img h_mean 0→60000"
+        " | passed | rule 5 |"
+    )
+    print("| -- " * 18 + "|")
+    for x in rows + p16:
+        p = x["pool"]
+        print(
+            f"| {x['name']} | {_flag(x['K1'])} | {_flag(x['K2'])} | {_flag(x['K3'])}"
+            f" | {_fmt(x['recon_blur_6000'], 4)} | {_fmt(x['recon_blur'], 4)}"
+            f" | {x['delta_long']:+.4f} | {_fmt(x['delta_long_threshold'], 4)}"
+            f" | {_fmt(x['dyn_6000'])} | {_fmt(x['dyn_1/copy_1'])}"
+            f" | {_fmt(x['calib_6000'])} | {_fmt(x['pred_ratio_calib'])}"
+            f" | {_fmt(p.get('recon_blur_0'))} | {_fmt(p.get('recon_blur_6000'))}"
+            f" | {_fmt(p.get('recon_blur_60000'))}"
+            f" | {_fmt(x['img_h_mean_0'])}→{_fmt(x['img_h_mean'])}"
+            f" | {'pass' if x['passed'] else 'fail'}"
+            f" | {'pass' if x['rule5'] else 'fail'} |"
+        )
+
+
+def print_course(name: str, rows: list[dict[str, Any]]) -> None:
+    print(f"\n### {name}\n")
+    keys = (
+        ("stacks", 0),
+        ("lr", 6),
+        ("train_pred", 3),
+        ("train_sigreg", 3),
+        ("pred_ratio_calib", 3),
+        ("sigreg_heldin", 3),
+        ("token_r2", 3),
+        ("rho_in", 3),
+        ("block_drift", 3),
+        ("embed_drift", 3),
+        ("recon_blur", 4),
+        ("span_recon_blur", 3),
+        ("dyn_1/copy_1", 3),
+        ("copy_1", 3),
+        ("rank", 1),
+        ("h_pool", 3),
+        ("img_h_mean", 3),
+        ("img_z", 3),
+        ("img_zbar", 3),
+    )
+    print("| step | " + " | ".join(k for k, _ in keys) + " |")
+    print("| -- " * (len(keys) + 1) + "|")
+    for r in rows:
+        cells = [_fmt(r[k], d) if r[k] is not None else "" for k, d in keys]
+        print(f"| {r['step']} | " + " | ".join(cells) + " |")
+
+
 def print_yardsticks(ys: dict[str, Code]) -> None:
     print("## yardsticks (zurich)\n")
     print("| code | recon_blur | sd | dyn_1/copy_1 | rank | token_r2 | sigreg_heldin |")
@@ -460,6 +699,34 @@ def main() -> None:
             "setting_passed": passed,
             "long_runs": longs,
         }
+        long_dirs = [a.runs / "v18b-long" / x["name"] for x in longs]
+        if longs and all((d / "posthoc_diag/tokens.jsonl").exists() for d in long_dirs):
+            img_long = a.runs / "v18b-long" / "imagenette"
+            long = [Run(d, img_long) for d in long_dirs]
+            long_rows = [judge_long(r, ys) for r in long]
+            p16 = p16_long(a.runs)
+            print_long(long_rows, p16)
+            courses = {r.name: long_course(r) for r in long}
+            for name, c in courses.items():
+                print_course(name, c)
+            f = [x for x in long_rows if x["arm"] == "f"]
+            q1 = question1(f, p16)
+            cand = v18c_candidate(
+                {
+                    "f": f,
+                    "m": [x for x in long_rows if x["arm"] == "m"],
+                    "p16": p16,
+                }
+            )
+            print(f"\nquestion 1: {json.dumps(q1)}")
+            print(f"V18c candidate: {json.dumps(cand)}")
+            out |= {
+                "long": long_rows,
+                "p16_long": p16,
+                "long_courses": courses,
+                "question1": q1,
+                "v18c_candidate": cand,
+            }
     if a.json is not None:
         a.json.write_text(json.dumps(out, indent=1))
 
