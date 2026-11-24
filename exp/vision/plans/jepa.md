@@ -443,7 +443,7 @@ $$
 
 ### 学習（`jepa.py`・`jepa_iid.py` の変更）
 
-- **定数**: `jepa.py` に `PROJ_KINDS = ("learned", "fixed")`、`LATENT_DIM = 1024`、`R_SEED = 67` を足し、`SIGREG_ON` に `"mix"` を足す。`W_SEED` = 61 は `exp/lib/randproj.py` のものを使う
+- **定数**: `jepa.py` に `PROJ_KINDS = ("learned", "fixed")`、`LATENT_DIM = 1024`、`R_SEED = 67`、`W_SEED = 61` を足し、`SIGREG_ON` に `"mix"` を足す。`exp/lib/randproj.py` は seed を持たず、評価の側も `jepa_eval.py` に同じ値の `W_SEED` を置いているので、合流のときに 1 か所にまとめる（実装のときに分かった）
 - **モジュール**: `FixedProj(weight)`（buffer `weight` (d, w) = $R$、$t = h R^\top$）と `Mix(weight)`（buffer `weight` (D, td) = $W$、$z = \mathrm{vec}(t) W^\top$）。`JEPAModules` に `mix: nn.Module | None = None` を足し、`proj` の型を `nn.Module` にする。`modules()` は `mix` があるときだけ `"mix"` を含める。`tokens(stacks)` は $t$（`proj` の出力）、`mu(stacks)` は `mix` があれば $W\,\mathrm{vec}(t)$、なければ V18 のとおり $\mathrm{vec}(t)$
 - **`build_jepa`**: `proj: str = "learned"`、`latent_dim: int | None = None` を足す。`proj="fixed"` なら $R$ を上の規則で作る（μP の $k_w^{-1/2}$ は掛けない）。`latent_dim` が整数なら $W$（`latent_dim` × $T d$）を作る。既定のままなら V18・V18b と同じ
 - **`sigreg_points(tokens, on, mix=None)`**: `"mix"` なら `mix(tokens.flatten(1))`（$(B, D)$）。`jepa_terms` は `mods.mix` を渡す。`"mix"` で `mix` がなければ `ValueError`
