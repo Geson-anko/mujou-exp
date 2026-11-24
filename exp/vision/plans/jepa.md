@@ -17,7 +17,7 @@ V17 で VAE の検証を締めくくり、検証する対象を JEPA に移す�
 | -- | -- | -- | -- | -- |
 | V18 | BP + AdamW | i.i.d. なランダムの stack のミニバッチ | 標準の SIGReg | モデル・目的・評価は正しいか。JEPA の上限の目安（V16 にあたる） |
 | V18b | 同上 | 同上 | 標準の SIGReg と、トークン平均の SIGReg | トークンを細かく（パッチ 4）すると、画素の細部を保てるか（2026-11-23 に追加） |
-| V18c | 同上 | 同上 | V18b の結果で決める | 未来の予測で学ぶ（計画は V18b の後に書く） |
+| V18c | 同上 | 同上 | 標準の SIGReg を、固定のランダム写像の潜在 $z = W\,\mathrm{vec}(t)$ にかける | パッチ 8 と固定のランダム写像で、空間のマスク予測のまま学べるか。良さは新しい評価（生成した画像の同定・E1）で測る（2026-11-24 に、未来予測の案から変えた） |
 | V19 | BP | 単一ストリーム（B = 1、長い run は c = 10） | 標準の SIGReg と FIFO のバッファ | 相関で何が壊れるかを、V18 と同じ物差しで再現して測る |
 | V20 | BP | 単一ストリーム | 時間相関の SIGReg | 仮説の検証。V19 との差が、相関の扱いの効果になる |
 | V21 | PC-ALM | 単一ストリーム | V20 で良かったもの | システムの学習則でも同じになるか |
@@ -335,6 +335,163 @@ $\bar z_n = \frac1T \sum_p z_{n,p}$ とし、$z_{n,p} = \bar z_n + u_{n,p}$（$\
 - **環境**: V18 と同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`、`just fleet x` で snapshot の `code/<snap>` から走らせる）
 - **名前**: `v18b-<腕>-lr<lr>-lam<λ>-r<r>-s<seed>`（腕は `f`・`m`・`p16`）。NAS の `/nas/geson/mujou-exp/runs/v18b-trial/`・`v18b-screen/`・`v18b-long/`（長い run は `v18b-long-<腕>-…`）・`v18b-baselines/`・`v18b-imagenette/`。ckpt を除いて `./runs/` に置く
 - **集計**: `exp/vision/results/v18b/judge.py` に、README の規則（崩壊・合格・判定保留・選び方・規則 5・仮説の読み）をそのまま書き、表を出す
+
+## V18c: パッチ 8 と固定のランダム写像（学習の側、詳細設計、2026-11-24）
+
+run の一覧・判定・長い run の規則・予想・反証は [README の「V18c」の節](../README.md)（回す前に決めたこと）に書いた。ここには、実装できる粒度の設計と、目的の式の自明な解の導出を書く。V18・V18b から変えるところだけを書き、書いていないところは V18 の節のとおりにする。新しい評価（拡散のデコーダで生成した画像の Inception の特徴での同定、Fable さんの E1「補完の同定」など）は別の workflow が作っている。この節は学習と、学習の側で測れる量だけを扱う。
+
+### ユーザーが決めたこと（2026-11-24）
+
+- **悪化の原因は、JEPA の学習目的と評価が合っていなかったこと。** 未来予測には進まず、**空間のマスク予測の V-JEPA のまま**進める。`recon_blur` は判定から外す。JEPA は抽象的な特徴を得る仕組みなので、再構成の向上は期待できない（[memory/feedback_eval_matches_objective.md](../../../memory/feedback_eval_matches_objective.md)）
+- **パッチ 8**: 64 px で 8×8 = 64 トークン、トークンの入力は 8 × 3 × 8 × 8 = 1536 次元
+- **潜在空間は、トークン数 $T$ とトークンの次元 $d$ に依存させない。学習しない固定のランダムな線形写像で決める（案 B）**: 各トークンを固定のランダム行列 $R$ で $d$ = 16 次元に写した $t_p = R h_p$ を予測の的にし、学習する射影 $P$ は無くす。潜在 $z = W\,\mathrm{vec}(t)$（$W$ は固定のランダムのガウス行列、$D$ = 1024）に SIGReg をかけ、評価の符号もこの $z$ にする
+- **マスク**: V18 の粗い 4×4 の族 $F_k$（$k$ = 4・8・12）から引き、2 倍に広げる（`expand` = 2）。Fable さんの評価のマスク `Q`・`H`・`R` が族に入ることをテストで確かめる
+- 学習は V18 と同じ（BP・i.i.d. なミニバッチ・LeJEPA の形・ViT-S 幅 1024・μP・予測器は幅 256・4 段・batch 128・warmup 1000 step と cosine）
+- 掃引は第 1 段（$r$ = 0.5、学習率 $\{10^{-5}, 3 \cdot 10^{-5}, 10^{-4}\}$ × $\lambda$ $\{0.5, 0.8, 0.95\}$）と第 2 段（$r$ = 0.25・0.75）。長い run の設定は、新しい評価が使えるようになってから、掃引の checkpoint にかけて決める
+- Codex さんの助言（V18b から引き継ぐ）: `pred` と $S$ を別々に記録して追う。学習率が低く、初期値の近くに留まった run は判定保留にする
+
+### モデルと写像
+
+| 量 | 形 | 作り方 | 学習 |
+| -- | -- | -- | -- |
+| $h_p$（エンコーダの出力、最後の `LayerNorm` の後） | $T$ = 64 個 × $w$ = 1024 | V18 と同じ ViT（`build_vae` の手順、patch 8） | する |
+| $R$ | $d \times w$ = 16 × 1024、全位置で共有 | `gaussian_projection(16, 1024, R_SEED)`（標準正規 × $1/\sqrt{w}$、`R_SEED` = 67） | しない |
+| $t_p = R h_p$（予測の的） | 16 次元 × 64 個 | | |
+| $\mathrm{vec}(t)$ | $T d$ = 1024 | 位置の行優先、位置の中で座標の順（`tokens.flatten(1)`、$\mathrm{vec}(t)_{16p + i} = t_{p,i}$） | |
+| $W$ | $D \times T d$ = 1024 × 1024（パッチ 8 では正方行列） | `gaussian_projection(1024, T d, W_SEED)`（標準正規 × $1/\sqrt{T d}$、`W_SEED` = 61） | しない |
+| $z = W\,\mathrm{vec}(t)$（潜在・SIGReg の相手・評価の符号） | $D$ = 1024 | | |
+| 予測器の出力 $\hat t_p$ | 16 次元（隠した位置ごと） | `Predictor(out_dim=16)`、V18 と同じ形 | する |
+
+- **正規化の意味**: `LayerNorm` の後のトークンは（gain 1 なら）$\lVert h_p \rVert^2 = w$ なので、$E[(R h_p)_i^2] = \lVert h_p \rVert^2 / w$ = 1。同じく $E[(W v)_j^2] = \lVert v \rVert^2 / (T d)$ なので、$\mathrm{vec}(t)$ の座標の分散が 1 なら $z$ の座標の分散も 1 になる。$z$ の尺度は $T$ にも $d$ にもよらない。$D$ も $T$・$d$ によらず 1024 に固定する（`LATENT_DIM` = 1024）
+- **乱数と、評価の側との共有**: $R$ と $W$ は、評価の側が決めた `exp/lib/randproj.py` の `gaussian_projection(d_out, d_in, seed)`（CPU の `torch.Generator().manual_seed(seed)` で `torch.randn(d_out, d_in)` を float32 で一度に引き、$1/\sqrt{d_{\mathrm{in}}}$ を掛ける。truncated normal ではない）で作る。リポジトリの中で $W$ の定義を 1 つにするためである。seed は run の seed に足さない固定の値で、$W$ は評価の側と同じ `W_SEED` = 61、$R$ は `R_SEED` = 67 とする。そのため、すべての run（長い run の seed 0 と 1 も）で $R$ と $W$ は同じで、seed の差は学習の差だけになる。worktree で先に実装するときは、評価の側の計画と同じ中身・同じ場所の `exp/lib/randproj.py` を書き、合流で 1 つにする。グローバルの RNG は使わないので、エンコーダと予測器の初期値の引き方は変わらない。エンコーダは同じ seed・同じパッチの V18 の手順と一致し、予測器は同じ seed・同じ $d$ の学習する射影の run と一致する（テストで確かめる）
+- **評価の側の `z_w` との違い**: 評価の側の計画は、$h$ を平らにした $\mathrm{vec}(h)$（パッチ 8 で 65536 次元）を $W$（1024 × 65536、同じ `W_SEED`）で写した `z_w` を符号に足し、パッチ 8 の学習を $z = W\,\mathrm{vec}(h)$ と書いている（案 B の決定の前の形）。案 B の学習の $z = W\,\mathrm{vec}(t)$（$W$ は 1024 × 1024）とは別の符号である。合流のときに、評価の側の「パッチ 8 の学習」の記述（E1g の $\hat z = W\,\mathrm{vec}(\tilde h)$ を含む）を $t$ に読み替える
+- **保存**: $R$ と $W$ はパラメータにせず、persistent な buffer にする。$R$ は module `proj`（`FixedProj`、buffer `weight` (16, 1024)、bias なし）、$W$ は新しい module `mix`（`Mix`、buffer `weight` (1024, 1024)）に置く。checkpoint の `modules` に `encoder`・`proj`・`predictor`・`mix` が入る（`ckpt.load_eval` は名前の集合の一致を求めるので、V18・V18b の run は `mix` なしのまま読める）。$R$ と $W$ は 4 MB 増えるだけで、ckpt は V18 と同じく 1 つ約 0.23 GB の見込み
+- **optimizer**: $R$ と $W$ はパラメータでないので optimizer に入らない（`JEPAModules.parameters()` に出ない）。テストで、学習の step の前後で $R$ と $W$ がビットまで同じことを確かめる
+- **ほかは V18 と同じ**: エンコーダ（`build_vae` と同じ手順。patch 8 では head が `Linear(64·1024 = 65536 → 512)` になり、作って捨てる）、予測器（幅 256・4 段、位置の符号 `sincos_2d((8, 8), 256)`、入口 `Linear(1024 → 256)`、出口 `Linear(256 → 16)`）、標的側は全トークン、文脈側は見えるトークンだけ（パッチの埋め込みと位置の符号の後で落とす）、EMA も stop-gradient もない
+- **パッチ 8 を受けられること**: `ModelConf` にパッチの大きさの検査はない。`PatchEmbed` は `Linear(24·8·8 = 1536 → 1024)` と `sincos_2d((8, 8), 1024)` になり、`grid = size // patch` = 8 から 64 トークンを出す。`mask_expansion(8)` = 2。V18b で patch 4 を通したのと同じ経路で、コードの変更は要らない（パッチ 8 の形のテストを足す）
+
+### μP での役割
+
+エンコーダと予測器の役割と倍率は V18 の表のまま（`jepa_mup_roles`・`jepa_mup_lr`）。変わるのは次のとおり。
+
+| パラメータ | 役割 | 学習率の倍率 | 初期値 |
+| -- | -- | -- | -- |
+| パッチの埋め込み（1536 → 1024） | input | 1 | LeCun（std $1/\sqrt{1536}$ = 0.0255） |
+| 予測器の `out`（256 → 16） | output（$k$ = 1） | 1 | LeCun（std 1/16） |
+| $R$・$W$ | パラメータでない | — | 上の表 |
+
+- **パッチの埋め込み**: V18b と同じ理由で、Adam の 1 step の出力の変化は fan-in に比例する。パッチ 8（1536）は P16（6144）の約 4 分の 1、パッチ 4（384）の 4 倍動く。倍率は足さず、`embed_drift` を並べる（V18b と同じ）
+- **$R$ の大きさ**: ユーザーの決定どおり LeCun の大きさ（std $1/\sqrt{w}$）にする。V18 の学習する $P$ の初期値（LeCun × $k_w^{-1/2}$）の 2 倍である。幅は 1024 から変えないので μP の転移には関わらず、$t$ がエンコーダに対して 2 倍敏感になる分は学習率の掃引に含まれる。倍率で補正はしない
+
+### マスク（4×4 から 8×8 へ広げる）
+
+- V18b と同じく、V18 の族 $F_k$ から `seed + MASK_SEED` の生成器で粗いマスクを引き、`expand_masks(mask, 2)` で 8×8 に広げる。粗い 1 マスは細かい 2×2 のブロックになる
+- 隠す数 $k_{\mathrm{fine}} = 4k$ = 16・32・48（$r$ = 0.25・0.5・0.75）、見える数は 48・32・16。画素の領域は V18・V18b とまったく同じ（細かい位置の 8×8 画素の 4 つで、粗い位置の 16×16 画素になる）。同じ seed なら、V18・V18b・V18c は step ごとに同じ画素を隠す
+- **Fable さんの評価のマスク**（粗い 4×4 の上、行優先の位置 $4i + j$）
+  - `Q`（四半分、$k$ = 4）: $\{0, 1\} \times \{0, 1\}$ など 4 通り。$F_4$ に入る
+  - `H`（半分、$k$ = 8）: 左・右・上・下の 4 通り。$F_8$ に入る
+  - `R`（外周、$k$ = 12）: 中央 $\{5, 6, 9, 10\}$ 以外のすべて。1 通り。$F_{12}$ に入る
+  - `mask_family` で確かめた（$|F_4|$ = 632、$|F_8|$ = 436、$|F_{12}|$ = 232 のまま、9 個とも含まれる）。テストでは、評価の側の `exp/lib/regions.py` が合流するまでは上の定義を書き、合流したらそのマスクで確かめる。`R` を 8×8 に広げると、中央の 4×4 の 16 個だけが見え、48 個を隠す
+  - 族の上の一様な引き方では、`Q` の 1 つは 1/632、`H` の 1 つは 1/436、`R` は 1/232 の確率で引かれる（学習の分布の中にあるが、多くは引かれない）。族を `Q`・`H`・`R` に寄せることはしない（位置ごとに一様な性質を保つため）
+
+### 損失
+
+$$
+L = (1 - \lambda)\, L_{\mathrm{pred}} + \lambda S, \qquad
+L_{\mathrm{pred}} = \frac{1}{B k_{\mathrm{fine}} d} \sum_{n=1}^{B} \sum_{p \in M_n} \lVert \hat t_{n,p} - t_{n,p} \rVert^2, \qquad
+S = \mathrm{SIGReg}\bigl(\{ W\,\mathrm{vec}(t_n) \}_{n=1}^{B}\bigr)
+$$
+
+- $d$ = 16、$B$ = 128。$L_{\mathrm{pred}}$ は V18 と同じく座標あたりの二乗誤差
+- $S$ = `sigreg(z, z[:0], A)`。batch の 128 個の $z$（$D$ = 1024）、V 統計量（LeJEPA と同じ、バッファなし）。方向 $A$ は 1024 本を step ごとに `seed + DIRECTION_SEED` の生成器から引き直す（V18 と同じ）
+- 標的側の $t$ にも、$z$ を通して $S$ にも勾配が届く。$R$・$W$ には勾配を流すが、パラメータでないので更新しない
+
+### 自明な解の導出（$N$ = 128、$D$ = 1024、$T$ = 64、$d$ = 16）
+
+数値は `exp.lib.sigreg.sigreg`（17 点の Epps–Pulley、$M$ = 1024 本、方向と標本を 8〜32 回引き直した平均）で求めた。1 回の引きのばらつき（標準偏差）は、健全な値で 0.04、K3 で 0.2〜0.3 である。$W$ は 1 つ引いたもの（特異値は最大 2.01・中央値 0.81・最小 0.0012）。
+
+**方向ごとの分散のばらつきと超過**: 共分散 $\Sigma$（$\mathrm{tr}\,\Sigma = D$）のガウスの $S$ の超過は、V18 の展開で $\approx \frac{N}{4} \int t^4 e^{-3t^2/2} dt \cdot \mathrm{Var}_a(a^\top \Sigma a) \approx 0.241\, N (1/r_2 - 1/D)$（$r_2$ は participation ratio）。ランク $q$ の等方的な $\Sigma = (D/q) P_q$ では、一様な単位ベクトル $a$ について $\lVert P_q a \rVert^2 \sim \mathrm{Beta}(q/2, (D-q)/2)$ なので、$a^\top \Sigma a$ の相対的な標準偏差は $\sqrt{2(D-q)/(q(D+2))}$ である（$q$ = 16 で 0.351、$q = D$ で 0）。
+
+| 解 | $z$ の共分散 | $S$（数値） | 健全な値からの超過 | $L_{\mathrm{pred}}$ |
+| -- | -- | -- | -- | -- |
+| 健全 $z \sim N(0, I_D)$ | $I$ | 1.05〜1.06 | 0 | $\ell_H$ |
+| 等方的な $t$（$\mathrm{vec}(t) \sim N(0, I)$、$z = W\,\mathrm{vec}(t)$） | $W W^\top$（$r_2$ = 511） | 1.07〜1.09 | 約 0.03（式で 0.030） | $\ell_H$ |
+| 定数 | 0 | 52.3（$0.409 N$） | 51.3 | 0 |
+| 位置だけの関数 $t_{n,p} = g(p)$ | 0（$z$ が定数） | 52.3 | 51.3 | 0 |
+| **K3**（$d$ = 16）: $t_{n,p} = A_p u_n$、$u_n \sim N(0, I_{16})$ | ランク 16 | **2.9〜3.0**（$A_p = I$ で 2.96・3.02、直交行列で回して 2.88） | **約 1.9**（式で 1.90） | 0（$u$ をどの見える部分からも推定できれば） |
+| （比べ）K3、$d$ = 1024（射影なし、$h_p$ を的にし $W$ は 1024 × 65536） | $W' W'^\top$、$W' = \sum_p W_p A_p$ は正方のガウスと同じ分布（$r_2$ = 511） | **1.08** | **約 0.03**（等方的な $t$ と同じ） | 0 |
+| 大域の解 $t_{n,p} = B_p g_n$、$g_n \sim N(0, I_q)$、$B_p$ はランダム（16 × $q$） | ランク $q$ | $q$ = 128: 1.31、256: 1.19〜1.21、512: 1.13〜1.17、768: 1.10〜1.14 | 0.26・0.15・0.10・0.07（等方的な $t$ との差は約 0.03 小さい） | 0（$g$ をどの見える部分からも推定できれば） |
+
+健全な解の予測の損失を $\ell_H$（座標あたり、0〜1 程度）とする。比べるのは、目的の式の大域的な最小どうしの値で、学習の動きの議論ではない（V18 と同じ）。
+
+1. **定数と位置だけの関数**: V18 と同じく $\lambda > \ell_H / (\ell_H + 51.3)$ で排除される
+2. **$W$ の条件数**: $W$ は正方のガウスなので特異値が 0.0012〜2.0 に広がる。SIGReg の理想は $\mathrm{Cov}(\mathrm{vec}\,t) = (W^\top W)^{-1}$ で、極端に偏っている。しかし等方的な $t$ の超過は約 0.03（$r_2 \approx D/2$）で、$N$ = 128 の SIGReg は $W$ の偏りをほとんど見分けない。健全な解として等方的な $t$ を置いてよい
+3. **典型の K3（$d$ = 16）**: どのトークンも stack 全体の符号 $u$ を丸ごと持ち、$t_p = A_p u$ とすると、$\mathrm{vec}(t)$ は 16 次元の部分空間に入り、$z$ の広がりはランク 16 に縮む。超過は約 1.9 で、排除されるのは $\lambda > \ell_H/(\ell_H + 1.9)$ のとき（$\ell_H$ = 0.3・0.5・1 で 0.14・0.21・0.34）。**掃引の $\lambda \ge 0.5$ では、K3 は目的の最小値にならない。** V18 の P16（$d$ = 64、超過 0.5）より 4 倍近く強く罰せられ、V18b の F（$d$ = 4、超過 7.3）より弱い。$A_p$ を位置ごとの直交行列にしてもスペクトルは同じで、$S$ も同じ（2.88）。固定の $R$ は $h_p$ の 16 次元の像しか見ないが、エンコーダは $R h_p = A_p u$ となる $h_p$ を作れるので、K3 の族の形は $R$ で制限されない
+4. **射影なし（$d$ = 1024）の K3 は穴になる**: トークンが 1024 次元あれば、$u \in \mathbb{R}^{1024}$ をどのトークンにも丸ごと持たせられる。$z = (\sum_p W_p A_p) u$ の写像は正方のガウスと同じ分布なので、$S$ は等方的な $t$ と同じ 1.08 になり、$L_{\mathrm{pred}} = 0$ と両立する。**どの $\lambda < 1$ でも、K3 が目的の最小値になる**（V18b の M と同じ形）。$d$ を小さくするのは、この穴を閉じるためである（ユーザーの決定の理由）
+5. **固定の $R$ と H-target**: 学習する $P$ は、$h_p$ のうち見える部分から当てやすい方向を選んで的にできる（Codex さんの H-target の一部）。固定の $R$ にはその自由がない。ただしエンコーダは $h_p$ そのものを変えられるので、H-target の道（当てにくい内容を $h_p$ から捨てる）は閉じない。$R$ の零空間（1008 次元）にある $h_p$ の成分は、標的側の損失からは制約されない（文脈側の計算と予測器の入力を通してだけ効く）。評価の `h_mean`・`h_pool` は、この成分も含めて測る
+6. **大域の解は、どの案でも残る**: 見えるトークン全体で $q$ 次元の大域の符号 $g$ を分け持ち、トークンごとに違う読み出し $B_p$ で表す符号は、$q$ が大きいほど SIGReg に罰せられない。$L_{\mathrm{pred}} = 0$ にするには、隠した位置の $B_p g$ が見えるトークンから決まる必要があり、$q \le$ 見える数 × $d$（$r$ = 0.25・0.5・0.75 で 768・512・256）である。超過は 0.07〜0.15 しかない（等方的な $t$ との差は 0.04〜0.12）。排除されるのは $\lambda > \ell_H / (\ell_H + e)$ のときで、$e$ = 0.05 なら $\ell_H$ = 0.5 で $\lambda > 0.91$。**$\lambda$ = 0.95 だけが、$\ell_H \lesssim 0.9$ の範囲でこの解を目的の最小値から外す。** $\lambda$ = 0.5 と 0.8 では、$\ell_H \ge 0.5$ なら外さない。ただし、この解が $L_{\mathrm{pred}} = 0$ になるのは、$g$ の中身がどの見える部分からも推定できるときだけで、どこまで推定できるかはデータが決める。トークンごとの `token_r2` は約 $d/q$（$q$ = 768 で 0.02）と小さく、K3 の検査に掛からない。そのため崩壊の検出（`token_r2`・`rho_in`・`rank`）に加えて、評価の側の `swap`（大域の符号だけなら 50%、Fable さんの導出）で見張る
+7. 学習の動き: 1 標本あたりの勾配の重みの比は $\lambda B / (1 - \lambda)$ で、$\lambda \ge 0.5$ では 128 以上になる（V18 と同じ尺度）。どの解に向かうかは導出だけでは決まらない
+
+**テストのオラクルにする値**（$N$ = 128、$M$ = 1024、方向と標本を 16 回引き直した平均。許容の幅は 1 回の引きの標準偏差 / $\sqrt{16}$ の 4 倍より広くとる）
+
+- 健全 $z \sim N(0, I)$: 1.06 ± 0.05。定数: 52.3（$0.409 N$、台形則の誤差の中）
+- 等方的な $t$ を $W$ で写したもの: 1.07〜1.09。健全な値との差が 0.08 未満
+- $d$ = 16 の K3（$A_p = I$ と、位置ごとの直交行列）: 2.6〜3.4。両者の差が 0.3 未満
+- $d$ = 1024 の K3（射影なし）: 健全な値との差が 0.08 未満（穴があることの確かめ）
+- 大域の解: $q$ = 128 で 1.2〜1.45。$q$ = 128・256・768 で $S$ が小さくなっていく（それぞれの間に 0.04 以上の差）
+- $a^\top \Sigma a$ の相対的な標準偏差（ランク 16、$D$ = 1024、$10^4$ 本の方向）: 0.351 ± 0.01
+
+### 学習（`jepa.py`・`jepa_iid.py` の変更）
+
+- **定数**: `jepa.py` に `PROJ_KINDS = ("learned", "fixed")`、`LATENT_DIM = 1024`、`R_SEED = 67` を足し、`SIGREG_ON` に `"mix"` を足す。`W_SEED` = 61 は `exp/lib/randproj.py` のものを使う
+- **モジュール**: `FixedProj(weight)`（buffer `weight` (d, w) = $R$、$t = h R^\top$）と `Mix(weight)`（buffer `weight` (D, td) = $W$、$z = \mathrm{vec}(t) W^\top$）。`JEPAModules` に `mix: nn.Module | None = None` を足し、`proj` の型を `nn.Module` にする。`modules()` は `mix` があるときだけ `"mix"` を含める。`tokens(stacks)` は $t$（`proj` の出力）、`mu(stacks)` は `mix` があれば $W\,\mathrm{vec}(t)$、なければ V18 のとおり $\mathrm{vec}(t)$
+- **`build_jepa`**: `proj: str = "learned"`、`latent_dim: int | None = None` を足す。`proj="fixed"` なら $R$ を上の規則で作る（μP の $k_w^{-1/2}$ は掛けない）。`latent_dim` が整数なら $W$（`latent_dim` × $T d$）を作る。既定のままなら V18・V18b と同じ
+- **`sigreg_points(tokens, on, mix=None)`**: `"mix"` なら `mix(tokens.flatten(1))`（$(B, D)$）。`jepa_terms` は `mods.mix` を渡す。`"mix"` で `mix` がなければ `ValueError`
+- **引数**（`jepa_iid`）: `--proj {learned,fixed}`（既定 `learned`）、`--sigreg-on {flat,mean,mix}`（既定 `flat`。`mix` のとき $W$ を作る）。V18c の run は `--patch 8 --token-dim 16 --proj fixed --sigreg-on mix`。既定のままなら V18・V18b とまったく同じ計算になる（既存のテストで確かめる）
+- **`jepa.json`**: V18b の項目に `proj`、`latent_dim`（`mix` のとき 1024、ほかは `null`）、`seeds.r`（`fixed` のとき 67）と `seeds.w`（`mix` のとき 61）を足す。`fixed` のときの `seeds.proj` は使わないので `null` にする。`sigreg_dim` は $D$ = 1024
+- **`train.jsonl`**: V18b の列（`loss`・`pred`・`sigreg`・`grad_norm`・`z_var`・`rho_in`・`zbar_var`、`lr`・`sec`・`max_mem`）。`z_var` と `rho_in` は $t$ のもの。`mix` の run だけ `mix_var`（$z = W\,\mathrm{vec}(t)$ の座標ごとの分散の平均。SIGReg の目標は 1）を足す
+- **checkpoint の時刻**: V18 と同じ（$t = 12.8 s$ 秒）。短い run（掃引）は step 0・1000・2000・4000・6000（$t$ = 0・12800・25600・51200・76800 秒）。長い run は V18 の `LONG_CKPT`（0・2000・6000・10000・20000・30000・40000・50000・60000）。長い run の step 数が 60000 より小さくなったときは V18b の規則（0・2000・6000 と $s_{\mathrm{long}} j/6$ を 2000 の倍数に切り下げたもの）
+- **出力** `<out>/`: V18 と同じ形（`config.yaml`、`jepa.json`、`train.jsonl`、`ckpt/<t>.pt`）。ckpt の modules は `encoder`・`proj`・`predictor`・`mix`
+- 損失が有限でなくなったら止める（V18 と同じ）
+
+```bash
+python -m exp.vision.jepa_iid --patch 8 --token-dim 16 --proj fixed --sigreg-on mix \
+    --mask-ratio 0.5 --lam 0.8 --lr 3e-5 --steps 6000 --out <run_dir>
+```
+
+### 評価（`jepa_eval.py`・`jepa_diag.py` の変更、学習の側で使うもの）
+
+- **run の読み方**: `build_run_jepa` が `jepa.json` の `proj`・`sigreg_on`・`token_dim`・`latent_dim` を読む（記録がなければ V18 の既定）。V18c の符号は `ARM_CODES["mix"] = ("z", "h_mean")`。`z` は `JEPAModules.mu` = $W\,\mathrm{vec}(t)$、その `tokens` は $t_p$（16 次元 × 64 個）
+- **崩壊の量**: `sigreg_heldin`・`sigreg_zurich`・`z_var`・`participation` は $z$ で、`token_r2`（順序つきの組 64 × 63 = 4032 組）・`rho_in` は $t_p$ で測る（`CodeStats.of` はそのまま使える）。`rank` は probe の $z$ の実効ランク
+- **予測**: `CodeStats.pred` の `pred`・`pred_ratio`・`pred_ratio_calib` は $t$ の空間（`mods.proj` = $R$、`expand` = 2 で広げた固定のマスク）。変更は要らない
+- **`drift`**: `embed_drift`・`block_drift`（V18b と同じ）
+- **probe**（`StreamEvaluator.probes`、6000 組）: 符号 `z` と `h_mean` を step 2000・6000 にかけ、`rank`（K2）と、並べるだけの `dyn_1/copy_1`・`recon_blur` を出す。長い run は step 6000・20000・60000 と、`h_pool`（$h$ を 2×2 のブロックごとに平均した 16 × 1024 = 16384 次元）を step 0・6000・20000・60000
+- **Imagenette**（`jepa_diag imagenette`、std-01）: `h_mean` と `z`。短い run は step 0（1 回）と 6000、長い run は全 checkpoint
+- **物差し**（`jepa_eval --yardsticks --patch 8 --token-dim 16 --proj fixed --sigreg-on mix`、1 回だけ）: `init_c`（V18c の step 0 の `z`、トークンは $t$。掃引の 9 本と第 2 段は seed 0 で同じ初期値）、`init_c_h_mean`、`color8`（パッチ 8 のパッチごと・チャネルごとの画素の平均、64 × 24 = 1536 次元、`ColorCode(8)`）。V18 の物差し（`color`・`v16`・`v17`）は `runs/v18-baselines/` の値を使う
+- **新しい評価への引き継ぎ**: 主の指標（生成した画像の同定）は $z$ にかける。E1 は予測の的が $t_p$ なので、$h$ を $t$ に読み替える。E1g は、隠した位置を $\hat t$ で埋めた $\tilde t$ から $\tilde z = W\,\mathrm{vec}(\tilde t)$ を作り、全体の $z$ で学んだデコーダに入れる（`JEPAModules.mix` で計算できる）。どちらも checkpoint だけからかけられる
+- **出力**: run の `posthoc_jepa/`、`posthoc_diag/`（`h_pool`）、Imagenette は `runs/v18c-imagenette/`、物差しは `runs/v18c-baselines/posthoc_jepa/`
+
+### 実装のテスト（理論のオラクル、V18・V18b のテストに足すもの）
+
+- **$R$・$W$**: 形が (16, 1024)・(1024, 1024)。run の seed（0 と 1）によらず同じ値で、`gaussian_projection(16, 1024, 67)`・`gaussian_projection(1024, 1024, 61)` とちょうど一致する。要素の標本の標準偏差が $1/\sqrt{1024}$ の ±1% の中。`JEPAModules.parameters()` と optimizer の param group に入らない。2 step 学習した後も、ビットまで同じ。**checkpoint に保存した $R$・$W$ が、seed から作り直したものとちょうど一致する**（保存と再現の両方を確かめる）。V18・V18b の形の run（`mix` なし）の checkpoint が、変更後のコードでそのまま読める
+- **写像の式**: `mu` が `tokens(x).flatten(1) @ W.T` とちょうど一致する。`vec` の順が $\mathrm{vec}(t)_{16p + i} = t_{p,i}$。等方的な $\mathrm{vec}(t)$（$10^4$ 標本）で $z$ の座標の分散の平均が 1 ± 0.02（$\mathrm{tr}(W W^\top)/D$ に一致する値、正規化の確かめ）
+- **SIGReg**: 上の「テストのオラクルにする値」と、方向の分散の相対的な標準偏差 0.351
+- **マスク**: `Q`（4 通り）・`H`（4 通り）・`R`（1 通り）が、それぞれ `mask_family(4|8|12, 4)` の行に含まれる。`expand_masks(·, 2)` が $4k$ 個を隠し、粗いマスクを 16 画素・広げたマスクを 8 画素に拡大した 64×64 の画素のマスクがちょうど一致する。広げた `R` は中央の 4×4 だけを見せる
+- **パッチ 8 の形**: トークンが 64 個、`PatchEmbed` の fan-in が 1536、予測器の位置の符号が 8×8。文脈側で、隠した位置の画素を変えても出力が変わらない
+- **初期値**: パッチ 8 のエンコーダのブロックが、同じ seed・パッチ 8 の `build_vae` のものと一致する。予測器が、同じ seed・$d$ = 16 の学習する射影の run と一致する
+- **損失**: 手で計算できる小さな例で、$L_{\mathrm{pred}}$ の正規化（$B k_{\mathrm{fine}} d$）と $S = \mathrm{SIGReg}(W\,\mathrm{vec}(t))$ が一致する。標的側の $t$ に $L_{\mathrm{pred}}$ と $S$ の両方の勾配が届く
+- **既定の値で V18 と同じ**: `--proj learned --sigreg-on flat` で、小さな設定の 2 step の損失と勾配が変更前と一致する（V18b のテストをそのまま通す）
+- **評価**: V18c の `jepa.json` から `build_run_jepa` が `mix` つきのモジュールを作り、checkpoint を読める。`z` の符号の `tokens` が $t$（16 次元）
+
+### 実行
+
+- **GPU の選び方**: 同じ GPU を評価の側の workflow も使う。ジョブを置く前に `nvidia-smi` で他のプロセスが無い GPU を選び、1 GPU に 1 本にする
+- **試し**（空いている 4090 と 4060 を 1 枚ずつ）: $r$ = 0.25（見える数が最多で最も重い）・学習率 $10^{-4}$・$\lambda$ = 0.5 で 200 step。40〜200 step の平均の秒 / step（4090 で $t_8$、4060 で $t_8'$）と `max_mem` を測る。`max_mem` が GPU のメモリの 92%（4090 で 22 GB、4060 で 7.3 GB）を超えるか落ちたら、その GPU では `--checkpoint-blocks` で測り直す。4090 の試しの run に `jepa_eval --probe-steps 200` をかけ、その時間の 2 倍を $e_8$（短い run 1 本の評価）とする。mini-00 は 100 step の煙の試しにだけ使ってよい（共有のホストなので、他のコンテナとシステムには触れない）
+- **見込み**: パッチ 8 の線形の計算は P16 の 4 倍、注意の行列は 16 倍（トークンあたりの計算の約 1%）なので、4090 の $t_8$ は 0.10〜0.20 秒 / step（P16 の 0.036〜0.060 と パッチ 4 の 0.49〜0.56 の間）、6000 step は 10〜20 分とみる。メモリは パッチ 4 の 21.4 GB の約 4 分の 1 で 4〜7 GB とみる（4060 に載るかは試しで決める）
+- **置き場所**: 4090 を先に使う。4060 は、試しで載り、1 本の時間（$6000 t_8' + e_8'$）が 4090 の 3 倍以下のときだけ使う
+- **環境**: V18 と同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`、`just fleet x` で、この worktree の checkout の snapshot の `code/<snap>` から走らせる）。Imagenette のデータは std-01 の `/data/geson/mujou-exp/.fleet/imagenette/u8` だけにある
+- **名前**: `v18c-lr<lr>-lam<λ>-r<r>-s<seed>`、長い run は `v18c-long-lr<lr>-lam<λ>-r<r>-s<seed>`。NAS の `/nas/geson/mujou-exp/runs/v18c-trial/`・`v18c-screen/`・`v18c-long/`・`v18c-baselines/`・`v18c-imagenette/` に置き、ckpt を除いて `./runs/` に pull する
+- **集計**: `exp/vision/results/v18c/judge.py` に、README の規則（崩壊・判定保留・短い run の合格・第 2 段の選び方）をそのまま書き、表を出す。長い run の選び方は、新しい評価の数値が届いてから同じスクリプトに足す（規則は README に先に書いてある）
 
 ## V19: ストリームで標準の SIGReg
 
