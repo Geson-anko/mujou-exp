@@ -1,6 +1,6 @@
 # vision: 単一ストリームから PC-ALM で VAE のエンコーダを学ぶ
 
-計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V10 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。V11〜V15（optimizer の研究）と V16（同じモデルを普通の深層学習で学んだ結果）は、図と表で読める [report-optim.html](report-optim.html) にまとめた。V17（1 本のストリームを 480 万 stack まで見せた結果と、連続する stack をまとめる学び方の検証）は [report-long.html](report-long.html) にまとめた。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
+計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V10 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。V11〜V15（optimizer の研究）と V16（同じモデルを普通の深層学習で学んだ結果）は、図と表で読める [report-optim.html](report-optim.html) にまとめた。V17（1 本のストリームを 480 万 stack まで見せた結果と、連続する stack をまとめる学び方の検証）は [report-long.html](report-long.html) にまとめた。V18・V18b（BP と i.i.d. なミニバッチで JEPA を学んだ結果）と、JEPA の計画の全体と今後の進め方は、図と表で読める [report-jepa.html](report-jepa.html) にまとめた。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
 
 ## 実行方法
 
@@ -2618,7 +2618,7 @@ zurich の値。`recon_blur` と dyn（`dyn_1/copy_1`）は判定の符号、`ca
 | F、seed 0 | なし | 0.412 | 0.466 | 0.634 | +0.222 | 0.012 | 1.050 | 1.162 | 0.591 | 0.271 | × | × |
 | F、seed 1 | なし | 0.333 | 0.379 | 0.596 | +0.263 | 0.019 | 1.050 | 1.207 | 0.579 | 0.268 | × | × |
 | M、seed 0 | K3 | 0.239 | 0.309 | 0.388 | +0.150 | 0.010 | 1.144 | 1.112 | 0.211 | 0.191 | × | × |
-| M、seed 1 | K3 | 0.252 | 0.291 | 0.371 | +0.120 | 0.010 | 1.169 | 1.126 | 0.210 | 0.193 | × | × |
+| M、seed 1 | K3 | 0.251 | 0.291 | 0.371 | +0.120 | 0.010 | 1.169 | 1.126 | 0.210 | 0.193 | × | × |
 | P16、seed 0（V18） | なし | 0.450 | 0.616 | 0.594 | +0.144 | 0.014 | 0.945 | 1.101 | 0.468 | 0.189 | × | × |
 | P16、seed 1（V18） | なし | 0.468 | 0.613 | 0.649 | +0.181 | 0.020 | 0.985 | 1.134 | 0.426 | 0.198 | × | × |
 | 物差し `color` | | 0.417 | | | | | 0.109 | | | | | |

@@ -1,0 +1,1056 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JEPA を BP で学ぶ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one reading column of about 46em; figures widen to 60em. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #13171e;
+  --ink-2: #4b5462;
+  --ink-3: #6f7886;
+  --rule: #d7dce4;
+  --grid: #e6e9ee;
+  --accent: #2a78d6;
+  --monitor: #0d1015;
+  --monitor-ink: #c9d1dc;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --neutral: #9aa3af;
+  --good: #0a7d0a;
+  --bad: #c03434;
+  --warn: #9a6400;
+  --good-bg: #e3f3e3;
+  --bad-bg: #fbe5e5;
+  --warn-bg: #fbf0d9;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+    --rule: #2b313a; --grid: #232830; --accent: #3987e5; --monitor: #07090c; --monitor-ink: #c9d1dc;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+    --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+    --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+  --rule: #2b313a; --grid: #232830; --accent: #3987e5; --monitor: #07090c; --monitor-ink: #c9d1dc;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+  --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+  --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.85;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+.col { max-width: 46rem; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.35; margin: 0; }
+h1 { font-weight: 900; font-size: clamp(1.9rem, 5vw, 2.8rem); letter-spacing: 0.01em; }
+h2 { font-weight: 900; font-size: 1.55rem; }
+h3 { font-weight: 700; font-size: 1.1rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--grid); padding: 0.05em 0.35em; border-radius: 3px; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+section { display: flex; flex-direction: column; gap: 20px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-3); text-transform: uppercase; }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-top: 2px solid var(--ink); padding-top: 14px; }
+.prose { display: flex; flex-direction: column; gap: 14px; max-width: 46rem; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 0.88rem; }
+
+header.hero { padding-top: 48px; display: flex; flex-direction: column; gap: 18px; }
+.hero .lead { font-size: 1.12rem; max-width: 44rem; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-3); }
+.meta span b { color: var(--ink-2); font-weight: 500; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.9rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 14px; }
+.finding { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.finding .k { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-3); letter-spacing: 0.06em; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); line-height: 1.7; max-width: 46rem; }
+.fig-title { font-weight: 700; font-size: 0.95rem; }
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { font-family: var(--font-mono); fill: var(--ink-3); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.84rem; color: var(--ink-2); }
+.legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; }
+.duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 22px; }
+.duo > * { min-width: 0; }
+
+/* the video monitor */
+.monitor { background: var(--monitor); color: var(--monitor-ink); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.screens { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+.screen { display: flex; flex-direction: column; gap: 6px; }
+.screen .lab { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.05em; color: #8e98a6; }
+.screen canvas { width: 208px; height: 208px; max-width: 100%; border: 1px solid #27303b; display: block; }
+#pix { image-rendering: pixelated; }
+.readout { font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.75; color: #aeb8c5; display: flex; flex-direction: column; min-width: 12rem; }
+.readout b { color: #eef2f6; font-weight: 500; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls button { font: inherit; font-size: 0.84rem; background: #1b222b; color: #dbe2ea; border: 1px solid #343e4b; border-radius: 4px; padding: 5px 12px; cursor: pointer; }
+.controls button[aria-pressed="true"] { background: #2a78d6; border-color: #2a78d6; color: #fff; }
+.controls button:focus-visible, .controls input:focus-visible { outline: 2px solid #86b6ef; outline-offset: 2px; }
+.controls input[type=range] { flex: 1 1 10rem; accent-color: #3987e5; }
+.strip svg text { font-family: var(--font-mono); fill: #8e98a6; }
+
+/* timeline */
+ol.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-width: 46rem; }
+ol.timeline li { display: grid; grid-template-columns: 6.5rem 1fr; gap: 14px; padding: 12px 0; border-top: 1px solid var(--rule); }
+ol.timeline li:last-child { border-bottom: 1px solid var(--rule); }
+ol.timeline .when { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-3); padding-top: 3px; }
+ol.timeline .what { min-width: 0; }
+
+/* tables */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 0.88rem; width: 100%; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 700; color: var(--ink-2); font-size: 0.8rem; }
+td.num, th.num { text-align: right; }
+.chip { display: inline-block; font-size: 0.78rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.ok { background: var(--good-bg); color: var(--good); }
+.chip.ng { background: var(--bad-bg); color: var(--bad); }
+.chip.mid { background: var(--warn-bg); color: var(--warn); }
+
+/* status matrix */
+.matrix td, .matrix th { text-align: center; }
+.matrix th:first-child, .matrix td:first-child { text-align: left; }
+
+/* dot plot */
+.dots { display: flex; flex-direction: column; }
+.dots .row { display: grid; grid-template-columns: minmax(7rem, 12rem) 1fr 1fr; gap: 12px; align-items: center; min-height: 30px; border-bottom: 1px solid var(--grid); }
+.dots .row.head { border-bottom: 1px solid var(--rule); min-height: 0; padding-bottom: 6px; align-items: end; }
+.dots .row.group { border-bottom: none; padding-top: 12px; min-height: 0; }
+.dots .group span { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.dots .name { font-size: 0.84rem; line-height: 1.35; min-width: 0; }
+.dots .track { position: relative; height: 26px; min-width: 0; }
+.dots .track svg { width: 100%; height: 26px; display: block; overflow: visible; }
+.dots .axis { position: relative; height: 34px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-3); }
+.dots .axis span { position: absolute; bottom: 0; transform: translateX(-50%); white-space: nowrap; }
+.dots .axis .t { bottom: 16px; font-family: var(--font-body); font-size: 0.78rem; color: var(--ink-2); font-weight: 700; transform: none; left: 0; }
+.dots .fail { font-size: 0.76rem; color: var(--bad); font-weight: 700; line-height: 26px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px; }
+.tile .big { font-family: var(--font-mono); font-size: 1.7rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tile .sub { font-size: 0.84rem; color: var(--ink-2); }
+
+dl.terms { display: grid; grid-template-columns: minmax(7rem, 9rem) 1fr; gap: 10px 18px; margin: 0; max-width: 46rem; }
+dl.terms dt { font-family: var(--font-mono); font-size: 0.86rem; font-weight: 500; padding-top: 2px; }
+dl.terms dd { margin: 0; min-width: 0; }
+
+.diagram svg { display: block; width: 100%; height: auto; max-width: 46rem; }
+.diagram text { font-family: var(--font-body); fill: var(--ink); }
+.diagram .m { font-family: var(--font-mono); fill: var(--ink-3); }
+
+#tip { position: fixed; pointer-events: none; z-index: 20; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; font-family: var(--font-mono); font-size: 0.74rem; line-height: 1.55; box-shadow: 0 4px 14px rgba(0,0,0,0.12); max-width: 18rem; }
+pre.cmd { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.7; margin: 0; }
+@media (max-width: 560px) {
+  ol.timeline li { grid-template-columns: 1fr; gap: 2px; }
+  dl.terms { grid-template-columns: 1fr; gap: 2px 0; }
+  dl.terms dd { margin-bottom: 10px; }
+  .dots .row { grid-template-columns: 5.5rem 1fr 1fr; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+/* additions for exp/vision: the optimizer colors (SGD s1, momentum s2, RMSProp s3, AdamW s4) */
+:root { --s4: #6250d6; --shade: rgba(42, 120, 214, 0.07); --n-in: #eef1f5; --n-enc: #e3eefb; --n-lat: #fbeedd; --n-dec: #e2f4ec; --n-out: #e2f4ec; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --s4: #8a7cf0; --shade: rgba(57, 135, 229, 0.12); --n-in: #20252c; --n-enc: #1b2a3d; --n-lat: #3a2c18; --n-dec: #17332a; --n-out: #17332a; }
+}
+:root[data-theme="dark"] { --s4: #8a7cf0; --shade: rgba(57, 135, 229, 0.12); --n-in: #20252c; --n-enc: #1b2a3d; --n-lat: #3a2c18; --n-dec: #17332a; --n-out: #17332a; }
+.chart text, .diagram text { fill: var(--ink-2); font-family: var(--font-mono); }
+.chart text.lbl, .diagram text.lbl { fill: var(--ink-3); font-family: var(--font-body); }
+.diagram text { font-family: var(--font-body); fill: var(--ink); }
+.diagram text.m { font-family: var(--font-body); fill: var(--ink-3); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8rem; color: var(--ink-2); margin-bottom: 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend svg { flex: none; }
+h3.subhead { margin-top: 12px; }
+
+/* images with row labels */
+.recon { display: grid; grid-template-columns: 7.5rem 1fr; gap: 10px; align-items: stretch; }
+.recon .rows { display: grid; grid-template-rows: repeat(3, 1fr); font-size: 0.78rem; color: var(--ink-2); line-height: 1.35; }
+.recon .rows span { display: flex; align-items: center; border-top: 1px solid var(--rule); }
+.recon .rows span:first-child { border-top: none; }
+.recon img, .strip-row img { width: 100%; height: auto; display: block; border-radius: 3px; min-width: 0; }
+.strips { display: flex; flex-direction: column; gap: 10px; }
+.strip-row { display: grid; grid-template-columns: 7.5rem 1fr; gap: 10px; align-items: center; }
+.strip-row .lab { font-size: 0.84rem; font-weight: 700; line-height: 1.4; }
+
+/* segmented buttons and the slider */
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { font: inherit; font-size: 0.82rem; background: var(--panel); color: var(--ink-2); border: 1px solid var(--rule); border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg button:focus-visible, .controls-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.controls-row input[type=range] { flex: 1 1 12rem; accent-color: var(--accent); }
+
+/* dot plots: HTML dots on tracks */
+.dots { overflow-x: auto; }
+.dots .row { min-width: 34rem; }
+.dots .track { position: relative; height: 26px; }
+.dots .track .ref { position: absolute; top: 2px; bottom: 2px; border-left: 1px dashed var(--ink-3); }
+.dots .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--c); border: 2px solid var(--c); cursor: default; }
+.dots .dot.hollow { background: var(--panel); }
+.dots .dot.out { border-radius: 2px; }
+.dots .row > div:last-child { display: flex; align-items: center; }
+
+details.full { max-width: 60rem; }
+details.full summary { cursor: pointer; color: var(--accent); font-size: 0.92rem; }
+details.full table { font-size: 0.78rem; }
+details.full td, details.full th { padding: 6px 8px; white-space: nowrap; }
+.prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 560px) {
+  .recon, .strip-row { grid-template-columns: 4.6rem 1fr; gap: 6px; }
+  .recon .rows { font-size: 0.66rem; }
+}
+.chart .legend svg { width: 22px; height: 10px; display: inline-block; overflow: visible; }
+.dots .track, .dots .axis { margin: 0 14px; }
+@media (max-width: 560px) { .chart svg { min-width: 540px; } }
+/* column rules */
+th + th, td + td { border-left: 1px solid var(--rule); }
+table { border-top: 1px solid var(--rule); }
+.dots .track, .dots .axis { position: relative; }
+.dots .track::before, .dots .axis::before { content: ""; position: absolute; left: -8px; top: -3px; bottom: -3px; border-left: 1px solid var(--rule); }
+.dots .row.head .axis::before { top: -6px; bottom: -7px; }
+.dots .row > div:last-child { border-left: 1px solid var(--rule); padding-left: 8px; align-self: stretch; }
+.dots .row.group > span { border: none; }
+.grid15 { border-collapse: separate; border-spacing: 4px; width: 100%; min-width: 34rem; }
+.grid15 th { font-weight: 500; font-size: 0.82rem; color: var(--ink-2); text-align: center; background: none; border: 0; padding: 2px; }
+.grid15 td { border: 1px solid var(--rule); border-radius: 6px; padding: 6px 4px; text-align: center; vertical-align: middle; line-height: 1.35; }
+.grid15 td .s { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.98rem; font-weight: 500; }
+.grid15 td .z { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-2); display: block; }
+.grid15 td .v { font-size: 0.72rem; display: block; }
+.grid15 td.ok { outline: 2.5px solid var(--good); outline-offset: -2px; }
+.scatter svg { width: 100%; height: auto; display: block; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+</style>
+<style>
+.recon { grid-template-columns: 7.5rem 1fr; }
+.chunkfig text { font-family: var(--font-body); fill: var(--ink); font-size: 13px; }
+.chunkfig text.m { fill: var(--ink-3); font-size: 12px; }
+.chart .legend svg { min-width: 0; }
+</style>
+<style>
+.plan td:first-child { font-family: var(--font-mono); font-weight: 500; white-space: nowrap; }
+.plan tr.done td { background: none; }
+.plan tr.now td { background: var(--warn-bg); }
+.cell { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.cell .chip { margin-left: 4px; }
+.sweep td, .sweep th { text-align: center; white-space: nowrap; }
+.sweep td:first-child, .sweep th:first-child { text-align: left; }
+.jepafig text { font-family: var(--font-body); fill: var(--ink); font-size: 13px; }
+.jepafig text.m { fill: var(--ink-3); font-size: 11.5px; }
+.jepafig .box { stroke: var(--rule); stroke-width: 1; }
+.jepafig .arrow { stroke: var(--ink-3); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+.quad { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+@media (max-width: 760px) { .quad { grid-template-columns: minmax(0, 1fr); } }
+.findings { grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+.tablewrap > table { min-width: 36rem; }
+.quad > * { min-width: 0; }
+.recon { grid-template-columns: 7.5rem 1fr; }
+.recon .rows { grid-template-rows: repeat(2, 1fr); }
+</style>
+<body>
+<main>
+<header class="hero">
+  <div class="eyebrow">mujou-exp · exp/vision · V18・V18b · 2026-11-23〜24</div>
+  <h1>誤差逆伝播と i.i.d. なミニバッチなら、JEPA は良い表現を学べるか</h1>
+  <p class="lead">V17 までに、同じ ViT で VAE を学べることを、普通の学習でもストリームの PC-ALM でも確かめました。この資料は、検証の対象を JEPA に移した最初の 2 段（V18・V18b）の結果です。誤差逆伝播（BP）と i.i.d. なミニバッチという最も素直な条件で、JEPA の表現に入力の情報が残るかを調べました。最後に、ここまでの計画と、これからの進め方をまとめます。</p>
+  <div class="meta">
+    <span><b>学習則</b> BP + AdamW（参照の条件）</span>
+    <span><b>mujou</b> 5aa3773</span>
+    <span><b>モデル</b> ViT-S・幅 1024・μP・early fusion</span>
+    <span><b>run</b> 掃引 18 + 33 本、長い run 4 + 4 本</span>
+    <span><b>PR</b> Geson-anko/mujou-exp#33</span>
+    <span><b>計算</b> RTX 4090 × 4、RTX 4060 × 4、RTX 5070 Ti</span>
+  </div>
+  <nav class="toc" aria-label="目次">
+    <a href="#findings">分かったこと</a>
+    <a href="#plan">計画の全体</a>
+    <a href="#setup">実験の仕組み</a>
+    <a href="#path">進め方</a>
+    <a href="#v18-screen">V18 掃引</a>
+    <a href="#v18-long">V18 長い run</a>
+    <a href="#diag">V18 診断</a>
+    <a href="#v18b-design">V18b の問い</a>
+    <a href="#v18b-screen">V18b 掃引</a>
+    <a href="#v18b-long">V18b 長い run</a>
+    <a href="#images">描き戻した画像</a>
+    <a href="#verdict">予想の判定</a>
+    <a href="#next">今後の進め方</a>
+    <a href="#repro">再現</a>
+  </nav>
+</header>
+
+<section id="findings" aria-labelledby="h-findings">
+  <div class="sec-head"><div class="eyebrow">結論</div><h2 id="h-findings">分かったこと</h2></div>
+  <div class="findings">
+    <article class="finding">
+      <div class="k">V18</div>
+      <h3>崩壊はしないが、学ぶほど描き戻しが悪くなる</h3>
+      <p>768 万 stack まで学んでも、発散も崩壊もせず、JEPA の目的の値は下がり続けました。しかし、表現 <i>z</i> から Zurich の画像を描き戻す誤差は、6000 step の 0.44〜0.47 から 60000 step の 0.56〜0.65 に上がりました。学習前の ViT（0.223）にも、パッチごとの平均の色（0.417）にも負けています。</p>
+    </article>
+    <article class="finding">
+      <div class="k">V18 · 診断</div>
+      <h3>エンコーダの出力も、学習の初めに細部を失う</h3>
+      <p>射影の前のエンコーダの出力 <code>h_flat</code> も、学習前の 0.106〜0.109 から 60000 step の 0.27〜0.32 に悪くなりました。悪化の大半は最初の 6000 step で起きています。情報を捨てたのは、射影だけではありません。</p>
+    </article>
+    <article class="finding">
+      <div class="k">V18b · 問い 1</div>
+      <h3>トークンを細かくしても、悪化は止まらない</h3>
+      <p>パッチを 16 から 4 にして、トークンを 16 個から 256 個にしました。それでも、6000 step から 60000 step にかけて描き戻しの誤差は +0.222・+0.263 上がりました。パッチ 16 の +0.162 より小さくなりません。「トークンが粗いから」という仮説（H-coarse）は棄却されました。</p>
+    </article>
+    <article class="finding">
+      <div class="k">V18b · 問い 2</div>
+      <h3>トークン平均だけの SIGReg は、導出どおり崩れる</h3>
+      <p>SIGReg をトークンの平均にだけかけると、stack の中の全トークンが同じになる崩壊（K3）に進みました。一方、細かいトークンの腕 F では、Imagenette の線形 probe が 50.8% から 58.3〜59.4% に上がりました。静止画のクラスは読みやすくなりましたが、画素の細部は失われています。</p>
+    </article>
+  </div>
+</section>
+
+<section id="plan" aria-labelledby="h-plan">
+  <div class="sec-head"><div class="eyebrow">1</div><h2 id="h-plan">計画の全体と、いまの位置</h2></div>
+  <div class="prose">
+    <p><b>ねらい</b>　mujou で最終的に確かめたいのは、1 本の動画のストリームから、ノードごとの局所的な学習則（PC-ALM）で JEPA を学べるかです。JEPA は、見えている部分の表現から、隠した部分の表現を当てる学び方です。表現が 1 点に潰れないように、表現の分布を標準正規分布に近づける正則化（SIGReg）を加えます。</p>
+    <p><b>この順序にした理由</b>　以前の実験（<code>exp/video</code> の M17）では、BP で学べることを確かめないまま、ストリームでの崩壊への対処に追われました。そのため、学べない原因が、実装・学習の設定・ストリームの時間相関のどれなのかを分けられませんでした。そこで VAE（V16 → V17）と同じく、まず普通の学習で学べることを確かめ、そこから 1 段ごとに条件を 1 つずつ変えます。各段では、回す前に判定の規則と予想を README に書きます。判定が外れたら、次の段に進まずに原因を調べます。</p>
+  </div>
+  <div class="tablewrap">
+    <table class="plan">
+      <thead><tr><th>段</th><th>変えるもの</th><th>問い</th><th>状況</th></tr></thead>
+      <tbody>
+        <tr class="done"><td>V18</td><td>BP + AdamW、i.i.d. なミニバッチ、標準の SIGReg</td><td>モデル・目的・評価は正しいか。JEPA の上限の目安を得る</td><td><span class="chip ng">規則 5 を満たさず</span> 長く学ぶほど悪くなった</td></tr>
+        <tr class="done"><td>V18 診断</td><td>学習は回し直さず、評価だけを足す</td><td>情報を失ったのは射影か、エンコーダか</td><td><span class="chip ng">エンコーダも失う</span></td></tr>
+        <tr class="done"><td>V18b</td><td>パッチ 16 → 4、トークン平均の SIGReg</td><td>トークンが粗いことが原因か（11-23 に追加）</td><td><span class="chip ng">H-coarse を棄却</span> 原因は目的の形</td></tr>
+        <tr class="now"><td>V18c</td><td>空間の補完 → 未来の予測</td><td>重ならない未来の表現を当てる目的なら、情報が残るか</td><td><span class="chip mid">計画の前</span> 設計をユーザーと決める</td></tr>
+        <tr><td>V19</td><td>i.i.d. → 単一ストリーム（FIFO のバッファ、順を並べ替えた対照）</td><td>時間相関で何が壊れるかを、同じ物差しで測る</td><td>未着手</td></tr>
+        <tr><td>V20</td><td>標準の SIGReg → 時間相関の SIGReg</td><td>相関を扱えば、ストリームでも学べるか（ユーザーの仮説の検証）</td><td>未着手</td></tr>
+        <tr><td>V21</td><td>BP → PC-ALM</td><td>システムの学習則でも同じになるか</td><td>未着手</td></tr>
+        <tr><td>V22</td><td>長いストリーム（数百万 stack）</td><td>V17 にあたる長い run</td><td>未着手</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p>V18 の判定が外れたので、V19 には進んでいません。V18b と V18c は、V18 の結果を受けて途中に足した段です。どちらも i.i.d. なミニバッチのまま、目的とトークンだけを変えます。V18c で「BP なら情報の残る JEPA を学べる」ことを確かめてから、V19 以降のストリームに戻ります。今後の詳しい進め方は、最後の「<a href="#next">今後の進め方</a>」に書きました。</p>
+  </div>
+</section>
+
+<section id="setup" aria-labelledby="h-setup">
+  <div class="sec-head"><div class="eyebrow">2</div><h2 id="h-setup">実験の仕組み</h2></div>
+  <div class="prose">
+    <p>入力は、街を歩きながら撮った動画（Walking Tours）です。0.1 秒ごとの 8 枚の画像（64×64 ピクセル）を 1 組にしたものを stack と呼びます。Zurich の動画は学習に使わず、評価だけに使います。</p>
+    <p>モデルは LeJEPA の形にしました。エンコーダは 1 つだけで、EMA の標的も stop-gradient も使いません。8 枚の画像は、チャネルの方向に重ねて 24 チャネルの 1 枚にしてから、エンコーダに入れます（early fusion）。そのため、課題は空間の補完だけで、時間の予測は含みません。</p>
+  </div>
+  <figure class="diagram jepafig">
+    <div class="fig-title">V18 の JEPA（パッチ 16、16 トークン）</div>
+    <svg viewBox="0 0 760 300" role="img" aria-label="stack を early fusion してエンコーダに通す。文脈側は見えるトークンだけを通して予測器で隠した位置を当て、標的側は全トークンを同じエンコーダと射影に通して z を作る。損失は予測の誤差と、batch の z の SIGReg">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ink-3)"/></marker></defs>
+      <rect class="box" x="4" y="118" width="112" height="60" rx="6" style="fill:var(--n-in)"/>
+      <text x="60" y="142" text-anchor="middle">stack</text>
+      <text class="m" x="60" y="160" text-anchor="middle">8 枚 → 24 チャネル</text>
+      <path class="arrow" d="M116,140 L150,62"/>
+      <path class="arrow" d="M116,158 L150,226"/>
+      <rect class="box" x="152" y="34" width="134" height="56" rx="6" style="fill:var(--n-in)"/>
+      <text x="219" y="57" text-anchor="middle">見えるトークン</text>
+      <text class="m" x="219" y="75" text-anchor="middle">隠す k 個を落とす</text>
+      <path class="arrow" d="M286,62 L316,62"/>
+      <rect class="box" x="318" y="34" width="126" height="56" rx="6" style="fill:var(--n-enc)"/>
+      <text x="381" y="57" text-anchor="middle">エンコーダ</text>
+      <text class="m" x="381" y="75" text-anchor="middle">ViT-S・幅 1024</text>
+      <path class="arrow" d="M444,62 L474,62"/>
+      <rect class="box" x="476" y="34" width="134" height="56" rx="6" style="fill:var(--n-lat)"/>
+      <text x="543" y="57" text-anchor="middle">予測器</text>
+      <text class="m" x="543" y="75" text-anchor="middle">幅 256・4 段</text>
+      <path class="arrow" d="M610,62 L640,62"/>
+      <text x="646" y="57">予測（隠した位置）</text>
+      <rect class="box" x="152" y="198" width="134" height="56" rx="6" style="fill:var(--n-in)"/>
+      <text x="219" y="221" text-anchor="middle">全トークン</text>
+      <text class="m" x="219" y="239" text-anchor="middle">4×4 = 16 個</text>
+      <path class="arrow" d="M286,226 L316,226"/>
+      <rect class="box" x="318" y="198" width="126" height="56" rx="6" style="fill:var(--n-enc)"/>
+      <text x="381" y="221" text-anchor="middle">エンコーダ</text>
+      <text class="m" x="381" y="239" text-anchor="middle">同じ重み → h</text>
+      <path class="arrow" d="M444,226 L474,226"/>
+      <rect class="box" x="476" y="198" width="134" height="56" rx="6" style="fill:var(--n-enc)"/>
+      <text x="543" y="221" text-anchor="middle">射影</text>
+      <text class="m" x="543" y="239" text-anchor="middle">1 トークン 64 次元</text>
+      <path class="arrow" d="M610,226 L640,226"/>
+      <text x="646" y="221"><tspan font-style="italic">z</tspan> ∈ ℝ¹⁰²⁴</text>
+      <path class="arrow" d="M690,206 L690,90"/>
+      <text class="m" x="682" y="144" text-anchor="end">予測の誤差</text>
+      <text class="m" x="682" y="160" text-anchor="end">（隠した位置）</text>
+      <text class="m" x="756" y="276" text-anchor="end">SIGReg（batch の 128 個の z）</text>
+      <text class="m" x="152" y="294">損失 = (1 − λ)·予測の誤差 + λ·SIGReg。標的側の z にも勾配が流れる。</text>
+    </svg>
+    <figcaption>上が文脈側、下が標的側です。2 つのエンコーダは同じ重みです。予測器は、見えるトークンと、隠した位置に置く mask token（位置の符号つき）から、隠した位置の <i>z</i> を当てます。SIGReg は、batch の 128 個の <i>z</i>（1024 次元）が標準正規分布に近いほど小さくなる量です。隠す位置は 4×4 の格子からちょうど <i>k</i> 個（<i>k</i> = 4・8・12、マスク率 <i>r</i> = 0.25・0.5・0.75）選び、8 枚すべてで同じ位置を隠します。V18b のパッチ 4 では、格子が 16×16 になり、粗い格子の 1 マスを 4×4 のブロックに広げて、隠す画素の領域を V18 とまったく同じにしました。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>指標の読み方</h3>
+    <p>表現の良さは、学習を止めた表現に、後から別の小さなモデルを当てはめて測ります（probe）。判定は Zurich の動画で行いました。</p>
+  </div>
+  <dl class="terms">
+    <dt><code>recon_blur</code></dt>
+    <dd>止めた表現から、別に学んだデコーダで stack の最後の 1 枚を描き戻したときの誤差です（ぼかした画像どうしで比べます）。平均の画像を出したときを 1 とします。<b>小さいほど、表現に入力の情報が残っています</b>。デコーダは約 6000 組で 4 seed 当てはめます。この資料の主な指標です。</dd>
+    <dt><code>dyn_1/copy_1</code></dt>
+    <dd>表現の 1 stack 先を線形の式で予測したときの誤差を、「変わらない」と予測したときの誤差で割ったものです。<b>小さいほど、表現の動きを予測しやすい</b>です。1 を超えると、線形の予測が「変わらない」より悪いということです。</dd>
+    <dt><code>pred_ratio</code></dt>
+    <dd>予測器の誤差を、隠した位置を位置ごとの平均で当てたときの誤差で割ったものです。<b>小さいほど、JEPA の課題が解けています</b>。<code>pred_ratio_calib</code> は、平均を Zurich 自身で求めた版です。</dd>
+    <dt><i>S</i>（<code>sigreg_heldin</code>）</dt>
+    <dd>学習のデータの 128 stack で測った SIGReg の値です。<i>z</i> が標準正規分布なら 1.05、定数に潰れると 52.3 になります。</dd>
+    <dt>K1・K2・K3</dt>
+    <dd>崩壊の判定です。K1 は定数への崩壊（<i>S</i> ≥ 26.7）、K2 は広がりの消失（実効ランクが 12.5 以下）、K3 は stack の中の全トークンが同じ値（位置ごとの線形写像を除いて）になる崩壊です。K3 は、あるトークンから別のトークンを線形に当てたときの <i>R</i>²（<code>token_r2</code>）が閾値（約 0.5）以上かで判定します。</dd>
+    <dt><code>rho_in</code></dt>
+    <dd>トークンのばらつきのうち、stack の中のばらつきの割合です。全トークンが同じなら 0、位置どうしが無相関なら 1 に近くなります。K3 の深さを見るために並べます。</dd>
+    <dt><code>z</code>・<code>h_flat</code>・<code>h_mean</code>・<code>h_pool</code></dt>
+    <dd>probe にかける表現の種類です。<code>z</code> は射影の後の表現（1024 次元）、<code>h_flat</code> は射影の前のエンコーダの出力を並べたもの（16 × 1024 次元）、<code>h_mean</code> はその全トークンの平均です。<code>h_pool</code> は、パッチ 4 の出力を 4×4 のブロックごとに平均したもので、パッチ 16 の <code>h_flat</code> と同じ次元・同じ画素の領域になります。</dd>
+    <dt>Imagenette</dt>
+    <dd>10 クラスの静止画の分類を、<code>h_mean</code> の線形 probe で解いたときの正解率です。2.3 ポイント以上の差を「差がある」とみなします。</dd>
+    <dt>物差し</dt>
+    <dd>同じ probe に通す比べる相手です。<code>init</code> は学習前の JEPA（パッチ 16）、<code>init_f</code> はパッチ 4 の学習前、<code>color</code> はパッチごとの平均の色（384 次元）、<code>v16</code>・<code>v17</code> は前の段の VAE の表現です。</dd>
+    <dt>合格・規則 5</dt>
+    <dd>合格は、崩壊せず、<code>recon_blur</code> で <code>color</code> を、<code>dyn_1/copy_1</code> で <code>init</code> を閾値を超えて下回ることです。規則 5 は長い run の判定で、60000 step で合格し、かつ <code>recon_blur</code> が同じ run の 6000 step より下がることを求めます。</dd>
+  </dl>
+</section>
+
+<section id="path" aria-labelledby="h-path">
+  <div class="sec-head"><div class="eyebrow">3</div><h2 id="h-path">進め方</h2></div>
+  <ol class="timeline">
+    <li><div class="when">11-23</div><div class="what"><b>計画。</b>JEPA の順序（V18〜V22）を決めました。時間相関のある SIGReg の手法は、Fable さんの指揮で文献を調べ、5 つの手法を考案してもらいました（V20 で使います）。early fusion のまま、マスク率を掃引の軸にすることを研究の依頼者が決めました。</div></li>
+    <li><div class="when">11-23</div><div class="what"><b>V18 の掃引。</b>学習率 2 × λ 3 × マスク率 3 の 18 本を 6000 step 回しました。合格は学習率 10<sup>−4</sup>・λ = 0.5 の 3 本だけでした。</div></li>
+    <li><div class="when">11-23</div><div class="what"><b>V18 の長い run。</b>合格した設定を 60000 step（768 万 stack）で 4 本回しました。4 本とも規則 5 を満たさず、V19 には進まないと決まりました。</div></li>
+    <li><div class="when">11-23</div><div class="what"><b>診断。</b>学習は回し直さず、checkpoint に評価を足しました（射影の前の表現、Imagenette、Zurich の SIGReg）。結果を Codex さんに相談し、「標的の <i>z</i> にも勾配が流れるので、当てにくい成分を捨てる」という見立て（H-target）をもらいました。</div></li>
+    <li><div class="when">11-23</div><div class="what"><b>V18b を追加。</b>研究の依頼者が「トークンが粗い可能性」を確かめるため、パッチ 4 を決めました。あわせて、ハイパーパラメータを広げ、トークン平均の SIGReg も試すことにしました。</div></li>
+    <li><div class="when">11-23</div><div class="what"><b>V18b の掃引。</b>3 つの腕 × 学習率 3 × λ 3 の 27 本と、マスク率を変えた 6 本を回しました。規則で、長い run の設定を腕ごとに選びました。</div></li>
+    <li><div class="when">11-23〜24</div><div class="what"><b>V18b の長い run。</b>パッチ 4 の 4 本を 60000 step 回しました（1 本約 9.5 時間）。パッチ 16 の比較には V18 の 2 本を使いました。6 本とも規則 5 を満たさず、H-coarse を棄却しました。</div></li>
+  </ol>
+</section>
+
+<section id="v18-screen" aria-labelledby="h-v18-screen">
+  <div class="sec-head"><div class="eyebrow">4 · V18</div><h2 id="h-v18-screen">どの設定なら、崩壊せずに学べるか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　どの学習率と λ（SIGReg の重み）で、崩壊せず、物差しを超える表現になるか。導出は、λ が小さいと K3 に崩れると予言していました。</p>
+    <p><b>条件</b>　学習率 {10<sup>−3</sup>, 10<sup>−4</sup>} × λ {0.005, 0.05, 0.5} × マスク率 {0.25, 0.5, 0.75}、seed 0、6000 step（76.8 万 stack）、batch 128。値は Zurich の <code>recon_blur</code> です。</p>
+  </div>
+  <figure>
+    <div class="fig-title">V18 の掃引の判定（step 6000、Zurich の <code>recon_blur</code>）</div>
+    <div class="tablewrap"><table class="sweep" id="t-v18-screen"></table></div>
+    <figcaption>緑は合格、赤は崩壊（どれも K3）、無印は崩壊していないが不合格です。物差しは <code>init</code> 0.223、<code>color</code> 0.417 です。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li>合格は 3 本で、どれも学習率 10<sup>−4</sup>・λ = 0.5 でした（<code>recon_blur</code> 0.326〜0.371）。</li>
+      <li>崩壊は 9 本で、λ = 0.005 の 6 本と λ = 0.05 の 3 本が K3 に当たりました。導出の予言どおりです。</li>
+      <li>合格した 3 本も、<code>recon_blur</code> は学習前の <code>init</code>（0.223）より 0.10〜0.15 悪い値でした。18 本すべてで、<code>recon_blur</code> は step 2000 から 6000 にかけて悪くなりました。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="v18-long" aria-labelledby="h-v18-long">
+  <div class="sec-head"><div class="eyebrow">5 · V18</div><h2 id="h-v18-long">長く学ぶと、表現は良くなるか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　合格した設定で 10 倍長く学ぶと、<code>recon_blur</code> は 6000 step より下がるか（規則 5）。</p>
+    <p><b>条件</b>　学習率 10<sup>−4</sup>・λ = 0.5 で、マスク率 0.25・0.5・0.75 の seed 0 と、0.25 の seed 1 の 4 本。60000 step（768 万 stack）で、学習率は最後に 0 まで下げます。probe は 6000・20000・60000 step で測りました。</p>
+  </div>
+  <div class="duo">
+    <figure>
+      <div class="fig-title">Zurich の <code>recon_blur</code>（<code>z</code>）</div>
+      <div class="chart" id="c-v18-recon"></div>
+    </figure>
+    <figure>
+      <div class="fig-title"><code>pred_ratio</code>（JEPA の課題の解けぐあい）</div>
+      <div class="chart" id="c-v18-pred"></div>
+    </figure>
+  </div>
+  <figure>
+    <figcaption>横軸は見た stack の数（step × 128）です。4 本とも、パッチ 16 の V18 の run なので緑で描き、マスク率と seed を線の形で分けました。左は<b>下ほど良い</b>値です。点線は物差しです。右は縦軸が対数で、<b>下ほど課題が解けています</b>。触れると全系列の値が出ます。</figcaption>
+  </figure>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>run</th><th class="num">6000</th><th class="num">20000</th><th class="num">60000</th><th class="num">60000 − 6000</th><th class="num"><code>dyn_1/copy_1</code> 60000</th><th>規則 5</th></tr></thead>
+      <tbody id="t-v18-long"></tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li><b>JEPA の目的は最後まで下がりました。</b><i>r</i> = 0.25・seed 0 では、学習の予測の誤差が 0.61 から 0.18 に、<i>S</i> が 1.65 から 1.18 に下がりました。崩壊の兆しもありません（<code>token_r2</code> 0.02〜0.05）。</li>
+      <li><b>一方で、描き戻しは悪くなりました。</b>4 本とも <code>recon_blur</code> が 6000 step から 60000 step に +0.12〜+0.18 上がり、60000 step の 0.558〜0.649 は <code>color</code>（0.417）にも <code>init</code>（0.223）にも負けました。規則 5 は 4 本とも満たしません。</li>
+      <li>学習と同じ分布の場面（span）でも、0.422 から 0.529 に上がりました（<i>r</i> = 0.25・seed 0）。Zurich だけの問題ではありません。</li>
+      <li><code>dyn_1/copy_1</code> も 1.04〜1.13 になり、線形の予測は「変わらない」より悪くなりました。</li>
+      <li>マスク率で変わったのは課題の難しさです（60000 step の <code>pred_ratio</code> は 0.19・0.40・0.62）。描き戻しの差は seed の差より小さく、マスク率の効果は読めません。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="diag" aria-labelledby="h-diag">
+  <div class="sec-head"><div class="eyebrow">6 · V18 診断</div><h2 id="h-diag">情報を失ったのは、射影か、エンコーダか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　LeJEPA は、損失をかける射影の後ではなく、その前のエンコーダの出力で表現を評価します。V18 の悪化は射影で捨てただけなのか、エンコーダ自身が失ったのか。</p>
+    <p><b>条件</b>　学習は回し直さず、V18 の長い run 4 本の checkpoint に、同じ probe を <code>h_flat</code> と <code>h_mean</code> でかけました。Imagenette の線形 probe も 9 個の checkpoint で測りました。</p>
+  </div>
+  <div class="duo">
+    <figure>
+      <div class="fig-title">表現の種類ごとの Zurich の <code>recon_blur</code></div>
+      <div class="chart" id="c-diag-recon"></div>
+    </figure>
+    <figure>
+      <div class="fig-title">Imagenette の線形 probe の正解率（%）</div>
+      <div class="chart" id="c-diag-img"></div>
+    </figure>
+  </div>
+  <figure>
+    <figcaption>4 本の長い run を、表現の種類ごとに色を分けて細い線で描きました（同じ色の 4 本が 4 つの run です）。左は<b>下ほど良い</b>値、右は<b>上ほど良い</b>値です。右の点線は <code>color</code>（38.5%）です。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li><b><code>h_flat</code> も悪くなりました。</b>学習前の 0.106〜0.109 から、6000 step で 0.261〜0.273、20000 step で 0.298〜0.352 になりました。20000 step から 60000 step では少し戻りますが（0.273〜0.323）、学習前より 0.16〜0.21 悪いままです。事前の規則では「エンコーダ自身が失う」に当たりました（4 本中 3 本で、6000 step から 60000 step に閾値を超えて上がった）。</li>
+      <li>6000 step から 60000 step の上がり幅は、<code>h_flat</code> が <code>z</code> の 3〜35% です。後半の悪化の多くは射影の後で起きています。</li>
+      <li><code>h_mean</code> は学習前から 0.64 で、描き戻しには使えない表現でした（位置の配置を捨てるうえ、実効ランクが 14.6 しかない）。</li>
+      <li><b>Imagenette は上がりました。</b><code>h_mean</code> は 40.2〜40.6% から 44.7〜46.4% になり、上がりの大半は最初の 2000 step で起きました。ただし Codex さんの指摘を受けて、「画素を捨てて意味に寄せた」とまでは読みません。言えるのは、静止画のクラスが読みやすくなったことまでです。</li>
+      <li>λ が小さく崩壊した run では、逆に <code>h_flat</code> がほぼ保たれ（0.109 → 0.135）、<code>z</code> だけが悪くなりました。</li>
+    </ul>
+    <p><b>Zurich の SIGReg の値について</b>　Zurich で測った SIGReg の値が大きいのは、主に評価の標本どうしの時間相関によるものでした。128 個の標本では、連続した標本の値と間隔をあけた標本の値の差（相関の分）が、間隔をあけた標本と学習のデータの差（分布のずれの分）の 4.3〜6.0 倍でした。Fable さんの式は、相関の分の 84〜85% を予測しました。このため、V19 以降は間隔をあけた標本で測ります。</p>
+    <p><b>Codex さんの見立て（H-target）</b>　標的の <i>z</i> にも勾配が流れるので、エンコーダは、見えている部分から当てにくい成分（その位置に固有の細部）を表現から落とすほど、予測の誤差を下げられます。SIGReg は分布の形を整えるだけで、入力の情報を守る力はありません。私たち（Claude）もこれを第一の説明としました。</p>
+  </div>
+</section>
+
+<section id="v18b-design" aria-labelledby="h-v18b-design">
+  <div class="sec-head"><div class="eyebrow">7 · V18b</div><h2 id="h-v18b-design">トークンを細かくすると、細部を保てるか</h2></div>
+  <div class="prose">
+    <p>V18 の結果には、2 つの説明が考えられました。</p>
+    <ul>
+      <li><b>H-coarse</b>（研究の依頼者の仮説）: トークンが 16 個と粗いので、近くから当てられる成分だけで予測が済みます。パッチ 4 にすれば、長く学んだときの悪化が止まるか、小さくなります。</li>
+      <li><b>H-target</b>（Codex さんの見立て）: 標的にも勾配が流れることが原因なので、トークンを細かくしても悪化は残ります。</li>
+    </ul>
+    <p>この 2 つを分けるため、次の 3 つの腕を比べました。F は、表現の次元（1024）も、画素あたりの圧縮率も V18 と同じで、トークンの細かさだけが違います。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>腕</th><th>パッチ</th><th class="num">トークン</th><th class="num">1 トークンの次元</th><th>SIGReg をかける相手</th><th>判定に使う表現</th></tr></thead>
+      <tbody>
+        <tr><td><span style="color:var(--s1)">●</span> F（平らに並べる）</td><td>4</td><td class="num">256</td><td class="num">4</td><td>並べた <i>z</i>（1024 次元）</td><td><code>z</code></td></tr>
+        <tr><td><span style="color:var(--s2)">●</span> M（トークン平均）</td><td>4</td><td class="num">256</td><td class="num">64</td><td>トークンの平均 <i>z̄</i>（64 次元）</td><td><code>zpca</code>（並べた <i>z</i> を PCA で 1024 次元に）</td></tr>
+        <tr><td><span style="color:var(--s3)">●</span> P16（比較）</td><td>16</td><td class="num">16</td><td class="num">64</td><td>並べた <i>z</i>（1024 次元）</td><td><code>z</code>（V18 と同じ）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>判定の規則（回す前に決めたこと）</b>　6000 step から 60000 step への <code>recon_blur</code> の変化を Δ と書きます。F の 2 seed がどちらも、学習が続いたうえで Δ<sub>F</sub> &gt; δ かつ Δ<sub>F</sub> ≥ 0.5 Δ<sub>P16</sub> なら H-coarse を棄却し、H-target を支持します。Δ<sub>F</sub> ≤ δ なら H-coarse を支持します。δ は差とみなす閾値（0.01 以上）です。</p>
+    <p><b>M についての導出</b>　トークン平均だけに SIGReg をかけると、SIGReg の値は平均だけで決まります。そのため、どの λ でも、全トークンが同じになる K3 が目的の下限に届きます。M は K3 に崩れると予言していました。それでも、研究の依頼者の提案を受けて、実際に何が起きるかを確かめるために腕に入れました。</p>
+  </div>
+</section>
+
+<section id="v18b-screen" aria-labelledby="h-v18b-screen">
+  <div class="sec-head"><div class="eyebrow">8 · V18b</div><h2 id="h-v18b-screen">ハイパーパラメータを広げた掃引</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　学習率を下げるか λ を上げると、目的の値が同じ程度まで下がったまま、<code>recon_blur</code> が良くなるか。</p>
+    <p><b>条件</b>　3 つの腕 × 学習率 {10<sup>−5</sup>, 3·10<sup>−5</sup>, 10<sup>−4</sup>} × λ {0.5, 0.8, 0.95}、マスク率 0.5、seed 0、6000 step の 27 本です。予測の誤差と <i>S</i> を別々に追い、同じ λ の学習率 10<sup>−4</sup> より目的の値が進んでいない run は「判定保留」にしました（初期値の近くに留まっていて、良い値が学習の結果とは言えないため）。</p>
+  </div>
+  <figure>
+    <div class="fig-title">V18b の掃引の判定（step 6000、Zurich の <code>recon_blur</code>）</div>
+    <div class="tablewrap"><table class="sweep" id="t-v18b-screen"></table></div>
+    <figcaption>緑は合格、赤は崩壊（どれも K3）、黄は判定保留、無印は不合格です。M には <code>dyn_1/copy_1</code> の使える物差しがなかったので、崩壊していない run も「判定なし」です。物差しは F が <code>init_f</code> 0.316、M が <code>init_m</code> 0.132、P16 が <code>init</code> 0.223 で、腕のあいだで値の高さを比べることはできません。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li><b>F は 9 本とも崩壊しませんでしたが、どれも不合格でした。</b>パッチ 4 の学習前の表現（<code>init_f</code> 0.316）を、どの run も下回れませんでした。</li>
+      <li><b>M は 4 本が K3 に崩れました</b>（λ = 0.5 の 3 本すべてと、学習率 10<sup>−4</sup>・λ = 0.8）。導出の予言どおりです。</li>
+      <li><b>P16 の合格 7 本のうち 6 本は判定保留でした。</b>学習率を下げた run は <code>recon_blur</code> が小さく見えますが、目的の値が下がりきらず、初期値の近くに留まっていました。λ を上げると <i>S</i> は下がりますが、<code>recon_blur</code> は悪くなりました。</li>
+      <li>事前の規則で、長い run の設定は F が学習率 10<sup>−4</sup>・λ = 0.5・<i>r</i> = 0.25、M が学習率 3·10<sup>−5</sup>・λ = 0.8・<i>r</i> = 0.25 に決まりました。どちらも合格した run がないまま選ばれています。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="v18b-long" aria-labelledby="h-v18b-long">
+  <div class="sec-head"><div class="eyebrow">9 · V18b</div><h2 id="h-v18b-long">細かいトークンでも、長く学ぶと悪くなるか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　F は、長く学んでも描き戻しの悪化を避けられるか（問い 1）。M は何が起きるか（問い 2）。</p>
+    <p><b>条件</b>　F と M を seed 0・1 で 60000 step（768 万 stack）回しました。P16 は、規則どおり V18 の <i>r</i> = 0.25 の 2 本を使いました。</p>
+  </div>
+  <div class="quad">
+    <figure>
+      <div class="fig-title">判定に使う表現の <code>recon_blur</code></div>
+      <div class="chart" id="c-b-recon"></div>
+    </figure>
+    <figure>
+      <div class="fig-title">エンコーダの出力の <code>recon_blur</code></div>
+      <div class="chart" id="c-b-pool"></div>
+    </figure>
+    <figure>
+      <div class="fig-title"><code>pred_ratio_calib</code></div>
+      <div class="chart" id="c-b-calib"></div>
+    </figure>
+    <figure>
+      <div class="fig-title">Imagenette（<code>h_mean</code>、%）</div>
+      <div class="chart" id="c-b-img"></div>
+    </figure>
+  </div>
+  <figure>
+    <figcaption>色は腕（青 F、橙 M、緑 P16）、実線は seed 0、破線は seed 1 です。横軸は見た stack の数です。左上は、F と P16 が <code>z</code>、M が <code>zpca</code> で、M は学習前の値（0.132）が低いので、高さを腕のあいだで比べません。右上は、F と M が <code>h_pool</code>、P16 が <code>h_flat</code> です。左下は縦軸が対数です。上の 2 つと左下は<b>下ほど良い</b>値、右下は<b>上ほど良い</b>値です。</figcaption>
+  </figure>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>run</th><th>崩壊</th><th class="num">6000</th><th class="num">20000</th><th class="num">60000</th><th class="num">Δ</th><th class="num">calib 6000 → 60000</th><th>規則 5</th></tr></thead>
+      <tbody id="t-b-long"></tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>問い 1 の判定</b></p>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="sub">Δ<sub>F</sub>（seed 0）</div><div class="big">+0.222</div><div class="sub">δ = 0.012</div></div>
+    <div class="tile"><div class="sub">Δ<sub>F</sub>（seed 1）</div><div class="big">+0.263</div><div class="sub">δ = 0.019</div></div>
+    <div class="tile"><div class="sub">Δ<sub>P16</sub>（V18 の 2 本の平均）</div><div class="big">+0.162</div><div class="sub">0.5 Δ<sub>P16</sub> = 0.081</div></div>
+    <div class="tile"><div class="sub">区分</div><div class="big" style="font-size:1.3rem">H-target × 2</div><div class="sub">H-coarse を棄却</div></div>
+  </div>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li><b>F の目的は下がり続けましたが、描き戻しは悪くなりました。</b><code>pred_ratio_calib</code> は 0.59・0.58 から 0.27 に下がり、ほぼ半分になりました。それでも <code>recon_blur</code> は 2 本とも δ と 0.5 Δ<sub>P16</sub> を大きく超えて上がりました。<b>H-coarse を棄却し、H-target を支持します。</b>悪化は span でも同じでした（0.336・0.309 → 0.515・0.501）。</li>
+      <li>F は、悪くなる時期が P16 より遅く、20000 step から 60000 step に +0.17・+0.22 上がりました。</li>
+      <li>F の <code>h_pool</code> は、学習前の 0.279・0.277 から 6000 step で約 +0.07 悪くなり、その後は止まりました（60000 step で 0.346）。この点だけは H-coarse の向きです。ただし <code>h_pool</code> はブロックの平均なので、ブロックの中の細部は測れていません。</li>
+      <li><b>M は K3 に崩れました。</b><code>token_r2</code> は 0.47 から 0.90・0.91 に、<code>rho_in</code> は 0.50 から 0.079・0.077 に動きました。同時に、平均の SIGReg の値は 6.1〜6.6 から 1.23・1.25 に下がり、健全な値（1.08）に近づきました。導出の言うとおり、SIGReg の値が整うほど K3 が深まりました。Imagenette も 50.8・50.7% から 47.9・47.3% に下がりました。</li>
+      <li><b>F の Imagenette は上がりました</b>（50.8・50.7% → 59.4・58.3%）。上がりの大半は 10000 step 以降で、<code>z</code> の描き戻しが悪くなる時期と重なります。</li>
+      <li>60000 step の <code>recon_blur</code> は、F が 0.615、P16 が 0.622（2 seed の平均）で、差の 0.007 は閾値の中です。seed ごとには、seed 0 では P16 が、seed 1 では F が良く、トークンの細かさの差は seed の差に埋もれます。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="images" aria-labelledby="h-images">
+  <div class="sec-head"><div class="eyebrow">10 · 画像</div><h2 id="h-images">描き戻した画像</h2></div>
+  <div class="prose">
+    <p>上の段が Zurich の本物の最後のフレーム、下の段が後から学んだデコーダで表現から描き戻したものです。10 コマを並べています。ボタンで表現と時点を切り替えます。</p>
+  </div>
+  <figure>
+    <div class="seg" id="seg-img" role="group" aria-label="画像の切り替え"></div>
+    <div class="recon" id="r-img" data-img="init" data-rows="本物|描き戻し"></div>
+    <figcaption id="cap-img"></figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること</b></p>
+    <ul>
+      <li>学習前の <code>init</code> と <code>h_flat</code> では、1 コマ目の左の木、2 コマ目の教会の塔、4 コマ目の階段の線などが、本物と同じ場所に出ます。どの JEPA の絵よりも良い見え方です。</li>
+      <li>60000 step の <code>z</code>（P16 も F も）では、暗い塊が本物と違う場所にまだらに散り、どのコマも似た街の模様になります。そのコマに固有の配置が出ません。P16 と F の 60000 step は、見た目ではほとんど区別できません。</li>
+      <li><code>color</code> はぼやけていますが、暗い塊の場所は本物と合います。この点で、長く学んだ <code>z</code> は <code>color</code> に負けます。</li>
+      <li>F の <code>h_pool</code> は、60000 step でも木や日よけの場所が合い、同じ時点の <code>z</code> よりずっと配置が合います。</li>
+      <li>M の 60000 step はなめらかで、空と地面の色の配置は残りますが、形はほとんどありません。</li>
+      <li>どの絵でも、数値と見た目が食い違う所はありませんでした。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="verdict" aria-labelledby="h-verdict">
+  <div class="sec-head"><div class="eyebrow">11</div><h2 id="h-verdict">予想の判定</h2></div>
+  <div class="prose">
+    <p>予想と判定の規則は、どれも run を回す前に README に書きました。結果を見てから規則を変えたものはありません。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>予想・仮説</th><th>判定</th><th>根拠</th></tr></thead>
+      <tbody>
+        <tr><td>V18. λ が小さいと K3 に崩れる（導出）</td><td><span class="chip ok">支持</span></td><td>λ = 0.005 の 6 本と λ = 0.05 の 3 本が K3</td></tr>
+        <tr><td>V18. 長い run は崩壊しない</td><td><span class="chip ok">支持</span></td><td>4 本とも <i>S</i> 1.18〜1.24、<code>token_r2</code> 0.02〜0.05</td></tr>
+        <tr><td>V18. 長い run は合格し、<code>recon_blur</code> が 6000 step より下がって 0.24〜0.30 になる</td><td><span class="chip ng">棄却</span></td><td>+0.12〜+0.18 上がり、0.558〜0.649</td></tr>
+        <tr><td>診断. 情報は射影で捨てられ、エンコーダは保っている</td><td><span class="chip ng">棄却</span></td><td><code>h_flat</code> も 3 本で閾値を超えて悪化（学習前から +0.16〜+0.21）</td></tr>
+        <tr><td>診断. Zurich の SIGReg の大きな値は、評価の標本の相関による</td><td><span class="chip ok">支持</span></td><td>相関の分が分布のずれの分の 4.3〜6.0 倍、Fable さんの式で 84〜85% を予測</td></tr>
+        <tr><td>V18b. H-coarse（トークンが粗いことが原因）</td><td><span class="chip ng">棄却</span></td><td>Δ<sub>F</sub> = +0.222・+0.263 ≥ 0.5 Δ<sub>P16</sub> = 0.081</td></tr>
+        <tr><td>V18b. H-target（標的にも勾配が流れることが原因）</td><td><span class="chip ok">支持</span></td><td>同上。目的が下がるほど、span と Zurich の両方で悪化</td></tr>
+        <tr><td>V18b. M は K3 に崩れる（導出）</td><td><span class="chip ok">支持</span></td><td><code>token_r2</code> 0.90、<code>rho_in</code> 0.08</td></tr>
+        <tr><td>V18b. F の Imagenette は学習前より上がる</td><td><span class="chip ok">支持</span></td><td>+8.6・+7.6 ポイント</td></tr>
+        <tr><td>V18b. M の Imagenette は F より高い</td><td><span class="chip ng">棄却</span></td><td>M は F より 11 ポイント低い</td></tr>
+        <tr><td>Codex さんの「学習率と λ を変えれば救える」の筋</td><td><span class="chip ng">不成立</span></td><td>選ばれた M は崩壊し、<code>recon_blur</code> も上がった</td></tr>
+        <tr><td>V19 に進む条件（規則 5）</td><td><span class="chip ng">不成立</span></td><td>V18・V18b の長い run 6 本とも満たさない</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><b>言えないこと</b></p>
+    <ul>
+      <li>H-target の仕組みそのものは、直接は確かめていません。確かめたのは「トークンの細かさは主な原因ではない」ことまでです。</li>
+      <li>F のエンコーダがブロックの中の細部を保ったかは分かりません（パッチ 4 の <code>h_flat</code> は 262144 次元で、測っていません）。</li>
+      <li>F と P16 の値の差は、seed の差と区別できません。</li>
+      <li>λ の上側や低い学習率の長い run は回していません。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="next" aria-labelledby="h-next">
+  <div class="sec-head"><div class="eyebrow">12</div><h2 id="h-next">今後の進め方</h2></div>
+  <div class="prose">
+    <h3>V18・V18b から持ち込むもの</h3>
+    <ul>
+      <li><b>原因はトークンの細かさではなく、目的の形にあります。</b>次はトークンではなく、目的を変えます。</li>
+      <li><b>トークンはパッチ 16（16 トークン、1 トークン 64 次元）にします。</b>事前の規則で P16 が選ばれました（F と <code>recon_blur</code> が閾値の中で、<code>dyn_1/copy_1</code> で P16）。パッチ 4 は計算が約 9〜16 倍重いのに、描き戻しの差は seed の差の中です。</li>
+      <li><b>トークン平均だけの SIGReg は使いません。</b>導出どおり K3 に崩れます。</li>
+      <li>予測の誤差と <i>S</i> を別々に追い、「学習が続いた」ことを読みの前提にします。エンコーダの出力と射影の後の <i>z</i> の両方を測ります。</li>
+    </ul>
+    <h3>次の段: V18c（未来の予測）の推奨案（研究の依頼者の判断待ち）</h3>
+    <p>計画を書く前に、ここで止めて判断を仰いでいます。推奨する設計は、V18 の診断で Codex さんが提案した形です。</p>
+    <ul>
+      <li><b>目的</b>: いまの stack の <i>z</i><sub>t</sub> から、重ならない未来の stack の <i>z</i><sub>t+δ</sub>（δ = 1 秒）を線形に予測します。空間の補完は使いません。</li>
+      <li><b>腕 A</b>: 未来の予測 + SIGReg だけ。</li>
+      <li><b>腕 B</b>: A に、入力の歪みの制約を加えます。<i>z</i><sub>t</sub> から入力を描き戻した誤差に上限 ε を課します。ε の初期値は <code>color</code> の誤差から決めます。分布の制約は、SIGReg の代わりに Cov(<i>z</i>) = <i>I</i> の等式制約でもよい、というのが Codex さんの意見です。どちらにするかは計画で決めます。</li>
+      <li><b>対照</b>: 同じ動画の中で、標的の時刻を並べ替えた run。背景・照明・動画の違いのように、ずっと続く成分だけで当たる近道を見分けるためです。</li>
+      <li><b>評価</b>: V18 と同じ probe と Imagenette に加え、予測の誤差と <i>S</i>、<code>h_flat</code> と <code>z</code> を並べます。判定の規則と予想は回す前に README に書きます。</li>
+    </ul>
+    <p>腕 B は描き戻しのデコーダを学習に入れるので、純粋な JEPA から VAE の側へ一歩寄ります。V18 と V18b の結果を見ると、予測の目的と SIGReg だけでは、画素の細部を保つ力が目的に入っていません。B は、その力を目的に直接入れる形です。研究の依頼者に決めてもらうことは 2 つです。(1) B を最初から入れて A と並べるか（推奨）、A だけで先に進めるか。(2) トークンを規則どおり P16 にするか、Imagenette の結果を重く見て F も残すか（計算は約 10 倍）。</p>
+    <h3>V19 の前に直すもの</h3>
+    <ul>
+      <li>SIGReg の期待値の計算（<code>expected_epps_pulley</code>）で、自己共分散の長いラグを正しく推定できない不具合を直します（1/(<i>G</i> − <i>l</i>) で割るため、長いラグで発散する）。</li>
+      <li>Zurich の SIGReg は、間隔をあけた標本（128 個）で測るように替えます。V19 からは、SIGReg を V 統計量から U 統計量に替えます。</li>
+    </ul>
+    <h3>V19〜V22</h3>
+    <ul>
+      <li><b>V19（BP・単一ストリーム）</b>: V18c で決めた設定のまま、データだけを 1 本のストリームにします。過去の <i>z</i> は FIFO のバッファに貯めます。stack の順だけを並べ替えた対照を入れ、「小さい batch・オンライン学習のせい」と「相関のせい」を分けます。方向ごとの相関を測り、Fable さんの予測（窓より遅い成分の分散が消え、その選別は次元の数 <i>D</i> 倍に効く）を確かめます。</li>
+      <li><b>V20（時間相関の SIGReg）</b>: Fable さんが考案した手法から、手法 3 を本命にします。δ 秒前の stack も符号化し、自己回帰の残差（<i>z</i><sub>t</sub> − <i>r̂</i> <i>z</i><sub>t−δ</sub>）を正規化したものに SIGReg をかけ、勾配を両端に流します。手法 1（遅らせた複数のストリームを並べる）は上限の参照、手法 2（時間差つきの FIFO）は最小の変更の腕、手法 4 は対照にします。回す前に、崩壊の閾値（相関の平均 0.646）と <i>D</i> 倍の選別を理論値のオラクルのテストで確かめ、Codex さんにも意見を求めます。</li>
+      <li><b>V21（PC-ALM）</b>: V20 で良かった正則化を、ノードの中で閉じた局所的な形にします。BP の勾配をオラクルにしたテストを先に書きます。</li>
+      <li><b>V22（長いストリーム）</b>: V17 と同じく、連続する 10 stack をまとめ、時定数を B = 1 の 10 分の 1 にして、数百万 stack まで回します。</li>
+    </ul>
+    <p>どの段でも、判定が外れたら次の段に進まず、原因を調べて研究の依頼者に報告します。</p>
+  </div>
+</section>
+
+<section id="repro" aria-labelledby="h-repro">
+  <div class="sec-head"><div class="eyebrow">付録</div><h2 id="h-repro">再現</h2></div>
+  <div class="prose">
+    <p>mujou は <code>5aa3773</code>、data_version は <code>ad6e56b5995e</code> です。判定の規則・予想・数字の詳細は <a href="README.md">README.md</a> の V18 と V18b にあり、計画は <a href="plans/jepa.md">plans/jepa.md</a> です。判定の数字は <a href="results/v18/judge.json">results/v18/judge.json</a> と <a href="results/v18b/judge.json">results/v18b/judge.json</a> から読みました。run の出力は <code>runs/&lt;batch&gt;/</code> にあり、git には入れていません。この資料は <code>uv run python -m exp.vision.report.build_jepa</code> で作りました。</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>batch</th><th>中身</th><th>snapshot</th></tr></thead>
+      <tbody>
+        <tr><td><code>v18-screen</code></td><td>V18 の掃引 18 本（6000 step）</td><td class="num">6fcf06cf0b5e</td></tr>
+        <tr><td><code>v18-long</code></td><td>V18 の長い run 4 本（60000 step）</td><td class="num">e29a8ae3684c</td></tr>
+        <tr><td><code>v18-diag</code></td><td>V18 の診断（<code>h_flat</code>・<code>h_mean</code>、Imagenette、SIGReg）</td><td class="num">1d2d1dc9e565</td></tr>
+        <tr><td><code>v18b-screen</code></td><td>V18b の掃引 26 + 4 本（P16 の 3 本は V18 の run を再利用）</td><td class="num">69096bb52662</td></tr>
+        <tr><td><code>v18b-long</code></td><td>V18b の長い run 4 本（F・M、seed 0・1）</td><td class="num">ff8806ce0c4e</td></tr>
+        <tr><td><code>v18-baselines</code>・<code>v18b-baselines</code></td><td>物差し</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+<pre class="cmd">export OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data
+# V18（パッチ 16）。長い run は --steps 60000
+python -m exp.vision.jepa_iid --config &lt;V16 と同じ config.yaml&gt; --mask-ratio 0.25 --lam 0.5 --lr 1e-4 --steps 6000 --batch 128 --out &lt;run_dir&gt;
+python -m exp.vision.jepa_eval &lt;run_dir&gt; --span 6000 --probe-steps 6000,20000,60000
+# V18b の腕 F と M
+python -m exp.vision.jepa_iid --patch 4 --token-dim 4 --sigreg-on flat --mask-ratio 0.25 --lam 0.5 --lr 1e-4 --steps 60000 --out &lt;run_dir&gt;
+python -m exp.vision.jepa_iid --patch 4 --token-dim 64 --sigreg-on mean --mask-ratio 0.25 --lam 0.8 --lr 3e-5 --steps 60000 --out &lt;run_dir&gt;
+# 診断
+python -m exp.vision.jepa_diag tokens &lt;run_dir&gt; --steps 0,6000,20000,60000
+python -m exp.vision.jepa_diag imagenette --data /data/geson/mujou-exp/.fleet/imagenette/u8 --out &lt;dir&gt; --runs &lt;run_dir&gt; ...
+# 判定の表と、この資料
+uv run python -m exp.vision.results.v18.judge --json exp/vision/results/v18/judge.json
+uv run python -m exp.vision.results.v18b.judge --json exp/vision/results/v18b/judge.json
+uv run python -m exp.vision.report.build_jepa</pre>
+  <div class="prose">
+    <p class="small muted">この資料のために計算した値はありません。表と図の値は、judge.json と runs/ の記録をそのまま丸めたものです。V18b の Imagenette の評価のジョブには、待ち受けスクリプトの終了コードの扱いの誤りで「失敗」の印が付きましたが、記録は 4 本とも全 19 行そろっています。</p>
+  </div>
+</section>
+</main>
+<div id="tip" hidden></div>
+<script type="application/json" id="data">/*__DATA__*/</script>
+<script>
+(() => {
+const D = JSON.parse(document.getElementById('data').textContent);
+const NS = 'http://www.w3.org/2000/svg';
+const tip = document.getElementById('tip');
+function showTip(ev, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = ev.clientY - h - 14;
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+}
+const hideTip = () => { tip.hidden = true; };
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) {
+    const v = attrs[k];
+    if ((k === 'fill' || k === 'stroke') && typeof v === 'string' && v.startsWith('var(')) e.style[k] = v;
+    else e.setAttribute(k, v);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const fmt = (v, d = 3) => v == null ? '—' : (+v).toFixed(d);
+const sup = s => s.replace(/1e(\d)/g, (_, k) => '10<sup>' + k + '</sup>');
+
+function legend(host, items) {
+  const lg = document.createElement('div'); lg.className = 'legend';
+  for (const it of items) {
+    const s = document.createElement('span');
+    const dash = it.dash ? `stroke-dasharray="${it.dash}"` : '';
+    s.innerHTML = `<svg width="22" height="10" aria-hidden="true"><line x1="1" x2="21" y1="5" y2="5" style="stroke:${it.color}" stroke-width="${it.width || 2.5}" ${dash}/></svg>${it.label}`;
+    lg.appendChild(s);
+  }
+  host.appendChild(lg);
+}
+
+// A line chart. o: {series: [{label, color, xs, ys, width, dash, opacity, marker}],
+// xmin, xmax, ymin, ymax, log (y), symlog (x, linthresh), xticks, yticks, xfmt, yfmt,
+// xlabel, ylabel, refs: [{y, label}], vlines: [{x, label}], shade: [x0, x1, label],
+// nearest (tooltip on the series nearest the pointer), legend: [{label, color, dash}]}
+let clipN = 0;
+function lineChart(host, o) {
+  host.innerHTML = '';
+  if (o.legend) legend(host, o.legend);
+  const W = o.width || 720, H = o.height || 270, m = {l: 50, r: 30, t: 24, b: 38};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': o.aria || ''});
+  host.appendChild(svg);
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const ty = v => o.log ? Math.log10(v) : v;
+  const lt = o.symlog || 10;
+  const tx = x => o.symlog ? Math.sign(x) * Math.log10(1 + Math.abs(x) / lt) : x;
+  const y0 = ty(o.ymin), y1 = ty(o.ymax), x0 = tx(o.xmin), x1 = tx(o.xmax);
+  const X = x => m.l + (tx(x) - x0) / (x1 - x0) * iw;
+  const Y = v => m.t + ih - (Math.min(Math.max(ty(v), y0), y1) - y0) / (y1 - y0) * ih;
+  const g = el('g', {}, svg);
+  if (o.shade) {
+    el('rect', {x: X(o.shade[0]), width: Math.max(0, X(o.shade[1]) - X(o.shade[0])), y: m.t, height: ih, fill: 'var(--shade)'}, g);
+    if (o.shade[2]) { const t = el('text', {x: X(o.shade[0]) + 6, y: m.t + 14, 'font-size': 11, class: 'lbl'}, g); t.textContent = o.shade[2]; }
+  }
+  for (const t of o.yticks) {
+    el('line', {x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: 'var(--grid)', 'stroke-width': 1}, g);
+    const e = el('text', {x: m.l - 8, y: Y(t) + 4, 'text-anchor': 'end', 'font-size': 11}, g);
+    e.textContent = o.yfmt ? o.yfmt(t) : t;
+  }
+  for (const t of o.xticks) {
+    const e = el('text', {x: X(t), y: H - m.b + 18, 'text-anchor': 'middle', 'font-size': 11}, g);
+    e.textContent = o.xfmt ? o.xfmt(t) : t;
+  }
+  el('line', {x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih, stroke: 'var(--ink-3)', 'stroke-width': 1}, g);
+  if (o.xlabel) { const t = el('text', {x: W - m.r, y: H - 3, 'text-anchor': 'end', 'font-size': 11, class: 'lbl'}, g); t.textContent = o.xlabel; }
+  if (o.ylabel) { const t = el('text', {x: m.l - 44, y: 12, 'font-size': 11, class: 'lbl'}, g); t.textContent = o.ylabel; }
+  for (const r of (o.refs || [])) {
+    el('line', {x1: m.l, x2: W - m.r, y1: Y(r.y), y2: Y(r.y), stroke: 'var(--ink-3)', 'stroke-width': 1, 'stroke-dasharray': '4 4'}, g);
+    if (r.label) { const t = el('text', {x: W - m.r, y: Y(r.y) - 5, 'text-anchor': 'end', 'font-size': 11, class: 'lbl'}, g); t.textContent = r.label; }
+  }
+  for (const v of (o.vlines || [])) {
+    el('line', {x1: X(v.x), x2: X(v.x), y1: m.t, y2: m.t + ih, stroke: v.color || 'var(--ink-2)', 'stroke-width': v.width || 1, 'stroke-dasharray': v.dash || ''}, g);
+    if (v.label) { const t = el('text', {x: X(v.x) + 5, y: m.t + 14, 'font-size': 11, class: 'lbl'}, g); t.textContent = v.label; }
+  }
+  const cid = 'clip' + (++clipN);
+  el('rect', {x: m.l, y: m.t - 6, width: iw, height: ih + 12}, el('clipPath', {id: cid}, el('defs', {}, svg)));
+  const plot = el('g', {'clip-path': `url(#${cid})`}, svg);
+  const paths = [];
+  for (const s of o.series) {
+    let d = '', pen = false;
+    s.xs.forEach((x, i) => {
+      const v = s.ys[i];
+      if (v == null || (o.log && v <= 0)) { pen = false; return; }
+      d += (pen ? 'L' : 'M') + X(x).toFixed(1) + ',' + Y(v).toFixed(1);
+      pen = true;
+    });
+    const p = el('path', {d, fill: 'none', stroke: s.color, 'stroke-width': s.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: s.opacity || 1, 'stroke-dasharray': s.dash || ''}, plot);
+    paths.push(p);
+    if (s.marker) s.xs.forEach((x, i) => { const v = s.ys[i]; if (v != null) el('circle', {cx: X(x), cy: Y(v), r: 4.5, fill: s.ok && !s.ok[i] ? 'var(--panel)' : s.color, stroke: s.color, 'stroke-width': 2}, plot); });
+  }
+  const cross = el('line', {y1: m.t, y2: m.t + ih, stroke: 'var(--ink-3)', 'stroke-width': 1, visibility: 'hidden'}, svg);
+  const hit = el('rect', {x: m.l, y: m.t, width: iw, height: ih, fill: 'transparent'}, svg);
+  let hl = null;
+  const near = (s, x) => { let bi = -1, bd = Infinity; s.xs.forEach((xx, i) => { if (s.ys[i] == null) return; const dd = Math.abs(tx(xx) - tx(x)); if (dd < bd) { bd = dd; bi = i; } }); return bi; };
+  hit.addEventListener('pointermove', ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W, py = (ev.clientY - r.top) / r.height * H;
+    const tv = x0 + (px - m.l) / iw * (x1 - x0);
+    const x = o.symlog ? Math.sign(tv) * lt * (10 ** Math.abs(tv) - 1) : tv;
+    if (o.nearest) {
+      let best = null, bd = Infinity;
+      o.series.forEach((s, j) => { const i = near(s, x); if (i < 0) return; const dd = Math.abs(Y(s.ys[i]) - py) + Math.abs(X(s.xs[i]) - px) * 0.2; if (dd < bd) { bd = dd; best = [j, i]; } });
+      if (!best) return;
+      const [j, i] = best, s = o.series[j];
+      if (hl !== null) { paths[hl].setAttribute('stroke-width', o.series[hl].width || 2); paths[hl].setAttribute('opacity', o.series[hl].opacity || 1); }
+      paths[j].setAttribute('stroke-width', 3.5); paths[j].setAttribute('opacity', 1); hl = j;
+      cross.setAttribute('x1', X(s.xs[i])); cross.setAttribute('x2', X(s.xs[i])); cross.setAttribute('visibility', 'visible');
+      showTip(ev, `<b>${o.xfmt ? o.xfmt(s.xs[i]) : s.xs[i]}</b><br><span style="color:${s.color}">●</span> ${sup(s.label)}: ${fmt(s.ys[i], o.digits || 3)}`);
+      return;
+    }
+    const rows = []; let bx = null;
+    for (const s of o.series) {
+      if (s.noTip) continue;
+      const i = near(s, x); if (i < 0) continue;
+      bx = bx ?? s.xs[i];
+      rows.push(`<span style="color:${s.color}">●</span> ${sup(s.label)}: ${fmt(s.ys[i], o.digits || 3)}`);
+    }
+    if (bx == null) return;
+    cross.setAttribute('x1', X(bx)); cross.setAttribute('x2', X(bx)); cross.setAttribute('visibility', 'visible');
+    showTip(ev, `<b>${o.xfmt ? o.xfmt(bx) : bx}</b><br>` + rows.join('<br>'));
+  });
+  hit.addEventListener('pointerleave', () => {
+    cross.setAttribute('visibility', 'hidden'); hideTip();
+    if (hl !== null) { paths[hl].setAttribute('stroke-width', o.series[hl].width || 2); paths[hl].setAttribute('opacity', o.series[hl].opacity || 1); hl = null; }
+  });
+}
+
+// ---- JEPA (V18, V18b) ----
+const YD = D.yard;
+const stk = s => s * 128;
+const pairs = (steps, ys, from = 0) => { const xs = [], vs = []; steps.forEach((s, i) => { if (s >= from && ys[i] != null) { xs.push(stk(s)); vs.push(ys[i]); } }); return {xs, ys: vs}; };
+const fromPairs = ps => ({xs: ps.map(p => stk(p[0])), ys: ps.map(p => p[1])});
+const at = (steps, ys, s) => { const i = steps.indexOf(s); return i < 0 ? null : ys[i]; };
+const XT = [0, 2e6, 4e6, 6e6];
+const xS = x => x === 0 ? '0' : (x / 1e4).toLocaleString('ja-JP') + ' 万';
+const XL = '見た stack の数';
+const lrL = lr => ({0.001: '10⁻³', 0.0001: '10⁻⁴', 0.00003: '3·10⁻⁵', 0.00001: '10⁻⁵'})[lr] || String(lr);
+const sgn = v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3);
+const chip = (st, pend) => {
+  const p = pend ? ' <span class="chip mid">保留</span>' : '';
+  if (st === 'collapse') return ' <span class="chip ng">崩壊</span>';
+  if (st === 'pass') return ' <span class="chip ok">合格</span>' + p;
+  if (st === 'none') return ' <span class="small muted">判定なし</span>' + p;
+  return ' <span class="small muted">不合格</span>' + p;
+};
+
+// V18 screen
+(() => {
+  const R = D.v18_screen, rs = [0.25, 0.5, 0.75];
+  let h = '<thead><tr><th>学習率</th><th>λ</th>' + rs.map(r => `<th><i>r</i> = ${r}</th>`).join('') + '</tr></thead><tbody>';
+  for (const lr of [0.001, 0.0001]) for (const lam of [0.005, 0.05, 0.5]) {
+    h += `<tr><td>${lrL(lr)}</td><td class="num">${lam}</td>`;
+    for (const r of rs) {
+      const x = R.find(q => q[0] === lr && q[1] === lam && q[2] === r);
+      h += `<td><span class="cell">${fmt(x[4])}</span>${chip(x[3])}</td>`;
+    }
+    h += '</tr>';
+  }
+  document.getElementById('t-v18-screen').innerHTML = h + '</tbody>';
+})();
+
+// V18 long
+const L18 = D.v18_long;
+const runName = r => `r = ${r.r}・seed ${r.seed}`;
+const dash18 = r => r.r === 0.25 ? (r.seed === 0 ? '' : '6 3') : (r.r === 0.5 ? '2 3' : '9 3 2 3');
+(() => {
+  const order = [...L18].sort((a, b) => a.r - b.r || a.seed - b.seed);
+  const s1 = order.map(r => ({label: runName(r), color: 'var(--s3)', dash: dash18(r), width: 2.2, marker: true, ...pairs(r.step, r.recon)}));
+  const lg = order.map(r => ({label: runName(r), color: 'var(--s3)', dash: dash18(r)}));
+  lineChart(document.getElementById('c-v18-recon'), {series: s1, width: 420, height: 300, xmin: 0, xmax: 7.9e6, ymin: 0.15, ymax: 0.7, xticks: XT, yticks: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7], xfmt: xS, xlabel: XL, ylabel: 'recon_blur', refs: [{y: YD.init[0], label: 'init 0.223'}, {y: YD.color[0], label: 'color 0.417'}], legend: lg});
+  const s2 = order.map(r => ({label: runName(r), color: 'var(--s3)', dash: dash18(r), width: 2.2, ...pairs(r.step, r.pred_ratio, 2000)}));
+  lineChart(document.getElementById('c-v18-pred'), {series: s2, width: 420, height: 300, xmin: 0, xmax: 7.9e6, ymin: 0.15, ymax: 1, log: true, xticks: XT, yticks: [0.15, 0.2, 0.3, 0.5, 0.7, 1], yfmt: v => v, xfmt: xS, xlabel: XL, ylabel: 'pred_ratio', legend: lg});
+  document.getElementById('t-v18-long').innerHTML = order.map(r => {
+    const v = [6000, 20000, 60000].map(s => at(r.step, r.recon, s));
+    return `<tr><td>${runName(r)}</td>${v.map(x => `<td class="num">${fmt(x)}</td>`).join('')}<td class="num">${sgn(v[2] - v[0])}</td><td class="num">${fmt(at(r.step, r.dyn, 60000))}</td><td><span class="chip ng">×</span></td></tr>`;
+  }).join('') + `<tr><td class="muted">物差し init / color</td><td class="num" colspan="3">${fmt(YD.init[0])} / ${fmt(YD.color[0])}</td><td></td><td class="num">${fmt(YD.init[1])} / ${fmt(YD.color[1])}</td><td></td></tr>`;
+})();
+
+// diagnosis
+const CODE = {z: 'var(--s3)', h_flat: 'var(--s4)', h_mean: 'var(--ink-2)'};
+(() => {
+  const s1 = [];
+  for (const r of L18) for (const [k, key] of [['z', 'z_diag'], ['h_flat', 'h_flat'], ['h_mean', 'h_mean']]) s1.push({label: `${k}（${runName(r)}）`, color: CODE[k], width: 1.6, marker: true, ...fromPairs(r[key])});
+  lineChart(document.getElementById('c-diag-recon'), {series: s1, width: 420, height: 300, xmin: 0, xmax: 7.9e6, ymin: 0, ymax: 0.85, xticks: XT, yticks: [0, 0.2, 0.4, 0.6, 0.8], xfmt: xS, xlabel: XL, ylabel: 'recon_blur', nearest: true, refs: [{y: YD.color[0], label: 'color'}], legend: [{label: 'z', color: CODE.z}, {label: 'h_flat', color: CODE.h_flat}, {label: 'h_mean', color: CODE.h_mean}]});
+  const s2 = [];
+  for (const r of L18) for (const [k, key] of [['z', 'img_z'], ['h_mean', 'img_h_mean']]) s2.push({label: `${k}（${runName(r)}）`, color: CODE[k], width: 1.6, ...fromPairs(r[key])});
+  lineChart(document.getElementById('c-diag-img'), {series: s2, width: 420, height: 300, xmin: 0, xmax: 7.9e6, ymin: 36, ymax: 48, xticks: XT, yticks: [36, 38, 40, 42, 44, 46, 48], xfmt: xS, xlabel: XL, ylabel: '正解率 %', digits: 1, nearest: true, refs: [{y: D.img_yard.color, label: 'color 38.5'}], legend: [{label: 'z', color: CODE.z}, {label: 'h_mean', color: CODE.h_mean}]});
+})();
+
+// V18b screen
+(() => {
+  const R = D.v18b_screen, lams = [0.5, 0.8, 0.95];
+  const AN = {f: '<span style="color:var(--s1)">●</span> F', m: '<span style="color:var(--s2)">●</span> M', p16: '<span style="color:var(--s3)">●</span> P16'};
+  let h = '<thead><tr><th>腕</th><th>学習率</th>' + lams.map(l => `<th>λ = ${l}</th>`).join('') + '</tr></thead><tbody>';
+  for (const arm of ['f', 'm', 'p16']) for (const lr of [0.00001, 0.00003, 0.0001]) {
+    h += `<tr><td>${lr === 0.00001 ? AN[arm] : ''}</td><td>${lrL(lr)}</td>`;
+    for (const lam of lams) {
+      const x = R.find(q => q[0] === arm && q[1] === lr && q[2] === lam);
+      h += `<td><span class="cell">${fmt(x[4])}</span>${chip(x[3], x[5])}</td>`;
+    }
+    h += '</tr>';
+  }
+  document.getElementById('t-v18b-screen').innerHTML = h + '</tbody>';
+})();
+
+// V18b long
+(() => {
+  const ARM = {f: ['F', 'var(--s1)'], m: ['M', 'var(--s2)'], p16: ['P16', 'var(--s3)']};
+  const runs = D.v18b_long.map(r => ({...r}));
+  for (const id of D.p16_long) {
+    const r = L18.find(q => q.id === id);
+    const pool = r.h_flat, img = r.img_h_mean;
+    runs.push({id, arm: 'p16', seed: r.seed, step: r.step, recon: r.recon, calib: r.calib, pool: r.step.map(s => (pool.find(p => p[0] === s) || [])[1] ?? null), img: r.step.map(s => (img.find(p => p[0] === s) || [])[1] ?? null)});
+  }
+  const lab = r => `${ARM[r.arm][0]}・seed ${r.seed}`;
+  const seriesOf = (key, from, marker) => runs.map(r => ({label: lab(r), color: ARM[r.arm][1], dash: r.seed ? '6 3' : '', width: 2.2, marker, ...pairs(r.step, r[key], from)}));
+  const lg = [...Object.values(ARM).map(([l, c]) => ({label: l, color: c})), {label: 'seed 1', color: 'var(--ink-3)', dash: '6 3'}];
+  const base = {width: 420, height: 300, xmin: 0, xmax: 7.9e6, xticks: XT, xfmt: xS, xlabel: XL, legend: lg};
+  lineChart(document.getElementById('c-b-recon'), {...base, series: seriesOf('recon', 0, true), ymin: 0.1, ymax: 0.7, yticks: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7], ylabel: 'recon_blur', refs: [{y: YD.color[0], label: 'color'}, {y: YD.init_f[0], label: 'init_f'}, {y: YD.init[0], label: 'init'}, {y: YD.init_m[0], label: 'init_m'}]});
+  lineChart(document.getElementById('c-b-pool'), {...base, series: seriesOf('pool', 0, true), ymin: 0.05, ymax: 0.45, yticks: [0.1, 0.2, 0.3, 0.4], ylabel: 'recon_blur'});
+  lineChart(document.getElementById('c-b-calib'), {...base, series: seriesOf('calib', 2000, false), ymin: 0.15, ymax: 1.2, log: true, yticks: [0.15, 0.2, 0.3, 0.5, 0.7, 1], yfmt: v => v, ylabel: 'pred_ratio_calib'});
+  lineChart(document.getElementById('c-b-img'), {...base, series: seriesOf('img', 0, false), ymin: 36, ymax: 62, yticks: [40, 45, 50, 55, 60], ylabel: '正解率 %', digits: 1, refs: [{y: D.img_yard.color, label: 'color'}]});
+  document.getElementById('t-b-long').innerHTML = runs.map(r => {
+    const v = [6000, 20000, 60000].map(s => at(r.step, r.recon, s));
+    const k3 = r.arm === 'm' ? '<span class="chip ng">K3</span>' : 'なし';
+    return `<tr><td>${lab(r)}</td><td>${k3}</td>${v.map(x => `<td class="num">${fmt(x)}</td>`).join('')}<td class="num">${sgn(v[2] - v[0])}</td><td class="num">${fmt(at(r.step, r.calib, 6000))} → ${fmt(at(r.step, r.calib, 60000))}</td><td><span class="chip ng">×</span></td></tr>`;
+  }).join('');
+})();
+
+// images
+function setRecon(box, key) {
+  box.dataset.img = key;
+  let img = box.querySelector('img');
+  if (!img) {
+    const labs = document.createElement('div'); labs.className = 'rows';
+    for (const t of box.dataset.rows.split('|')) { const s = document.createElement('span'); s.textContent = t; labs.appendChild(s); }
+    box.appendChild(labs);
+    img = document.createElement('img'); box.appendChild(img);
+  }
+  img.src = D.img[key]; img.alt = 'Zurich の本物と描き戻しの 2 段';
+}
+(() => {
+  const IM = [
+    ['init', '学習前（P16）', 'V18 の学習前の JEPA の <code>z</code>（<code>recon_blur</code> 0.223）。'],
+    ['color', 'color', 'パッチごとの平均の色（0.417）。'],
+    ['p16_6000', 'P16・6000 step', 'V18 の長い run（<i>r</i> = 0.25・seed 0）の <code>z</code>（0.450）。'],
+    ['p16_60000', 'P16・60000 step', '同じ run の 60000 step の <code>z</code>（0.594）。'],
+    ['hflat_0', 'h_flat・学習前', 'V18 の <i>r</i> = 0.5・seed 0 の学習前の <code>h_flat</code>（0.109）。'],
+    ['hflat_60000', 'h_flat・60000 step', '同じ run の 60000 step の <code>h_flat</code>（0.273）。'],
+    ['z05_60000', 'z・60000 step（r = 0.5）', '同じ run の 60000 step の <code>z</code>（0.558）。<code>h_flat</code> と見比べます。'],
+    ['init_f', '学習前（F）', 'パッチ 4 の学習前の <code>z</code>（0.316）。'],
+    ['f_6000', 'F・6000 step', 'V18b の F（seed 0）の <code>z</code>（0.412）。'],
+    ['f_60000', 'F・60000 step', '同じ run の 60000 step の <code>z</code>（0.634）。'],
+    ['fpool_0', 'F の h_pool・学習前', 'パッチ 4 の学習前の <code>h_pool</code>（0.279）。'],
+    ['fpool_60000', 'F の h_pool・60000 step', 'F（seed 0）の 60000 step の <code>h_pool</code>（0.346）。'],
+    ['init_m', '学習前（M）', 'M の学習前の <code>zpca</code>（0.132）。'],
+    ['m_60000', 'M・60000 step', 'M（seed 0）の 60000 step の <code>zpca</code>（0.388）。K3 に崩れた後です。'],
+  ];
+  const seg = document.getElementById('seg-img'), box = document.getElementById('r-img'), cap = document.getElementById('cap-img');
+  const pick = k => {
+    seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.key === k ? 'true' : 'false'));
+    setRecon(box, k); cap.innerHTML = IM.find(x => x[0] === k)[2] + ' 括弧の中は Zurich の <code>recon_blur</code> です。';
+  };
+  for (const [k, l] of IM) { const b = document.createElement('button'); b.dataset.key = k; b.textContent = l; b.addEventListener('click', () => pick(k)); seg.appendChild(b); }
+  pick('init');
+})();
+})();
+</script>
+</html>
