@@ -36,10 +36,11 @@ on the checkpoints of the runs, without learning again. Three commands:
   ``IMAGE_SIDE`` (``shrink``) and repeated into a still stack of the run's
   $n$ frames (``still_stacks``): ``IMAGENETTE_POOLS`` of the runs'
   checkpoints by their SIGReg's data point (``h_mean`` and ``z``, of arm M
-  ``h_mean`` and ``zbar``; or ``--codes``, of ``TokenCode``'s pools and
-  ``z_w``, ``jepa_eval.RandProjCode``), ``color`` (``jepa_eval.ColorCode``) and the
-  $\mu$ of VAE checkpoints. Into ``<out>/``: ``imagenette.json``, ``imagenette.jsonl`` (a
-  row per code)::
+  ``h_mean`` and ``zbar``; of V18c's ``z`` is $W \mathrm{vec}(t)$; or
+  ``--codes``, of ``TokenCode``'s pools and ``z_w``,
+  ``jepa_eval.RandProjCode``), ``color`` (``jepa_eval.ColorCode``) and the
+  $\mu$ of VAE checkpoints. Into ``<out>/``: ``imagenette.json``,
+  ``imagenette.jsonl`` (a row per code)::
 
     python -m exp.vision.jepa_diag tokens <run_dir> [--steps 0,6000,20000,60000] \
         [--codes z,h_mean,h_flat] [--span 6000]
@@ -115,7 +116,11 @@ __all__ = [
 
 OUT = "posthoc_diag"
 POOLS = ("z", "h_mean", "h_flat")  # the default codes of tokens
-IMAGENETTE_POOLS = {"flat": ("h_mean", "z"), "mean": ("h_mean", "zbar")}
+IMAGENETTE_POOLS = {
+    "flat": ("h_mean", "z"),
+    "mean": ("h_mean", "zbar"),
+    "mix": ("h_mean", "z"),  # V18c's: z = W vec(t)
+}
 DIAG_STEPS = (0, 6000, 20000, 60000)  # the default steps of tokens
 GRID_STEP = 10  # video frames between the grid's stacks: 1 s at 10 fps
 GROUP_SIZES = (128, 1024)  # n of sigreg's groups: the training's batch, val's

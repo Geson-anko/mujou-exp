@@ -1,10 +1,12 @@
 """``exp.vision.jepa_iid`` on the tiny synthetic Walking Tours of
 ``test_eval`` (videos A, B, C of 20 frames, H held out; stacks of 2 frames of
 16 px, patch 4: the 4 x 4 grid of V18; patch 1: the 16 x 16 grid of V18b's
-patch 4 at 64 px). The defaults reproduce the values of V18's code."""
+patch 4 at 64 px, and of V18c's patch 8 at 64 px with patch 2). The defaults
+reproduce the values of V18's code."""
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,8 +14,9 @@ import torch
 import yaml
 
 from exp.lib import ckpt
+from exp.lib.randproj import gaussian_projection
 from exp.vision.compose import from_dict, to_dict
-from exp.vision.jepa import build_jepa, jepa_mup_lr
+from exp.vision.jepa import LATENT_DIM, R_SEED, W_SEED, build_jepa, jepa_mup_lr
 from exp.vision.jepa_iid import (
     RUNS,
     V16_RUN,
@@ -219,3 +222,64 @@ class TestTrain:
         )
         got = rows(out)
         assert got[-1]["loss"] < 0.5 * got[0]["loss"]
+
+
+V18C = ("--patch", "2", "--token-dim", "16", "--proj", "fixed", "--sigreg-on", "mix")
+
+
+class TestV18c:
+    """V18c's run on the grid 8 x 8 (patch 2 at 16 px, the grid of patch 8 at
+    64 px): the fixed R, W vec(t) of LATENT_DIM for SIGReg."""
+
+    def test_the_settings_and_the_rows_of_a_mix_run(self, root, tmp_path):
+        out = run(root, tmp_path, "r", "--steps", "2", "--batch", "4", *V18C)
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["grid"] == 8 and settings["expand"] == 2
+        assert settings["k_fine"] == 32 and settings["tokens"] == 64
+        assert settings["token_dim"] == 16 and settings["proj"] == "fixed"
+        assert settings["sigreg_on"] == "mix" and settings["latent_dim"] == LATENT_DIM
+        assert settings["sigreg_dim"] == LATENT_DIM
+        seeds = settings["seeds"]
+        assert seeds["r"] == R_SEED and seeds["w"] == W_SEED and seeds["proj"] is None
+        keys = ("loss", "pred", "sigreg", "z_var", "rho_in", "zbar_var", "mix_var")
+        assert all(math.isfinite(r[k]) for r in rows(out) for k in keys)
+
+    def test_v18s_settings_record_a_learned_p_and_no_w(self, root, tmp_path):
+        out = run(root, tmp_path, "r", "--steps", "1", "--batch", "4")
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["proj"] == "learned" and settings["latent_dim"] is None
+        assert settings["seeds"]["r"] is None and settings["seeds"]["w"] is None
+        assert "mix_var" not in rows(out)[0]
+
+    def test_r_and_w_are_kept_bit_for_bit_and_rebuilt_from_their_seeds(
+        self, root, tmp_path
+    ):
+        out = run(root, tmp_path, "r", "--steps", "2", "--batch", "4", *V18C)
+        r = gaussian_projection(16, 128, R_SEED)
+        w = gaussian_projection(LATENT_DIM, 64 * 16, W_SEED)
+        for t in (0.0, 0.8):  # before the first step and after the last
+            saved = torch.load(ckpt.eval_path(out, t), weights_only=True)["modules"]
+            assert set(saved) == {"encoder", "proj", "predictor", "mix"}
+            assert torch.equal(saved["proj"]["weight"], r)
+            assert torch.equal(saved["mix"]["weight"], w)
+        # the run did learn: the encoder moved
+        a = torch.load(ckpt.eval_path(out, 0.0), weights_only=True)["modules"]
+        b = torch.load(ckpt.eval_path(out, 0.8), weights_only=True)["modules"]
+        assert any(
+            not torch.equal(a["encoder"][k], b["encoder"][k]) for k in a["encoder"]
+        )
+
+    def test_no_optimizer_group_holds_r_or_w(self):
+        conf = replace(conf_of(), model=replace(conf_of().model, patch=2))
+        mods = build_jepa(
+            conf, seed=0, token_dim=16, proj="fixed", latent_dim=LATENT_DIM
+        )
+        assert mods.mix is not None
+        opt = _optimizer(mods, conf, 1e-3)
+        held = {id(p) for g in opt.param_groups for p in g["params"]}
+        assert held == {id(p) for p in mods.parameters()}
+        assert id(mods.proj.weight) not in held and id(mods.mix.weight) not in held
+
+    def test_an_unknown_proj_is_refused(self, root, tmp_path):
+        with pytest.raises(SystemExit):
+            run(root, tmp_path, "r", "--steps", "1", "--proj", "frozen")

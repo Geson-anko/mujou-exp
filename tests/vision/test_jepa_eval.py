@@ -4,7 +4,8 @@ split of 3 windows; patch 2 for V18b's finer grid, 8 x 8): the color code and
 the codes of $h$ by hand, the predictions of known solutions, SIGReg's
 references, the participation ratio and the tokens' R^2 on codes of known
 covariance and against a solve of each pair, the drift of known changes, the
-arms' codes, and tiny runs and the yardsticks end to end.
+arms' codes, and tiny runs and the yardsticks end to end; V18c's runs (their
+R and W read back, the code W vec(t) of the tokens t) and yardsticks.
 """
 
 import itertools
@@ -22,9 +23,18 @@ from exp.lib import ckpt, pca
 from exp.lib.png import read_png
 from exp.lib.randproj import gaussian_projection
 from exp.vision import jepa_iid
-from exp.vision.compose import to_dict
+from exp.vision.compose import from_dict, to_dict
 from exp.vision.eval import PCA_SEED
-from exp.vision.jepa import JEPAModules, TokenEncoder, build_jepa, rho_in, take
+from exp.vision.jepa import (
+    LATENT_DIM,
+    FixedProj,
+    JEPAModules,
+    Mix,
+    TokenEncoder,
+    build_jepa,
+    rho_in,
+    take,
+)
 from exp.vision.jepa_eval import (
     W_DIM,
     W_SEED,
@@ -33,6 +43,7 @@ from exp.vision.jepa_eval import (
     RandProjCode,
     TokenCode,
     arm_codes,
+    build_run_jepa,
     drift,
     evaluate_run,
     evaluate_yardsticks,
@@ -581,3 +592,101 @@ class TestOutName:
         assert all("token_r2" not in r and math.isfinite(r["z_var"]) for r in rows)
         probes = jsonl(out / "probes.jsonl")
         assert {r["code"] for r in probes} == {"z_w"}
+
+
+V18C = ("--patch", "2", "--token-dim", "16", "--proj", "fixed", "--sigreg-on", "mix")
+
+
+class TestV18c:
+    """V18c's runs (patch 2 at 16 px: the 8 x 8 grid of patch 8 at 64 px): the
+    code $z = W \\mathrm{vec}(t)$ and the tokens $t_p = R h_p$."""
+
+    def test_the_run_is_built_with_its_r_and_w_and_reads_its_checkpoint(
+        self, root, tmp_path
+    ):
+        run = tiny_run(root, tmp_path, *V18C)
+        conf = from_dict(yaml.safe_load((run / "config.yaml").read_text()))
+        mods = build_run_jepa(conf, json.loads((run / "jepa.json").read_text()))
+        assert isinstance(mods.proj, FixedProj) and isinstance(mods.mix, Mix)
+        ckpt.load_eval(ckpt.eval_path(run, 0.8), mods.modules())
+        x = random_stacks(3)
+        with torch.no_grad():
+            t = mods.tokens(x)
+            assert t.shape == (3, 64, 16)
+            assert torch.equal(mods.mu(x), t.flatten(1) @ mods.mix.weight.T)
+        assert mods.mu(x).shape == (3, LATENT_DIM)
+
+    def test_a_v18_run_without_the_new_settings_is_built_as_before(
+        self, root, tmp_path
+    ):
+        run = tiny_run(root, tmp_path)
+        settings = json.loads((run / "jepa.json").read_text())
+        old = {k: v for k, v in settings.items() if k not in ("proj", "latent_dim")}
+        conf = from_dict(yaml.safe_load((run / "config.yaml").read_text()))
+        mods = build_run_jepa(conf, old)
+        assert mods.mix is None and isinstance(mods.proj, nn.Linear)
+        ckpt.load_eval(ckpt.eval_path(run, 0.8), mods.modules())
+
+    def test_a_v18c_run_rows_of_z_and_h_mean(self, root, tmp_path):
+        run = tiny_run(root, tmp_path, *V18C)
+        out = evaluate_run(
+            run,
+            root=root,
+            span=SPAN,
+            probe_steps=(),
+            fit_steps=FIT,
+            spacing=EVERY,
+            heldin=HELDIN,
+        )
+        rows = jsonl(out / "jepa.jsonl")
+        assert [(r["step"], r["code"]) for r in rows] == [
+            (s, c) for s in (0, 4) for c in ("z", "h_mean")
+        ]
+        keys = ("pred", "pred_ratio_calib", "sigreg_heldin", "sigreg_zurich", "z_var")
+        assert all(math.isfinite(r[k]) for r in rows for k in keys)
+        for r in rows:  # token_r2 and rho_in of the tokens t of z alone
+            assert ("token_r2" in r) == (r["code"] == "z")
+        config = json.loads((out / "config.json").read_text())
+        assert config["sigreg_on"] == "mix" and config["proj"] == "fixed"
+        assert config["latent_dim"] == LATENT_DIM and config["token_dim"] == 16
+        assert config["codes"] == ["z", "h_mean"] and config["expand"] == 2
+
+    def test_the_yardsticks_of_v18c(self, root, tmp_path):
+        out = evaluate_yardsticks(
+            conf_of(patch=2),
+            tmp_path / "y",
+            root=root,
+            span=SPAN,
+            fit_steps=FIT,
+            spacing=EVERY,
+            heldin=HELDIN,
+            token_dim=16,
+            proj="fixed",
+            sigreg_on="mix",
+        )
+        rows = {r["code"]: r for r in jsonl(out / "jepa.jsonl")}
+        assert list(rows) == ["init_c", "init_c_h_mean", "color2"]
+        for name, row in rows.items():
+            tokens = name in ("init_c", "color2")
+            assert ("rho_in" in row) == ("token_r2" in row) == tokens, name
+        config = json.loads((out / "config.json").read_text())
+        assert config["sigreg_on"] == "mix" and config["proj"] == "fixed"
+        assert config["token_dim"] == 16 and config["latent_dim"] == LATENT_DIM
+        # init_c is the step 0 of a V18c run of the same seed
+        run = tiny_run(root, tmp_path, *V18C)
+        first = jsonl(
+            evaluate_run(
+                run,
+                root=root,
+                span=SPAN,
+                probe_steps=(),
+                fit_steps=FIT,
+                spacing=EVERY,
+                heldin=HELDIN,
+                codes=("z",),
+            )
+            / "jepa.jsonl"
+        )[0]
+        assert first["step"] == 0
+        for k in ("sigreg_heldin", "sigreg_zurich", "token_r2", "participation"):
+            assert rows["init_c"][k] == pytest.approx(first[k], rel=1e-6), k

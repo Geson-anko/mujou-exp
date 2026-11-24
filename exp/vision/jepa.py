@@ -1,15 +1,25 @@
-r"""The JEPA of V18 and V18b (``plans/jepa.md``, 「V18」「V18b」): the masks,
-the modules and the loss, in LeJEPA's form (one encoder, no EMA target, no
-stop-gradient).
+r"""The JEPA of V18, V18b and V18c (``plans/jepa.md``, 「V18」「V18b」「V18c」):
+the masks, the modules and the loss, in LeJEPA's form (one encoder, no EMA
+target, no stop-gradient).
 
 The encoder is the ViT of ``build_vae`` (the same steps and seed, so its
 blocks start as the VAE's) without the head: a stack enters by
 ``early_fusion`` and leaves as $T = g^2$ tokens $h_p$ of the width $w$ after
 the last ``LayerNorm`` ($g$ = size / patch; 4 x 4 at 64 px and patch 16,
-V18's; 16 x 16 at patch 4, V18b's). The projection $P$ (``Linear(w, d)``,
-shared by the positions; $d$ = ``TOKEN_DIM`` = 64 by default) maps them to
-$z_p = P h_p$, and $z = (z_1, \dots, z_T)$ flattened (row-major positions) is
-the code of a stack, $D = T d$ (1024 in V18).
+V18's; 16 x 16 at patch 4, V18b's; 8 x 8 at patch 8, V18c's). The
+projection $P$ (shared by the positions; $d$ = ``TOKEN_DIM`` = 64 by default)
+maps them to $z_p = P h_p$, and $z = (z_1, \dots, z_T)$ flattened (row-major
+positions, $\mathrm{vec}(z)_{dp + i} = z_{p,i}$) is the code of a stack, $D =
+T d$ (1024 in V18). $P$ is learned (``Linear(w, d)``, ``"learned"``, V18's)
+or the fixed random $R$ (``FixedProj``, ``"fixed"``, V18c's: $d \times w$ of
+``exp.lib.randproj.gaussian_projection`` of ``R_SEED``, standard normal over
+$\sqrt w$, never learned). V18c's code is $z = W \mathrm{vec}(t)$ of its
+tokens $t_p = R h_p$ by the fixed random $W$ (``Mix``, ``LATENT_DIM`` x $T d$
+of ``W_SEED``, standard normal over $\sqrt{T d}$): its size $D$ =
+``LATENT_DIM`` depends on neither $T$ nor $d$, and an isotropic
+$\mathrm{vec}(t)$ of unit variance gives $z$ of unit variance on average.
+$R$ and $W$ are buffers of the checkpoints, not parameters, and their seeds
+are not the run's.
 
 Masks. The family $F_k$ (``mask_family``) is every union of one or two
 rectangles of sides 1..G on the ``COARSE_GRID`` x ``COARSE_GRID`` grid ($G$ =
@@ -36,14 +46,16 @@ The loss (``jepa_terms``): $L = (1 - \lambda) L_{\mathrm{pred}} + \lambda S$,
 $L_{\mathrm{pred}} = \frac{1}{B k d} \sum_n \sum_{p \in M_n} \lVert \hat
 z_{n,p} - z_{n,p} \rVert^2$ ($k$ the positions a mask hides), $S$ =
 ``exp.lib.sigreg.sigreg`` of the batch's data points along unit directions
-(no buffer): the flat $z$ ``(B, T d)`` (``"flat"``, V18's) or the mean token
-$\bar z = \frac1T \sum_p z_p$ ``(B, d)`` (``"mean"``, V18b's arm M;
-``sigreg_points``). The gradient reaches the target $z$ too.
+(no buffer): the flat $z$ ``(B, T d)`` (``"flat"``, V18's), the mean token
+$\bar z = \frac1T \sum_p z_p$ ``(B, d)`` (``"mean"``, V18b's arm M) or $W
+\mathrm{vec}(z)$ ``(B, LATENT_DIM)`` (``"mix"``, V18c's; ``sigreg_points``).
+The gradient reaches the target $z$ too, through $R$ and $W$ for V18c's.
 
 muP (``jepa_mup_roles``, ``jepa_mup_lr``): the encoder's roles are the
-VAE's; $P$ and ``embed`` map the encoder's width to a fixed size (output,
-$k_w^{-1}$ with $k_w$ = width / ``BASE_WIDTH``); the predictor's blocks and
-``out`` are of the fixed width 256 ($k$ = 1).
+VAE's; a learned $P$ and ``embed`` map the encoder's width to a fixed size
+(output, $k_w^{-1}$ with $k_w$ = width / ``BASE_WIDTH``); the predictor's
+blocks and ``out`` are of the fixed width 256 ($k$ = 1). $R$ and $W$ have no
+role (no parameters).
 """
 
 import math
@@ -55,6 +67,7 @@ import torch
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
+from exp.lib.randproj import gaussian_projection
 from exp.lib.sigreg import sigreg
 from exp.vision.models import (
     INIT_STD,
@@ -71,13 +84,19 @@ from exp.vision.schema.run import RunConf
 
 __all__ = [
     "COARSE_GRID",
+    "LATENT_DIM",
     "PREDICTOR_SEED",
     "PRED_BLOCKS",
     "PRED_WIDTH",
+    "PROJ_KINDS",
     "PROJ_SEED",
+    "R_SEED",
+    "W_SEED",
     "SIGREG_ON",
     "TOKEN_DIM",
+    "FixedProj",
     "JEPAModules",
+    "Mix",
     "Predictor",
     "TokenEncoder",
     "build_jepa",
@@ -99,7 +118,11 @@ __all__ = [
 
 TOKEN_DIM = 64  # d: the code of a token (V18's; V18b's arm F takes 4)
 COARSE_GRID = 4  # G: the grid of the masks' family (V18's, patch 16 at 64 px)
-SIGREG_ON = ("flat", "mean")  # SIGReg's data point: z (V18's) or z_bar
+SIGREG_ON = ("flat", "mean", "mix")  # SIGReg's data point: z, z_bar or W vec(z)
+PROJ_KINDS = ("learned", "fixed")  # P: Linear(w, d) (V18's) or the fixed R (V18c's)
+LATENT_DIM = 1024  # D of W vec(t) (V18c's), whatever T and d
+R_SEED = 67  # R's own seed (not added to the run's)
+W_SEED = 61  # W's own seed, of jepa_eval's z_w too (plans/jepa.md, V18c)
 PRED_WIDTH, PRED_BLOCKS = 256, 4  # the predictor's width and blocks
 PROJ_SEED = 21  # added to the seed: the projection's initial weights
 PREDICTOR_SEED = 23  # added to the seed: the predictor's initial weights
@@ -270,6 +293,35 @@ class Predictor(nn.Module):
         return self.out(self.norm(x[:, keep.shape[1] :]))
 
 
+class FixedProj(nn.Module):
+    r"""The fixed projection $R$ ``weight`` ``(d, w)`` of the tokens, a
+    buffer (not learned): $t = h R^\top$, ``(..., w)`` to ``(..., d)``."""
+
+    def __init__(self, weight: Tensor) -> None:
+        super().__init__()
+        self.register_buffer("weight", weight)
+        self.weight: Tensor
+
+    @override
+    def forward(self, h: Tensor) -> Tensor:
+        return h @ self.weight.T
+
+
+class Mix(nn.Module):
+    r"""The fixed map $W$ ``weight`` ``(D, T d)`` of the flat tokens, a buffer
+    (not learned): $z = \mathrm{vec}(t) W^\top$, ``(B, T d)`` to ``(B,
+    D)``."""
+
+    def __init__(self, weight: Tensor) -> None:
+        super().__init__()
+        self.register_buffer("weight", weight)
+        self.weight: Tensor
+
+    @override
+    def forward(self, v: Tensor) -> Tensor:
+        return v @ self.weight.T
+
+
 def _trunc_normal_(w: Tensor, std: float) -> None:
     nn.init.trunc_normal_(w, std=std, a=-2 * std, b=2 * std)
 
@@ -292,19 +344,23 @@ def _init_predictor(p: Predictor) -> None:
 @dataclass
 class JEPAModules:
     """The JEPA: ``encoder`` (images to tokens ``(B, T, w)``, with ``keep``
-    the visible ones), ``proj`` (a token to $z_p$) and ``predictor``
-    (``Predictor``'s call)."""
+    the visible ones), ``proj`` (a token to $z_p$: a learned ``Linear`` or
+    the fixed ``FixedProj``), ``predictor`` (``Predictor``'s call) and, of
+    V18c's, ``mix`` (``Mix``, the flat tokens to the code)."""
 
     encoder: nn.Module
-    proj: nn.Linear
+    proj: nn.Module
     predictor: nn.Module
+    mix: nn.Module | None = None
 
     def modules(self) -> dict[str, nn.Module]:
-        """The learned modules by the names of the checkpoints."""
-        return {"encoder": self.encoder, "proj": self.proj, "predictor": self.predictor}
+        """The modules by the names of the checkpoints (``mix`` if any)."""
+        mods = {"encoder": self.encoder, "proj": self.proj, "predictor": self.predictor}
+        return mods if self.mix is None else mods | {"mix": self.mix}
 
     def parameters(self) -> list[nn.Parameter]:
-        """The learned parameters, the encoder's first."""
+        r"""The learned parameters, the encoder's first ($R$ and $W$ are
+        buffers, not of them)."""
         return [p for m in self.modules().values() for p in m.parameters()]
 
     def tokens(self, stacks: Tensor) -> Tensor:
@@ -313,8 +369,10 @@ class JEPAModules:
         return self.proj(self.encoder(early_fusion(stacks)))
 
     def mu(self, stacks: Tensor) -> Tensor:
-        """The code $z$ ``(B, T d)`` of the stacks (the evaluations')."""
-        return self.tokens(stacks).flatten(1)
+        r"""The code of the stacks (the evaluations'): the flat $z$ ``(B, T
+        d)``, or with ``mix`` $W \mathrm{vec}(z)$ ``(B, D)``."""
+        flat = self.tokens(stacks).flatten(1)
+        return flat if self.mix is None else self.mix(flat)
 
 
 def build_jepa(
@@ -323,42 +381,59 @@ def build_jepa(
     seed: int,
     token_dim: int = TOKEN_DIM,
     checkpoint_blocks: bool = False,
+    proj: str = "learned",
+    latent_dim: int | None = None,
 ) -> JEPAModules:
     r"""The JEPA of ``conf.model`` (a ViT) on ``conf.device``, $d$ =
     ``token_dim``: the encoder of ``build_vae(conf, seed=seed)`` (muP's
     initialization included) without its head (``TokenEncoder`` of
-    ``checkpoint_blocks``); $P$ drawn from ``seed + PROJ_SEED`` and the
-    predictor from ``seed + PREDICTOR_SEED`` (on the CPU, the global RNG left
-    as it was). In muP the output matrices $P$ and ``embed`` are drawn of
-    LeCun's std times $k_w^{-1/2}$. The encoder does not depend on
-    ``token_dim``.
+    ``checkpoint_blocks``); $P$ of ``proj`` (``PROJ_KINDS``): ``"learned"``
+    drawn from ``seed + PROJ_SEED``, ``"fixed"`` the $R$ of ``R_SEED``
+    (module docstring, whatever ``seed``); the predictor drawn from ``seed +
+    PREDICTOR_SEED`` (on the CPU, the global RNG left as it was); with
+    ``latent_dim`` $D$, ``mix`` $W$ ``(D, T d)`` of ``W_SEED``. In muP the
+    output matrices of a learned $P$ and ``embed`` are drawn of LeCun's std
+    times $k_w^{-1/2}$. The encoder depends on neither ``token_dim`` nor
+    ``proj``, nor the predictor on ``proj``.
 
     Raises:
-        ValueError: ``model.arch`` is not ``"vit"``.
+        ValueError: ``model.arch`` is not ``"vit"``, or ``proj`` is not of
+            ``PROJ_KINDS``.
     """
     m, t = conf.model, conf.data.tours
     if m.arch != "vit":
         raise ValueError(f"the JEPA's encoder is the ViT, not {m.arch!r}")
+    if proj not in PROJ_KINDS:
+        raise ValueError(f"proj is one of {PROJ_KINDS}, not {proj!r}")
     parts = list(build_vae(conf, seed=seed).encoder.parts)
     vit = [p for p in parts if isinstance(p, ViTPart)]
     vit[-1].head = None
     grid = t.size // m.patch
     with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(seed + PROJ_SEED)
-        proj = nn.Linear(m.width, token_dim)
-        _trunc_normal_(proj.weight, 1 / math.sqrt(m.width))
-        nn.init.zeros_(proj.bias)
+        projection: nn.Module
+        if proj == "learned":
+            torch.manual_seed(seed + PROJ_SEED)
+            projection = nn.Linear(m.width, token_dim)
+            _trunc_normal_(projection.weight, 1 / math.sqrt(m.width))
+            nn.init.zeros_(projection.bias)
+        else:
+            projection = FixedProj(gaussian_projection(token_dim, m.width, R_SEED))
         torch.manual_seed(seed + PREDICTOR_SEED)
         predictor = Predictor(width_in=m.width, grid=grid, out_dim=token_dim)
         _init_predictor(predictor)
     if m.param == "mup":
         k = m.width / BASE_WIDTH
         with torch.no_grad():
-            proj.weight.mul_(k**-0.5)
+            if isinstance(projection, nn.Linear):
+                projection.weight.mul_(k**-0.5)
             predictor.embed.weight.mul_(k**-0.5)
     dev = torch.device(conf.device)
     encoder = TokenEncoder(vit, checkpoint_blocks=checkpoint_blocks)
-    return JEPAModules(encoder, proj.to(dev), predictor.to(dev))
+    mix = None
+    if latent_dim is not None:
+        w = gaussian_projection(latent_dim, grid * grid * token_dim, W_SEED)
+        mix = Mix(w).to(dev)
+    return JEPAModules(encoder, projection.to(dev), predictor.to(dev), mix)
 
 
 # -- muP ------------------------------------------------------------------------
@@ -366,9 +441,9 @@ def build_jepa(
 
 def jepa_mup_roles(mods: JEPAModules) -> dict[Tensor, str]:
     """The role in muP of each parameter (``exp.vision.models.ROLES``): the
-    patch embedding's matrix is ``"input"``; $P$'s, ``embed``'s and ``out``'s
-    ``"output"``; the other matrices ``"hidden"``; the biases, the norms and
-    the mask token ``"vector"``.
+    patch embedding's matrix is ``"input"``; a learned $P$'s, ``embed``'s and
+    ``out``'s ``"output"``; the other matrices ``"hidden"``; the biases, the
+    norms and the mask token ``"vector"``.
 
     Raises:
         ValueError: The modules are not ``build_jepa``'s.
@@ -378,7 +453,9 @@ def jepa_mup_roles(mods: JEPAModules) -> dict[Tensor, str]:
     if not isinstance(pred, Predictor) or len(embeds) != 1:
         raise ValueError("muP's roles are of build_jepa's modules")
     inputs = {id(embeds[0].proj.weight)}
-    outputs = {id(mods.proj.weight), id(pred.embed.weight), id(pred.out.weight)}
+    outputs = {id(pred.embed.weight), id(pred.out.weight)}
+    if isinstance(mods.proj, nn.Linear):
+        outputs.add(id(mods.proj.weight))
     matrices = {
         id(m.weight)
         for module in mods.modules().values()
@@ -433,18 +510,24 @@ def predict(mods: JEPAModules, images: Tensor, mask: Tensor) -> tuple[Tensor, Te
     return mods.predictor(mods.encoder(images, keep), keep, hide), hide
 
 
-def sigreg_points(tokens: Tensor, on: str) -> Tensor:
+def sigreg_points(tokens: Tensor, on: str, mix: nn.Module | None = None) -> Tensor:
     r"""SIGReg's data points of the tokens $z_p$ ``(B, T, d)``: the flat $z$
-    ``(B, T d)`` (``on`` ``"flat"``) or the mean token $\bar z = \frac1T
-    \sum_p z_p$ ``(B, d)`` (``"mean"``).
+    ``(B, T d)`` (``on`` ``"flat"``), the mean token $\bar z = \frac1T
+    \sum_p z_p$ ``(B, d)`` (``"mean"``) or $W \mathrm{vec}(z)$ ``(B, D)``
+    by ``mix`` (``"mix"``).
 
     Raises:
-        ValueError: ``on`` is not of ``SIGREG_ON``.
+        ValueError: ``on`` is not of ``SIGREG_ON``, or is ``"mix"`` without
+            ``mix``.
     """
     if on == "flat":
         return tokens.flatten(1)
     if on == "mean":
         return tokens.mean(1)
+    if on == "mix":
+        if mix is None:
+            raise ValueError("sigreg_on 'mix' needs the JEPA's mix W")
+        return mix(tokens.flatten(1))
     raise ValueError(f"sigreg_on is one of {SIGREG_ON}, not {on!r}")
 
 
@@ -458,14 +541,15 @@ def jepa_terms(
 ) -> dict[str, Tensor]:
     r"""The loss of the stacks ``x`` u8 ``(B, n, 3, H, W)`` under ``mask``
     ``(B, T)`` (each hiding $k$) and the directions ``dirs`` ``(M, D_S)`` of
-    SIGReg's data points (``sigreg_points`` of ``sigreg_on``; module
-    docstring): ``loss`` $L$, ``pred`` $L_{\mathrm{pred}}$, ``sigreg`` $S$,
-    and the target side's ``tokens`` $z_p$ ``(B, T, d)`` (detached)."""
+    SIGReg's data points (``sigreg_points`` of ``sigreg_on`` and
+    ``mods.mix``; module docstring): ``loss`` $L$, ``pred``
+    $L_{\mathrm{pred}}$, ``sigreg`` $S$, and the target side's ``tokens``
+    $z_p$ ``(B, T, d)`` (detached)."""
     images = early_fusion(x)
     tokens = mods.proj(mods.encoder(images))  # (B, T, d), the target side
     z_hat, hide = predict(mods, images, mask)
     pred = (z_hat - take(tokens, hide)).square().mean()
-    z = sigreg_points(tokens, sigreg_on)  # (B, D_S)
+    z = sigreg_points(tokens, sigreg_on, mods.mix)  # (B, D_S)
     s = sigreg(z, z[:0], dirs)
     return {
         "loss": (1 - lam) * pred + lam * s,

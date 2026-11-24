@@ -1,21 +1,26 @@
-r"""V18 and V18b: the JEPA (``exp.vision.jepa``) learned by backpropagation
-and AdamW on batches of stacks drawn at random (``plans/jepa.md``, 「学習」 of
-V18 and V18b), the JEPA's counterpart of V16 (``exp.vision.iid``).
+r"""V18, V18b and V18c: the JEPA (``exp.vision.jepa``) learned by
+backpropagation and AdamW on batches of stacks drawn at random
+(``plans/jepa.md``, 「学習」 of V18, V18b and V18c), the JEPA's counterpart of
+V16 (``exp.vision.iid``).
 
 The model is ``build_jepa`` of the run's config (``--config``, a
 ``config.yaml``; by default V16's, ``v16_config``), its ``model.patch`` set
-by ``--patch`` (V18b's 4; the grid $g$ = size / patch, $T = g^2$), $d$ =
-``--token-dim`` and ``--checkpoint-blocks`` (``jepa.TokenEncoder``). A step
+by ``--patch`` (V18b's 4, V18c's 8; the grid $g$ = size / patch, $T = g^2$),
+$d$ = ``--token-dim``, $P$ of ``--proj`` (V18c's ``fixed`` $R$) and
+``--checkpoint-blocks`` (``jepa.TokenEncoder``); with ``--sigreg-on mix``
+also the fixed $W$ of ``jepa.LATENT_DIM`` rows (V18c's). A step
 draws ``--batch`` stacks uniformly with replacement from every unit of the
 training videos (``iid.Units`` of ``"all"``, from ``seed + iid.DRAW_SEED``),
 a mask of $F_k$ of the coarse grid for each ($k$ = ``--mask-ratio`` x
 $G^2$, ``jepa.mask_family``; from ``seed + MASK_SEED``) spread to the grid
 $g = s G$ (``jepa.expand_masks``; $s^2 k$ positions) and ``--directions``
 unit directions of $\mathbb{R}^{D_S}$ (from ``seed + DIRECTION_SEED``, the
-same for the batch; $D_S = T d$ of the flat $z$, or $d$ of $\bar z$ by
-``--sigreg-on``), and descends $(1 - \lambda) L_{\mathrm{pred}} + \lambda
-S$ (``jepa.jepa_terms``, $\lambda$ = ``--lam``). The defaults (the config's
-patch, $d$ = 64, ``flat``) are V18's run, the same computation.
+same for the batch; $D_S = T d$ of the flat $z$, $d$ of $\bar z$ or
+``LATENT_DIM`` of $W \mathrm{vec}(z)$ by ``--sigreg-on``), and descends $(1 -
+\lambda) L_{\mathrm{pred}} + \lambda S$ (``jepa.jepa_terms``, $\lambda$ =
+``--lam``). The defaults (the config's patch, $d$ = 64, ``learned``,
+``flat``) are V18's run, the same computation. $R$ and $W$ are buffers: no
+optimizer holds them and the checkpoints keep them.
 
 AdamW ($\beta$ = 0.9, 0.999, eps 1e-8, no weight decay, no clipping), a
 group per learning-rate multiplier of ``jepa_mup_lr`` (muP; all 1 in SP); the
@@ -30,15 +35,20 @@ batch 128). The checkpoints are at the steps of ``ckpt_steps``.
 settings and ``provenance.of_diagnosis``'s record of the code and the host),
 ``train.jsonl`` (a row every ``--log-every`` steps: the means
 since the last row of ``loss``, ``pred``, ``sigreg``, ``grad_norm`` and the
-batch's ``z_var`` (the mean over the coordinates of $z$ of their variance),
-``rho_in`` (``jepa.rho_in``) and ``zbar_var`` (that of $\bar z$); ``lr``,
+batch's ``z_var`` (the mean over the coordinates of the flat tokens of
+their variance), ``rho_in`` (``jepa.rho_in``) and ``zbar_var`` (that of $\bar
+z$), of a ``mix`` run ``mix_var`` (that of $W \mathrm{vec}(z)$); ``lr``,
 ``sec`` since the start, and on CUDA ``max_mem``, the peak of the memory
 allocated, GiB) and
 ``ckpt/<t>.pt`` (``program`` ``"jepa"``; ``encoder``, ``proj``,
-``predictor``). A non-finite mean stops the run (``FloatingPointError``)::
+``predictor``, and ``mix`` of a ``mix`` run). A non-finite mean stops the run
+(``FloatingPointError``)::
 
     python -m exp.vision.jepa_iid --mask-ratio 0.5 --lam 0.05 --lr 1e-3 \
         --steps 6000 --out runs/v18-jepa/jepa-r0.5-lam0.05-lr1e-3-s0
+    python -m exp.vision.jepa_iid --patch 8 --token-dim 16 --proj fixed \
+        --sigreg-on mix --mask-ratio 0.5 --lam 0.8 --lr 3e-5 --steps 6000 \
+        --out <run_dir>
 """
 
 import argparse
@@ -60,12 +70,16 @@ from exp.vision.compose import from_dict, to_dict
 from exp.vision.iid import DRAW_SEED, Units, lr_at
 from exp.vision.jepa import (
     COARSE_GRID,
+    LATENT_DIM,
     PRED_BLOCKS,
     PRED_WIDTH,
     PREDICTOR_SEED,
+    PROJ_KINDS,
     PROJ_SEED,
+    R_SEED,
     SIGREG_ON,
     TOKEN_DIM,
+    W_SEED,
     JEPAModules,
     build_jepa,
     directions,
@@ -154,28 +168,35 @@ def train(
     token_dim: int = TOKEN_DIM,
     sigreg_on: str = "flat",
     checkpoint_blocks: bool = False,
+    proj: str = "learned",
 ) -> None:
-    """Learn ``build_jepa(conf, token_dim=token_dim)`` as the module docstring
-    says, into ``out``.
+    """Learn ``build_jepa(conf, token_dim=token_dim, proj=proj)`` (with $W$
+    of ``LATENT_DIM`` rows for ``sigreg_on`` ``"mix"``) as the module
+    docstring says, into ``out``.
 
     Raises:
         ValueError: ``mask_ratio`` hides no whole number of the coarse grid's
             positions in ``[1, G^2 - 1]`` (``hidden_count``), the grid is no
             whole multiple of the coarse one (``mask_expansion``), ``lam`` is
-            not in ``[0, 1]`` or ``sigreg_on`` not of ``SIGREG_ON``.
+            not in ``[0, 1]``, ``sigreg_on`` not of ``SIGREG_ON`` or ``proj``
+            not of ``PROJ_KINDS``.
         FloatingPointError: A mean of ``train.jsonl`` is not finite.
     """
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must be in [0, 1], not {lam}")
     if sigreg_on not in SIGREG_ON:
         raise ValueError(f"sigreg_on is one of {SIGREG_ON}, not {sigreg_on!r}")
+    if proj not in PROJ_KINDS:
+        raise ValueError(f"proj is one of {PROJ_KINDS}, not {proj!r}")
     dev = torch.device(conf.device)
     grid = conf.data.tours.size // conf.model.patch
     s = mask_expansion(grid)
     k = hidden_count(mask_ratio, COARSE_GRID * COARSE_GRID)
     family = mask_family(k, COARSE_GRID).to(dev)
     tokens_count = grid * grid
-    d = tokens_count * token_dim if sigreg_on == "flat" else token_dim  # D_S
+    latent = LATENT_DIM if sigreg_on == "mix" else None
+    dims = {"flat": tokens_count * token_dim, "mean": token_dim, "mix": LATENT_DIM}
+    d = dims[sigreg_on]  # D_S
     stamps = ckpt_steps(steps)
     seed = conf.seed
     settings: dict[str, Any] = {
@@ -190,6 +211,8 @@ def train(
         "k_fine": s * s * k,
         "lam": lam,
         "token_dim": token_dim,
+        "proj": proj,
+        "latent_dim": latent,
         "sigreg_on": sigreg_on,
         "sigreg_dim": d,
         "checkpoint_blocks": checkpoint_blocks,
@@ -206,7 +229,9 @@ def train(
         "ckpt_steps": stamps,
         "seeds": {
             "init": seed,
-            "proj": seed + PROJ_SEED,
+            "proj": seed + PROJ_SEED if proj == "learned" else None,
+            "r": R_SEED if proj == "fixed" else None,
+            "w": W_SEED if latent is not None else None,
             "predictor": seed + PREDICTOR_SEED,
             "draw": seed + DRAW_SEED,
             "mask": seed + MASK_SEED,
@@ -222,7 +247,12 @@ def train(
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.yaml").write_text(yaml.safe_dump(to_dict(conf), sort_keys=False))
     mods = build_jepa(
-        conf, seed=seed, token_dim=token_dim, checkpoint_blocks=checkpoint_blocks
+        conf,
+        seed=seed,
+        token_dim=token_dim,
+        checkpoint_blocks=checkpoint_blocks,
+        proj=proj,
+        latent_dim=latent,
     )
     opt = _optimizer(mods, conf, lr)
     params = mods.parameters()
@@ -244,6 +274,7 @@ def train(
         )
 
     keys = ("loss", "pred", "sigreg", "grad_norm", "z_var", "rho_in", "zbar_var")
+    keys += ("mix_var",) if mods.mix is not None else ()
     acc = torch.zeros(len(keys), dtype=torch.float64, device=dev)
     start, n = time.monotonic(), 0
     log = (out / "train.jsonl").open("w")
@@ -267,6 +298,9 @@ def train(
             row = [terms[k].detach() for k in ("loss", "pred", "sigreg")]
             row += [norm.detach(), tokens.flatten(1).var(0).mean(), rho_in(tokens)]
             row += [sigreg_points(tokens, "mean").var(0).mean()]
+            if mods.mix is not None:
+                with torch.no_grad():
+                    row += [mods.mix(tokens.flatten(1)).var(0).mean()]
             acc += torch.stack([r.double() for r in row])
             n += 1
             if (step + 1) % log_every == 0 or step + 1 == steps:
@@ -306,6 +340,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--sigreg-on", choices=SIGREG_ON, default="flat", help="SIGReg's data point"
     )
     ap.add_argument(
+        "--proj", choices=PROJ_KINDS, default="learned", help="P: learned or fixed R"
+    )
+    ap.add_argument(
         "--checkpoint-blocks",
         action="store_true",
         help="compute the encoder's blocks again in the backward (less memory)",
@@ -339,6 +376,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         token_dim=args.token_dim,
         sigreg_on=args.sigreg_on,
         checkpoint_blocks=args.checkpoint_blocks,
+        proj=args.proj,
     )
 
 
