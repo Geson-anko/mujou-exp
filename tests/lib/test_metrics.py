@@ -3,7 +3,14 @@ import math
 import pytest
 import torch
 
-from exp.lib.metrics import bootstrap_se, effective_rank, probe_accuracy, probe_r2
+from exp.lib.metrics import (
+    bootstrap_se,
+    effective_rank,
+    identification,
+    probe_accuracy,
+    probe_r2,
+    swap,
+)
 
 
 class TestEffectiveRank:
@@ -88,3 +95,117 @@ class TestProbeAccuracy:
         f = torch.randn(2000, 4, generator=g)
         acc = probe_accuracy(f[:1000], y[:1000], f[1000:], y[1000:], 4)
         assert abs(acc - 0.25) < 4 * math.sqrt(0.25 * 0.75 / 1000)
+
+
+def _features(n: int, f: int = 6, seed: int = 0) -> torch.Tensor:
+    return torch.randn(n, f, generator=torch.Generator().manual_seed(seed))
+
+
+class TestIdentification:
+    def test_the_real_features_themselves_are_all_found(self):
+        real = _features(10)
+        out = identification(real, real, center=real.mean(0))
+        assert out["top1"] == out["top5"] == 1.0
+        assert out["hits"] == [1.0] * 10 and out["top1_se"] == 0.0
+        assert out["top1_adj"] is None  # no miss
+        assert out["pick_max"] == pytest.approx(1 / 10)  # every row once
+
+    def test_one_prediction_for_all_finds_exactly_1_and_5_of_n(self):
+        real = _features(20)
+        pred = _features(1, seed=1).expand(20, -1)
+        out = identification(pred, real, center=real.mean(0))
+        assert out["top1"] == pytest.approx(1 / 20)
+        assert out["top5"] == pytest.approx(5 / 20)
+        assert out["pick_max"] == 1.0  # a hub: every pick on one row
+
+    def test_a_permutation_finds_its_fixed_points(self):
+        real = _features(12)
+        perm = torch.tensor([0, 2, 1, 3, 5, 4, 6, 7, 9, 8, 11, 10])
+        out = identification(real[perm], real, center=real.mean(0))
+        fixed = int((perm == torch.arange(12)).sum())
+        assert out["top1"] == pytest.approx(fixed / 12)
+        # each miss picked the swapped neighbour
+        assert out["top1_adj"] == 1.0
+
+    def test_positive_scales_change_nothing_and_top5_is_at_least_top1(self):
+        real = _features(15)
+        pred = real[:, None] + 0.8 * torch.randn(
+            15, 4, 6, generator=torch.Generator().manual_seed(3)
+        )
+        center = real.mean(0)
+        a = identification(pred, real, center=center)
+        scale = torch.linspace(0.5, 3, 15)[:, None, None]
+        b = identification(center + scale * (pred - center), real, center=center)
+        assert a == b
+        assert a["top5"] >= a["top1"]
+        assert len(a["hits"]) == 15
+        assert a["top1"] == pytest.approx(sum(a["hits"]) / 15)
+
+    def test_among_its_own_alone_every_query_is_found(self):
+        real = _features(9)
+        pred = _features(4, seed=2)  # nowhere near
+        truth = torch.tensor([7, 1, 4, 0])
+        out = identification(
+            pred, real, center=real.mean(0), truth=truth, among=truth[:, None]
+        )
+        assert out["top1"] == 1.0 and "top1_adj" not in out
+
+    def test_among_a_set_ranks_only_within_it(self):
+        real = _features(9)
+        truth = torch.tensor([2, 5])
+        pred = real[[3, 6]]  # each the real of another row
+        among = torch.tensor([[2, 4], [5, 6]])
+        out = identification(
+            pred, real, center=torch.zeros(6), truth=truth, among=among
+        )
+        # query 0 (row 3) is not among {2, 4} so picks one of them; query 1 picks 6
+        assert out["hits"][1] == 0.0
+
+    def test_a_prediction_at_the_centre_finds_none(self):
+        # no direction: every real is as near as its own, and a tie is no hit
+        real = _features(9)
+        center = real.mean(0)
+        pred = center.expand(4, -1)
+        truth = torch.tensor([7, 1, 4, 0])
+        among = torch.stack([truth, (truth + 1) % 9, (truth + 2) % 9], 1)
+        assert identification(pred, real, center=center, truth=truth)["top1"] == 0
+        out = identification(pred, real, center=center, truth=truth, among=among)
+        assert out["top1"] == 0.0  # its own first in among changes nothing
+
+    def test_a_tie_with_another_row_is_no_hit(self):
+        real = _features(5)
+        real[3] = real[1]  # two candidates of the same features
+        out = identification(real, real, center=torch.zeros(6))
+        assert out["hits"] == [1.0, 0.0, 1.0, 0.0, 1.0]
+
+
+class TestSwap:
+    def test_its_own_real_against_one_of_no_direction_is_always_chosen(self):
+        t, zero = _features(30), torch.zeros(30, 6)
+        value, each = swap(t, zero, t)
+        assert value == 1.0 and each.shape == (30,)
+        assert swap(zero, t, t)[0] == 0.0
+        assert swap(t, -t, t)[0] == 1.0
+
+    def test_equal_rows_and_rows_of_no_direction_tie_at_exactly_one_half(self):
+        a, t = _features(30), _features(30, seed=1)
+        value, each = swap(a, a.clone(), t)
+        assert value == 0.5 and torch.all(each == 0.5)
+        zero = torch.zeros(30, 6)
+        assert swap(zero, zero, t)[0] == 0.5
+        assert swap(a + 1e3, a + 1e3, t)[0] == 0.5
+
+    def test_exchangeable_pairs_unrelated_to_the_real_are_half(self):
+        n = 10_000
+        a, b, t = _features(n, seed=4), _features(n, seed=5), _features(n, seed=6)
+        value, _ = swap(a, b, t)
+        assert abs(value - 0.5) < 4 * math.sqrt(0.25 / n)
+
+    def test_a_noisier_other_unrelated_to_the_real_is_still_half(self):
+        n = 10_000
+        common, t = _features(n, seed=7), _features(n, seed=8)
+        t = t + common  # the common part points to the real
+        a = common + 0.1 * _features(n, seed=9)
+        b = common + 3.0 * _features(n, seed=10)
+        value, _ = swap(a, b, t)
+        assert abs(value - 0.5) < 4 * math.sqrt(0.25 / n)

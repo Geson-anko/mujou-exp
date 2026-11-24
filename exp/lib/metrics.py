@@ -1,5 +1,8 @@
 """Metrics of representations, on tensors."""
 
+import math
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -7,8 +10,10 @@ __all__ = [
     "PROBE_RIDGES",
     "bootstrap_se",
     "effective_rank",
+    "identification",
     "probe_accuracy",
     "probe_r2",
+    "swap",
 ]
 
 PROBE_RIDGES = (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  # of probe_accuracy, times n
@@ -101,3 +106,93 @@ def bootstrap_se(
     idx = torch.randint(n, (resamples, n), generator=gen, device=x.device)
     means = x.double()[idx].mean(1)
     return float(means.std())
+
+
+def _unit(x: torch.Tensor, center: torch.Tensor) -> torch.Tensor:
+    """The rows of ``x`` less ``center``, of length 1, in float64."""
+    u = x.double() - center.double()
+    return u / torch.linalg.vector_norm(u, dim=-1, keepdim=True).clamp(min=1e-300)
+
+
+def identification(
+    pred: torch.Tensor,
+    real: torch.Tensor,
+    *,
+    center: torch.Tensor,
+    truth: torch.Tensor | None = None,
+    among: torch.Tensor | None = None,
+    ks: tuple[int, ...] = (1, 5),
+) -> dict[str, Any]:
+    r"""How often the features ``pred`` ``(n, K, F)`` ($g_{ij}$, $K$ of a
+    query $i$; or ``(n, F)`` for $K$ = 1) pick their own real features out of
+    ``real`` ``(m, F)`` ($r_l$) by the nearest cosine, both less ``center``
+    ``(F,)``.
+
+    Query $i$'s own is ``real[truth[i]]`` (``truth`` ``(n,)``, by default
+    $i$) among the rows ``among[i]`` (``among`` ``(n, c)``, by default all
+    $m$; each row holds ``truth[i]``). A tie is not a hit: a row as near as
+    its own ranks before it, so a prediction at ``center`` (of no direction)
+    finds none, whatever the order of ``among[i]``, and one prediction for
+    all the queries finds exactly one of them where the real rows are
+    distinct. With $\hat l_{ij} = \arg\max_l
+    \cos(g_{ij} - \text{center}, r_l - \text{center})$: ``top1`` $=
+    \frac{1}{nK} \sum_{i,j} [\hat l_{ij} = \text{truth}_i]$; ``top<k>`` for
+    each $k$ of ``ks``, the share of $g_{ij}$ whose own is among the $k$
+    nearest; ``hits`` the list of $h_i = \frac1K \sum_j [\hat l_{ij} =
+    \text{truth}_i]$; ``top1_se`` $= \mathrm{sd}_i(h_i) / \sqrt n$; and,
+    without ``among``, ``top1_adj``, the share of the misses whose pick is a
+    neighbour $\lvert \hat l_{ij} - \text{truth}_i \rvert = 1$ (None
+    without a miss), and ``pick_max``, the largest share of the $nK$ picks
+    $\hat l_{ij}$ on one real row (a hub: a common shift of the predictions
+    draws the picks to the rows along it; $1/m$ if every row is picked
+    alike). Chance is $1/m$ (or $1/c$) for ``top1``.
+    """
+    g = pred.reshape(pred.shape[0], -1, pred.shape[-1])  # (n, K, F)
+    n, k_samples, _ = g.shape
+    gu, ru = _unit(g, center), _unit(real, center)
+    own = torch.arange(n, device=real.device) if truth is None else truth
+    sims = gu @ ru.T  # (n, K, m)
+    at = own  # the column of each query's own in sims
+    if among is not None:
+        sims = sims.gather(2, among[:, None, :].expand(-1, k_samples, -1))
+        at = (among == own[:, None]).int().argmax(1)
+    own_sim = sims.gather(2, at[:, None, None].expand(-1, k_samples, 1))
+    # the place of its own in a descending sort: the nearer rows, and the
+    # other rows as near before it (a tie is not a hit)
+    cols = torch.arange(sims.shape[2], device=sims.device)
+    ties = (sims == own_sim) & (cols != at[:, None, None])
+    rank = (sims > own_sim).sum(2) + ties.sum(2)  # (n, K)
+    hits = (rank == 0).double().mean(1)  # (n,)
+    out: dict[str, Any] = {
+        f"top{k}": float((rank < k).double().mean()) for k in sorted({1, *ks})
+    }
+    out["top1_se"] = float(hits.std(unbiased=True)) / math.sqrt(n) if n > 1 else 0.0
+    out["hits"] = hits.tolist()
+    if among is None:
+        picks = sims.argmax(2)  # (n, K)
+        miss = rank > 0
+        adj = (picks - own[:, None]).abs() == 1
+        misses = int(miss.sum())
+        out["top1_adj"] = float((adj & miss).sum()) / misses if misses else None
+        counts = torch.bincount(picks.flatten(), minlength=real.shape[0])
+        out["pick_max"] = float(counts.max()) / picks.numel()
+    return out
+
+
+def swap(
+    own: torch.Tensor, other: torch.Tensor, real: torch.Tensor
+) -> tuple[float, torch.Tensor]:
+    r"""The two-way choice of each row $i$: whether ``own`` $a_i$ points
+    more to ``real`` $t_i$ than ``other`` $b_i$ does (all ``(n, F)``, taken
+    as they are: the caller centres them), $(a_i - b_i) \cdot t_i > 0$: 1,
+    0, or 1/2 on a tie. The mean over the rows and the values ``(n,)``
+    float64.
+
+    Equal rows $a_i = b_i$ tie (exactly 1/2 for a choice that cannot tell the
+    two apart). Where $a_i - b_i$ is independent of $t_i$ and symmetric about
+    0, the expectation is 1/2 whatever the scales of $a$ and $b$: a common
+    part of the two cancels, and so does neither's size, unlike the cosine
+    or the distance, which favour the less noisy one."""
+    d = ((own.double() - other.double()) * real.double()).sum(1)
+    v = (d > 0).double() + 0.5 * (d == 0).double()
+    return float(v.mean()), v
