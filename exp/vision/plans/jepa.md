@@ -336,6 +336,330 @@ $\bar z_n = \frac1T \sum_p z_{n,p}$ とし、$z_{n,p} = \bar z_n + u_{n,p}$（$\
 - **名前**: `v18b-<腕>-lr<lr>-lam<λ>-r<r>-s<seed>`（腕は `f`・`m`・`p16`）。NAS の `/nas/geson/mujou-exp/runs/v18b-trial/`・`v18b-screen/`・`v18b-long/`（長い run は `v18b-long-<腕>-…`）・`v18b-baselines/`・`v18b-imagenette/`。ckpt を除いて `./runs/` に置く
 - **集計**: `exp/vision/results/v18b/judge.py` に、README の規則（崩壊・合格・判定保留・選び方・規則 5・仮説の読み）をそのまま書き、表を出す
 
+## V18c: 評価（生成と Inception、未観測の部分、詳細設計、2026-11-24）
+
+問い・物差し・読み方の規則・予想は、README の「V18c: 生成と Inception で JEPA の符号を測り直す」と「V18c: 未観測の部分の評価（E1・E1e・E1g・E2）」（どちらも回す前に決めたこと）に書いた。ここには、評価の側を実装できる粒度の設計を書く。次の学習（パッチ 8、案 B: $t_p = R h_p$、$z = W \cdot \mathrm{vec}(t)$）は別に並行して進めるので、この節では扱わない。ただし、評価の部品のうち $W$ の作り方（`exp/lib/randproj.py`）と評価のマスク（`exp/lib/regions.py`）は、学習の側と共有する。
+
+### ユーザーが決めたこと（2026-11-24）
+
+- **`recon_blur` を判定から外す。** JEPA は細部ではなく抽象的な特徴を得る仕組みなので、決定的なデコーダの再構成が良くなることは期待できない。V18・V18b の長い run の描き戻しは、悪化しても同じ画像だと分かる程度には描けている。学習目的と評価が合っていなかった（[memory/feedback_eval_matches_objective.md](../../../memory/feedback_eval_matches_objective.md)）
+- **新しい評価**: 符号を条件にした軽量の拡散デコーダで画像を生成し、Inception V3 の特徴で測る。主の指標は**同定の正解率**（生成した画像の特徴で、元の画像を候補の中から最近傍で当てる）。副は FID、生成と本物の対の特徴の距離、Imagenette、`dyn_1/copy_1`、崩壊の検出
+- **潜在の写像 $W$** は seed を固定したランダムのガウス行列で、学習しない（$D$ = 1024）。既存の checkpoint にも、固定のランダム写像の符号 $z_W = W \cdot \mathrm{vec}(h)$ をかける。その後、学習の側は案 B（各トークンを固定のランダム行列 $R$ で 16 次元に写した $t_p = R h_p$ を的にし、$z = W \cdot \mathrm{vec}(t)$）に決まった。$z_W$ は案 B の前の形のままで、新しい学習の $z$ とは別の符号である（下の「符号」）
+- **未観測の部分の評価**（Fable さんの提案 [memory/agents/fable/out-of-view-eval.md](../../../memory/agents/fable/out-of-view-eval.md) を推奨どおりに採った）: 主は E1「補完の同定」、エンコーダだけの版 E1e、拡散のデコーダで描く E1g を絵と裏づけにする。E2「画面の外」のために、元の動画から左右の帯を切り直す（評価専用の別のデータにし、既存の `data_version` は変えない）。的は Inception V3 と `color` の 2 本（DINOv2 は採らない）。E3（未来）は V19 から作る
+
+推奨で決めたこと（ユーザーは「推奨で」と答えた）: デコーダは 2026-11-18 の [PLAN の「評価の拡張: 軽量の拡散デコーダ」](../PLAN.md) の形にする。Inception は pytorch-fid と同じ重み・同じ前処理にする。候補は Zurich から間隔をあけてとる。
+
+### 評価の一覧
+
+| 評価 | 測ること | 入力の符号 | 後から学ぶもの | 位置づけ |
+| -- | -- | -- | -- | -- |
+| G（生成） | 符号から描いた画像で、元の画像を当てられるか | `z`・`z_w`・物差し | 拡散のデコーダ（符号ごと） | **主**（`top1`）。副に FID・`feat_ratio` |
+| E1（補完の同定） | 予測器が、隠した領域の外部の特徴を当てるか | 予測器の出力 | 領域ごとの ridge（全体を見たトークンで当てはめて凍結） | **未観測の部分の主** |
+| E1e（エンコーダだけ） | 見える部分の符号から、隠した領域の特徴を線形に取り出せるか | 文脈側のトークン・物差し | マスクごとの ridge | 副（物差しと同じ読み出しで比べる） |
+| E1g（仮想の $z$） | 予測で埋めた $\hat z$ を描くと、隠した領域が当たるか | 隠した位置を埋めた `z` | なし（G のデコーダを使う） | 絵と裏づけ |
+| E2（画面の外） | 一度も入力に入らない左右の帯の特徴を、符号から取り出せるか | `z`・`z_w`・物差し | 帯ごとの ridge | 副 |
+| 既存 | `dyn_1/copy_1`、Imagenette、崩壊（K1・K3） | `z`・`z_w` | 既存のとおり | 副 |
+
+### 共通 1: Zurich の格子と候補（G・E1・E1g・E2 で同じ）
+
+- **格子**: `jepa_diag.ZurichGrid`（最初のフレームが 10 フレーム = 1 秒おきの stack）。Zurich は 38996 フレームなので、格子は $G$ = 3899 個になる（実装で数えて `config.json` に書く）
+- **候補**: $n$ = `N_CAND` = 512 個。候補 $i$ は格子の $c_i = \lfloor i (G - 1) / (n - 1) \rfloor$ 番目の stack で、隣との間隔は 7 か 8 秒になる
+- **数と間隔の理由**: (1) 偶然の値は $1/512$ = 0.2% で、正解率 0.5 での標準誤差は $\sqrt{0.25/512}$ = 0.022 になる。符号どうしは同じ候補・同じ雑音で比べるので、差の標準誤差（対の標準誤差、下）はさらに小さい。(2) V18 の診断で、Zurich の 1 秒おきの stack は強く相関していた。7〜8 秒の間隔は stack の幅 0.8 秒よりずっと長く、歩いて 10 m ほど進む。1024 個（約 3.8 秒おき）にすると、ほとんど同じ景色の隣の組が倍になる。128 個（約 30 秒おき）では標準誤差が 0.044 に広がる。(3) 近い候補との取り違えは `top1_adj` と `real_shift`（下）で見る
+- **難しい候補（`id_hard`）**: 候補 $i$ に、同じ動画の前後 ±2〜±32 秒（2 秒おき、$c_i + 2m$、$m = \pm 1, \dots, \pm 16$）の格子の 32 個を足した 33 個の中から当てる。偶然の値は 1/33。場面・天気・照明は候補どうしで共通なので、「同じ街角」だけでは当たらない。$c_i < 32$ か $c_i > G - 33$ の候補（両端の約 9 個）は `id_hard` から外し、数を `n_hard` に書く
+- 学習の動画は Zurich を含まないので、候補は学習に使っていない。G は Zurich で何も当てはめないので、val や calib の窓と重なってもかまわない
+- E1・E1e・E2 の ridge は、$\alpha$ を Zurich の calib の窓で選ぶので、calib の stack が候補と同じか 1 秒以内に重なりうる。重なりは除かない。理由: calib から決まるのは、`linear_dyn.ALPHA_SCALES` の 9 つの尺度から選ぶ 1 つのスカラーだけで（当てはめそのものは学習の動画の組）、9 つから 1 つを選ぶことで候補の採点に持ち込める情報は $\log_2 9 \approx 3.2$ ビットにとどまる。E1 の `oracle`・`pred`・`mean`・`shuf` は同じ $g_U$（同じ $\alpha$）を通るので、段どうしの差には共通に入る。E1e・E2 の符号どうしの比べでは、符号ごとに $\alpha$ を選ぶので漏れは打ち消し合わないが、どの符号も同じ 9 つから同じ規則で選ぶので、大きさは同じ程度とみる
+
+### 共通 2: 外部の特徴（`exp/lib/inception.py`）
+
+- **ネット**: pytorch-fid の FID 用の InceptionV3（`FIDInceptionA`・`FIDInceptionC`・`FIDInceptionE_1`・`FIDInceptionE_2` で、torchvision の `inception_v3(num_classes=1008, aux_logits=False, init_weights=False, weights=None)` のブロックを置き換えたもの）。この 4 つのクラスは pytorch-fid（Apache-2.0）から移し、出典をファイルの先頭に書く。特徴は pool3（`avgpool` の出力、2048 次元、ReLU の後なので負でない）
+- **前処理**（pytorch-fid の `InceptionV3(resize_input=True, normalize_input=True)` と同じ）: u8 の画像 $x$ を $x/255$ にし、`F.interpolate(size=(299, 299), mode="bilinear", align_corners=False)` で拡大し、$2x - 1$ にする。正方形でない切り出し（下の領域と帯）も、同じく 299×299 に引き伸ばす（縦横比は変わるが、すべての符号で同じ）
+- **重み**: `pt_inception-2015-12-05-6726825d.pth`（pytorch-fid の release の FID の重み）。読むときに sha256 が `6726825d` で始まることを確かめる。置き場所は `--inception` で渡し、既定は `$MUJOU_EXP_DATA/inception/pt_inception-2015-12-05-6726825d.pth`。Mac で一度だけダウンロードし、NAS の `/nas/geson/mujou-exp/cache/inception/` を経由して、各ホストの `/data/geson/mujou-exp/.fleet/data/inception/` に置く。git には入れない
+- **依存**: `uv add torchvision`（torch の cu132 と、free-threaded の 3.14t の wheel に合う版）。解決できなければ、torchvision の `inception_v3` の残りのブロック（`BasicConv2d`、`InceptionB`・`InceptionD`、幹）も同じファイルに移し、torchvision に頼らない。どちらにしたかを README の実行の記録に書く
+- `eval()`・`no_grad`・float32 で、batch 200 ずつ通す
+
+### 共通 3: 同定の採点（`exp/lib/metrics.py`）
+
+- **`identification(pred, real, *, center, among=None, ks=(1, 5))`**: 問い $i$ の特徴 $g_i$（$K$ 枚あれば $g_{ij}$）と、候補 $l$ の本物の特徴 $r_l$ を、どちらも `center` を引いてから $\cos$ で比べる。`top1` = $\frac{1}{nK} \sum_{i,j} [\arg\max_l \cos(g_{ij}, r_l) = i]$、`top5` は上位 5 個に $i$ が入る割合。`hits` は候補ごとの $h_i = \frac1K \sum_j [\arg\max_l \cos(g_{ij}, r_l) = i]$。`among` を渡すと、問い $i$ の候補を `among[i]`（`id_hard` の 33 個）に限る。`top1_adj` は、外れたうちで選ばれた $l$ が隣の候補（$\lvert l - i \rvert = 1$）だった割合
+- **中心を引く理由**: pool3 の特徴は負でなく、共通の大きな平均を持つので、生の $\cos$ は主にその平均の向きを測る。G では FID の参照の組 $R$（Zurich の 4096 枚、下）の平均を引く。E1・E1e・E2・E1g の的は当てはめの組（学習の動画）の平均で中心化してあるが、同じ理由で、採点では Zurich の格子の全 stack の的の平均を引く（`fill_eval.score`）。学習の動画と Zurich のずれはすべての候補に共通の向きで、0 を中心にすると、その向きが $\cos$ を支配し、ずれに沿う候補に当たりが集まる（hub）。その偏りは符号ごとに違いうる。`swap`（下）も、的の側は Zurich の格子の平均を引いたものを使う
+- **同点**: 自分と同じだけ近い別の候補は、自分より前に並べる（同点は外れ）。中心にある予測（向きがない）はどの候補も当てない。以前は同点を `among` の先頭（いつも自分）に倒していたので、中心にある予測の `id_hard` が 1 になった
+- **対の標準誤差**: 2 つの結果 A・B の差の標準誤差は $\mathrm{SE}_{\mathrm{pair}} = \mathrm{sd}_i(h^A_i - h^B_i)/\sqrt{n}$、1 つの結果の標準誤差は $\mathrm{sd}_i(h_i)/\sqrt{n}$（`top1_se`）。どの行にも `hits` を書き、集計で計算する
+- **`identification` の `pick_max`**: $nK$ 個の選択 $\hat l_{ij}$ のうち、1 つの候補に集まった割合の最大（`among` なし）。すべての候補が同じだけ選ばれれば $1/n$。生成した特徴に符号ごとの共通のずれ $b$ があると、$\arg\max_l$ に $b \cdot r_l$ の項が加わり、$b$ に沿う候補に当たりが集まる（hub）。その偏りは符号（デコーダ）ごとに違いうるので、`top1` を読むときに `pick_max` で見分ける。G の行は `pick_max`、E1・E1e・E2・E1g の行は `pick_max_easy`
+- **`swap(own, other, real)`**: 行ごとに $(a_i - b_i) \cdot t_i > 0$ なら 1、0 なら 1/2、負なら 0 の平均（E1 の 2 択。3 つとも呼び出し側で中心化したものを渡す）。候補ごとの値も返す。$a_i = b_i$ なら引き分けでちょうど 1/2。$a_i - b_i$ が $t_i$ と独立で 0 について対称なら、$a$ と $b$ の大きさによらず期待値は 1/2（$\cos$ や距離で比べると、雑音の小さい方が選ばれてしまう）
+
+### G: 生成で測る
+
+**1 つの符号の評価の流れ**
+
+1. 符号 $c(x)$ を決める（checkpoint と `z`・`z_w` の組、または物差し）
+2. 学習の組（131072 個の stack、すべての符号で同じ）の符号と最後のフレームを作る
+3. 符号を条件にした flow matching のデコーダを posthoc に BP で学ぶ
+4. 512 個の候補の各符号から 8 枚ずつ生成する
+5. 生成と本物の Inception の特徴から、同定の正解率・FID・対の特徴の距離を出す
+6. 絵を書き、デコーダの重みを保存する（E1g が使う）
+
+デコーダの初期値・学習の組・batch の引き方・$t$・雑音・サンプルの雑音は、すべての符号で同じ seed から作る（共通の乱数）。符号のあいだの差には、デコーダの乱数の差が入らない。
+
+**符号**
+
+| 名前 | 中身 | 次元 |
+| -- | -- | -- |
+| `z` | 今までの評価の符号。P16（V18）と F は射影の後の平らな $z$（`JEPAModules.mu`）、M は `zpca`（V18b と同じ） | 1024 |
+| `z_w` | $z_W = W \cdot \mathrm{vec}(h)$。$h$ はエンコーダの最後の `LayerNorm` の後のトークン `(B, T, w)`、$\mathrm{vec}$ は位置を行優先で平らにしたもの（`h_flat` と同じ並び）。エンコーダの出力の固定のランダム写像という物差しで、案 B の学習の $z$ とは別の符号 | 1024 |
+| 物差し | `color`（384）、`pca`（1024）、`v16`・`v17`（$\mu$、256）、`init_m`（M の step 0 の `zpca`、1024）、`uncond`（条件なし） | 表のとおり |
+
+- **$W$**（`exp/lib/randproj.py` の `gaussian_projection(d_out, d_in, seed)`）: CPU の `torch.Generator().manual_seed(seed)` で `torch.randn(d_out, d_in)`（float32）を一度に引き、$1/\sqrt{d_{\mathrm{in}}}$ を掛ける。seed は `W_SEED` = 61 で、run の seed に足さない（すべての run で同じ $W$）。$d_{\mathrm{in}} = T w$ は P16 で 16384（$W$ は 64 MB）、F と M で 262144（1 GB、CPU で数秒）。$W$ は GPU に置き、batch ごとに `vec(h) @ W.T` を 1 回で掛ける（batch 128 で $\mathrm{vec}(h)$ は 134 MB、積は 1 stack あたり 0.54 GFLOP で、エンコーダの前向き（F で約 26 GFLOP）より軽い）。GPU のメモリが足りなければ、列を `W_CHUNK` = 32768 ずつに分けて部分和をとる。分けると和の順が変わるので、使うかどうかはすべての符号で同じにする
+- $z_W$ の座標の分散は $\lVert \mathrm{vec}(h) \rVert^2 / (T w)$、つまり $h$ の 2 乗の平均で、`LayerNorm` の後なら 1 程度である。デコーダの前で標準化するので、尺度は結果に効かない
+- **学習の側と同じ関数を使うが、符号は同じではない。** 学習の側（案 B、worktree の commit fa2bf4c）は、$R$ = `gaussian_projection(16, 1024, R_SEED = 67)`、$W$ = `gaussian_projection(1024, 16 T, W_SEED = 61)`（パッチ 8 で 1024 × 1024）で $z = W \cdot \mathrm{vec}(R h)$ を作る。旧 checkpoint の `z_w` の $W$ は 1024 × $T w$ で、$R$ を通さない。$R$ は各トークンを 16 次元の部分空間に落とすので、案 B の $z$ は $W \cdot \mathrm{vec}(h)$ より情報が少ない。したがって、旧 checkpoint の `z_w` を「新しい設計と同じ写像」として V18c の $z$ と並べない。`z_w` は「エンコーダの出力の固定のランダム写像」という別の物差しとして読む。案 B と同じ形の符号（例 `z_wr` = $W \cdot \mathrm{vec}(R h)$）を旧 checkpoint に足すかは、未決定（下の「未決定」）
+- **定数の置き場所（合流のとき）**: 学習の側は `W_SEED`・`R_SEED`・`LATENT_DIM` を `exp/vision/jepa.py` に、評価の側は `W_DIM`・`W_SEED`・`W_CHUNK` を `exp/vision/jepa_eval.py` に置いた。合流では、$W$ の定義を 1 つにするため、`W_SEED` は学習の側の `jepa.py` に寄せ、`jepa_eval.py` はそれを import する（`W_DIM` は `LATENT_DIM` と同じ 1024 なので `LATENT_DIM` を使う。`W_CHUNK` は評価だけの定数なので `jepa_eval.py` に残す）。`jepa_eval.py` の `CODES`・`ARM_CODES`・import と `jepa_diag.py` の `IMAGENETTE_POOLS` は、両方の変更を足し合わせる
+- **M の `z_w` と F の `z_w` の step 0 はちょうど一致する。** F と M のエンコーダの初期値は一致し（V18b のテスト）、$z_W$ は射影 $P$ によらないからである。M の `zpca` の step 0 は F と違うので、物差しに `init_m` を足した
+- `init` と `init_f` は、V18 の seed 0 と F の seed 0 の step 0 の行をそのまま使う（V18 の 18 本はすべて同じ初期値）。seed 1 の step 0 も同じ評価にかける
+- `uncond` は、すべての入力で 0 の 1024 次元の符号（標準化を通さない）。同じネット・同じ step 数で学ぶ。同定の偶然の値と、FID の基準になる
+- `pca` と `zpca` の PCA は、V18 と同じく probe の当てはめの組の stack で当てはめる（`StreamEvaluator.fit_stacks`、`SPAN` = 6000 秒、seed + `eval.PCA_SEED`）
+
+**学習の組（すべての符号で同じ）**
+
+- **区間**: 学習の動画すべて（`iid.Units(conf, root, "all", seed=GEN_DATA_SEED)`、Zurich を除く 479350 個の単位）から、一様に重複を許して 131072（$2^{17}$）個の stack を引く（`Units.draw`）。`GEN_DATA_SEED` = 53 は run の seed に足さないので、どの run・どの符号でも同じ stack になる（テストで確かめる）
+- JEPA の run も `all` から i.i.d. に学んだので、この組はエンコーダにとって学習の分布の中の stack である。測るのは、学習に使わない Zurich への一般化である
+- V16〜V18 の probe の当てはめの組（span の奇数の区間、約 6000 組）は使わない。拡散のデコーダには少なすぎ、符号と画像の対を覚えてしまうためである
+- **対象**: stack の最後のフレーム（8 枚目）u8 `(3, 64, 64)` を $x_1 = 2 \cdot x/255 - 1$ にする
+- **符号**: 止めた符号で、`no_grad` のまま `BATCH` ずつ一度だけ計算する。131072 × 1024 の float32 で 0.5 GB（GPU に置く）。最後のフレームは u8 で 1.6 GB（CPU に置き、batch ごとに GPU に送る）
+- **標準化**: `eval.Standardizer`（成分ごとの平均を引き、全成分で 1 つの尺度で割る）を学習の組の符号で当てはめ、候補にも同じものを使う
+
+**デコーダ（`exp/lib/flow_decoder.py`）**
+
+目的（rectified flow）: $x_0 \sim N(0, I)$（雑音）、$x_1$（データ）、$t \sim U(0, 1)$、$x_t = (1 - t) x_0 + t x_1$ として
+
+$$
+L = \mathbb{E}\, \frac{1}{3 \cdot 64^2} \lVert v_\theta(x_t, t, c) - (x_1 - x_0) \rVert^2
+$$
+
+ネット: 64×64 の小さな U-Net（ADM の形を小さくしたもの）。
+
+- 解像度 64・32・16・8 で、チャネルは 32・64・128・256。下りは各解像度に `ResBlock` 2 つ、中央は 8×8 で `ResBlock`・注意・`ResBlock`、上りは各解像度に `ResBlock` 3 つ（下りの出力を連結する）。注意は 16×16 と 8×8 と中央（head の次元 32）。下りは stride 2 の 3×3 の畳み込み、上りは最近傍の 2 倍の拡大と 3×3 の畳み込み。入口は 3 → 32 の 3×3、出口は `GroupNorm`・SiLU・32 → 3 の 3×3
+- `ResBlock`: $h = \mathrm{conv}(\mathrm{SiLU}(\mathrm{GN}(x)))$、$h = \mathrm{GN}(h) (1 + \gamma) + \beta$、$h = \mathrm{conv}(\mathrm{SiLU}(h))$、出力は $h$ + skip（チャネルが変わるときは 1×1）。`GroupNorm` は 32 群（チャネルが 32 未満の所はない）。dropout はない
+- **条件（FiLM）**: 時刻は $1000 t$ の正弦波の埋め込み 128 次元 → `Linear(128, 512)` → SiLU → `Linear(512, 512)`。符号は標準化した $c$ → `Linear(D, 512)` → SiLU → `Linear(512, 512)`。2 つの和 $e$ から、各 `ResBlock` が `Linear(SiLU(e))` で $(\gamma, \beta)$（$2 \times$ 出力チャネル）を作る。符号の次元 $D$ で入口の行列だけが変わる（1024 で 52 万個、256 で 13 万個）。ほかは全部の符号で同じ
+- **大きさ**: この形をそのまま書いた試作（scratch、2026-11-24）で数えると、$D$ = 1024 で 1952 万個のパラメータ、1 枚の前向きは 6.0 GFLOP（3.0 GMAC）だった。実装で数えて `config.json` に書く
+- 初期値は PyTorch の既定のまま。EMA・classifier-free guidance・条件の dropout・時刻の重みづけ（logit-normal など）は入れない
+
+学習: batch 128、AdamW（学習率 $2 \cdot 10^{-4}$、betas (0.9, 0.999)、eps $10^{-8}$、weight decay 0）、500 step の線形の warmup のあと 0 までの cosine、勾配のクリップなし。step 数 `FIT_STEPS` は仮に 10000 とし、試しの実測で決める（下の「実行」）。float32 で、`configure_determinism` の下（TF32 なし）で回す。bf16 は使わない。
+
+- 見込み: 前向きと逆向きで 1 枚約 18 GFLOP、batch 128 で 1 step 約 2.3 TFLOP。4090 の float32 で実効 25 TFLOPS なら約 0.09 秒 / step、10000 step で約 15 分
+- 乱数: デコーダ $j$（既定は 0 だけ）の初期値・batch の引き方・$t$・雑音は、`DEC_SEED` + 1000 $j$ の生成器から引く。`DEC_SEED` = 67 は run の seed に足さない
+- ログ: 200 step ごとの損失の平均を `fit/<step>-<code>-d<j>.jsonl` に書く
+
+**サンプル**
+
+- Euler 法、`SAMPLE_STEPS` = 100、$t_k = k/100$、$x_{k+1} = x_k + \frac{1}{100} v_\theta(x_k, t_k, c)$
+- 初期の雑音は、`SAMPLE_SEED` = 71 の生成器から `(512, 8, 3, 64, 64)` を一度だけ引く。候補 $i$ のサンプル $j$ の雑音は、すべての符号で同じ
+- 最後に $[-1, 1]$ に切り、$\mathrm{round}((x + 1)/2 \cdot 255)$ で u8 にする。本物のフレームと同じ u8 の経路で Inception に入れる
+- 4096 枚 × 100 step × 6.0 GFLOP は約 2.5 PFLOP で、4090 で約 2 分
+
+**同定の正解率**: 候補 $i$ のサンプル $j$ の特徴 $g_{ij}$ で、512 個の候補の本物の最後のフレームの特徴 $r_l$ から当てる（`identification`、`center` は $R$ の平均、$K$ = 8）。`top1`・`top5`・`top1_se`・`top1_adj`・`hits` を出す。偶然の値は `top1` が $1/512$、`top5` が $5/512$。`id_hard`（候補を前後の格子に限ったもの）も同じ $g_{ij}$ で出す。
+
+**本物どうしの参照**（デコーダなし、`refs` で 1 回だけ）
+
+- `real_shift`: 生成の代わりに、各候補の 1 秒後の stack（格子の $c_i + 1$）の本物の最後のフレームの特徴で同定したときの `top1`・`top5`。1 秒の景色の変化に対して、候補がどれだけ見分けられるかの目安
+- `fid_cand`: 512 個の候補の本物の最後のフレームと $R$ の FID（生成の `fid` と同じ 512 枚の推定量。符号が完全に情報を持ち、デコーダが本物を描くときの `fid` の値で、下限の目安）。以前の `fid_real`（$R$ と、それを 4 フレームずらした組）は、ほとんど同じ画像の組どうしなので 0 に近く、何の下限も示さないので外した
+- `fid_train`: 学習の組の 4096 個の最後のフレームを 512 個ずつ 8 組に分け、各組と $R$ の FID を平均したもの（`fid_train_j` も書く）。学習の動画と Zurich のずれの目安で、学習の分布を完全に写す条件なしのデコーダの `fid` は、この程度になる
+
+**FID**: サンプル $j$（$K$ = 8 個）ごとに、512 枚（各候補 1 枚）と参照の組 $R$ の FID をとり（`fid_j`）、$j$ で平均する（`fid`）。$R$ は Zurich の最後のフレーム 4096 枚（最初のフレームが $\lfloor i (F - 8)/4095 \rfloor$、$F$ = 38996、約 9.5 フレームおき）で、どの符号でも同じ $R$ を使う。4096 枚をまとめて $R$ と比べない理由: 符号が情報を持つほど同じ候補の 8 枚が似てくるので、実質の標本数が 512 に近づく。FID の有限標本の偏り（およそ $1/N$）はそのぶん大きくなり、情報を持つ符号ほど FID が悪く出て、符号どうしの順位が入れ替わりうる（d = 512 のガウスの例で、独立な 4096 個は 19.4、512 個を 8 回ずつ繰り返すと 96.0）。サンプルごとなら、どの符号でも 512 個の別々の候補の 512 枚になる。`fid` は `fid_cand`（下限の目安）と `fid_train`（ドメインのずれの目安）の間で読む。$\mathrm{FID} = \lVert \mu_1 - \mu_2 \rVert^2 + \mathrm{tr}(\Sigma_1 + \Sigma_2 - 2 (\Sigma_1 \Sigma_2)^{1/2})$ を float64 で計算する。$\mathrm{tr}(\Sigma_1 \Sigma_2)^{1/2}$ は、対称な $\Sigma_1^{1/2} \Sigma_2 \Sigma_1^{1/2}$ の固有値（負は 0 に切る）の平方根の和で求める（scipy を使わない）。**64 px を拡大した 4096 枚の FID は偏りが大きいので、文献の値とは比べず、この表の符号どうしの比較にだけ使う。**
+
+**対の特徴の距離**: `feat_dist` = $\frac{1}{nK} \sum_{i,j} \lVert g_{ij} - r_i \rVert^2$、`feat_ratio` = `feat_dist` / $\frac{1}{n(n-1)} \sum_{i \ne l} \lVert r_i - r_l \rVert^2$（0 なら本物と同じ特徴、1 なら別の候補の本物と同じくらい遠い）。候補ごとの値 `feat_i` も行に書く（対の標準誤差のため）。
+
+**条件つきの損失**: `fm_zurich` は、512 個の候補の最後のフレームで、固定した $t_m = (m + 0.5)/16$（16 点）と固定した雑音（`FM_SEED` = 73）での $L$。条件なしとの差は $I(x; z)$ の推定（PLAN の 2）に関わるが、並べるだけにする。
+
+**G の出力**
+
+- run の `posthoc_gen/` に書く。1 つの job（checkpoint・符号・デコーダの seed の組）は `rows/<step>-<code>-d<j>.json` に 1 行を書く。別々のホストの job が同じ jsonl に追記しないようにするためで、同じ名前のファイルがあればその job は何もしない（やり直しは消してから）
+- 行の項目: `t`、`step`、`code`、`dim`、`dec_seed`、`fit_steps`、`fit_batch`、`fit_loss`（最後の 1000 step の平均）、`fm_zurich`、`top1`、`top5`、`top1_se`、`top1_adj`、`pick_max`、`hits`（512 個）、`hard_top1`・`hard_hits`、`feat_dist`、`feat_ratio`、`feat_i`（512 個）、`fid`・`fid_j`、`sec_encode`、`sec_fit`、`sec_sample`、`max_mem`、`key`
+- `config.json`: 定数のすべて、Inception の重みの sha256、`W_SEED`・`W_DIM`・`W_CHUNK`、データの設定（`conf.data.tours`。学習の組・格子・候補はこれで決まり、run の符号と物差しが同じ学習の組を使うことはこの一致に頼るので `key` に入れる）、PCA の seed（`conf.seed` + `PCA_SEED`）と `pca` の成分の数・`zpca` の次元、候補の $c_i$、パラメータの数（job が出会った符号の次元すべて。物差しは 1 符号ずつ回るので、後の job が新しい次元を足す）、`configure_determinism` と `of_diagnosis` の記録、`key`（行が依存する設定の sha256 の先頭 12 桁。Inception は重みのパスでなく sha256 で入れる）
+- **設定の照合**: 出力先の `config.json` か行の `key` が今の設定と違えば、job は止まる（黙って再利用しない）。行がすべてあって job を飛ばすときも、先に `config.json` を照合する。Inception は sha256 だけで照合する（重みのパスはホストで違う）。`config.json` の Inception の記録には torchvision の版も書く。試しのように別の設定で回すときは、`--out-name`（既定は `posthoc_gen`）で出力先を分ける。`fill_eval` の `config.json` も、行が依存する設定（`FillConf`、的のキャッシュの `<hash>`、seed、候補）が違えば止まる
+- 絵 `<step>-<code>-d<j>.png`: 512 個から 32 個おきの 16 個の候補を行にし、列は本物の最後のフレーム、サンプル 4 枚、8 枚の平均、8 枚の画素ごとの標準偏差（4 倍して表示）
+- デコーダの重み `ckpt/dec-<step>-<code>-d<j>.pt`（約 80 MB、E1g が読む）。`ckpt` の下なので `just fleet pull` は持ってこない
+- 物差しは `runs/v18c-gen/yardsticks/posthoc_gen/`（行の `code` に名前）。本物どうしの参照は同じ場所の `refs.json`
+
+### 未観測の部分: 評価のマスクと領域（`exp/lib/regions.py`）
+
+**評価のマスク**は、粗い 4×4 の格子の上で決める。行 $a$・列 $b$（0〜3、行優先で位置 $4a + b$）とする。
+
+| 名前 | 隠す粗いマス | $k$ | 画素（64×64 の最後のフレーム） | 族 |
+| -- | -- | -- | -- | -- |
+| `Q_tl`・`Q_tr`・`Q_bl`・`Q_br` | 四半分の 2×2（例 `Q_tl` は $a, b \in \{0, 1\}$） | 4 | 32×32 | $F_4$ の矩形 1 つ |
+| `H_l`・`H_r`・`H_t`・`H_b` | 半分（例 `H_l` は $b \in \{0, 1\}$） | 8 | 64×32 か 32×64 | $F_8$ の矩形 1 つ |
+| `R` | 外周（中央の $a, b \in \{1, 2\}$ だけを見せる） | 12 | 幅 16 の枠 | $F_{12}$（トーラスの上で、行 $\{3, 0\}$ × 全列の 2×4 と、行 $\{1, 2\}$ × 列 $\{3, 0\}$ の 2×2 の和） |
+| `S_1` = `Q_tl` ∪ `Q_br`、`S_2` = `Q_tr` ∪ `Q_bl` | 対角の 2 つの四半分 | 8 | 32×32 が 2 つ | $F_8$ の矩形 2 つの和 |
+
+- 粗いマスクを `jepa.expand_masks(mask, s)`（$s$ = grid / 4）で広げれば、パッチ 16・8・4 で画素の領域がまったく同じになる（V18b の写像のテストと同じ理由）
+- **族に入ること**（Fable さんは導いただけなので、テストで確かめる）: 9 つの評価のマスクと `S_1`・`S_2` が、それぞれ `jepa.mask_family(k, 4)` の行に含まれること
+- **分布の中と外**: run のマスク率の $k$ と同じ $k$ のマスクを「分布の中」とし、行に `in_dist` を書く。V18 と V18b の $r$ = 0.25 の run では `Q` が中、`H`・`R`・`S` は外。V18 の $r$ = 0.5 の run では `H` と `S`、0.75 では `R` が中。判定は分布の中のマスクで読み、外のマスクは「分布の外」と明記して並べる。例外は `swap` の 1 つだけで、README の条件 1 が $r$ = 0.25 の run でも分布の外の `S` の `swap` を使う（理由は README）
+- **領域の画像**（`region_image(frame, mask)`）: 領域の画素の外接矩形を切り出し、矩形の中で領域に入らない画素を灰色（u8 の 128）で埋める。`Q`・`H` は矩形そのもの（埋める画素はない）、`R` は 64×64 で中央の 32×32 が灰色になる。見える部分 $V$ の画像も同じ規則で作る（`Q` の $V$ は 64×64 で隠した四半分が灰色、`H` の $V$ は残りの半分、`R` の $V$ は中央の 32×32）
+- **調和補間**（`harmonic_fill(frame, mask)`、対照 `interp`）: 最後のフレームの隠した画素 $U$ を、見える画素を境界の値にした離散のラプラス方程式の解で埋める。4 近傍のグラフのラプラシアン $L$（画像の端は、存在する近傍だけをとる。Neumann の条件にあたる）について $x_U = -L_{UU}^{-1} L_{UV} x_V$。行列 $-L_{UU}^{-1} L_{UV}$（`R` で 3072 × 1024）はマスクごとに 1 回だけ float64 で作り、画像には行列の積で掛ける（反復しないので、収束の判断が要らない）
+
+### 未観測の部分: 的（checkpoint によらないので 1 回だけ作ってキャッシュする）
+
+- **`incep`**: 領域の画像（上の規則）を Inception に通した pool3 の 2048 次元を、領域ごとに、当てはめの組で PCA（`pca.fit_pca`、256 成分、`TARGET_PCA_SEED` = 79）にかけ、当てはめの組の平均を引いて、全成分で 1 つの尺度（`Standardizer` と同じく、成分の標準偏差の 2 乗平均の平方根）で割る
+  - 画像の全体を入れた特徴マップの 1 マスを的にしない。Inception の最後の層の受容野は画像のほぼ全体なので、隠した位置のマスにも見える部分の情報が入る（Fable さんの導出）
+- **`color`**: 領域の最後のフレームの、8×8 画素のブロックごとの平均の色（`Q` で 16 ブロック × 3 = 48 次元、`H` で 96、`R` で 144、E2 の帯で 72、外側だけの帯で 48）。`incep` と同じく中心化し、1 つの尺度で割る
+- 2 つの的を並べるのは、32×32 を 9 倍に拡大した Inception の特徴が、主に色と質感を表すと思われるからである（Fable さんの推測）
+- **組**（すべて `jepa_eval` と同じ conf・`SPAN` = 6000 秒）
+  - 当てはめ: `StreamEvaluator.fit_stacks`（span の奇数の区間の約 6000 個）
+  - $\alpha$ の選択: `StreamEvaluator.zurich_calib_stacks`（Zurich の calib の 1024 窓の最初の stack）
+  - 評価: Zurich の格子の全 stack（$G$ = 3899）。512 個の候補と `id_hard` の候補はその部分集合
+- **キャッシュ**（`fill_eval targets`）: 9 つのマスクの領域（`S` の四半分は `Q` と同じ）の $U$ と $V$ の `incep`・`color`、`interp` の `incep`・`color`、E2 の帯（下）のもの。Inception に通す画像は約 40 万枚（4090 で 10 分以内の見込み）。保存するのは PCA の後の 256 次元と、PCA の平均・成分・尺度（E1g が生成した画像を同じ空間に写すため）。置き場所は `$MUJOU_EXP_DATA/v18c-targets-<hash>/`（`<hash>` は設定と組の stack の番号の sha256 の先頭 12 桁）で、NAS の `/nas/geson/mujou-exp/cache/` に写しを置く。`targets.json` に組の番号・Inception の sha256・seed を書き、読むときに conf と照らし合わせる
+
+### 未観測の部分: 読み出し（`exp/lib/readout.py`）
+
+- **ridge**: $X$（当てはめの組の入力、$n \times D$）と $Y$（的、$n \times 256$）をそれぞれ当てはめの組の平均で中心化し、$B = (X^\top X + \alpha I)^{-1} X^\top Y$ を float64 で解く。$\alpha = c \cdot \mathrm{tr}(X^\top X)/D$、$c$ は `linear_dyn.ALPHA_SCALES`（$10^{-8}$〜1）
+- **$\alpha$ の選び方**: calib の `r2`（下）が最大の $c$（同点なら最初のもの）。**E1 では全体を見たトークン（`oracle` の入力）だけで選ぶ。** 予測器の出力は、当てはめにも $\alpha$ の選択にも使わない
+- **入力の次元**: $D$ が 1024 を超えたら、当てはめの組で PCA（`pca.fit_pca`、1024 成分、`READOUT_PCA_SEED` = 83）にかけてから ridge に通す。同じ PCA を、同じ読み出しに通すすべての段に使う
+- **採点**（評価は 512 個の候補）
+  - `r2`: 的の座標ごとの $R^2 = 1 - \sum_i (\hat y_{ik} - y_{ik})^2 / \sum_i (y_{ik} - \bar y_k)^2$ の、256 座標の平均（$\bar y$ は候補の平均）
+  - `id_easy`: `identification(ŷ, y)`（候補 512 個、偶然 1/512）
+  - `id_hard`: `identification(ŷ, y, among=…)`（前後の格子の 33 個、偶然 1/33）
+  - `swap`: 下の E1 の 2 択
+- Fable さんの案では `id_easy` の候補を 64 個にしていたが、G と同じ 512 個にした。主の指標と同じ候補で読め、偶然の値と標準誤差も小さくなるためである
+
+### E1: 補完の同定（未観測の部分の主）
+
+入力: 候補の stack と評価のマスク。文脈側は見えるトークンだけをエンコーダに通す（`TokenEncoder.forward(images, keep)`）。
+
+- **予測の空間**: V18・V18b の予測器は射影の後の $z_p$ を当てるので、E1 の「トークン」は $z_p$ とする（`JEPAModules.tokens`）。パッチ 8 の学習（案 B、予測の的は $t_p = R h_p$）では $t_p$ とする（`JEPAModules.tokens` が $t_p$ を返す）。領域 $U$ のトークンを位置の昇順に並べて平らにしたもの $z_U$ が読み出しの入力で、P16 と F の `Q` は 256 次元、`H` は 512、`R` は 768（PCA なし）、M の `Q` は 4096 次元（PCA で 1024）になる
+- **読み出し $g_U$**: 領域ごと・的ごとに 1 本。入力は**全体を見たとき**（標的側）の $z_U$、出力は $T(U)$。当てはめの組で求めて凍結する
+- **4 段と対照**（同じ $g_U$ に通す）
+  - `oracle`: 全体を見たときの $z_U$。上限で、エンコーダのトークンがその位置の中身をどれだけ持つかを表す
+  - `pred`: 予測器の出力 $\hat z_U$（マスクは $U$ 自身）。**測りたい値**
+  - `mean`: 位置ごとの平均のトークン（当てはめの組の $z_U$ の平均）。予測が定数なので、`id_easy` はちょうど偶然の値 1/512 になる（すべての問いが同じ候補を選ぶ）。`id_hard` は問いごとに候補の集合が違うので、定数の予測の向き（Zurich の格子の平均を引いた後の向き）で決まる値になり、1/33 とは限らない。定数の予測の基準として、そのまま `pred` と比べる
+  - `shuf`: 別の候補の $\hat z_U$（候補の番号を 256 ずらしたもの）。実装の確かめで、偶然の値に近いはず
+  - `interp`: 読み出しを通さず、調和補間で埋めた画像の $T$ をそのまま予測にする。隣の画素の延長で当たる分の目安
+- **`swap`**: `S_1` と `S_2` で 2 つの四半分 $A$・$B$ を同時に隠し、$A$ の読み出し $g_A$ が、$A$ の真の特徴を「$A$ の位置の入力」から読むか、「$B$ の位置の入力」から読むかの 2 択にする。段ごとに、$A$ の位置の入力 $x_A$（`pred` なら予測器の出力 $\hat z_A$、`oracle` なら全体を見たトークン、`mean` なら位置ごとの平均のトークン、`shuf` なら 256 ずらした候補の予測）と $B$ の位置の入力 $x_B$（同じく。位置の昇順に平らにすると、同じ形の四半分なので位置が対応する）を、どちらも $A$ の PCA（`Reducer`）に通し、候補の平均を引いて $u_A$・$u_B$ とする。$t$ を $A$ の的から Zurich の格子の平均を引いたものとして、$(u_A - u_B) B_A \cdot t > 0$ の割合（`metrics.swap`）をとる。$A$ と $B$ を入れ替えた 2 通り × `S_1`・`S_2` の 4 通りを平均した候補ごとの値を `swap_i` とする。偶然の値は 0.5
+  - **導出**: 2 つの位置の入力の差が位置ごとの定数だけの符号（K3 の族 $z_{n,p} = h(x_n) + g(p)$）では $u_A = u_B$ なので、引き分けでちょうど 0.5 になる。四半分どうしの分布が違っても（左上の空と右下の路面）変わらない。`mean` は $u_A = u_B = 0$ なので、どの符号でもちょうど 0.5。入力の差が $t$ と独立な雑音なら、雑音の大きさが位置で違っても期待値は 0.5。0.5 を超えるのは、$A$ の位置の入力の候補ごとの動きが、$B$ の位置のものより $A$ の真の特徴の向きに沿うときだけである。`oracle` の同じ 2 択が上限（空と空のように本当に似た組があるので 1 にはならない）。2 つ隠すので $k$ = 8 で、$r$ = 0.5 の run では分布の中、$r$ = 0.25 の run では分布の外になる
+  - **はじめの定義を改めた理由**（2026-11-24、実行の前。レビューの指摘）: はじめは、$g_A(\hat z_A)$ が $A$ の本物の特徴 $T_A(A)$ と、$B$ の本物の画像を $A$ の PCA と尺度で写した $T_A(B)$ のどちらに $\cos$（中心を引かない）で近いかをとっていた（Fable さんの案）。しかし $T_A(B)$ には平均のずれ $\mu_B - \mu_A$ がそのまま残るので、四半分の分布が違うと、場面だけを表す符号でも $A$ を選べる（合成の数値実験で、場面だけの符号が 1.0、交換可能にした組で 0.46）。Fable さんの「場面や時刻だけを表す符号はちょうど 0.5」は、$A$ と $B$ が交換可能なときにしか成り立たない。また `mean` の予測は当てはめの組の的の平均（中心化の後なので丸め誤差だけの $10^{-9}$ 程度のベクトル）になり、中心を引かない $\cos$ ではその向きで値が決まっていた（同じ実験で 0.407）。比べる側を的から入力に移すと、K3 の族と `mean` が定義からちょうど 0.5 になる。$\cos$ でなく内積の符号にしたのは、$\cos$ では雑音の小さい位置の方が選ばれるからである（同じ実験で、場面に、位置ごとに大きさの違う無関係な雑音を足した符号が $\cos$ で 0.618、内積で 0.485）。予測の位置ごとの偏り（予測器の出力の平均が位置で違う分）も、候補の平均を引くことで除く
+- **まとめ**: $\mathrm{gain} = (\texttt{pred} - \texttt{mean}) / (\texttt{oracle} - \texttt{mean})$ を `r2`・`id_easy`・`id_hard`・`swap` のそれぞれで出す。マスクの種類（`Q` の 4 つ、`H` の 4 つ）は平均した行も書く
+
+### E1e: エンコーダだけの版
+
+- 入力: 文脈側のトークン $h_V$（エンコーダの出力、幅 1024、見える位置の昇順に平らにしたもの）を、マスクごとに当てはめの組で PCA 1024 にしてから、$T(U)$ への ridge を当てはめる（$\alpha$ は calib でその符号自身で選ぶ）。P16 の `Q` は 12288 次元、F の `Q` は 196608 次元（当てはめの組で 4.7 GB。4090 に載る）
+- 物差し（同じ読み出し）: `init`（同じ run の step 0 の $h_V$）、`color_V`（見える粗いマスの、8 枚 × 3 チャネルの平均の色。V18 の `color` の見える位置、`Q` で 288 次元）、`pca_V`（隠した画素を 0 にした stack の画素の PCA 1024、マスクごとに当てはめの組で求める）、`ext`（見える部分の的 $T(V)$、`incep` の的なら `incep`、`color` なら `color` から $T(U)$ への ridge）
+- 1.1 節（Fable さんの報告）のとおり、見える部分の画素が情報の上限なので、物差しとの差だけを読む
+
+### E1g: 仮想の $z$ を拡散のデコーダへ
+
+- G で学んだ、全体の `z` を条件にしたデコーダ（`ckpt/dec-<step>-z-d0.pt`）に、隠した位置を埋めた $\hat z$ をそのまま入れる。デコーダの学習は増えない
+- 段: `full`（全部が標的側の $z_p$。G のサンプル 0 と同じ）、`oracle`（見える位置は文脈側の $z_p^{\mathrm{ctx}} = P h_p^{\mathrm{ctx}}$、隠した位置は標的側）、`pred`（見える位置は文脈側、隠した位置は予測器の出力）、`mean`（見える位置は文脈側、隠した位置は位置ごとの平均）。M は埋めた 16384 次元を G と同じ PCA で `zpca` にしてから入れる
+- `z_w` の E1g は、V18・V18b の checkpoint では作れない（予測器が $h_p$ ではなく $z_p$ を当てるため）。パッチ 8 の学習（案 B）では、隠した位置を予測 $\hat t_p$ で埋めた $\tilde t$ から $\hat z = W \cdot \mathrm{vec}(\tilde t)$ で作れる
+- マスクは 9 つすべて、各候補 1 枚（雑音は G のサンプル 0 と同じ）。512 × (1 + 9 × 3) = 14336 枚で、4090 で約 6 分
+- 採点: 生成した画像の**隠した領域だけ**を領域の画像にし、E1 と同じ PCA と尺度で写して、本物の同じ領域から当てる（`id_easy`・`id_hard`）。見える領域の同定（`vis_easy`）も並べる（`mean` でも高いはず）
+- 絵 `g-<step>-<mask>.png`: 16 個の候補を行にし、列は本物、`full`、`oracle`、`pred`、`mean`（`Q_br` と `R`）
+
+### E2: 画面の外（帯のデータ: `exp/lib/tours/wide.py`）
+
+**帯の切り直し**: 元の動画（`/datasets/walking_tours`、std-00 のコンテナの中）は 854×480 で、いまの 64×64 は中央の 480×480（$x_0$ = 187）を面積の平均で 7.5 分の 1 に縮めたものである（`video_io.ffmpeg_filter`）。同じ縮尺で、中央の左右に 24 画素（元の 180 画素）ずつの帯を切る。
+
+- フィルタ: `fps=10,split=3[a][b][c];[a]crop=180:480:7:0,scale=24:64:flags=area[l];[b]crop=480:480:187:0,scale=64:64:flags=area[m];[c]crop=180:480:667:0,scale=24:64:flags=area[r];[l][m][r]hstack=inputs=3`。1 フレームは u8 `(3, 64, 112)`（列 0〜23 が左の帯、24〜87 が中央、88〜111 が右の帯）。中央の鎖は、いまのデータと同じ演算（`fps`・中央の正方形の `crop`・`scale` の area）である
+- 一般の形: 入力の高さを $c$ として $x_0 = (W_{\mathrm{in}} - c)/2$、帯の幅は元で $b = 24 c / 64$。$x_0 < b$ なら切らずに止める。対象の 3 本はどれも 854×480（manifest）
+- **位置の確かめ**: 中央の 64 列が、いまのデータ（`data_version` `ad6e56b5995e`）の同じ動画のフレームと、全フレームでバイトまで一致し、フレームの数も同じであること。合わなければ書き出さずに止める（帯と中央が同じ時刻のフレームであることの保証）
+- `video_io.ffmpeg_frames` に、フィルタの文字列を渡す引数 `vf`（既定は今の `ffmpeg_filter`）を足す
+- **対象の動画**: span の当てはめの組が触れる動画（Amsterdam と Bangkok。実装で `locate` から求め、足りなければ止める）と Zurich。動画全体を切る（CPU で 10〜30 分の見込み）
+- **置き場所**: `walking_tours` と同じく、各動画を `<out>/<video>/`（`U8Writer`）に書き、`finalize` で `index.json`（動画と各 index の sha256、元の `data_version`、フィルタ、幾何）を書いて `wide-<12 桁>` に名前を変える。std-00 で作り、NAS の `/nas/geson/mujou-exp/cache/wide-<…>/` を経由して各ホストの `$MUJOU_EXP_DATA/wide-<…>/` に置く。既存の `data_version` のデータには触れない
+- **stack の位置**: `StackedTourFrames.locate(k)`（足す）が、$k$ 番目の stack の動画の名前とフレームの番号を返す。当てはめの組は `StreamEvaluator` の当てはめの組の $k$ から、Zurich は格子の最初のフレーム + 7 から、帯の最後のフレームを読む
+
+**的**: 左の帯 `L`（64×24）、右の帯 `R`（64×24）、外側だけの帯 `L_out`（左の帯の列 0〜15）・`R_out`（右の帯の列 8〜23）。それぞれ `incep`（299×299 に引き伸ばす）と `color`（8×8 のブロックの平均）。見える端に接する画素は端の延長で当たるので、外側だけの版で接している分を除く。
+
+**入力**: マスクなしの普段の stack の符号。checkpoint の `z`・`z_w` と、G の物差し（`init`・`init_f`・`init_m`・`color`・`pca`・`v16`・`v17`）。1024 次元を超える符号はない。
+
+**対照**: `ext`（中央の最後のフレーム全体の `incep` か `color` から帯の的への ridge）、`interp`（中央の端の列を帯の幅に複製した画像の $T$ を、読み出しなしでそのまま予測にする）、`mean`（偶然の値）。
+
+**読み出しと採点**: 帯ごとに ridge（当てはめは span の約 6000 組、$\alpha$ は calib、評価は 512 個の候補）。`r2`・`id_easy`・`id_hard`。`L` と `R` の平均を `side`、`L_out` と `R_out` の平均を `outer` として行に書く。
+
+### 未観測の部分の出力
+
+- run の `posthoc_fill/`: `config.json`（定数、キャッシュの `<hash>`、`targets.json` の写し）、`rows/<step>-<part>.json`（`part` は `e1`・`e1e`・`e1g`。G と同じく job ごとに 1 ファイル）、E1g の絵
+  - E1 の行: `step`、`t`、`target`（`incep`・`color`）、`mask`（9 つと `Q`・`H` の平均）、`in_dist`、`stage`（`oracle`・`pred`・`mean`・`shuf`・`interp`）、`alpha`、`r2`、`id_easy`、`id_hard`、`hits_easy`・`hits_hard`（候補ごと）、`n_hard`、`pick_max_easy`。`swap` は `mask` = `S` の行に、`stage` ごとの `swap` と `swap_i`。`gain` は集計で計算する
+  - E1e の行: `stage` の代わりに `code`（`h_V`・`init`・`color_V`・`pca_V`・`ext`）
+  - E1g の行: `mask`、`stage`（`full`・`oracle`・`pred`・`mean`）、`id_easy`・`id_hard`・`vis_easy` と候補ごとの `hits`
+- 行のファイルは、その job の行の JSON の配列にする（1 つの job が的・マスク・段の数だけ行を出すため）
+- キャッシュの `<hash>` には Inception の重みを入れない。`targets.json` に sha256 を書き、E1g は自分の Inception がそれと同じことを確かめる
+- run の `posthoc_side/`: `config.json`、`rows/<step>-<code>.json`（`target`、`band`（`L`・`R`・`L_out`・`R_out`・`side`・`outer`）、`alpha`、`r2`、`id_easy`、`id_hard`、`hits`）
+- 物差し: `runs/v18c-fill/yardsticks/posthoc_fill/`・`posthoc_side/`
+
+### CLI
+
+```bash
+# G（生成）
+python -m exp.vision.gen_eval run <run_dir> --steps 0,6000,20000,60000 --codes z,z_w \
+    [--dec-seeds 0] [--fit-steps N] [--inception <path>]
+python -m exp.vision.gen_eval yardsticks --out runs/v18c-gen/yardsticks \
+    --v16 <ckpt> --v17 <ckpt> --m-run <run_dir> [--codes color,pca,v16,v17,init_m,uncond]
+python -m exp.vision.gen_eval refs --out runs/v18c-gen/yardsticks
+# 帯のデータ（std-00、1 回だけ）
+python -m exp.lib.tours.wide prepare <video> --src /datasets/walking_tours \
+    --data $MUJOU_EXP_DATA/ad6e56b5995e --out <dir>
+python -m exp.lib.tours.wide finalize <dir>
+# 未観測の部分（的のキャッシュは 1 回だけ。--wide を後から渡すと E2 の的だけを足す）
+python -m exp.vision.fill_eval videos   # 帯のデータに要る動画の名前を出す
+python -m exp.vision.fill_eval targets [--wide <dir>] [--inception <path>]
+python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,20000,60000 [--parts e1,e1e,e2]
+python -m exp.vision.fill_eval gen <run_dir> --steps 0,6000,20000,60000   # E1g（G のデコーダの後）
+python -m exp.vision.fill_eval yardsticks --out runs/v18c-fill/yardsticks --v16 <ckpt> --v17 <ckpt> \
+    --m-run <run_dir>
+```
+
+`run` は `jepa.json` から腕を読む（`sigreg_on` が `mean` なら `z` は `zpca`、$k$ から `in_dist`）。
+
+### 副の量（既存の評価に足す）
+
+- **`z_w` の統計と `dyn_1/copy_1`**: `jepa_eval` の `CODES` に `z_w`（`RandProjCode(mods)`）を足し、`jepa_eval <run> --codes z_w --probe-steps 0,6000,20000,60000 --out-name posthoc_jepa_w` で `CodeStats`（`sigreg_heldin`・`participation`・`z_var`。`z_w` はトークンを持たないので `token_r2` はない）と probe（`dyn_1/copy_1`、`rank`。`recon_blur` は並べるだけ）を出す。`evaluate_run` に出力の名前の引数（`out_name`、既定は `OUT`）を足す。`_start` は `jepa.jsonl` を空にするので、既存の `posthoc_jepa/` に書くと V18・V18b の結果が消えるためである
+- **Imagenette**: `jepa_diag imagenette` に `--codes`（既定は今の `IMAGENETTE_POOLS`）を足し、`z_w` も測る。手順・データ・$\delta_a$ = 2.3 ポイントは V18 の診断と同じ（std-01 だけにデータがある）
+- **崩壊の検出**: `z` の `token_r2`・`sigreg_heldin`（K1・K3）は `posthoc_jepa/` にすでにある値を使う
+
+### ファイルの置き場所
+
+| ファイル | 中身 |
+| -- | -- |
+| `exp/lib/flow_decoder.py` | U-Net（`FlowUNet`）、`flow_loss`、`euler_sample`、`fit_flow`（学習の組と生成器を受け取る） |
+| `exp/lib/inception.py` | FID の InceptionV3（`FIDInception`、`load_fid_inception(path)`）、`preprocess`、`frechet_distance`、`fid` |
+| `exp/lib/metrics.py` | `identification`（`top_k`、`hits`、`top1_adj`、`among`）、`swap` を足す |
+| `exp/lib/readout.py` | 中心化した ridge（`fit_ridge`、`select_ridge`、`predict`）、`r2` |
+| `exp/lib/regions.py` | 評価のマスク（`EVAL_MASKS`、`SWAP_PAIRS`）、`pixel_mask`、`region_image`、`harmonic_fill` |
+| `exp/lib/randproj.py` | `gaussian_projection` |
+| `exp/lib/tours/wide.py` | 帯のデータ（`prepare`、`finalize`）。`stacks.py` に `StackedTourFrames.locate`、`video_io.py` に `ffmpeg_frames` の `vf` |
+| `exp/vision/gen_eval.py` | G: 候補・参照の組・学習の組、符号（`jepa_eval` の部品を使う）、job の流れ、出力、CLI |
+| `exp/vision/fill_eval.py` | E1・E1e・E1g・E2: 的のキャッシュ、読み出しの組、job の流れ、出力、CLI |
+| `exp/vision/jepa_eval.py`・`jepa_diag.py` | `z_w`（`RandProjCode`）、`out_name`、Imagenette の `--codes` |
+| `exp/vision/results/v18c/judge.py` | README の規則をそのまま書いた集計（閾値の計算を含む）。まだ無い。後の段で、数値を読む前に作る |
+| `tests/lib/test_flow_decoder.py`・`test_inception.py`・`test_randproj.py`・`test_readout.py`・`test_regions.py`・`test_metrics.py`、`tests/lib/tours/test_wide.py`、`tests/vision/test_gen_eval.py`・`test_fill_eval.py` | 下のテスト |
+
+`exp/lib` の部品は mujou・torch・標準ライブラリ・torchvision だけに依存し、`exp/vision` を import しない（評価のマスクが族に入ることのテストは `jepa` を使うので `tests/vision/` に置く）。
+
+### 実装のテスト（理論のオラクル）
+
+- **rectified flow の最適な速度場**: 1 次元で、データ $x_1 \sim N(m, s^2)$ と雑音 $x_0 \sim N(0, 1)$ が独立なら、$v^*(x, t) = \mathbb{E}[x_1 - x_0 \mid x_t = x] = m + \frac{t s^2 - (1 - t)}{(1 - t)^2 + t^2 s^2} (x - t m)$。(1) `flow_loss` を $v^*$ で評価したモンテカルロの値が、閉じた形の最小値 $\mathbb{E}_t[(1 + s^2) - (t s^2 - (1 - t))^2 / ((1 - t)^2 + t^2 s^2)]$ と誤差の中で一致する。(2) $v^*$ に摂動 $\epsilon$ を足すと、損失が $\epsilon^2$ だけ増える。(3) `euler_sample` を $v^*$ で 1000 step 回すと、$N(0, 1)$ の標本が平均 $m$・標準偏差 $s$ に写る（ODE の解 $x_t = t m + \sqrt{(1-t)^2 + t^2 s^2}\, x_0$ との差が step 数の逆数で縮む）
+- **決定的なデータ**: $x_1 = c$ のとき $v^*(x, t) = (c - x)/(1 - t)$ で、`euler_sample` はどの step 数でも最後の step でちょうど $c$ に着く
+- **U-Net**: 出力の形が入力と同じ。符号を変えると出力が変わり、符号への勾配が 0 でない（FiLM の経路が通る）。同じ seed で同じ重み。パラメータの数が、各層の形から手で数えた数と一致する。小さな版（チャネルを 8 に縮めたもの）で、2 枚の画像を符号 ±1 で条件づけて CPU で数百 step 学ぶと、各符号のサンプルの最近傍が正しい画像になる（`slow`）
+- **Fréchet 距離**: 1 次元で $(\mu_1 - \mu_2)^2 + (\sigma_1 - \sigma_2)^2$。対角の共分散で $\sum_k (\sqrt{a_k} - \sqrt{b_k})^2$ と平均の差。共通の直交行列で回しても変わらない。$(a, b)$ と $(b, a)$ で同じ。同じ分布で 0。ランク落ちの共分散（標本の数 < 次元）でも有限で負にならない
+- **同定の正解率**: 生成 = 本物なら `top1` = 1。生成がすべて同じなら（本物はばらばら）`top1` はちょうど $1/n$、`top5` はちょうど $5/n$。生成を置換 $\pi$ で並べ替えると `top1` = $\pi$ の不動点の数 / $n$。特徴を正の数倍しても変わらない。`top5` ≥ `top1`。`among` で候補を 1 個（自分だけ）にすると 1
+- **`swap`**: $a = t$・$b = 0$ なら 1。$a = b$（0 どうしも）なら各行がちょうど 1/2。$a$・$b$・$t$ が独立なら、$10^4$ 組で 0.5 から二項分布の 4σ の中。共通の部分が $t$ に沿い、$b$ の雑音が $a$ の 30 倍でも、雑音が $t$ と独立なら同じく 4σ の中。E1 の合成の組では、四半分の分布を変えても（左上を明るく、右下を暗く）、K3 のエンコーダの `swap` はどの段もちょうど 0.5、パッチのトークンの `oracle` は 0.9 を超え、どのエンコーダでも `mean` はちょうど 0.5
+- **Inception**: 前処理が `F.interpolate(..., (299, 299), mode="bilinear", align_corners=False)` と $2x - 1$ の手計算と一致する。重みのファイルがあるときだけ（無ければ skip）: sha256 が `6726825d` で始まる、出力が `(B, 2048)` で負でない、batch の大きさを変えても特徴が $10^{-5}$ の中で同じ。ネットワークには接続しない
+- **$W$**: 形と、同じ seed で同じ値。固定したベクトル $v$ について、$\frac{1}{d_{\mathrm{out}}} \lVert W v \rVert^2$ が $\lVert v \rVert^2 / d_{\mathrm{in}}$ にカイ 2 乗の幅の中で一致する。列を分けて掛けた値が一度に掛けた値と float の誤差の中で一致する
+- **読み出し**: 雑音のない線形の関係 $Y = XB + b$ で $\alpha \to 0$ の解が $B$ を返し、`r2` = 1。$Y$ が $X$ と独立なら、大きな $\alpha$ で `r2` ≤ 0 に近い。`select_ridge` が calib の `r2` の最大を選ぶ。入力を定数にした予測（E1 の `mean`）の `id_easy` がちょうど $1/n$。`oracle` の入力を `pred` に渡すと `gain` が 1、`mean` を渡すと 0
+- **評価のマスク**: 9 つのマスクと `S_1`・`S_2` が `mask_family(k, 4)` の行に含まれる（`tests/vision/`）。`expand_masks` で $s$ = 1・2・4 に広げた画素のマスクが同じ。`Q` の 4 つは互いに重ならず和が全体、`R` の $V$ が中央の 32×32
+- **領域の画像**: `Q`・`H` は外接矩形の切り出しと一致し、灰色の画素がない。`R` は中央の 32×32 だけが 128
+- **調和補間**: 定数の画像をそのまま返す。埋めた画素のそれぞれが、4 近傍（画像の中にあるもの）の平均に $10^{-6}$ の中で等しい。最大値の原理（埋めた値が見える画素の最小と最大の間）
+- **帯のデータ**: 合成の動画（`imageio_ffmpeg` の ffmpeg で `testsrc` から作る 854×480・2 秒、可逆の codec）で、中央の 64 列が `ffmpeg_frames`（いまのフィルタ）の出力とバイトまで一致し、フレームの数も同じ。列ごとに値の違う縦縞の画像で、帯の各列が元の 7.5 列の面積の平均（境界の列は重みつき）と 1 以内で一致する。$x_0 < b$ の動画を断る（`slow`）
+- **`locate`**: `locate(k)` の動画とフレームから読んだ stack が、`StackedTourFrames.next()` の $k$ 番目の stack と一致する
+- **`gen_eval`・`fill_eval`**: 候補が 512 個で、隣との間隔が 70 フレーム以上、フレームを共有せず、動画の中に収まる。`id_hard` の候補の集合が 33 個で、両端の候補が外れる。学習の組が run の seed によらない（seed 0 と 1 の conf で同じ stack）。M の step 0 の `z_w` が F の step 0 の `z_w` とちょうど一致する。E2 の物差し `init_m`（`v16_config` の当てはめの組で求めた PCA）の行が、M の run 自身の step 0 の `z`（`zpca`、M の conf の当てはめの組）の行とちょうど一致する（2 つの conf は、データ・時間・span・seed が同じで、当てはめの組が同じ）。`uncond` の符号がすべて 0。的のキャッシュの `<hash>` が、組の stack が変われば変わる
+
+### 実行
+
+- **試し**（std-00 の 4090）: `gen_eval run <V18 の seed 0> --steps 60000 --codes z --fit-steps 300 --out-name posthoc_gen_trial` と、`<F の seed 0> --steps 60000 --codes z_w --fit-steps 300 --out-name posthoc_gen_trial` を回し、秒 / step（50〜300 step の平均）・`max_mem`・符号の計算の時間（`sec_encode`）・サンプルの時間を測る。`sec_encode` はその job のすべての符号を 1 回の読み込みでまとめて計算した時間なので、試しは符号を 1 つずつ回す（判定の run の `--codes z,z_w` の `sec_encode` は 2 つの符号の合計になり、下の式には使わない）。試しの出力は判定の run と分け（`posthoc_gen_trial`）、判定には使わない。絵が出ることも確かめる。CUDA のホストで torchvision（PyPI の wheel）の import が通ることもここで確かめ、README の実行の記録に書く。`fill_eval targets` と、`fill_eval run <V18 の seed 0> --steps 60000` も回して時間を測る（`fill_eval run` の設定は判定の run と同じなので行は再利用してよいが、その後にコードを変えたら行を消す）
+- **step 数の決め方**: 1 つの符号の合計が 4090 で 20 分以内になるように、`FIT_STEPS` = min(12000, ⌊(1200 秒 − 符号の時間 − サンプルと Inception の時間) / 秒 / step / 1000⌋ × 1000) とする（F の `z_w` の符号の時間で決める）。「符号の時間」は `sec_encode` で、`gen_eval run` は checkpoint ごとに学習の組の 131072 stack を引き直して読み、符号を計算し直す（結果は同じ）ので、その読み込みも入る。6000 を下回ったら、batch を 64 にして測り直し、同じ式で決める。決めた値は判定の run の前に README の実行の記録に書き、すべての符号で同じにする
+- **G の job**: checkpoint 17 個（V18 の $r$ = 0.25 の seed 0・1 と F の seed 0・1 の step 0・6000・20000・60000、M の seed 0 の 60000）× `z`・`z_w` = 34 個。物差し 6 個（`color`・`pca`・`v16`・`v17`・`init_m`・`uncond`）。デコーダの seed 1 を 3 個（V18 の seed 0 の step 0 の `z`、同じ run の 60000 の `z`、F の seed 0 の 60000 の `z_w`。$\sigma_{\mathrm{dec}}$ の推定に使う）。合わせて 43 個のデコーダで、4090 で約 14 時間分。std-00〜03 の 4090 と 4060 に、1 GPU に 1 job ずつ置く（4060 では 2〜3 倍かかる見込み）。パッチ 8 の学習と GPU を分け合うので、学習が 4090 を使っている間は 4060 から埋める。F と M の `z_w`（$W$ が 1 GB）は 4090 を優先する
+- **未観測の部分の job**: 的のキャッシュ（1 回、std-00 の 4090、帯のデータの後）。E1・E1e・E2 を、G と同じ 17 個の checkpoint と、V18 の $r$ = 0.5・0.75 の seed 0 の step 0・6000・60000（`H`・`S`・`R` を分布の中で受ける run）にかける（1 checkpoint 1〜3 分、F・M は数分の見込み）。物差しは 1 回。E1g は G のデコーダができた checkpoint の `z` に（17 個 × 約 6 分）
+- **順序**: (1) 帯のデータ（CPU、std-00）と G の試しを並べて回す。(2) 的のキャッシュ。(3) Fable さんの推奨どおり、E1 を先に V18 の長い run の step 0・6000・60000 と M の 60000 にかける（M の `swap` が 0.5 付近になることで、評価が K3 を見分けることを確かめる）。(4) G の 43 個と E1・E1e・E2 の残り。(5) E1g
+- **環境**: V18b と同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`、`just fleet x` で snapshot から）。checkpoint は NAS の `/nas/geson/mujou-exp/runs/v18-long/v18-long-lr1e-4-lam0.5-r{0.25,0.5,0.75}-s{0,1}/` と `/nas/geson/mujou-exp/runs/v18b-long/v18b-long-{f-lr1e-4-lam0.5,m-lr3e-5-lam0.8}-r0.25-s{0,1}/` の `ckpt/`。出力は run の `posthoc_gen/`・`posthoc_fill/`・`posthoc_side/`（NAS）と `/nas/geson/mujou-exp/runs/v18c-gen/`・`v18c-fill/`。ckpt 以外を `./runs/` に pull する
+- **副の量**: `jepa_eval --codes z_w --out-name posthoc_jepa_w`（4060）と Imagenette（std-01 の 4060）を、生成の job と並行して回す
+- **判定の前に絵を見る**（[memory/feedback_metrics_need_qualitative_check.md](../../../memory/feedback_metrics_need_qualitative_check.md)）: README の規則のとおり、G の絵と E1g の絵を、数値を読む前に見て記録する
+
 ## V19: ストリームで標準の SIGReg
 
 - V18 で選んだ設定のまま、データだけを単一ストリームにする
@@ -368,5 +692,6 @@ $\bar z_n = \frac1T \sum_p z_{n,p}$ とし、$z_{n,p} = \bar z_n + u_{n,p}$（$\
 
 - 時間相関の SIGReg の手法（調査の後に決める）
 - V18 の後: stack の中で一定の解（「V18」の導出）が実際に起きたとき、標本数 $N$（batch・バッファ）を軸にするか
+- V18c の評価: 旧 checkpoint に、案 B と同じ形の符号 `z_wr` = $W \cdot \mathrm{vec}(R h)$（$R$ = `gaussian_projection(16, w, 67)`、$W$ = `gaussian_projection(1024, 16 T, 61)`）を足すか、`z_w`（$W \cdot \mathrm{vec}(h)$）を別の物差しとして並べるだけにするか（ユーザーの判断待ち。ユーザーの $R$ の扱いについての質問への答えのあとで決める）
 
 決まったこと（2026-11-23）: patch 16 の 4×4 のまま（early fusion、ユーザー）。マスク率は $\{0.25, 0.5, 0.75\}$ を掃引し、隠す数はちょうど $k$ 個（ユーザー）。予測器は幅 256・4 段に固定。V18 の batch は 128。
