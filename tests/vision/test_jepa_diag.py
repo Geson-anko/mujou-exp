@@ -219,3 +219,14 @@ class TestCommands:
             ("m", 4, "zbar"),
         ]
         assert all(0 <= r["acc"] <= 1 for r in rows)
+        codes = ("z_w", "h_mean")
+        out = evaluate_imagenette(
+            data, tmp_path / "w", conf=conf, runs=[run], steps=(4,), side=SIZE,
+            codes=codes,
+        )  # fmt: skip
+        rows = jsonl(out / "imagenette.jsonl")
+        assert [(r.get("step"), r["code"]) for r in rows] == [
+            (None, "color"),
+            (4, "z_w"),
+            (4, "h_mean"),
+        ]

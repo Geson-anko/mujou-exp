@@ -14,6 +14,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
+from exp.lib import regions
 from exp.lib.sigreg import sigreg
 from exp.vision.jepa import (
     COARSE_GRID,
@@ -629,3 +630,23 @@ class TestRhoIn:
         pos = torch.randn(1, 16, 8, generator=g)
         z = pos + torch.randn(64, 1, 8, generator=g)  # position + one per stack
         assert float(rho_in(z)) == pytest.approx(0.0, abs=1e-12)
+
+
+class TestEvalMasksOfTheFamily:
+    """V18c's evaluation masks (``exp.lib.regions``) are of $F_k$ (Fable
+    derived it; checked here) and spread to the same pixels at every grid."""
+
+    @pytest.mark.parametrize("name", sorted(regions.EVAL_MASKS))
+    def test_each_is_a_row_of_its_family(self, name):
+        mask = regions.EVAL_MASKS[name]
+        family = mask_family(int(mask.sum()), COARSE_GRID)
+        assert bool((family == mask).all(1).any())
+
+    @pytest.mark.parametrize("name", sorted(regions.EVAL_MASKS))
+    def test_the_same_pixels_at_patch_16_8_and_4(self, name):
+        mask = regions.EVAL_MASKS[name]
+        want = regions.pixel_mask(mask, 64)
+        assert torch.equal(pixel_mask(mask, COARSE_GRID, 64), want)
+        for s in (1, 2, 4):
+            fine = expand_masks(mask[None], s)[0]
+            assert torch.equal(pixel_mask(fine, COARSE_GRID * s, 64), want)

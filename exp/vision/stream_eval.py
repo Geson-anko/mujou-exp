@@ -322,6 +322,12 @@ class StreamEvaluator:
         return self._fit[1][:, 0]
 
     @property
+    def fit_ks(self) -> list[int]:
+        """The units $k$ of stream 0 of the probes' fit pairs' first stacks
+        (``fit_stacks``)."""
+        return list(self._fit[0])
+
+    @property
     def zurich_stacks(self) -> Tensor:
         """The first stack u8 ``(m, n, C, H, W)`` (CPU) of each of the
         held-out video's val windows."""

@@ -20,13 +20,17 @@ from torch import Tensor, nn
 
 from exp.lib import ckpt, pca
 from exp.lib.png import read_png
+from exp.lib.randproj import gaussian_projection
 from exp.vision import jepa_iid
 from exp.vision.compose import to_dict
 from exp.vision.eval import PCA_SEED
 from exp.vision.jepa import JEPAModules, TokenEncoder, build_jepa, rho_in, take
 from exp.vision.jepa_eval import (
+    W_DIM,
+    W_SEED,
     CodeStats,
     ColorCode,
+    RandProjCode,
     TokenCode,
     arm_codes,
     drift,
@@ -533,3 +537,47 @@ class TestEvaluate:
         assert config["token_dims"] == {"init_f": 16, "init_m": 64}
         probes = jsonl(out / "probes.jsonl")
         assert [r["code"] for r in probes] == [c for c in rows for _ in range(3)]
+
+
+class TestRandProjCode:
+    def test_z_w_is_the_fixed_w_times_the_flat_h_by_hand(self):
+        mods = build_jepa(conf_of(), seed=0)
+        x = random_stacks(3)
+        h = mods.encoder(early_fusion(x)).flatten(1).double()
+        w = gaussian_projection(W_DIM, h.shape[1], W_SEED).double()
+        with torch.no_grad():
+            z = RandProjCode(mods).mu(x)
+        assert z.shape == (3, W_DIM)
+        torch.testing.assert_close(z.double(), h.detach() @ w.T, rtol=1e-4, atol=1e-4)
+
+    def test_arms_of_the_same_encoder_share_it_whatever_their_projection(self):
+        conf = conf_of(patch=2)
+        f = build_jepa(conf, seed=0, token_dim=16)
+        m = build_jepa(conf, seed=0, token_dim=64)
+        x = random_stacks(2)
+        with torch.no_grad():
+            assert torch.equal(RandProjCode(f).mu(x), RandProjCode(m).mu(x))
+        assert "z_w" in arm_codes(f, ("z_w",), x, seed=0, device="cpu")
+
+
+class TestOutName:
+    def test_z_w_into_another_directory_keeps_the_rows_of_out(self, root, tmp_path):
+        run = tiny_run(root, tmp_path)
+        kw = {"root": root, "span": SPAN, "fit_steps": FIT, "spacing": EVERY}
+        first = evaluate_run(run, probe_steps=(), heldin=HELDIN, codes=("z",), **kw)
+        before = (first / "jepa.jsonl").read_text()
+        out = evaluate_run(
+            run,
+            probe_steps=(0,),
+            heldin=HELDIN,
+            codes=("z_w",),
+            out_name="posthoc_jepa_w",
+            **kw,
+        )
+        assert out == run / "posthoc_jepa_w"
+        assert (first / "jepa.jsonl").read_text() == before
+        rows = jsonl(out / "jepa.jsonl")
+        assert [(r["step"], r["code"]) for r in rows] == [(0, "z_w"), (4, "z_w")]
+        assert all("token_r2" not in r and math.isfinite(r["z_var"]) for r in rows)
+        probes = jsonl(out / "probes.jsonl")
+        assert {r["code"] for r in probes} == {"z_w"}

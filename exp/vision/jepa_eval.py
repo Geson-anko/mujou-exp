@@ -16,7 +16,11 @@ the probes' fit stacks to ``ZPCA_DIM`` dimensions (``eval.PCA_SEED``; V18b's
 arm M, whose $z$ has 16384); and the codes of ``TokenCode``: ``zbar``
 ($\bar z$), and of $h$, the encoder's tokens after its last ``LayerNorm``,
 ``h_mean``, ``h_flat`` and ``h_pool`` (their means over each block of the
-coarse grid, ``jepa.COARSE_GRID``).
+coarse grid, ``jepa.COARSE_GRID``); ``z_w`` (``RandProjCode``, V18c), $z_W =
+W \cdot \mathrm{vec}(h)$ of a fixed random Gaussian $W$ (``W_DIM`` x $T w$,
+``exp.lib.randproj.gaussian_projection`` of ``W_SEED``: the same map for
+the runs of the same $T w$, but another for another $T w$, so ``z_w`` of
+patch 16 ($T w$ = 16384) and of patch 4 (262144) are not of one map).
 
 Statistics of a code (``CodeStats.of``), on the first stack of each of the
 held-out video's val windows ($N$ = 1024) unless said:
@@ -59,14 +63,14 @@ $z$ of V18's $D$, $d = G^2 \cdot$ ``TOKEN_DIM`` / $T$); ``init_m``,
 ``init_m_zbar`` and ``init_m_zflat``, arm M's ``zpca``, ``zbar`` and ``z`` at
 step 0; ``color<patch>``; and ``v16``, ``v17`` given.
 
-``evaluate_run`` writes ``<run_dir>/posthoc_jepa/`` (``config.json``,
+``evaluate_run`` writes ``<run_dir>/posthoc_jepa/`` (or ``out_name``; ``config.json``,
 ``jepa.jsonl`` a row per checkpoint and code, ``probes.jsonl`` a row per
 probed checkpoint, code and group, the pictures ``<t>-<code>-*.png``);
 ``evaluate_yardsticks`` writes ``<out>/posthoc_jepa/`` of the same files, a
 row per code (``code``)::
 
     python -m exp.vision.jepa_eval <run_dir> [--probe-steps 2000,6000] \
-        [--codes z,h_mean]
+        [--codes z,h_mean] [--out-name posthoc_jepa_w]
     python -m exp.vision.jepa_eval --yardsticks [--config <config.yaml>] \
         [--patch 4] --v16 <ckpt> --v17 <ckpt> --out runs/v18-jepa/yardsticks
 """
@@ -85,6 +89,7 @@ from torch import Tensor, nn
 
 from exp.lib import ckpt, pca
 from exp.lib.provenance import configure_determinism
+from exp.lib.randproj import gaussian_projection, project
 from exp.lib.rundir import write_json
 from exp.lib.sigreg import sigreg
 from exp.lib.tours.stacks import tours_root
@@ -128,10 +133,14 @@ __all__ = [
     "SPAN",
     "TOKEN_POOLS",
     "TOKEN_RIDGE",
+    "W_CHUNK",
+    "W_DIM",
+    "W_SEED",
     "ZPCA_DIM",
     "CodeStats",
     "ColorCode",
     "PCACode",
+    "RandProjCode",
     "TokenCode",
     "arm_codes",
     "build_run_jepa",
@@ -157,7 +166,10 @@ PCA_COMPONENTS = 1024
 TOKEN_RIDGE = 1e-3  # token_r2's ridge, relative to the mean variance of z_p
 ZPCA_DIM = 1024  # zpca's dimensions: the D of V18's z, of the arms' codes
 TOKEN_POOLS = ("z", "zbar", "h_mean", "h_flat", "h_pool")  # of TokenCode
-CODES = ("zflat", "zpca", *TOKEN_POOLS)  # of arm_codes
+CODES = ("zflat", "zpca", *TOKEN_POOLS, "z_w")  # of arm_codes
+# z_w's W (V18c): its rows, its seed (not added to a run's: one W for all) and
+# the columns of each partial product (always, so every code sums alike)
+W_DIM, W_SEED, W_CHUNK = 1024, 61, 32768
 # a run's codes by its SIGReg's data point: the judged code first (V18b)
 ARM_CODES = {"flat": ("z", "h_mean"), "mean": ("zpca", "zbar", "zflat", "h_mean")}
 
@@ -221,6 +233,29 @@ class TokenCode:
         g = COARSE_GRID
         s = mask_expansion(math.isqrt(t))
         return h.reshape(b, g, s, g, s, w).mean((2, 4)).flatten(1)
+
+
+class RandProjCode:
+    r"""$z_W = W \cdot \mathrm{vec}(h)$ ``(B, W_DIM)`` of the JEPA ``mods``:
+    $h$ ``(B, T, w)`` the encoder's tokens after its last ``LayerNorm``,
+    $\mathrm{vec}$ them flattened in row-major positions (``h_flat``'s
+    order), $W$ = ``gaussian_projection(W_DIM, T w, W_SEED)`` made at the
+    first call (on the tokens' device) and kept, multiplied ``W_CHUNK``
+    columns at a time (``exp.lib.randproj.project``). Not of the projection
+    $P$: arm F's and M's of the same encoder are the same."""
+
+    def __init__(self, mods: JEPAModules) -> None:
+        self._mods = mods
+        self._w: Tensor | None = None
+
+    def modules(self) -> Mapping[str, nn.Module]:
+        return self._mods.modules()
+
+    def mu(self, x: Tensor) -> Tensor:
+        v = self._mods.encoder(early_fusion(x)).flatten(1)  # (B, T w)
+        if self._w is None or self._w.shape[1] != v.shape[1]:
+            self._w = gaussian_projection(W_DIM, v.shape[1], W_SEED).to(v.device)
+        return project(v, self._w, W_CHUNK)
 
 
 def pixels(x: Tensor) -> Tensor:
@@ -356,11 +391,13 @@ def arm_codes(
     seed: int,
     device: str,
     zpca_dim: int = ZPCA_DIM,
+    w_code: RandProjCode | None = None,
 ) -> dict[str, Code]:
     r"""The codes ``names`` (``CODES``; module docstring) of the JEPA
     ``mods``: ``z`` and ``zflat`` the modules themselves, ``zpca`` the PCA of
     ``zpca_dim`` components of their $z$ on the stacks ``fit`` (from ``seed +
-    eval.PCA_SEED``), the others ``TokenCode``\ s.
+    eval.PCA_SEED``), ``z_w`` ``w_code`` (a run's, whose $W$ is made once;
+    by default a new ``RandProjCode``), the others ``TokenCode``\ s.
 
     Raises:
         ValueError: A name is not of ``CODES``.
@@ -375,6 +412,8 @@ def arm_codes(
         elif name == "zpca":
             gen = torch.Generator().manual_seed(seed + PCA_SEED)
             codes[name] = PCACode.fit(mods.mu, fit, zpca_dim, gen=gen, device=device)
+        elif name == "z_w":
+            codes[name] = RandProjCode(mods) if w_code is None else w_code
         else:
             codes[name] = TokenCode(mods, name)
     return codes
@@ -511,10 +550,12 @@ def evaluate_run(
     heldin: tuple[int, int] = (HELDIN_BATCHES, HELDIN_BATCH),
     codes: Sequence[str] | None = None,
     zpca_dim: int = ZPCA_DIM,
+    out_name: str = OUT,
 ) -> Path:
     """Evaluate every checkpoint of the JEPA run in ``run_dir`` (its
     ``config.yaml`` and ``jepa.json``) in the order of ``t``, under
-    ``configure_determinism``, into ``run_dir / OUT`` (module docstring):
+    ``configure_determinism``, into ``run_dir / out_name`` (module
+    docstring; another name keeps the rows of ``OUT``, which it empties):
     the statistics of every checkpoint's ``codes`` (``arm_codes``; by default
     ``ARM_CODES`` of the run's SIGReg's data point), the probes of the steps
     of ``probe_steps`` and of the last one, on the span ``[0, span)``.
@@ -532,7 +573,7 @@ def evaluate_run(
     if not paths:
         raise FileNotFoundError(f"no checkpoint under {run_dir / 'ckpt'}")
     root = tours_root(conf.data.tours.data_version) if root is None else root
-    out = run_dir / OUT
+    out = run_dir / out_name
     ev = StreamEvaluator(
         view, run_dir, root, out, fit_steps=fit_steps, c=1, **(spacing or {})
     )
@@ -560,6 +601,7 @@ def evaluate_run(
     )
     mods = build_run_jepa(conf, settings)
     init = build_run_jepa(conf, settings)  # the weights of step 0
+    w_code = RandProjCode(mods)  # W made once for the run's checkpoints
     for path in paths:
         head = ckpt.load_eval(path, mods.modules())
         step = int(head["frame"]) // settings["batch"]
@@ -574,6 +616,7 @@ def evaluate_run(
             seed=conf.seed,
             device=conf.device,
             zpca_dim=zpca_dim,
+            w_code=w_code,
         )
         for name, code in found.items():
             row = stamp | {"code": name} | stats.of(code) | shared
@@ -722,6 +765,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
         type=lambda s: tuple(s.split(",")),
         help="a run: comma-separated codes (default: ARM_CODES of its run)",
     )
+    ap.add_argument("--out-name", default=OUT, help="a run: the output's directory")
     args = ap.parse_args(argv)
     if not args.yardsticks:
         if args.run_dir is None:
@@ -733,6 +777,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
             probe_steps=args.probe_steps,
             fit_steps=args.fit_steps,
             codes=args.codes,
+            out_name=args.out_name,
         )
     if args.out is None:
         ap.error("--yardsticks needs --out")

@@ -98,7 +98,7 @@ from exp.lib.png import tile, write_png
 from exp.lib.provenance import configure_determinism
 from exp.lib.rundir import atomic_open, write_json
 from exp.lib.tours.stacks import StackedTourFrames, tours_root
-from exp.lib.tours.walking_tours import eval_windows, videos
+from exp.lib.tours.walking_tours import eval_starts, eval_windows, videos
 from exp.lib.video_io import U8Reader
 from exp.vision.compose import from_dict
 from exp.vision.schema import RunConf
@@ -201,6 +201,25 @@ def eval_splits(conf: RunConf, root: Path) -> dict[str, Tensor]:
     if u8.shape[-1] != t.size:
         raise ValueError(f"the data is of {u8.shape[-1]} pixels, not {t.size}")
     return {s: u8[i * m : (i + 1) * m] for i, s in enumerate(SPLITS)}
+
+
+def eval_split_starts(conf: RunConf, root: Path) -> dict[str, Tensor]:
+    """The first frames ``(m,)`` in the held-out video of the windows of
+    ``eval_splits`` of each split (frame ``j`` of a window is its first plus
+    ``j stride``).
+
+    Raises:
+        ValueError: as ``eval_splits``.
+    """
+    t, m = conf.data.tours, conf.measure.clips * conf.measure.windows
+    starts = eval_starts(
+        root,
+        held_out=t.held_out,
+        clips=len(SPLITS) * m,
+        length=(t.frames + HORIZON - 1) * t.stride + 1,
+        seed=TOURS_SEED,
+    )
+    return {s: starts[i * m : (i + 1) * m] for i, s in enumerate(SPLITS)}
 
 
 def check_splits(conf: RunConf, root: Path) -> None:
@@ -455,6 +474,16 @@ class Standardizer:
 
     def __call__(self, z: Tensor) -> Tensor:
         return (z.float() - self._mean) / self._sd
+
+    @property
+    def mean(self) -> Tensor:
+        r"""$\bar z$ ``(D,)``."""
+        return self._mean
+
+    @property
+    def sd(self) -> float:
+        """$s$."""
+        return self._sd
 
 
 def _decoded(dec: nn.Module, z: Tensor) -> Tensor:

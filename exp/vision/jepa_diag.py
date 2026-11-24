@@ -36,7 +36,8 @@ on the checkpoints of the runs, without learning again. Three commands:
   ``IMAGE_SIDE`` (``shrink``) and repeated into a still stack of the run's
   $n$ frames (``still_stacks``): ``IMAGENETTE_POOLS`` of the runs'
   checkpoints by their SIGReg's data point (``h_mean`` and ``z``, of arm M
-  ``h_mean`` and ``zbar``), ``color`` (``jepa_eval.ColorCode``) and the
+  ``h_mean`` and ``zbar``; or ``--codes``, of ``TokenCode``'s pools and
+  ``z_w``, ``jepa_eval.RandProjCode``), ``color`` (``jepa_eval.ColorCode``) and the
   $\mu$ of VAE checkpoints. Into ``<out>/``: ``imagenette.json``, ``imagenette.jsonl`` (a
   row per code)::
 
@@ -44,7 +45,8 @@ on the checkpoints of the runs, without learning again. Three commands:
         [--codes z,h_mean,h_flat] [--span 6000]
     python -m exp.vision.jepa_diag sigreg <run_dir> [--steps ...]
     python -m exp.vision.jepa_diag imagenette --data <dir> --out <dir> \
-        [--runs <run_dir> ...] [--steps ...] [--v16 <ckpt>] [--v17 <ckpt>]
+        [--runs <run_dir> ...] [--steps ...] [--v16 <ckpt>] [--v17 <ckpt>] \
+        [--codes h_mean,z,z_w]
 """
 
 import argparse
@@ -78,6 +80,7 @@ from exp.vision.jepa_eval import (
     PICTURES,
     SPAN,
     ColorCode,
+    RandProjCode,
     TokenCode,
     build_run_jepa,
     vae_at,
@@ -475,10 +478,12 @@ def evaluate_imagenette(
     v16: Path | None = None,
     v17: Path | None = None,
     side: int = IMAGE_SIDE,
+    codes: Sequence[str] | None = None,
 ) -> Path:
     """The linear probe of Imagenette at ``data`` (module docstring) of
-    ``color`` (of ``conf``'s patch), ``v16`` and ``v17`` given, and
-    ``IMAGENETTE_POOLS`` (of each run's SIGReg's data point) of the
+    ``color`` (of ``conf``'s patch), ``v16`` and ``v17`` given, and the
+    ``codes`` (``TokenCode``'s pools or ``"z_w"``; by default
+    ``IMAGENETTE_POOLS`` of each run's SIGReg's data point) of the
     checkpoints of ``steps`` (by default all) of each of ``runs``, on
     ``conf.device``, into ``out``. Returns ``out``."""
     dev = torch.device(conf.device)
@@ -525,12 +530,14 @@ def evaluate_imagenette(
         rc = replace(_conf(run), device=conf.device)
         mods = _jepa(run, rc)
         pools = IMAGENETTE_POOLS[_settings_of(run).get("sigreg_on", "flat")]
+        pools = pools if codes is None else codes
         ckpts = run_ckpts(run)
+        w_code = RandProjCode(mods)  # W made once for the run's checkpoints
         for s in _pick(ckpts, steps, ()):
             head = ckpt.load_eval(ckpts[s], mods.modules())
             for pool in pools:
                 row = {"run": run.name, "step": s, "t": head["t"], "code": pool}
-                write(row, TokenCode(mods, pool))
+                write(row, w_code if pool == "z_w" else TokenCode(mods, pool))
     return out
 
 
@@ -566,6 +573,11 @@ def main(argv: Sequence[str] | None = None) -> Path:
     img.add_argument("--v17", type=Path, help="a VAE checkpoint")
     img.add_argument("--config", type=Path, help="(default: v16_config)")
     img.add_argument("--device", default="cuda")
+    img.add_argument(
+        "--codes",
+        type=lambda s: tuple(s.split(",")),
+        help="comma-separated codes of the runs (default: IMAGENETTE_POOLS)",
+    )
     for p in (tok, sig, img):
         p.add_argument("--steps", type=_ints, help="comma-separated steps")
     for p in (tok, sig):
@@ -598,6 +610,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
         steps=args.steps,
         v16=args.v16,
         v17=args.v17,
+        codes=args.codes,
     )
 
 
