@@ -1,6 +1,8 @@
 # The mujou submodule has its own pre-commit configuration; not checked from here.
 # Vendored from https://github.com/nanaism/yomiyasu as is: replaced wholesale on update.
-exclude: ^(mujou/|\.claude/skills/yomiyasu/)
+# Places365's class names and scene hierarchy are vendored byte for byte: their
+# sha256 is checked in exp/lib/places365.py (no newline at the end, a typo kept).
+exclude: ^(mujou/|\.claude/skills/yomiyasu/|exp/lib/places365_(categories\.txt|hierarchy\.csv)$)
 
 default_language_version:
   python: python3.14

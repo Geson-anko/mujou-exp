@@ -12,8 +12,11 @@ from exp.lib.metrics import (
     integrated_time,
     probe_accuracy,
     probe_r2,
+    scene_bootstrap,
     swap,
+    video_jackknife,
 )
+from exp.lib.readout import balanced_accuracy, scene_m
 
 
 class TestEffectiveRank:
@@ -275,3 +278,111 @@ class TestSwap:
         b = common + 3.0 * _features(n, seed=10)
         value, _ = swap(a, b, t)
         assert abs(value - 0.5) < 4 * math.sqrt(0.25 / n)
+
+
+class TestSceneBootstrap:
+    """The stratified block bootstrap of ``readout.scene_m`` (V18c's main
+    measure, 3rd remake)."""
+
+    @staticmethod
+    def labelled(n: int, videos: int, seed: int):
+        g = torch.Generator().manual_seed(seed)
+        y = torch.randint(3, (n,), generator=g)
+        video = torch.arange(n) * videos // n
+        p1 = torch.where(
+            torch.rand(n, generator=g) < 0.6, y, torch.randint(3, (n,), generator=g)
+        )
+        p2 = torch.where(
+            torch.rand(n, generator=g) < 0.5, y, torch.randint(3, (n,), generator=g)
+        )
+        return y, video, torch.stack([p1, p2]), g
+
+    def test_a_code_against_itself_has_no_error(self):
+        y, video, preds, _ = self.labelled(600, 3, 0)
+        blocks = contiguous_blocks(video, 10)
+        twice = torch.stack([preds[0], preds[0]])
+        se = scene_bootstrap(
+            twice, y, video, blocks, torch.tensor([[1.0, -1.0]]), 200,
+            torch.Generator().manual_seed(1),
+        )  # fmt: skip
+        assert float(se[0]) == 0.0
+
+    def test_a_prediction_constant_in_each_video_has_no_error(self):
+        # every resample keeps each video's own blocks, so m stays exactly 0
+        y, video, _, g = self.labelled(600, 4, 2)
+        per_video = torch.randint(3, (4,), generator=g)[video]
+        blocks = contiguous_blocks(video, 7)
+        se = scene_bootstrap(
+            per_video[None], y, video, blocks, torch.eye(1), 200,
+            torch.Generator().manual_seed(3),
+        )  # fmt: skip
+        assert float(se[0]) == 0.0
+
+    def test_independent_items_give_the_binomial_error_of_ba(self):
+        # blocks of one item, 2 classes of n_k = 1000: sd(BA) = sqrt(sum p_k
+        # (1 - p_k) / n_k) / K to first order
+        g = torch.Generator().manual_seed(4)
+        n_k, p = 1000, (0.8, 0.6)
+        y = torch.arange(2 * n_k) % 2
+        hit = torch.rand(2 * n_k, generator=g) < torch.tensor(p)[y]
+        pred = torch.where(hit, y, 1 - y)
+        video = torch.zeros_like(y)
+        se = scene_bootstrap(
+            pred[None], y, video, torch.arange(2 * n_k), torch.eye(1), 2000,
+            torch.Generator().manual_seed(5), measure="ba",
+        )  # fmt: skip
+        want = math.sqrt(sum(q * (1 - q) / n_k for q in p)) / 2
+        assert float(se[0]) == pytest.approx(want, rel=0.1)
+
+    def test_parts_alike_are_their_mean(self):
+        y, video, preds, _ = self.labelled(600, 3, 6)
+        blocks = contiguous_blocks(video, 10)
+        c = torch.tensor([[1.0, -1.0]])
+        one = scene_bootstrap(
+            preds, y, video, blocks, c, 300, torch.Generator().manual_seed(7)
+        )
+        two = scene_bootstrap(
+            torch.stack([preds, preds], 1), torch.stack([y, y]), video, blocks, c, 300,
+            torch.Generator().manual_seed(7),
+        )  # fmt: skip
+        torch.testing.assert_close(one, two, rtol=1e-12, atol=0)
+
+    def test_a_resample_of_all_the_blocks_once_is_the_measure(self):
+        # the m of a resample is that of readout.scene_m on its rows: with
+        # one block per video drawn, every resample is the sample itself
+        y, video, preds, _ = self.labelled(300, 3, 8)
+        blocks = video.clone()  # one block per video
+        m = [scene_m(p, y, video, 3) for p in preds]
+        se = scene_bootstrap(
+            preds, y, video, blocks, torch.tensor([[1.0, 0.0]]), 50,
+            torch.Generator().manual_seed(9),
+        )  # fmt: skip
+        assert float(se[0]) == pytest.approx(0.0, abs=1e-15)
+        assert balanced_accuracy(preds[0], y, 3) > m[0]
+
+    def test_excluded_rows_do_not_count(self):
+        y, video, preds, _ = self.labelled(600, 3, 10)
+        blocks = contiguous_blocks(video, 10)
+        c = torch.tensor([[1.0, -1.0]])
+        keep = torch.ones_like(y, dtype=torch.bool)
+        keep[::5] = False
+        y_ex = torch.where(keep, y, torch.full_like(y, -1))
+        a = scene_bootstrap(
+            preds, y_ex, video, blocks, c, 100, torch.Generator().manual_seed(11)
+        )
+        preds2 = preds.clone()
+        preds2[:, ~keep] = (preds2[:, ~keep] + 1) % 3  # what they predict is ignored
+        b = scene_bootstrap(
+            preds2, y_ex, video, blocks, c, 100, torch.Generator().manual_seed(11)
+        )
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
+class TestVideoJackknife:
+    def test_a_mean_of_video_means_has_the_textbook_error(self):
+        g = torch.Generator().manual_seed(0)
+        a = torch.randn(9, generator=g, dtype=torch.float64)
+        theta = torch.stack([torch.cat([a[:u], a[u + 1 :]]).mean() for u in range(9)])
+        values, se = video_jackknife(theta)
+        assert torch.equal(values, theta)
+        assert se == pytest.approx(float(a.std()) / 3, rel=1e-12)

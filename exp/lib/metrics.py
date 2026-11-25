@@ -16,7 +16,10 @@ __all__ = [
     "integrated_time",
     "probe_accuracy",
     "probe_r2",
+    "scene_bootstrap",
+    "scene_resamples",
     "swap",
+    "video_jackknife",
 ]
 
 PROBE_RIDGES = (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  # of probe_accuracy, times n
@@ -162,6 +165,119 @@ def block_bootstrap(
     counts.scatter_add_(1, draws, torch.ones(n, b, dtype=torch.float64))
     m = 1 - (counts @ e_b.T) / (counts @ v_b)[:, None]  # (n, C)
     return (m @ contrasts.double().cpu().T).std(0)
+
+
+def _block_draws(
+    blocks: torch.Tensor, video: torch.Tensor, n: int, gen: torch.Generator
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The items' block positions ``(N,)``, the blocks' videos ``(B,)`` and
+    the draws' counts ``(n, B)`` float64: each video's blocks drawn as many
+    times as it has, uniformly with replacement (videos in order)."""
+    _, inverse = torch.unique(blocks.cpu(), return_inverse=True)
+    nb = int(inverse.max()) + 1
+    first = torch.full((nb,), len(inverse), dtype=torch.long)
+    first.scatter_reduce_(0, inverse, torch.arange(len(inverse)), reduce="amin")
+    of_video = video.cpu()[first]
+    counts = torch.zeros(n, nb, dtype=torch.float64)
+    for v in torch.unique(of_video).tolist():
+        own = (of_video == v).nonzero().flatten()
+        draws = own[torch.randint(len(own), (n, len(own)), generator=gen)]
+        counts.scatter_add_(1, draws, torch.ones(n, len(own), dtype=torch.float64))
+    return inverse, of_video, counts
+
+
+def scene_resamples(
+    preds: torch.Tensor,
+    y: torch.Tensor,
+    video: torch.Tensor,
+    blocks: torch.Tensor,
+    n: int,
+    gen: torch.Generator,
+    *,
+    measure: str = "m",
+) -> torch.Tensor:
+    r"""The stratified block bootstrap's resampled measures ``(n, C)``
+    float64 of $C$ codes' scene measures (``readout.scene_m``, or BA with
+    ``measure`` ``"ba"``; V18c's main measure, 3rd remake): ``preds``
+    ``(C, N)`` the predictions of the labels ``y`` ``(N,)`` in the videos
+    ``video`` ``(N,)``, or ``(C, P, N)`` of $P$ parts of their own labels
+    ``(P, N)`` whose measures are averaged (E1f's quarters); a label -1
+    leaves its row out. ``blocks`` ``(N,)`` each item's block, within one
+    video (``contiguous_blocks`` of the videos).
+
+    Each of the ``n`` resamples draws each video's blocks as many times as
+    it has, uniformly with replacement (by ``gen``, a CPU generator; the
+    videos in order), the same draws for every code and part, and for every
+    call of the same ``blocks``, ``video``, ``n`` and seed whatever the
+    labels (so two subsets' resamples pair); the confusion, $n_k$, $P(v
+    \mid y = k)$ and $P(\hat y = k \mid v)$ are made again of the drawn
+    rows. A class absent from a resample is left out of its sums."""
+    p3 = preds if preds.dim() == 3 else preds[:, None]
+    y2 = y if y.dim() == 2 else y[None]
+    inverse, of_video, counts = _block_draws(blocks, video, n, gen)
+    nb = counts.shape[1]
+    vids = torch.unique(of_video)
+    onehot_bv = (of_video[:, None] == vids[None]).double()  # (B, V)
+    per_part = []
+    for part in range(y2.shape[0]):
+        t = y2[part].cpu().long()
+        valid = t >= 0
+        k = int(t.max()) + 1
+        pr = p3[:, part].cpu().long()
+        at = inverse[valid] * k
+        ones = torch.ones(int(valid.sum()), dtype=torch.float64)
+        a = torch.zeros(nb * k, dtype=torch.float64).index_add_(0, at + t[valid], ones)
+        a = a.view(nb, k)
+        h = torch.zeros(len(pr), nb * k, dtype=torch.float64)
+        q = torch.zeros(len(pr), nb * k, dtype=torch.float64)
+        for c in range(len(pr)):
+            pc = pr[c][valid]
+            inside = (pc >= 0) & (pc < k)
+            h[c].index_add_(0, at + t[valid], (pc == t[valid]).double())
+            q[c].index_add_(0, at + pc.clamp(0, k - 1), inside.double())
+        h, q = h.view(-1, nb, k), q.view(-1, nb, k)
+        rows_b = a.sum(1)
+        nvk = torch.einsum("nb,bv,bk->nvk", counts, onehot_bv, a)[:, None]
+        hit = torch.einsum("nb,bv,cbk->ncvk", counts, onehot_bv, h)
+        pred_k = torch.einsum("nb,bv,cbk->ncvk", counts, onehot_bv, q)
+        rows = torch.einsum("nb,bv,b->nv", counts, onehot_bv, rows_b)[:, None, :, None]
+        nk = nvk.sum(2)  # (n, 1, K)
+        kept = nk > 0
+        kk = kept.sum(2)  # (n, 1)
+        if measure == "ba":
+            term = hit.sum(2)
+        else:
+            term = ((hit * rows - nvk * pred_k) / rows.clamp(min=1)).sum(2)
+        val = torch.where(kept, term / nk.clamp(min=1), torch.zeros_like(term))
+        per_part.append(val.sum(2) / kk)  # (n, C)
+    return torch.stack(per_part).mean(0)
+
+
+def scene_bootstrap(
+    preds: torch.Tensor,
+    y: torch.Tensor,
+    video: torch.Tensor,
+    blocks: torch.Tensor,
+    contrasts: torch.Tensor,
+    n: int,
+    gen: torch.Generator,
+    *,
+    measure: str = "m",
+) -> torch.Tensor:
+    """The standard errors ``(Q,)`` float64 of the contrasts ``(Q, C)`` of
+    the measures of ``scene_resamples`` (its arguments)."""
+    m = scene_resamples(preds, y, video, blocks, n, gen, measure=measure)
+    return (m @ contrasts.double().cpu().T).std(0)
+
+
+def video_jackknife(theta: torch.Tensor) -> tuple[torch.Tensor, float]:
+    r"""The values $\theta_{(u)}$ ``(U,)`` (each without video $u$) as they
+    are and the jackknife's standard error $\sqrt{\frac{U - 1}{U} \sum_u
+    (\theta_{(u)} - \bar\theta)^2}$ (listed only; V18c's main measure,
+    3rd remake)."""
+    t = theta.double()
+    u = len(t)
+    return theta, math.sqrt((u - 1) / u * float((t - t.mean()).square().sum()))
 
 
 def integrated_time(x: torch.Tensor) -> float:
