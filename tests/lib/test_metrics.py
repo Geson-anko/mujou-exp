@@ -4,9 +4,12 @@ import pytest
 import torch
 
 from exp.lib.metrics import (
+    block_bootstrap,
     bootstrap_se,
+    contiguous_blocks,
     effective_rank,
     identification,
+    integrated_time,
     probe_accuracy,
     probe_r2,
     swap,
@@ -65,6 +68,69 @@ class TestBootstrapSE:
     def test_constant_values_have_no_error(self):
         g = torch.Generator().manual_seed(7)
         assert bootstrap_se(torch.full((50,), 2.5), gen=g) == 0.0
+
+
+class TestContiguousBlocks:
+    def test_by_hand(self):
+        seg = torch.tensor([0] * 7 + [1] * 3 + [2] * 2)
+        got = contiguous_blocks(seg, 3)
+        # 7 = 3 + 4 (the remainder joins the block before), 3, and 2 < 3
+        assert got.tolist() == [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3]
+
+
+class TestBlockBootstrap:
+    """With $v_i$ = 1, $m_c = 1 - \bar e_c$, so the contrast $m_A - m_B$ is
+    minus the mean of $d_i = e_{Ai} - e_{Bi}$: its standard error is that of
+    a mean, of the items where they are independent and of the blocks' means
+    where the items are equal within a block."""
+
+    def test_independent_items_give_the_se_of_their_mean(self):
+        n, sigma = 1000, 2.0
+        g = torch.Generator().manual_seed(1)
+        d = sigma * torch.randn(n, generator=g, dtype=torch.float64)
+        e = torch.stack([d, torch.zeros(n, dtype=torch.float64)])
+        blocks = torch.arange(n)
+        got = block_bootstrap(
+            e, torch.ones(n), blocks, torch.tensor([[1.0, -1.0]]), 4000, g
+        )
+        want = float(d.std(unbiased=False)) / math.sqrt(n)
+        assert abs(float(got[0]) / want - 1) < 0.06  # 1/sqrt(2 * 4000) is 1.1%
+
+    def test_equal_items_within_blocks_count_as_one_per_block(self):
+        b, length = 400, 8
+        g = torch.Generator().manual_seed(2)
+        per_block = torch.randn(b, generator=g, dtype=torch.float64)
+        d = per_block.repeat_interleave(length)
+        e = torch.stack([d, torch.zeros_like(d)])
+        blocks = contiguous_blocks(torch.zeros(b * length), length)
+        got = block_bootstrap(
+            e, torch.ones(b * length), blocks, torch.tensor([[1.0, -1.0]]), 4000, g
+        )
+        want = float(per_block.std(unbiased=False)) / math.sqrt(b)
+        assert abs(float(got[0]) / want - 1) < 0.06
+
+    def test_a_code_against_itself_is_exactly_0(self):
+        g = torch.Generator().manual_seed(3)
+        e = torch.rand(1, 50, generator=g, dtype=torch.float64).expand(2, -1)
+        v = 1 + torch.rand(50, generator=g, dtype=torch.float64)
+        got = block_bootstrap(
+            e, v, torch.arange(50) // 5, torch.tensor([[1.0, -1.0]]), 100, g
+        )
+        assert float(got[0]) == 0.0
+
+
+class TestIntegratedTime:
+    @pytest.mark.parametrize("phi", [0.5, 0.9])
+    def test_an_ar1_has_tau_of_1_plus_phi_over_1_minus_phi(self, phi):
+        t, k = 50000, 8
+        g = torch.Generator().manual_seed(4)
+        noise = torch.randn(t, k, generator=g, dtype=torch.float64)
+        x = torch.empty_like(noise)
+        x[0] = noise[0] / math.sqrt(1 - phi**2)  # stationary from the start
+        for i in range(1, t):
+            x[i] = phi * x[i - 1] + noise[i]
+        want = (1 + phi) / (1 - phi)
+        assert integrated_time(x) == pytest.approx(want, rel=0.05)
 
 
 def test_effective_rank_is_that_of_the_eigenvalues_of_the_covariance():

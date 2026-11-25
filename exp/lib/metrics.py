@@ -8,9 +8,12 @@ from torch import nn
 
 __all__ = [
     "PROBE_RIDGES",
+    "block_bootstrap",
     "bootstrap_se",
+    "contiguous_blocks",
     "effective_rank",
     "identification",
+    "integrated_time",
     "probe_accuracy",
     "probe_r2",
     "swap",
@@ -106,6 +109,78 @@ def bootstrap_se(
     idx = torch.randint(n, (resamples, n), generator=gen, device=x.device)
     means = x.double()[idx].mean(1)
     return float(means.std())
+
+
+def contiguous_blocks(segments: torch.Tensor, length: int) -> torch.Tensor:
+    r"""The block of each item ``(N,)`` long: the items of each segment (``segments``
+    ``(N,)``, the items in order, a segment's items consecutive) cut into
+    blocks of ``length`` consecutive items, the remainder of fewer than
+    ``length`` at a segment's end joined to the block before it (a segment
+    shorter than ``length`` is one block). Blocks are numbered from 0 in
+    order."""
+    out = torch.empty_like(segments, dtype=torch.long)
+    start, nxt = 0, 0
+    n = len(segments)
+    while start < n:
+        end = start
+        while end < n and segments[end] == segments[start]:
+            end += 1
+        count = max((end - start) // length, 1)
+        within = torch.arange(end - start) // length
+        out[start:end] = nxt + within.clamp(max=count - 1)
+        nxt += count
+        start = end
+    return out
+
+
+def block_bootstrap(
+    e: torch.Tensor,
+    v: torch.Tensor,
+    blocks: torch.Tensor,
+    contrasts: torch.Tensor,
+    n: int,
+    gen: torch.Generator,
+) -> torch.Tensor:
+    r"""The block bootstrap's standard errors ``(Q,)`` float64 of the
+    contrasts of the pooled measures $m_c = 1 - \sum_i e_{ci} / \sum_i
+    v_i$ of $C$ codes: ``e`` ``(C, N)``, ``v`` ``(N,)``, ``blocks`` ``(N,)``
+    each item's block (``contiguous_blocks``), ``contrasts`` ``(Q, C)`` the
+    coefficients $a_{qc}$ of $\sum_c a_{qc} m_c$.
+
+    Each of the ``n`` resamples draws as many blocks as there are, uniformly
+    with replacement (by ``gen``, a CPU generator), the same draws for every
+    code (so the contrasts are paired); a resample's $m^*_c$ is made of the
+    drawn items' sums. A block much longer than the items' correlation
+    makes the blocks' sums nearly independent (Künsch 1989)."""
+    ids, inverse = torch.unique(blocks.cpu(), return_inverse=True)
+    b = len(ids)
+    ed, vd = e.double().cpu(), v.double().cpu()
+    e_b = torch.zeros(ed.shape[0], b, dtype=torch.float64).index_add_(1, inverse, ed)
+    v_b = torch.zeros(b, dtype=torch.float64).index_add_(0, inverse, vd)
+    draws = torch.randint(b, (n, b), generator=gen)
+    counts = torch.zeros(n, b, dtype=torch.float64)
+    counts.scatter_add_(1, draws, torch.ones(n, b, dtype=torch.float64))
+    m = 1 - (counts @ e_b.T) / (counts @ v_b)[:, None]  # (n, C)
+    return (m @ contrasts.double().cpu().T).std(0)
+
+
+def integrated_time(x: torch.Tensor) -> float:
+    r"""The integrated correlation time $\tau = 1 + 2 \sum_{\ell = 1}^{\ell^*}
+    \rho(\ell)$ of the series ``x`` ``(T, K)`` (time first): $\rho(\ell)$
+    the mean over the $K$ coordinates of their autocorrelations $\sum_t
+    \tilde x_t \tilde x_{t + \ell} / \sum_t \tilde x_t^2$ ($\tilde x$
+    less its mean), $\ell^*$ the lag before $\rho$ is first at most 0. An
+    AR(1) of coefficient $\phi$ has $\tau = (1 + \phi) / (1 - \phi)$."""
+    xc = x.double() - x.double().mean(0)
+    t = len(xc)
+    den = xc.square().sum(0)
+    tau = 1.0
+    for lag in range(1, t):
+        rho = float(((xc[:-lag] * xc[lag:]).sum(0) / den).mean())
+        if rho <= 0:
+            break
+        tau += 2 * rho
+    return tau
 
 
 def _unit(x: torch.Tensor, center: torch.Tensor) -> torch.Tensor:
