@@ -1,9 +1,12 @@
-"""Build ``exp/vision/report-jepa.html``, the report of V18 and V18b (JEPA with
-BP and i.i.d. minibatches), from the runs and the page template
+"""Build ``exp/vision/report-jepa.html``, the report of V18, V18b and V18c (JEPA
+with BP and i.i.d. minibatches), from the runs and the page template
 ``jepa.html.in`` next to this file.
 
 The judged numbers come from the two ``judge.json`` of ``results/v18`` and
-``results/v18b`` (the rules applied by their ``judge.py``). The rest is read
+``results/v18b`` (the rules applied by their ``judge.py``). V18c's numbers come
+from the JSON of ``results/v18c`` (``judge_screen``, ``judge_long``,
+``judge_self``, ``judge``, ``judge_m_checks`` and ``judge_scene``), and G's
+``top1`` from the rows its ``judge.py`` reads. The rest is read
 from ``runs/``: the yardsticks (``v18-baselines``, ``v18b-baselines``), V18's
 diagnosis (``v18-diag``: ``h_flat``/``h_mean`` and the Imagenette probe) and,
 for P16 in V18b's figure, V18's long runs as ``results/v18b/figs.py`` reads
@@ -22,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from exp.vision.report.build_optim import PLACEHOLDER, _jsonl, _r
+from exp.vision.results.v18c.judge import ARMS as G_ARMS, G
 
 HERE = Path(__file__).parent
 ROOT = HERE.parents[2]
@@ -30,6 +34,7 @@ P16_LONG = ["v18-long-lr1e-4-lam0.5-r0.25-s0", "v18-long-lr1e-4-lam0.5-r0.25-s1"
 F0 = "v18b-long/v18b-long-f-lr1e-4-lam0.5-r0.25-s0"
 M0 = "v18b-long/v18b-long-m-lr3e-5-lam0.8-r0.25-s0"
 P0 = "v18-long/v18-long-lr1e-4-lam0.5-r0.25-s0"
+STEPS_G = [0, 6000, 20000, 60000]
 # key: the zurich picture under runs/ (top row: the true last frame, bottom
 # row: the posthoc decoder's drawing). The stem is stacks / 10.
 IMAGES = {
@@ -50,13 +55,13 @@ IMAGES = {
 }
 
 
-def image(path: Path) -> str:
-    """The picture at half size, as a JPEG data URI."""
+def image(path: Path, scale: str = "iw/2") -> str:
+    """The picture shrunk to ``scale`` wide, as a JPEG data URI."""
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "x.jpg"
         subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y", "-i", str(path)]
-            + ["-vf", "scale=iw/2:-1", "-q:v", "6", str(out)],
+            + ["-vf", f"scale={scale}:-1", "-q:v", "6", str(out)],
             check=True,
         )
         return "data:image/jpeg;base64," + base64.b64encode(out.read_bytes()).decode()
@@ -158,6 +163,153 @@ def v18b_long(judge: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+# ---- V18c ----
+V18C = RESULTS / "v18c"
+LONG_STEPS = ["0", "2000", "6000", "10000", "20000", "30000", "40000", "50000", "60000"]
+
+
+def _r8(x: float | None) -> float | None:
+    """Eight significant digits, so the page's own rounding to 3 decimals
+    matches the README's rounding of the exact value."""
+    return _r(x, 8)
+
+
+def _load(name: str) -> Any:
+    return json.loads((V18C / name).read_text())
+
+
+def v18c_screen() -> list[list[Any]]:
+    """Each screen run: stage, lr, lambda, r, ``pred_ratio_calib``,
+    ``sigreg_heldin``, ``token_r2``, ``rank``, pending, passed, Imagenette's
+    ``h_mean`` at step 6000 (%)."""
+    j = _load("judge_screen.json")
+    out = []
+    for stage, rows in [(1, j["first"]), (2, j["second"])]:
+        for r in rows:
+            out.append(
+                [stage, r["lr"], r["lam"], r["r"]]
+                + [_r8(r[k]) for k in ["pred_ratio_calib", "sigreg_heldin"]]
+                + [_r8(r["token_r2"]), _r8(r["rank"])]
+                + [bool(r["pending"]), bool(r["passed"])]
+                + [_r8(100 * r["in_h_mean_6000"])]
+            )
+    return out
+
+
+def v18c_long() -> dict[str, Any]:
+    """The 12 long runs by checkpoint (``judge_long``), with L1, its premise
+    and the lines of K1 to K3."""
+    j = _load("judge_long.json")
+    pick = {
+        "calib": ("pred_ratio_calib", 1.0),
+        "S": ("sigreg_heldin", 1.0),
+        "token_r2": ("token_r2", 1.0),
+        "rank": ("rank", 1.0),
+        "part": ("participation", 1.0),
+        "drift": ("block_drift", 1.0),
+        "img_h": ("in_h_mean", 100.0),
+        "img_z": ("in_z", 100.0),
+        "recon": ("recon_blur", 1.0),
+        "pred": ("train_pred", 1.0),
+    }
+    runs = []
+    for r in j["runs"]:
+        t = r["trajectory"]
+        row: dict[str, Any] = {
+            "lr": r["lr"],
+            "lam": r["lam"],
+            "seed": r["seed"],
+            "premise": r["premise"],
+            "L1": r["L1"],
+            "K": [r["K1"], r["K2"], r["K3"]],
+        }
+        for k, (src, scale) in pick.items():
+            row[k] = [
+                None if t[s].get(src) is None else _r8(scale * t[s][src])
+                for s in LONG_STEPS
+            ]
+        runs.append(row)
+    return {"steps": [int(s) for s in LONG_STEPS], "lines": j["lines"], "runs": runs}
+
+
+def v18c_self() -> dict[str, Any]:
+    """The self-space identification (``judge_self``): V18c's long runs by
+    checkpoint, and the rows of V18 and V18b compared with them."""
+    j = _load("judge_self.json")
+
+    def row(x: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {k: _r8(v) for k, v in x["hard"].items()}
+        for k in ["pool", "flat", "interp"]:
+            d = x[f"hard_pred-{k}"]
+            out[f"d_{k}"] = [_r8(d["d"]), _r8(d["se2"])]
+        out["easy"] = _r8(x["easy_pred"]["v"])
+        out["swap"] = _r8(x["swap"]["v"])
+        out["swap_in"] = x["swap_in_dist"]
+        if x.get("fwd_pred") is not None:
+            out["fwd"] = _r8(x["fwd_pred"]["v"])
+            out["rev"] = _r8(x["rev_pred"]["v"])
+            out["L"] = _r8(x["local"]["L"])
+            out["rho_V"] = _r8(x["local"]["rho_V"])
+        return out
+
+    long = []
+    for name, by_step in j["groups"]["long"].items():
+        conf = name.split("/")[-1]
+        long.append(
+            {
+                "lr": 1e-4 if "lr1e-4" in conf else 1e-5,
+                "lam": float(conf.split("-lam")[1].split("-")[0]),
+                "seed": int(conf[-1]),
+                "steps": [int(s) for s in by_step],
+                "rows": [row(by_step[s]) for s in by_step],
+            }
+        )
+    old = {}
+    for group in ["v18", "v18b"]:
+        for name, by_step in j["groups"][group].items():
+            old[name.split("/")[-1]] = {s: row(by_step[s]) for s in ["6000", "60000"]}
+    return {"long": long, "old": old}
+
+
+def v18c_gen(runs: Path) -> dict[str, Any]:
+    """G's ``top1`` by checkpoint (P16 and F, ``z`` and ``z_w``, decoder seed
+    0), the yardsticks, and E1's ``color`` target by checkpoint (reference)."""
+    g = G(runs)
+    top1 = {
+        f"{arm}/{code}/s{s}": [_r8(g.row(arm, s, t, code)["top1"]) for t in STEPS_G]
+        for arm in G_ARMS
+        for code in ["z", "z_w"]
+        for s in [0, 1]
+    }
+    fill = json.loads((V18C / "judge.json").read_text())["fill"]["stages_Q"]
+    e1 = {
+        f"{arm}/s{s}": {
+            st: [_r8(fill[f"{arm}/s{s}/{t}/color"][st]["id_easy"]) for t in STEPS_G]
+            for st in ["oracle", "pred"]
+        }
+        for arm in G_ARMS
+        for s in [0, 1]
+    }
+    return {
+        "steps": STEPS_G,
+        "top1": top1,
+        "yard": {c: _r8(r["top1"]) for c, r in g.yard.items()},
+        "init": [_r8(g.row("p16", s, 0, "z")["top1"]) for s in [0, 1]],
+        "e1": e1,
+    }
+
+
+def v18c_metric() -> dict[str, Any]:
+    """The yardsticks of the second main metric (``m`` on sel) and the audit
+    of the third (agreement by group)."""
+    m = _load("judge_m_checks.json")["yardsticks"]["rows"]
+    sc = _load("judge_scene.json")["validity"]["V-c2"]
+    return {
+        "m2": {k: _r8(v["m_sel"]) for k, v in m.items()},
+        "c2": {k: _r8(v) for k, v in sc["agree"].items()},
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--runs", type=Path, default=ROOT / "runs")
@@ -188,7 +340,13 @@ def main() -> None:
         "p16_long": P16_LONG,
         "q1": j18b["question1"],
         "img": {k: image(args.runs / p) for k, p in IMAGES.items()},
+        "v18c_screen": v18c_screen(),
+        "v18c_long": v18c_long(),
+        "v18c_self": v18c_self(),
+        "v18c_gen": v18c_gen(args.runs),
+        "v18c_metric": v18c_metric(),
     }
+    data["img"]["e1g"] = image(V18C / "e1g.jpg", "720")
     page = (HERE / "jepa.html.in").read_text()
     if page.count(PLACEHOLDER) != 1:
         raise ValueError(f"the template must hold {PLACEHOLDER} once")
