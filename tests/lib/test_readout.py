@@ -7,7 +7,8 @@ The scene categories' readout (V18c's main measure, 3rd remake): the
 weighted ridge equals the unweighted one of the rows copied by integer
 weights; ``nested_cv``'s eigen path equals a ridge solved per fold and scale
 (the codes standardized on each fit set), leaks nothing of the scored video,
-and breaks ties to the larger scale; ``scene_m`` is exactly 0 for a
+and breaks ties to the larger scale; ``LIMIT`` is the arg max of the path
+at a scale far beyond the grid (the limit $c \to \infty$); ``scene_m`` is exactly 0 for a
 prediction constant within each video and $1 - B$ for the labels, 0 in
 expectation for one independent of the labels within each video, and $q (1 -
 B(\mathrm{label}))$ in expectation for the synthetic signal $S_q$."""
@@ -20,6 +21,7 @@ import torch
 from exp.lib.metrics import identification
 from exp.lib.readout import (
     CONST,
+    LIMIT,
     SCENE_SCALES,
     balanced_accuracy,
     centered_r2,
@@ -346,6 +348,21 @@ class TestNestedCV:
         x = torch.nn.functional.one_hot(video, 4).double()
         got = nested_cv(x, y, video, 3, scales=(*SCENE_SCALES, CONST))
         assert abs(scene_m(got.pred, y, video, 3)) <= 1e-12
+
+    def test_the_limit_is_the_paths_arg_max_far_beyond_the_grid(self):
+        # the classes' weighted means are all 1/K, so as c -> oo the arg max
+        # of ybar + (x - xbar) B tends to that of (x - xbar) X'WY
+        x, y, video = scenes(240, 3, 4, seed=16)
+        far = nested_cv(x, y, video, 3, fixed=dict.fromkeys(range(4), 1e12))
+        lim = nested_cv(x, y, video, 3, fixed=dict.fromkeys(range(4), LIMIT))
+        assert torch.equal(far.pred, lim.pred)
+        # a multiple of LIMIT (E1f's pred_k3 at P times pool's) is the limit
+        more = nested_cv(x, y, video, 3, fixed=dict.fromkeys(range(4), 16 * LIMIT))
+        assert torch.equal(more.pred, lim.pred)
+        # between the grid's top and CONST in the default candidates
+        got = nested_cv(x, y, video, 3)
+        assert set(got.scale_by_video.values()) <= {*SCENE_SCALES, LIMIT, CONST}
+        assert len(next(iter(got.inner.values()))) == len(SCENE_SCALES) + 2
 
     def test_fixed_scales_are_the_outer_fits_at_them(self):
         x, y, video = scenes(240, 3, 4, seed=15)

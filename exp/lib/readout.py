@@ -34,10 +34,17 @@ under a uniform prior, which maximizes the balanced accuracy):
 W X_c + \alpha I)^{-1} X_c^\top W Y_c$, $\alpha = c\,\mathrm{tr}(X_c^\top W
 X_c) / D$. The prediction is the arg max of the outputs (the first on a
 tie). ``nested_cv`` takes the videos as units: each video $v$ is scored by
-the readout fit on the others, its scale chosen among ``SCENE_SCALES`` and
-``CONST`` (the constant prediction, class 0: $c = \infty$, its outputs 0) by
-the best $m$ of the inner leave-one-video-out on those others (a tie to the
-larger scale). Each fit standardizes the codes by its fit rows' mean and
+the readout fit on the others, its scale chosen among ``SCENE_SCALES``,
+``LIMIT`` and ``CONST`` by the best $m$ of the inner leave-one-video-out on
+those others (a tie to the larger scale). ``LIMIT`` is the path's end $c
+\to \infty$: the weighted means $\bar y$ of the classes present are all
+$1/K$, so the arg max of $\bar y + (x - \bar x) B$ tends to that of $(x -
+\bar x)\, X_c^\top W Y_c$ (a centroid rule, free of the scale) among them;
+with $\mathrm{tr} / D$ the unit of $\alpha$, the largest eigenvalue is at
+most $D$ units, so for $D \le 10^{3.5}$ the shrinkage's ratios between
+$10^{3}$ and the limit move by at most $1 + D / 10^3 \le 10^{0.5}$, one step
+of the grid. ``CONST`` is the constant prediction (class 0: $c = \infty$,
+its outputs 0). Each fit standardizes the codes by its fit rows' mean and
 (population) sd (an sd of at most $10^{-12}$ taken as 1); the weighted
 centring cancels the mean, so a fit is that of $x / s$.
 
@@ -66,6 +73,7 @@ from exp.lib.linear_dyn import ALPHA_SCALES
 
 __all__ = [
     "CONST",
+    "LIMIT",
     "SCENE_SCALES",
     "NestedResult",
     "Ridge",
@@ -88,6 +96,7 @@ __all__ = [
 
 SCENE_SCALES = tuple(10.0 ** (e / 2) for e in range(-12, 7))  # 1e-6 .. 1e3
 CONST = math.inf  # the constant prediction (class 0) as the largest scale
+LIMIT = 1e300  # the path's end c -> oo; any finite scale from it up is the limit
 
 
 @dataclass(frozen=True)
@@ -360,11 +369,16 @@ class _Fold:
     unit: float
 
     def scores(self, x: Tensor, scale: float) -> Tensor:
-        """The outputs ``(n, K)`` on the rows ``x`` (``_Moments.x``'s) at
-        ``scale``; 0 for ``CONST``."""
+        r"""The outputs ``(n, K)`` on the rows ``x`` (``_Moments.x``'s) at
+        ``scale``; 0 for ``CONST``; for ``LIMIT`` (or more), $(x - \bar x)
+        X_c^\top W Y_c$, $-\infty$ at the classes absent from the fit (the
+        limit's arg max, module docstring)."""
         if scale == CONST:
             return torch.zeros(len(x), len(self.ybar), dtype=torch.float64)
         a = ((x - self.xbar) / self.sd) @ self.u
+        if scale >= LIMIT:
+            out = (a @ self.st).masked_fill(self.ybar <= 0, -math.inf)
+            return out.cpu()
         out = a @ (self.st / (self.lam + scale * self.unit)[:, None]) + self.ybar
         return out.cpu()
 
@@ -387,7 +401,7 @@ def nested_cv(
     video: Tensor,
     k: int,
     *,
-    scales: Sequence[float] = (*SCENE_SCALES, CONST),
+    scales: Sequence[float] = (*SCENE_SCALES, LIMIT, CONST),
     fixed: Mapping[int, float] | None = None,
 ) -> NestedResult:
     """The nested cross-validation by video (module docstring) of the code

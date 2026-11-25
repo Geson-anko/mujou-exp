@@ -195,6 +195,7 @@ def scene_resamples(
     gen: torch.Generator,
     *,
     measure: str = "m",
+    min_count: int = 1,
 ) -> torch.Tensor:
     r"""The stratified block bootstrap's resampled measures ``(n, C)``
     float64 of $C$ codes' scene measures (``readout.scene_m``, or BA with
@@ -211,7 +212,8 @@ def scene_resamples(
     call of the same ``blocks``, ``video``, ``n`` and seed whatever the
     labels (so two subsets' resamples pair); the confusion, $n_k$, $P(v
     \mid y = k)$ and $P(\hat y = k \mid v)$ are made again of the drawn
-    rows. A class absent from a resample is left out of its sums."""
+    rows. A class of fewer than ``min_count`` rows in a resample (at least
+    absent) is left out of its sums, as ``readout.scene_m`` does."""
     p3 = preds if preds.dim() == 3 else preds[:, None]
     y2 = y if y.dim() == 2 else y[None]
     inverse, of_video, counts = _block_draws(blocks, video, n, gen)
@@ -242,7 +244,7 @@ def scene_resamples(
         pred_k = torch.einsum("nb,bv,cbk->ncvk", counts, onehot_bv, q)
         rows = torch.einsum("nb,bv,b->nv", counts, onehot_bv, rows_b)[:, None, :, None]
         nk = nvk.sum(2)  # (n, 1, K)
-        kept = nk > 0
+        kept = nk >= max(min_count, 1)
         kk = kept.sum(2)  # (n, 1)
         if measure == "ba":
             term = hit.sum(2)

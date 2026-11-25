@@ -13,6 +13,7 @@ from exp.lib.metrics import (
     probe_accuracy,
     probe_r2,
     scene_bootstrap,
+    scene_resamples,
     swap,
     video_jackknife,
 )
@@ -376,6 +377,29 @@ class TestSceneBootstrap:
             preds2, y_ex, video, blocks, c, 100, torch.Generator().manual_seed(11)
         )
         torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+    def test_min_count_leaves_out_the_classes_scene_m_leaves_out(self):
+        # each video one block: every resample is the sample itself, so each
+        # resampled m is scene_m of the sample with the same min_count
+        y, video, preds, _ = self.labelled(600, 3, 12)
+        y = y.clone()
+        y[y == 2] = 1
+        y[:5] = 2  # class 2: 5 rows, below min_count 10
+        blocks = contiguous_blocks(video, 600)
+        for mc in (1, 10):
+            got = scene_resamples(
+                preds, y, video, blocks, 20, torch.Generator().manual_seed(13),
+                min_count=mc,
+            )  # fmt: skip
+            for c in range(2):
+                want = scene_m(preds[c], y, video, 3, min_count=mc)
+                torch.testing.assert_close(
+                    got[:, c], torch.full((20,), want, dtype=torch.float64),
+                    rtol=0, atol=1e-12,
+                )  # fmt: skip
+        assert scene_m(preds[0], y, video, 3) != scene_m(
+            preds[0], y, video, 3, min_count=10
+        )
 
 
 class TestVideoJackknife:
