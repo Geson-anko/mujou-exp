@@ -9,14 +9,17 @@ from torch import nn
 __all__ = [
     "PROBE_RIDGES",
     "block_bootstrap",
+    "block_counts",
     "bootstrap_se",
     "contiguous_blocks",
     "effective_rank",
     "identification",
     "integrated_time",
+    "max_t_critical",
     "pair_wins",
     "probe_accuracy",
     "probe_r2",
+    "ratio_resamples",
     "scene_bootstrap",
     "scene_resamples",
     "swap",
@@ -166,6 +169,46 @@ def block_bootstrap(
     counts.scatter_add_(1, draws, torch.ones(n, b, dtype=torch.float64))
     m = 1 - (counts @ e_b.T) / (counts @ v_b)[:, None]  # (n, C)
     return (m @ contrasts.double().cpu().T).std(0)
+
+
+def block_counts(n_blocks: int, n: int, gen: torch.Generator) -> torch.Tensor:
+    """How many times each of ``n_blocks`` blocks is drawn ``(n, B)``
+    float64 in each of ``n`` resamples of ``n_blocks`` blocks drawn
+    uniformly with replacement by ``gen`` (a CPU generator): the draws of
+    ``block_bootstrap``, so one seed pairs the resamples of codes computed
+    apart."""
+    draws = torch.randint(n_blocks, (n, n_blocks), generator=gen)
+    counts = torch.zeros(n, n_blocks, dtype=torch.float64)
+    return counts.scatter_add_(1, draws, torch.ones(n, n_blocks, dtype=torch.float64))
+
+
+def ratio_resamples(
+    num_b: torch.Tensor, den_b: torch.Tensor, counts: torch.Tensor
+) -> torch.Tensor:
+    r"""The resampled ratios $\sum_b c_b\,\mathrm{num}_{cb} / \sum_b c_b\,
+    \mathrm{den}_{cb}$ ``(n, C)`` float64 of $C$ codes' block sums ``num_b``
+    and ``den_b`` ``(C, B)`` (each code its own denominator, unlike
+    ``block_bootstrap``) and the ``counts`` ``(n, B)`` of ``block_counts``;
+    a paired difference of two codes is the difference of their columns."""
+    c = counts.double()
+    return (c @ num_b.double().T) / (c @ den_b.double().T)
+
+
+def max_t_critical(
+    resamples: torch.Tensor,
+    estimate: torch.Tensor,
+    se: torch.Tensor,
+    level: float = 0.95,
+) -> float:
+    r"""The critical value $c$ of the simultaneous intervals $\hat	heta_l
+        \pm c\,\mathrm{SE}_l$ over $L$ values: the ``level`` quantile of $\max_l
+        \lvert 	heta^*_l - \hat	heta_l
+    vert / \mathrm{SE}_l$ over the
+        ``resamples`` ``(n, L)`` of the ``estimate`` ``(L,)`` of standard errors
+        ``se`` ``(L,)``. Of one value, the quantile of $\lvert t
+    vert$."""
+    t = (resamples.double() - estimate.double()).abs() / se.double()
+    return float(torch.quantile(t.max(1).values, level))
 
 
 def _block_draws(

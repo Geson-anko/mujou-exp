@@ -5,14 +5,17 @@ import torch
 
 from exp.lib.metrics import (
     block_bootstrap,
+    block_counts,
     bootstrap_se,
     contiguous_blocks,
     effective_rank,
     identification,
     integrated_time,
+    max_t_critical,
     pair_wins,
     probe_accuracy,
     probe_r2,
+    ratio_resamples,
     scene_bootstrap,
     scene_resamples,
     swap,
@@ -476,3 +479,55 @@ class TestVideoJackknife:
         values, se = video_jackknife(theta)
         assert torch.equal(values, theta)
         assert se == pytest.approx(float(a.std()) / 3, rel=1e-12)
+
+
+class TestRatioResamples:
+    def test_block_counts_draw_each_resample_b_blocks(self):
+        counts = block_counts(7, 50, torch.Generator().manual_seed(3))
+        assert counts.shape == (50, 7)
+        assert torch.equal(counts.sum(1), torch.full((50,), 7.0, dtype=torch.float64))
+
+    def test_a_common_denominator_is_block_bootstraps(self):
+        # block_bootstrap's m_c = 1 - sum e / sum v of the same draws
+        g = torch.Generator().manual_seed(0)
+        e = torch.rand(3, 40, generator=g, dtype=torch.float64)
+        v = 1 + torch.rand(40, generator=g, dtype=torch.float64)
+        blocks = torch.arange(40) // 5
+        contrasts = torch.tensor([[1.0, -1, 0], [0, 1, -1], [1, 0, 0]])
+        want = block_bootstrap(
+            e, v, blocks, contrasts, 300, torch.Generator().manual_seed(9)
+        )
+        e_b = torch.zeros(3, 8, dtype=torch.float64).index_add_(1, blocks, e)
+        v_b = torch.zeros(8, dtype=torch.float64).index_add_(0, blocks, v)
+        counts = block_counts(8, 300, torch.Generator().manual_seed(9))
+        m = 1 - ratio_resamples(e_b, v_b.expand(3, -1), counts)
+        got = (m @ contrasts.double().T).std(0)
+        torch.testing.assert_close(got, want, rtol=1e-12, atol=0)
+
+    def test_each_code_keeps_its_own_denominator(self):
+        num = torch.tensor([[1.0, 2.0], [3.0, 1.0]])
+        den = torch.tensor([[2.0, 2.0], [1.0, 4.0]])
+        counts = torch.tensor([[2.0, 0.0], [1.0, 1.0]])
+        got = ratio_resamples(num, den, counts)
+        want = torch.tensor([[2 / 4, 6 / 2], [3 / 4, 4 / 5]], dtype=torch.float64)
+        torch.testing.assert_close(got, want, rtol=1e-15, atol=0)
+
+
+class TestMaxTCritical:
+    def test_one_value_is_the_quantile_of_abs_t(self):
+        g = torch.Generator().manual_seed(1)
+        r = torch.randn(1000, 1, generator=g, dtype=torch.float64)
+        got = max_t_critical(r, torch.zeros(1), torch.full((1,), 2.0), 0.9)
+        assert got == pytest.approx(
+            float(torch.quantile(r.abs()[:, 0] / 2, 0.9)), rel=1e-12
+        )
+
+    def test_the_maximum_over_values_is_wider(self):
+        g = torch.Generator().manual_seed(2)
+        r = torch.randn(4000, 6, generator=g, dtype=torch.float64)
+        one = max_t_critical(r[:, :1], torch.zeros(1), torch.ones(1))
+        six = max_t_critical(r, torch.zeros(6), torch.ones(6))
+        # independent normals: P(max |t| <= c) = (2 Phi(c) - 1)^6 = 0.95
+        c6 = math.sqrt(2) * torch.special.erfinv(torch.tensor(0.95 ** (1 / 6))).item()
+        assert one == pytest.approx(1.96, abs=0.08)
+        assert six == pytest.approx(c6, abs=0.1)
