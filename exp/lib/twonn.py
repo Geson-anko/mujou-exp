@@ -3,7 +3,8 @@ the thinned point sets it is taken on (``exp/vision/plans/jepa.md``,
 「情報の幅: TwoNN」).
 
 Of points $x_i$ ``(N, D)``: duplicates first, the points within ``floor``
-$\cdot R$ of an earlier kept point (0 included) dropped (``n_dup``), $R$ the
+$\cdot R$ of an earlier kept point (0 included) dropped (``n_dup``; of them
+``n_exact`` at the float64 distance 0, the exact duplicates), $R$ the
 scale (by default $\sqrt{2\,\mathrm{tr}\,C}$ of the points, the RMS distance
 of two random points). Of the $N'$ kept, each point's nearest and second
 distances $r_1 \le r_2$ (pairs of ``exclude`` not allowed as neighbours),
@@ -34,7 +35,8 @@ TIE = 1e-6  # mu < 1 + TIE counts as r1 ~ r2
 @dataclass(frozen=True)
 class TwoNN:
     """The estimate (module docstring): ``d``, ``d_ml`` (None if not
-    defined), the points ``n`` given and ``n_kept``, ``n_dup``, ``n_fit``
+    defined), the points ``n`` given and ``n_kept``, ``n_dup`` (of them
+    ``n_exact`` at the distance 0), ``n_fit``
     (the points of the fit), ``tie_share``, ``rho``, and ``kept`` ``(N',)``
     the given indices of the kept points with ``nn`` ``(N', 2)`` the given
     indices of their two neighbours."""
@@ -44,6 +46,7 @@ class TwoNN:
     n: int
     n_kept: int
     n_dup: int
+    n_exact: int
     n_fit: int
     tie_share: float | None
     rho: float | None
@@ -76,16 +79,19 @@ def twonn(
     dist = torch.cdist(p, p, compute_mode="donot_use_mm_for_euclid_dist")
     near = dist <= floor * radius
     near.fill_diagonal_(False)
+    kept: list[int] = []
+    exact = 0
     if not bool(near.any()):
         kept = list(range(n))
     else:
-        kept = []
         for i in range(n):  # greedy: drop a point near an earlier kept one
             if not kept or not bool(near[i, kept].any()):
                 kept.append(i)
+            else:
+                exact += bool((dist[i, kept] == 0).any())
     idx = torch.tensor(kept, dtype=torch.long)
-    none = TwoNN(None, None, n, len(kept), n - len(kept), 0, None, None, idx,
-                 torch.empty(len(kept), 0, dtype=torch.long))  # fmt: skip
+    none = TwoNN(None, None, n, len(kept), n - len(kept), exact, 0, None, None,
+                 idx, torch.empty(len(kept), 0, dtype=torch.long))  # fmt: skip
     if len(kept) < 3:
         return none
     sub = dist[idx][:, idx].clone()
@@ -112,6 +118,7 @@ def twonn(
         n=n,
         n_kept=m,
         n_dup=n - m,
+        n_exact=exact,
         n_fit=n_fit,
         tie_share=float((mu < 1 + TIE).double().mean()),
         rho=float(r[:, 1].median()) / radius if radius > 0 else None,

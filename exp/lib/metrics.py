@@ -200,13 +200,11 @@ def max_t_critical(
     se: torch.Tensor,
     level: float = 0.95,
 ) -> float:
-    r"""The critical value $c$ of the simultaneous intervals $\hat	heta_l
-        \pm c\,\mathrm{SE}_l$ over $L$ values: the ``level`` quantile of $\max_l
-        \lvert 	heta^*_l - \hat	heta_l
-    vert / \mathrm{SE}_l$ over the
-        ``resamples`` ``(n, L)`` of the ``estimate`` ``(L,)`` of standard errors
-        ``se`` ``(L,)``. Of one value, the quantile of $\lvert t
-    vert$."""
+    r"""The critical value $c$ of the simultaneous intervals $\hat\theta_l
+    \pm c\,\mathrm{SE}_l$ over $L$ values: the ``level`` quantile of $\max_l
+    \lvert \theta^*_l - \hat\theta_l \rvert / \mathrm{SE}_l$ over the
+    ``resamples`` ``(n, L)`` of the ``estimate`` ``(L,)`` of standard errors
+    ``se`` ``(L,)``. Of one value, the quantile of $\lvert t \rvert$."""
     t = (resamples.double() - estimate.double()).abs() / se.double()
     return float(torch.quantile(t.max(1).values, level))
 

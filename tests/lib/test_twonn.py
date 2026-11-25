@@ -50,7 +50,7 @@ class TestTwoNN:
         radius = 10.0
         x = torch.cat([LINE, LINE[3:4], LINE[5:6] + 1e-6 * radius / 2])
         got = twonn(x, radius=radius)
-        assert got.n_dup == 2 and got.n_kept == 7
+        assert got.n_dup == 2 and got.n_exact == 1 and got.n_kept == 7
         assert got.d == pytest.approx(by_hand(MUS, 6)[0], rel=1e-12)
 
     @pytest.mark.parametrize(("n", "fit"), [(10, 9), (30, 27), (487, 438), (488, 439)])
