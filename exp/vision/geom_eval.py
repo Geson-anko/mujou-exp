@@ -27,8 +27,9 @@ latent; ``h_mean``, the mean over the positions of the encoder's last
 Whitener`` of $k$, $c_\epsilon$ and the reference ``ref``: ``all`` the
 5998 fit stacks of ``fill_eval.fill_sets``, ``front`` and ``back`` its
 halves in the stream's order): ``spec`` (the spectrum; the only row of a
-code not scoreable at $k$), ``spread`` ($V$ and its blocks' sums $\sum w$,
-$\sum \lVert w \rVert^2$, counts), ``mid`` of each lag and stratum ($G$,
+code not scoreable at $k$), ``spread`` ($V$, ``spread_diagnosis`` and its
+blocks' sums $\sum w$, $\sum \lVert w \rVert^2$, counts), ``mid`` of each
+lag and stratum ($G$,
 $s$, $\bar D$, the means of $\lVert a \rVert^2$, $\lVert b \rVert^2$, and
 the blocks' sums ``num_b``, ``den_b``, ``n_b``), ``twonn`` of each metric
 (``pre`` the PCA coordinates $y$, ``white`` $w$), spacing and offset (and of
@@ -36,19 +37,27 @@ the blocks' sums ``num_b``, ``den_b``, ``n_b``), ``twonn`` of each metric
 estimate without such neighbours ``d_far``), and ``twonn_sub``: of 8 s, the
 offsets' mean $\hat d$ on ``sub_draws`` half-samples of the blocks drawn
 without replacement (seed ``sub_seed``, the same for every code: paired).
+A synthetic control also has the rows of ``ref`` ``population``: whitened by
+its population's covariance $I$ (``population_whitener``), its main
+comparison with the theory; its reference's rows record how the
+reference's sampling enters the metric (README, 「実装のレビューを受けた
+直し」).
 
 **The checks** (``check_rows``, V-d0a to V-d0f, synthetic, on the CPU) and
 **the yard** (``evaluate_yard``: the sets, the yardsticks ``pca``,
 ``color``, ``mean8``, the step 0 of the JEPAs and of V16's VAE, the
 synthetic controls ``pca_perm``, ``ou_mix_<c>``, ``cheb_a``, ``cheb_b``,
-``cheb_c``, ``k3_z``, ``k3_hmean``, and V-d0h, V-d1, V-d2 and the TwoNN's
+``cheb_c``, ``k3_z``, ``k3_hmean``, whether the step 0 of the runs of a seed
+are the same (``step0_same``), and V-d0h, V-d1, V-d2 and the TwoNN's
 resolution into ``vd.json``). No learned checkpoint is evaluated before the
-user decides $\Delta_*$ (``run`` and ``vae`` are the later step)::
+user decides $\Delta_*$ (``run`` and ``vae`` are the later step; ``run``
+also makes the K3's rows of a V18c checkpoint)::
 
     OMP_NUM_THREADS=1 python -m exp.vision.geom_eval checks --out runs/v18c-geom/checks
     python -m exp.vision.geom_eval yard --config <v18c run> --out runs/v18c-geom \
         --init <v18 run> --init-f <..> --init-m <..> --init-c <..> --init-c1 <..> \
-        --init-v16 <v16 run>
+        --init-v16 <v16 run> --same-c <the 6 runs of seed 0> \
+        --same-c1 <the 6 runs of seed 1>
     python -m exp.vision.geom_eval run <run_dir> --steps 6000,60000 --sets runs/v18c-geom
     python -m exp.vision.geom_eval vae <ckpt> --name v16 --sets runs/v18c-geom
 """
@@ -107,6 +116,7 @@ from exp.vision.jepa_eval import (
 )
 from exp.vision.models import VAEModules, ViTPart, build_vae, early_fusion
 from exp.vision.schema import RunConf
+from exp.vision.self_eval import same_weights
 
 __all__ = [
     "OUT",
@@ -138,6 +148,8 @@ PLACES = ("own", "h_mean")
 STRATA = ("all", "in", "cross", "slow", "mid", "fast")
 METRICS = ("pre", "white")
 YARD_INITS = ("init", "init_f", "init_m", "init_c", "init_c1")
+SAME_INITS = ("init_c", "init_c1")  # whose step 0 stands for a seed's runs
+DIAG_TOP = 5  # the directions of spread_diagnosis's top_share
 
 type Places = Callable[[Tensor], dict[str, Tensor]]
 type Row = dict[str, Any]
@@ -430,9 +442,8 @@ def zurich_sets(conf: RunConf, root: Path, gconf: GeomConf) -> tuple[GeomSets, Z
 
 def _pooled(h: Tensor) -> Tensor:
     """The mean over the positions of ``h`` ``(B, T, w)``, float64 ``(B,
-    w)``: float64 holds the sum of $T$ float32 tokens exactly unless their
-    exponents spread over more than $29 - \\log_2 T$ bits, so the mean of $T$
-    copies of the mean is the mean (V-d0h) where float32 would round it."""
+    w)`` (float64 holds the sum of $T$ float32 tokens exactly unless their
+    exponents spread over more than $29 - \\log_2 T$ bits)."""
     return h.double().mean(1)
 
 
@@ -478,10 +489,26 @@ class JepaPlaces:
         return {"own": z, "h_mean": _pooled(h)}
 
 
+def _tree_mean(x: Tensor) -> Tensor:
+    """The mean over dim 1 of ``x`` ``(B, T, w)`` float64 summed in pairs
+    (``T`` a power of 2): of $T$ copies of a value every partial sum is a
+    power of 2 times it, so the mean is the value to the bit (a summation
+    of another order rounds $3v$, $5v$, ...)."""
+    t = x.shape[1]
+    if t & (t - 1):
+        raise ValueError(f"the pairwise mean needs T a power of 2, not {t}")
+    while x.shape[1] > 1:
+        x = x[:, 0::2] + x[:, 1::2]
+    return x[:, 0] / t
+
+
 class K3Places:
     r"""The replicated K3 of a V18c JEPA (``sem_eval.K3Code``'s): ``own``
     $W \mathrm{vec}(1 \otimes \bar t)$ (``k3_z``) and ``h_mean`` the same
-    replacement of $h$ before its mean (``k3_hmean``)."""
+    replacement of $h$ before its mean (``k3_hmean``). The replacement of
+    $h$ is of its float64 mean (``_pooled``), its mean ``_tree_mean``: the
+    K3's ``h_mean`` is the plain one to the bit by arithmetic, so V-d0h can
+    fail only where two passes of the encoder differ, never by rounding."""
 
     def __init__(self, mods: JEPAModules) -> None:
         if mods.mix is None:
@@ -493,7 +520,7 @@ class K3Places:
         t = self._mods.proj(h)
         z = self._mix(t.mean(1, keepdim=True).expand_as(t).flatten(1))
         hbar = _pooled(h)[:, None].expand(-1, h.shape[1], -1)
-        return {"own": z, "h_mean": hbar.mean(1)}
+        return {"own": z, "h_mean": _tree_mean(hbar)}
 
 
 @torch.no_grad()
@@ -501,7 +528,8 @@ def encode_places(
     fn: Places, stacks: Callable[[Tensor], Tensor], n: int, dev: torch.device
 ) -> dict[str, Tensor]:
     """The places of ``fn`` of the ``n`` stacks ``stacks(idx)`` u8 (CPU),
-    ``BATCH`` at a time, on the CPU (float32, or float64 as given)."""
+    ``BATCH`` at a time, computed on ``dev`` and returned on the CPU
+    (float32, or float64 as given)."""
     got: dict[str, list[Tensor]] = {}
     for i in range(0, n, BATCH):
         idx = torch.arange(i, min(i + BATCH, n))
@@ -543,12 +571,27 @@ def ratio_se(num_b: Tensor, den_b: Tensor, contrast: Tensor, gconf: GeomConf) ->
     \mathrm{num} / \sum \mathrm{den}$ of the blocks' sums ``(C, B)``: the
     larger of the block bootstraps of the blocks and of their adjacent pairs
     (``metrics.ratio_resamples``, ``boot`` resamples of ``boot_seed``, the
-    same draws for every code)."""
-    out = 0.0
+    same draws for every code). A resample of no triple of a code (a
+    denominator 0, as in a stratum of few blocks) has no ratio: the standard
+    deviation is of the others (conditional on a triple; NaN of fewer than
+    2)."""
+    sds = []
     for n_, d_ in ((num_b, den_b), (_paired(num_b), _paired(den_b))):
         r = ratio_resamples(n_, d_, _counts(n_.shape[1], gconf))
-        out = max(out, float((r @ contrast.double()).std()))
-    return out
+        sds.append(_finite_std(r @ contrast.double()))
+    return _larger(sds)
+
+
+def _finite_std(r: Tensor) -> float:
+    """The standard deviation of the finite values of ``r`` (NaN of fewer
+    than 2)."""
+    ok = r[torch.isfinite(r)]
+    return float(ok.std()) if len(ok) >= 2 else math.nan
+
+
+def _larger(sds: Sequence[float]) -> float:
+    """The largest of ``sds``, NaN if one is (``max`` would drop it)."""
+    return math.nan if any(math.isnan(x) for x in sds) else max(sds)
 
 
 def s_resamples(
@@ -573,18 +616,19 @@ def _f64(values: Any) -> Tensor:
 def s_se(
     spread_row: Mapping[str, Any], mid_row: Mapping[str, Any], gconf: GeomConf
 ) -> float:
-    """$\\mathrm{SE}^*$ of $s$ of a ``mid`` row and its ``spread`` row."""
+    """$\\mathrm{SE}^*$ of $s$ of a ``mid`` row and its ``spread`` row (a
+    resample of no triple dropped, as in ``ratio_se``)."""
     den_b, n_b = _f64(mid_row["den_b"]), _f64(mid_row["n_b"])
     w_b = _f64(spread_row["w_b"])  # (B, k)
     ww_b, m_b = _f64(spread_row["ww_b"]), _f64(spread_row["m_b"])
-    out = 0.0
+    sds = []
     for paired in (False, True):
         if paired:
             den_b, n_b, ww_b, m_b = map(_paired, (den_b, n_b, ww_b, m_b))
             w_b = _paired(w_b.T).T
         r = s_resamples(den_b, n_b, w_b, ww_b, m_b, _counts(len(den_b), gconf))
-        out = max(out, float(r.std()))
-    return out
+        sds.append(_finite_std(r))
+    return _larger(sds)
 
 
 # -- the rows of a code --------------------------------------------------------------
@@ -619,14 +663,34 @@ def _refs(z_ref: Tensor) -> dict[str, Tensor]:
     return {"all": z_ref, "front": z_ref[:half], "back": z_ref[half : 2 * half]}
 
 
+def spread_diagnosis(w: Tensor, top: int = DIAG_TOP) -> dict[str, float]:
+    r"""Of the whitened evaluation ``w`` ``(n, k)``: $V / k$, the largest
+    variance of a direction ``var_max`` (the evaluation's own principal
+    directions in $w$) and the share of $V$ of the ``top`` largest
+    ``top_share``. A reference like the evaluation gives $V/k \approx 1$,
+    ``var_max`` $\approx 1$ and ``top_share`` $\approx \text{top}/k$; far
+    from these, the metric follows where the reference and the evaluation
+    differ (README, 「言葉づかいの規則」)."""
+    x = w.double() - w.double().mean(0)
+    var = torch.linalg.eigvalsh(x.T @ x / len(x)).flip(0).clamp(min=0)
+    total = float(var.sum())
+    return {
+        "V_over_k": total / w.shape[1],
+        "var_max": float(var[0]),
+        "top_share": float(var[:top].sum()) / total if total > 0 else math.nan,
+    }
+
+
 def mid_rows(w: Tensor, sets: GeomSets) -> tuple[Row, list[Row]]:
-    """The ``spread`` row and the ``mid`` rows (module docstring) of the
-    whitened codes ``w`` ``(n, k)`` of the sets' stacks."""
+    """The ``spread`` row (with ``spread_diagnosis``) and the ``mid`` rows
+    (module docstring) of the whitened codes ``w`` ``(n, k)`` of the sets'
+    stacks."""
     nb = sets.n_blocks
     v = spread(w)
     spread_row = {
         "part": "spread",
         "V": v,
+        **spread_diagnosis(w),
         "w_b": _block_sums(w, sets.blocks, nb).tolist(),
         "ww_b": _block_sums(w.double().square().sum(1), sets.blocks, nb).tolist(),
         "m_b": _block_sums(torch.ones(len(w)), sets.blocks, nb).tolist(),
@@ -667,18 +731,26 @@ def _radius(points: Tensor) -> float:
 
 def _estimate(est: TwoNN) -> dict[str, Any]:
     return {
-        "N": est.n, "n_kept": est.n_kept, "n_dup": est.n_dup, "d": est.d,
+        "N": est.n, "n_kept": est.n_kept, "n_dup": est.n_dup, "n_exact": est.n_exact, "d": est.d,
         "d_ml": est.d_ml, "rho": est.rho, "tie_share": est.tie_share,
     }  # fmt: skip
 
 
 def twonn_rows(
-    points: Tensor, sets: GeomSets, gconf: GeomConf, *, sub: bool
+    points: Tensor,
+    sets: GeomSets,
+    gconf: GeomConf,
+    *,
+    sub: bool,
+    times: Tensor | None = None,
 ) -> list[Row]:
     """The ``twonn`` rows of the grid's ``points`` ``(G, k)`` of one metric
-    (module docstring) and with ``sub`` its ``twonn_sub`` row."""
+    (module docstring) and with ``sub`` its ``twonn_sub`` row; ``times``
+    ``(G,)`` the points' times in steps of the grid (by default their
+    places, ``arange(G)``; a permuted code's, its stacks' own)."""
     radius = _radius(points)
-    times = torch.arange(len(points))  # seconds
+    if times is None:
+        times = torch.arange(len(points), dtype=torch.float64)
     rows: list[Row] = []
     for spacing in gconf.spacings:
         for offset, idx in enumerate(thinned(len(points), spacing)):
@@ -741,6 +813,46 @@ def _sub_estimates(
     return out
 
 
+def population_whitener(d: int, c_eps: float) -> Whitener:
+    r"""The whitening of a synthetic control by its population: mean 0 and
+    covariance $I_d$ (independent columns of unit variance), all $k = d$
+    directions, $\epsilon = c_\epsilon \mathrm{tr}(I)/d = c_\epsilon$."""
+    f64 = torch.float64
+    return Whitener(
+        mean=torch.zeros(d, dtype=f64),
+        basis=torch.eye(d, dtype=f64),
+        values=torch.ones(d, dtype=f64),
+        eps=c_eps,
+        total=float(d),
+        k=d,
+        why=None,
+    )
+
+
+def _whitened_rows(
+    wh: Whitener,
+    z_eval: Tensor,
+    sets: GeomSets,
+    gconf: GeomConf,
+    lab: Mapping[str, Any],
+    *,
+    twonn: bool,
+    sub: bool,
+    times: Tensor | None,
+) -> list[Row]:
+    rows: list[Row] = [dict(lab) | {"part": "spec"} | wh.spec()]
+    if not wh.scoreable:
+        return rows
+    w = wh.white(z_eval)
+    spread_row, mids = mid_rows(w, sets)
+    rows += [dict(lab) | spread_row] + [dict(lab) | r for r in mids]
+    if twonn:
+        for metric, x in (("pre", wh.pca(z_eval)), ("white", w)):
+            got = twonn_rows(x[sets.grid], sets, gconf, sub=sub, times=times)
+            rows += [dict(lab) | {"metric": metric} | r for r in got]
+    return rows
+
+
 def code_rows(
     z_eval: Tensor,
     z_ref: Tensor,
@@ -749,26 +861,28 @@ def code_rows(
     *,
     sens: bool,
     labels: Mapping[str, Any],
+    population: bool = False,
+    times: Tensor | None = None,
 ) -> list[Row]:
     """The rows (module docstring) of a code's evaluation ``z_eval`` ``(n,
     D)`` (the sets' stacks) and reference ``z_ref`` ``(m, D)``, each with
-    ``labels``, its ``k``, ``eps`` ($c_\\epsilon$) and ``ref``."""
+    ``labels``, its ``k``, ``eps`` ($c_\\epsilon$) and ``ref``. With
+    ``population`` (a synthetic control) also the rows of ``ref``
+    ``population`` (``population_whitener``, $k = D$, with the TwoNN and its
+    ``twonn_sub``); ``times`` the grid's times for ``twonn_rows``."""
     rows: list[Row] = []
     refs = _refs(z_ref)
     for v in variants(gconf, sens=sens):
         wh = Whitener.fit(refs[v.ref], v.k, c_eps=v.c_eps)
         lab = dict(labels) | {"k": v.k, "eps": v.c_eps, "ref": v.ref, "key": sets.key}
-        rows.append(lab | {"part": "spec"} | wh.spec())
-        if not wh.scoreable:
-            continue
-        w = wh.white(z_eval)
-        spread_row, mids = mid_rows(w, sets)
-        rows += [lab | spread_row] + [lab | r for r in mids]
-        if v.twonn:
-            main = v.k == gconf.k
-            for metric, x in (("pre", wh.pca(z_eval)), ("white", w)):
-                got = twonn_rows(x[sets.grid], sets, gconf, sub=main)
-                rows += [lab | {"metric": metric} | r for r in got]
+        rows += _whitened_rows(wh, z_eval, sets, gconf, lab, twonn=v.twonn,
+                               sub=v.k == gconf.k, times=times)  # fmt: skip
+    if population:
+        d = z_eval.shape[1]
+        lab = dict(labels) | {"k": d, "eps": gconf.c_eps, "ref": "population",
+                              "key": sets.key}  # fmt: skip
+        rows += _whitened_rows(population_whitener(d, gconf.c_eps), z_eval, sets,
+                               gconf, lab, twonn=True, sub=True, times=times)  # fmt: skip
     return rows
 
 
@@ -862,7 +976,11 @@ def _processes(
     ]
 ]:
     """V-d0b's processes: their name, their draw and the closed form of
-    the mean per triple of $\\nu$ and $\\delta$ at a lag."""
+    the mean per triple of $\\nu$ and $\\delta$ at a lag. ``two_bands``'s
+    second band is the first's 32 frequencies times ``second_band``: centred
+    on $5\\omega_0$ and 5 times as wide (the plan does not say its width;
+    the closed form is of the same frequencies, so the check holds either
+    way)."""
     n, d = cc.n, cc.d
     r = math.exp(-1 / gconf.ou_tau)
 
@@ -1116,7 +1234,9 @@ def _vd0f(cc: CheckConf, gconf: GeomConf) -> list[Row]:
     rows.append(_check("V-d0f-hand", ok, d=got.d, d_hand=want, n_fit=got.n_fit))
     dup = twonn(torch.cat([line, line[3:4], line[5:6] + 4e-6]), radius=10.0)
     ok = dup.n_dup == 2 and dup.d is not None and _close(dup.d, want, 1e-12)
-    rows.append(_check("V-d0f-duplicates", ok, n_dup=dup.n_dup, d=dup.d))
+    rows.append(
+        _check("V-d0f-duplicates", ok, n_dup=dup.n_dup, n_exact=dup.n_exact, d=dup.d)
+    )
     n487 = cc.twonn_points
     rows.append(_check("V-d0f-discard", twonn(torch.randn(n487, 3, generator=torch.Generator().manual_seed(0),
                        dtype=torch.float64)).n_fit == 438, n=n487))  # fmt: skip
@@ -1394,21 +1514,55 @@ def _sets_at(
     """
     if (out / "sets.pt").exists():
         sets = GeomSets.load(out)
-        if sets.ident.get("geom") != json.loads(json.dumps(asdict(gconf))):
+        zurich = Zurich(conf, root, 1)
+        t = conf.data.tours
+        want = {"data_version": t.data_version, "held_out": t.held_out,
+                "frames": len(zurich.frames), "stack": t.frames, "stride": t.stride,
+                "geom": asdict(gconf)}  # fmt: skip
+        got = {k: sets.ident.get(k) for k in want}
+        if got != json.loads(json.dumps(want)):
             raise ValueError(f"{out / 'sets.pt'} is of other settings")
-        return sets, Zurich(conf, root, 1)
+        return sets, zurich
     sets, zurich = zurich_sets(conf, root, gconf)
     sets.save(out)
     return sets, zurich
 
 
 def _jepa_of(run_dir: Path, device: str) -> tuple[JEPAModules, str]:
-    """The JEPA of the run (at step 0) and its own latent's kind: ``zpca``
-    of the SIGReg of the mean (V18b M), else ``z``."""
+    """The JEPA of the run (built from its seed) and its own latent's kind:
+    ``zpca`` of the SIGReg of the mean (V18b M), else ``z``."""
     conf = _conf_of(run_dir, device)
     settings = json.loads((run_dir / "jepa.json").read_text())
     own = "zpca" if settings.get("sigreg_on", "flat") == "mean" else "z"
     return build_run_jepa(conf, settings), own
+
+
+def _init_of(run_dir: Path, device: str) -> tuple[JEPAModules, str, Path]:
+    """The JEPA of the run's step 0 checkpoint (``plans/jepa.md``, 「符号と
+    checkpoint」), its own latent's kind and the checkpoint.
+
+    Raises:
+        ValueError: The run has no checkpoint of step 0.
+    """
+    ckpts = run_ckpts(run_dir)
+    if 0 not in ckpts:
+        raise ValueError(f"{run_dir} has no checkpoint of step 0 (of {list(ckpts)})")
+    mods, own = _jepa_of(run_dir, device)
+    ckpt.load_eval(ckpts[0], mods.modules())
+    return mods, own, ckpts[0]
+
+
+def _first_vae(run_dir: Path) -> Path:
+    """The checkpoint of $t = 0$ of the VAE run (its untrained $\\mu$).
+
+    Raises:
+        ValueError: The run's first checkpoint is not of $t = 0$ (a learned
+            VAE would be a yardstick before $\\Delta_*$).
+    """
+    first = min((run_dir / "ckpt").glob("*.pt"), key=lambda p: float(p.stem))
+    if float(first.stem) != 0.0:
+        raise ValueError(f"{run_dir}'s first checkpoint {first.name} is not of t = 0")
+    return first
 
 
 def _places_of(
@@ -1442,6 +1596,7 @@ def evaluate_yard(
     *,
     inits: Mapping[str, Path],
     init_v16: Path,
+    same: Mapping[str, Sequence[Path]],
     root: Path | None = None,
     gconf: GeomConf = GeomConf(),
     fconf: FillConf = FillConf(),
@@ -1451,13 +1606,19 @@ def evaluate_yard(
     """The sets, the yardsticks' and synthetic controls' rows (``out /
     "yard/rows/<code>.json"``), and V-d0h, V-d1, V-d2 and the TwoNN's
     resolution (``out / "yard/vd.json"``). ``inits`` the runs of
-    ``YARD_INITS`` (step 0); ``init_v16`` V16's VAE run (its first
-    checkpoint). Returns ``out``.
+    ``YARD_INITS`` (their step 0 checkpoints); ``init_v16`` V16's VAE run
+    (its checkpoint of $t = 0$); ``same`` of ``init_c`` and ``init_c1`` the
+    runs of the seed whose step 0 stands for all (``plans/jepa.md``: a
+    ``step0_same`` record of ``self_eval.same_weights``; where they differ,
+    each run's step 0 is a yardstick too, ``<init>@<run>``). Every row of an
+    init holds its checkpoint ``source`` and ``t``. Returns ``out``.
 
     Raises:
-        ValueError: A run of ``YARD_INITS`` is not given.
+        ValueError: A run of ``YARD_INITS`` or of ``same`` is not given, a
+            run has no step 0, or V16's first checkpoint is not of $t = 0$.
     """
     missing = [n for n in YARD_INITS if n not in inits]
+    missing += [n for n in SAME_INITS if not same.get(n)]
     if missing:
         raise ValueError(f"the yard needs the runs {missing}")
     determinism = configure_determinism(conf.device)
@@ -1468,6 +1629,7 @@ def evaluate_yard(
     ref = fill_sets(conf, root, fconf, spacing=spacing, **kw).fit
     yard = out / "yard"
     sources = {k: str(v) for k, v in inits.items()} | {"init_v16": str(init_v16)}
+    sources |= {f"same_{k}": [str(p) for p in same[k]] for k in SAME_INITS}
     _start(
         yard, {"geom": asdict(gconf), "key": sets.key, "sources": sources}, determinism
     )
@@ -1475,15 +1637,29 @@ def evaluate_yard(
     kept: dict[str, dict[str, tuple[Tensor, Tensor]]] = {}
 
     def emit(
-        code: str, places: Mapping[str, tuple[Tensor, Tensor]], sens: bool
+        code: str,
+        places: Mapping[str, tuple[Tensor, Tensor]],
+        sens: bool,
+        labels: Mapping[str, Any] | None = None,
+        **kw: Any,
     ) -> None:
         rows: list[Row] = []
         for place, (ev, rf) in places.items():
-            rows += code_rows(
-                ev, rf, sets, gconf, sens=sens, labels={"code": code, "place": place}
-            )
+            lab = {"code": code, "place": place} | dict(labels or {})
+            rows += code_rows(ev, rf, sets, gconf, sens=sens, labels=lab, **kw)
         _write(yard / "rows" / f"{code}.json", rows, {})
         rows_by[code] = rows
+
+    def init_places(
+        run_dir: Path,
+    ) -> tuple[dict[str, tuple[Tensor, Tensor]], JEPAModules, dict[str, Any]]:
+        mods, own, path = _init_of(run_dir, conf.device)
+        places = _places_of(JepaPlaces(mods).places, zurich, ref, sets, dev)
+        if own == "zpca":
+            places["own"] = _zpca(
+                places["own"], _conf_of(run_dir, None).seed, gconf.pca_dim
+            )
+        return places, mods, {"source": str(path), "t": float(path.stem)}
 
     gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
     pca_code = PCACode.fit(pixels, ref, gconf.pca_dim, gen=gen, device=conf.device)
@@ -1497,29 +1673,37 @@ def evaluate_yard(
     gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
     mean8 = PCACode.fit(_mean8, ref, gconf.pca_dim, gen=gen, device=conf.device)
     emit("mean8", _places_of(_feature_code(mean8.mu), zurich, ref, sets, dev), True)
+    records: list[Row] = []
     for name in YARD_INITS:
-        mods, own = _jepa_of(inits[name], conf.device)
-        places = _places_of(JepaPlaces(mods).places, zurich, ref, sets, dev)
-        if own == "zpca":
-            places["own"] = _zpca(
-                places["own"], _conf_of(inits[name], None).seed, gconf.pca_dim
-            )
-        emit(name, places, True)
+        places, mods, source = init_places(inits[name])
+        emit(name, places, True, labels=source)
         if name == "init_c":
             kept["init_c"] = places
             kept["k3"] = _places_of(K3Places(mods).places, zurich, ref, sets, dev)
-    first = min((init_v16 / "ckpt").glob("*.pt"), key=lambda p: float(p.stem))
+    for name in SAME_INITS:
+        runs = list(same[name])
+        ok = same_weights([run_ckpts(d)[0] for d in runs])
+        records.append({"part": "record", "name": "step0_same", "init": name,
+                        "same": ok, "runs": [str(d) for d in runs]})  # fmt: skip
+        if not ok:  # each run's step 0 a yardstick (plans/jepa.md)
+            for run_dir in runs:
+                places, _, source = init_places(run_dir)
+                emit(f"{name}@{run_dir.name}", places, True, labels=source)
+    first = _first_vae(init_v16)
     vae = vae_at(first, conf.device)
     assert isinstance(vae, VAEModules)
-    emit("init_v16", _places_of(VaeTokenCode(vae).places, zurich, ref, sets, dev), True)
+    emit("init_v16", _places_of(VaeTokenCode(vae).places, zurich, ref, sets, dev), True,
+         labels={"source": str(first), "t": float(first.stem)})  # fmt: skip
     # the synthetic controls
     ev, rf = kept["pca"]["own"]
     perm = torch.randperm(
         len(ev), generator=torch.Generator().manual_seed(gconf.perm_seed)
     )
-    emit("pca_perm", {"own": (ev[perm], rf)}, False)
+    # the TwoNN's near neighbours by the permuted stacks' own times
+    emit("pca_perm", {"own": (ev[perm], rf)}, False,
+         times=perm[sets.grid].double() / gconf.grid_step)  # fmt: skip
     for name, pair in synthetic_codes(sets.n, gconf).items():
-        emit(name, {"own": pair}, False)
+        emit(name, {"own": pair}, False, population=True)
     emit("k3_z", {"own": kept["k3"]["own"]}, False)
     emit("k3_hmean", {"h_mean": kept["k3"]["h_mean"]}, False)
     checks = vd0h(
@@ -1528,7 +1712,7 @@ def evaluate_yard(
     checks += vd1(rows_by, gconf)
     checks += vd2(*kept["pca"]["own"], sets, gconf)
     checks += twonn_resolution(gconf)
-    _write(yard / "vd.json", checks, {"key": sets.key})
+    _write(yard / "vd.json", records + checks, {"key": sets.key})
     return out
 
 
@@ -1561,7 +1745,10 @@ def evaluate_run(
 ) -> Path:
     """The rows of the JEPA run's checkpoints of ``steps`` into ``run_dir /
     OUT / "rows/<step>.json"`` (a step whose file is there is skipped), on
-    the sets saved in ``sets_dir``. Returns the directory.
+    the sets saved in ``sets_dir``; of a run with $W$ (V18c) also the
+    replicated K3's (``K3Places``: ``code`` ``k3_z`` of ``own`` and
+    ``k3_hmean`` of ``h_mean``, with ``run``) into ``k3/<step>.json``
+    (``plans/jepa.md``, 「合成の対照」). Returns the directory.
 
     Raises:
         ValueError: A step has no checkpoint, or the sets or the
@@ -1584,18 +1771,26 @@ def evaluate_run(
         out, {"geom": asdict(gconf), "key": sets.key, "run": run_dir.name}, determinism
     )
     for step in steps:
+        stamp = {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)}
         path = out / "rows" / f"{step:06d}.json"
-        if path.exists():
+        k3_path = out / "k3" / f"{step:06d}.json"
+        todo = not path.exists() or (mods.mix is not None and not k3_path.exists())
+        if not todo:
             continue
         ckpt.load_eval(ckpts[step], mods.modules())
-        rows = _apply_rows(JepaPlaces(mods).places, zurich, ref, sets, dev,
-                           {"code": run_dir.name, "step": step}, gconf,
-                           conf.seed if own == "zpca" else None)  # fmt: skip
-        _write(
-            path,
-            rows,
-            {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)},
-        )
+        if not path.exists():
+            rows = _apply_rows(JepaPlaces(mods).places, zurich, ref, sets, dev,
+                               {"code": run_dir.name, "step": step}, gconf,
+                               conf.seed if own == "zpca" else None)  # fmt: skip
+            _write(path, rows, stamp)
+        if mods.mix is not None and not k3_path.exists():
+            k3 = _places_of(K3Places(mods).places, zurich, ref, sets, dev)
+            rows = []
+            for code, place in (("k3_z", "own"), ("k3_hmean", "h_mean")):
+                ev, rf = k3[place]
+                lab = {"code": code, "place": place, "run": run_dir.name, "step": step}
+                rows += code_rows(ev, rf, sets, gconf, sens=False, labels=lab)
+            _write(k3_path, rows, stamp)
     return out
 
 
@@ -1647,6 +1842,9 @@ def main(argv: Sequence[str] | None = None) -> Path:
     for name in YARD_INITS:
         yard.add_argument(f"--{name.replace('_', '-')}", type=Path, required=True)
     yard.add_argument("--init-v16", type=Path, required=True)
+    for name in SAME_INITS:  # the runs of the seed, the init's own among them
+        yard.add_argument(f"--same-{name.removeprefix('init_')}", type=Path,
+                          nargs="+", required=True)  # fmt: skip
     run = sub.add_parser("run")
     run.add_argument("run_dir", type=Path)
     run.add_argument("--steps", type=_ints, required=True)
@@ -1664,7 +1862,9 @@ def main(argv: Sequence[str] | None = None) -> Path:
     if a.job == "yard":
         conf = _conf_of(a.config, a.device)
         inits = {n: getattr(a, n) for n in YARD_INITS}
-        return evaluate_yard(conf, a.out, inits=inits, init_v16=a.init_v16, root=a.root)
+        same = {n: getattr(a, f"same_{n.removeprefix('init_')}") for n in SAME_INITS}
+        return evaluate_yard(conf, a.out, inits=inits, init_v16=a.init_v16, same=same,
+                             root=a.root)  # fmt: skip
     if a.job == "run":
         return evaluate_run(
             a.run_dir, steps=a.steps, sets_dir=a.sets, root=a.root, device=a.device

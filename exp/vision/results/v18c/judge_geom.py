@@ -24,8 +24,18 @@ the registered two).
    256), the thinning's curve ($N$, $\rho$, $\hat d$ of each spacing), the
    share of near neighbours and $\hat d$ without them, and the standard
    deviation of the paired half-samples' differences of $\hat d$ (median and
-   largest of the pairs); (e) the synthetic controls against their
-   stationary values (``theory``).
+   largest of the pairs; a guide to the SE of the whole sample's difference,
+   likely on the large side: a half-sample's TwoNN draws its neighbours
+   anew, near an estimate of $N/2$ points); (e) the synthetic controls
+   against their stationary values (``theory``): of each the main row of
+   its population's whitening (``ref`` ``population``, $k = D$), and as
+   records the rows whitened by its reference at $k$ and ``k_side``; (f) of
+   the yardsticks' main whitening, ``geom_eval.spread_diagnosis`` ($V/k$,
+   the largest variance of a direction and the top 5's share of $V$).
+
+Before them, whether the step 0 of a seed's runs are the same
+(``step0_same``; where not, each run's step 0 is a yardstick
+``<init>@<run>``).
 
 $\mathrm{SE}^*$ is ``geom_eval.ratio_se`` and ``geom_eval.s_se``: the larger
 of the block bootstraps of 128 s and 256 s, 2000 resamples, seed 101. The
@@ -67,6 +77,13 @@ SENS: tuple[tuple[str, dict[str, Any]], ...] = (
 )
 CONTROLS = ("pca_perm", "ou_mix_1", "ou_mix_3", "ou_mix_10", "ou_mix_30", "cheb_a",
             "cheb_b", "cheb_c", "k3_z", "k3_hmean")  # fmt: skip
+
+
+def _yardsticks(by_code: Mapping[str, Sequence[Row]]) -> dict[str, tuple[str, ...]]:
+    """``YARDSTICKS`` and the step 0 of each run of a seed whose step 0
+    differ (``<init>@<run>``)."""
+    extra = tuple(sorted(c for c in by_code if "@" in c))
+    return {place: codes + extra for place, codes in YARDSTICKS.items()}
 
 
 def _load(path: Path) -> list[Row]:
@@ -137,10 +154,14 @@ def _g_se(rows: Sequence[Row], g: GeomConf) -> float:
     return ratio_se(num, den, coef, g)
 
 
-def curves(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, Any]:
+def curves(
+    by_code: Mapping[str, Sequence[Row]],
+    g: GeomConf,
+    yardsticks: Mapping[str, Sequence[str]] = YARDSTICKS,
+) -> dict[str, Any]:
     """(a): the ``in`` stratum's $G$, $s$ and their $\\mathrm{SE}^*$."""
     out: dict[str, Any] = {}
-    for place, codes in YARDSTICKS.items():
+    for place, codes in yardsticks.items():
         for code in codes:
             rows = by_code.get(code, [])
             spread = _main(rows, g, part="spread", place=place)
@@ -158,11 +179,15 @@ def curves(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, Any]:
     return out
 
 
-def pair_widths(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, Any]:
+def pair_widths(
+    by_code: Mapping[str, Sequence[Row]],
+    g: GeomConf,
+    yardsticks: Mapping[str, Sequence[str]] = YARDSTICKS,
+) -> dict[str, Any]:
     """(b): the widths $4\\,\\mathrm{SE}^*$ of the paired differences of
     $G$ of every two yardsticks of a place, by lag."""
     out: dict[str, Any] = {}
-    for place, codes in YARDSTICKS.items():
+    for place, codes in yardsticks.items():
         for lag in g.lags:
             widths = []
             for a, b in combinations(codes, 2):
@@ -185,11 +210,15 @@ def _flips(main: Mapping[str, float], other: Mapping[str, float]) -> int:
     )
 
 
-def sensitivity(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, Any]:
+def sensitivity(
+    by_code: Mapping[str, Sequence[Row]],
+    g: GeomConf,
+    yardsticks: Mapping[str, Sequence[str]] = YARDSTICKS,
+) -> dict[str, Any]:
     """(c): $G$ of each variant of the whitening and the pairs whose order
     flips from the main."""
     out: dict[str, Any] = {}
-    for place, codes in YARDSTICKS.items():
+    for place, codes in yardsticks.items():
         for lag in g.lags:
             main = {
                 c: m["G"]
@@ -205,12 +234,16 @@ def sensitivity(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, 
     return out
 
 
-def twonn_table(by_code: Mapping[str, Sequence[Row]], g: GeomConf) -> dict[str, Any]:
+def twonn_table(
+    by_code: Mapping[str, Sequence[Row]],
+    g: GeomConf,
+    yardsticks: Mapping[str, Sequence[str]] = YARDSTICKS,
+) -> dict[str, Any]:
     """(d): the TwoNN's offsets, thinning, near neighbours and the paired
     half-samples."""
     out: dict[str, Any] = {"codes": {}, "pairs": {}}
     first = g.spacings[0]
-    for place, codes in YARDSTICKS.items():
+    for place, codes in yardsticks.items():
         for code in codes:
             rows = by_code.get(code, [])
             for k in (g.k, *g.k_side):
@@ -304,26 +337,71 @@ def theory(code: str, lag: int, g: GeomConf, n: int) -> tuple[float, float] | No
     return s1, float(num / den)
 
 
+def _control_variants(
+    rows: Sequence[Row], g: GeomConf, place: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """The whitenings of a control in order, the main first: its
+    population's (``k`` its $D$) where it has one, then its reference's at
+    $k$ and ``k_side``."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    pop = _of(rows, part="spec", place=place, ref="population")
+    if pop:
+        out.append(("population", {"ref": "population", "k": pop[0]["k"]}))
+    return out + [(f"ref-k{k}", {"k": k}) for k in (g.k, *g.k_side)]
+
+
+def _diag(row: Row) -> dict[str, Any]:
+    return {k: row.get(k) for k in ("V_over_k", "var_max", "top_share")}
+
+
 def controls(
     by_code: Mapping[str, Sequence[Row]], g: GeomConf, n: int
 ) -> dict[str, Any]:
-    """(e): the synthetic controls' $G$, $s$ (``all`` stratum, main
-    whitening; None where not scoreable) against ``theory``."""
+    """(e): the synthetic controls' $G$, $s$ (``all`` stratum; None where
+    not scoreable) of each whitening (``_control_variants``, ``main`` the
+    first) with its ``spread_diagnosis``, against ``theory``."""
     out: dict[str, Any] = {}
     for code in CONTROLS:
         rows = by_code.get(code, [])
         place = "h_mean" if code == "k3_hmean" else "own"
-        spec = _main(rows, g, part="spec", place=place)
-        entry: dict[str, Any] = {"scoreable": spec[0]["scoreable"] if spec else None,
-                                 "why": spec[0]["why"] if spec else None, "lags": {}}  # fmt: skip
+        entry: dict[str, Any] = {"main": None, "theory": {}, "variants": {}}
         for lag in g.lags:
-            m = _mid(rows, g, place, lag, stratum="all")
             t = theory(code, lag, g, n)
-            entry["lags"][lag] = {
-                "G": m["G"] if m else None, "s": m["s"] if m else None,
-                "s_theory": t[0] if t else None, "G_theory": t[1] if t else None,
-            }  # fmt: skip
+            entry["theory"][lag] = {"s": t[0] if t else None, "G": t[1] if t else None}
+        for name, variant in _control_variants(rows, g, place):
+            base = {"k": g.k, "eps": g.c_eps, "ref": "all"} | variant
+            spec = _of(rows, part="spec", place=place, **base)
+            spread = _of(rows, part="spread", place=place, **base)
+            v: dict[str, Any] = {
+                "scoreable": spec[0]["scoreable"] if spec else None,
+                "why": spec[0]["why"] if spec else None,
+                "diag": _diag(spread[0]) if len(spread) == 1 else None,
+                "lags": {},
+            }
+            for lag in g.lags:
+                m = _mid(rows, g, place, lag, stratum="all", **variant)
+                v["lags"][lag] = {
+                    "G": m["G"] if m else None,
+                    "s": m["s"] if m else None,
+                }
+            entry["variants"][name] = v
+            entry["main"] = entry["main"] or name
         out[code] = entry
+    return out
+
+
+def spread_table(
+    by_code: Mapping[str, Sequence[Row]],
+    g: GeomConf,
+    yardsticks: Mapping[str, Sequence[str]] = YARDSTICKS,
+) -> dict[str, Any]:
+    """(f): ``spread_diagnosis`` of the yardsticks' main whitening."""
+    out: dict[str, Any] = {}
+    for place, codes in yardsticks.items():
+        for code in codes:
+            got = _main(by_code.get(code, []), g, part="spread", place=place)
+            if len(got) == 1:
+                out.setdefault(place, {})[code] = _diag(got[0])
     return out
 
 
@@ -339,8 +417,14 @@ def yard_stage(geom: Path, g: GeomConf) -> dict[str, Any]:
     )
     checks = [r for r in vd if r["part"] == "check"]
     stop = not checks or not all(r["pass"] for r in checks)
-    out: dict[str, Any] = {"checks": checks, "stop": stop}
-    print("## V-d0h・V-d1・V-d2\n")
+    same = _of(vd, part="record", name="step0_same")
+    out: dict[str, Any] = {"checks": checks, "stop": stop, "step0_same": same}
+    ys = _yardsticks(by_code)
+    print("## step 0 の一致（`self_eval.same_weights`）\n")
+    for r in same:
+        what = "同じ" if r["same"] else "違う（各 run の step 0 も物差しとして回した）"
+        print(f"- {r['init']}: {what}（{len(r['runs'])} 本）")
+    print("\n## V-d0h・V-d1・V-d2\n")
     print("| 確かめ | ラベル | 合否 |\n| -- | -- | -- |")
     for r in checks:
         label = ", ".join(
@@ -357,11 +441,12 @@ def yard_stage(geom: Path, g: GeomConf) -> dict[str, Any]:
               f"{_fmt(r['recovery'], 3)} | {'はい' if r['apart_from_0'] else 'いいえ'} |")  # fmt: skip
     ident = sets.get("ident", {})
     n = ident["frames"] - (ident["stack"] - 1) * ident["stride"] if ident else 0
-    out["curves"] = curves(by_code, g)
-    out["pair_widths"] = pair_widths(by_code, g)
-    out["sensitivity"] = sensitivity(by_code, g)
-    out["twonn"] = twonn_table(by_code, g)
+    out["curves"] = curves(by_code, g, ys)
+    out["pair_widths"] = pair_widths(by_code, g, ys)
+    out["sensitivity"] = sensitivity(by_code, g, ys)
+    out["twonn"] = twonn_table(by_code, g, ys)
     out["controls"] = controls(by_code, g, n) if n > 1 else {}
+    out["spread"] = spread_table(by_code, g, ys)
     print("\n## V-d3 の材料\n\n### (a) `in` の G と s（2 SE*）\n")
     for place, codes in out["curves"].items():
         print(
@@ -393,17 +478,26 @@ def yard_stage(geom: Path, g: GeomConf) -> dict[str, Any]:
                              f"{_fmt(first.get('max'), 3)}]")  # fmt: skip
             print(f"- {place} {code}: " + "; ".join(cells))
     for place, by_metric in out["twonn"]["pairs"].items():
-        print(f"- 半分の部分標本の対の差の標準偏差 {place}: " + "、".join(
+        print(f"- 半分の部分標本の対の差の標準偏差（全体の差の SE の目安。おそらく保守側） {place}: " + "、".join(
             f"{m} {_fmt(v['median'], 3)}・{_fmt(v['max'], 3)}" for m, v in by_metric.items()))  # fmt: skip
-    print("\n### (e) 合成の対照（all の層、主の白色化）\n")
+    print("\n### (e) 合成の対照（all の層。主は母集団の白色化、参照の白色化は記録）\n")
     for code, e in out["controls"].items():
-        if not e["scoreable"]:
-            print(f"- {code}: 採点できない（{e['why']}）")
-            continue
-        print(f"- {code}: " + "、".join(
-            f"{lag / 10:g} 秒 G {_fmt(v['G'], 3)}（理論 {_fmt(v['G_theory'], 3)}）"
-            f" s {_fmt(v['s'], 3)}（理論 {_fmt(v['s_theory'], 3)}）"
-            for lag, v in e["lags"].items()))  # fmt: skip
+        for name, v in e["variants"].items():
+            tag = f"{code} {name}" + ("（主）" if name == e["main"] else "（記録）")
+            if not v["scoreable"]:
+                print(f"- {tag}: 採点できない（{v['why']}）")
+                continue
+            d = v["diag"] or {}
+            print(f"- {tag} [V/k {_fmt(d.get('V_over_k'), 3)}, 最大 {_fmt(d.get('var_max'), 3)}, "
+                  f"上位 5 {_fmt(d.get('top_share'), 3)}]: " + "、".join(
+                f"{lag / 10:g} 秒 G {_fmt(x['G'], 3)}（理論 {_fmt(e['theory'][lag]['G'], 3)}）"
+                f" s {_fmt(x['s'], 3)}（理論 {_fmt(e['theory'][lag]['s'], 3)}）"
+                for lag, x in v["lags"].items()))  # fmt: skip
+    print("\n### (f) 白色化した評価の分散の診断（主の白色化）\n")
+    for place, codes in out["spread"].items():
+        for code, d in codes.items():
+            print(f"- {place} {code}: V/k {_fmt(d['V_over_k'], 3)}、方向の分散の最大 "
+                  f"{_fmt(d['var_max'], 3)}、上位 5 方向の割合 {_fmt(d['top_share'], 3)}")  # fmt: skip
     return out
 
 

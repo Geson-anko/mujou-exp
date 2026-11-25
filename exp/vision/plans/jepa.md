@@ -1718,7 +1718,7 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 
 ### 白色化（`exp/lib/midpoint.Whitener`）
 
-1. 参照の組 $Z_{\mathrm{ref}}$ は `fill_eval.fill_sets(conf, root, FillConf()).fit`（自己同定と同じ 5998 stack、Amsterdam 4905・Bangkok 1093。Zurich を含まない）。合成の符号では、同じ過程の独立な実現（評価と同じ長さ）を参照にする
+1. 参照の組 $Z_{\mathrm{ref}}$ は `fill_eval.fill_sets(conf, root, FillConf()).fit`（自己同定と同じ 5998 stack、Amsterdam 4905・Bangkok 1093。Zurich を含まない）。合成の符号では、同じ過程の独立な実現（評価と同じ長さ）を参照にする。ただし合成の対照の**主の比べは、母集団の共分散 $I$ で白色化した行**（`ref` = `population`、$k = D$、平均 0）にし、参照の実現で白色化した行は「参照の標本の揺れが計量に入る効き方」の記録にする（実装のレビューを受けた直し。理由は README の同じ名前の節）
 2. 平均 $\mu$ と共分散 $C$（float64、$1/n$ で割る）。固有分解 $C = U \Lambda U^\top$、固有値は降順
 3. **PCA の座標**（白色化の前）: $y = U_k^\top (z - \mu)$（$k$ 次元）
 4. **白色化した座標**: $w_i = y_i / \sqrt{\lambda_i + \epsilon}$、$\epsilon = c_\epsilon \cdot \mathrm{tr}(C) / D$。主は $c_\epsilon = 10^{-6}$（`exp/lib/linear_dyn.py` の正則化と同じ形）、感度に $10^{-3}$。各方向の白色化の後の参照の分散は $\lambda_i/(\lambda_i + \epsilon)$ で、これを記録する
@@ -1740,7 +1740,7 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 - **カット**: 隣り合うフレーム $f_i$、$f_{i+1}$（u8 を 255 で割った 3 × 64 × 64）の画素の二乗差の平均 $d_i$ を全ての $i$ で求める。無関係な 2 枚の基準として、600 秒（6000 フレーム）以上離れた Zurich のフレームの対を 20000 組（seed 401）無作為に引き、同じ量の 1% 点 $\theta$ を取る。$d_i \ge \theta$ なら $i$ と $i+1$ の間をカットとする
   - 理由: カットの前後の 2 枚は、無関係な 2 枚と同じ分布に従うとみなせる。$\theta$ を無関係な対の 1% 点に置けば、その仮定のもとでカットを見落とす確率は 1% で、閾値はデータの見た目で調整したものではない。600 秒は、同じ場面の続きを避けるための離れ方で、画素の相関がもっと長く残る（M17 で 11〜36 分）ため、$\theta$ は小さめ（カットを多めに拾う側）に偏る。拾った数と $d_i$ の分布を記録する
 - **層**: 三つ組のフレームの範囲（$u - n_\Delta$ 〜 $u + n_\Delta + 7$）にカットを含まないものを `in`（主）、含むものを `cross` とする。`in` を、画素の変位 $M = \tfrac12 (\lVert x_u - x_{u - n_\Delta} \rVert^2 + \lVert x_{u + n_\Delta} - x_u \rVert^2)$（stack の全 8 枚、$x/255$）の刻みごとの 3 分位で `slow`・`mid`・`fast` に分ける。分位で切るのは、どの層にも同じ数の三つ組を置くためで、閾値を選ばない
-- 層別した値は記述である。定常の下限 $s/2$ は層の中では成り立たない（層は変位で条件づけている）
+- 層別した値は記述である。定常の下限 $s/2$ は層の中では成り立たない（層は変位で条件づけている）。主の層 `in` もカットの有無で条件づけているので、`in` でも下限ではない（線は目安として並べる）
 
 ### 量（`exp/lib/midpoint.py`）
 
@@ -1755,12 +1755,12 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 
 - **点の集合**: Zurich の 1 秒おきの格子（`gen_eval.Zurich(conf, root, 10)`、3899 個。評価の stack の部分集合）から、$S \in \{8, 16, 32, 64\}$ 秒おきに間引く。開始の秒 $o = 0, \dots, S - 1$ の全通り（$S$ 通りの互いに素な集合）。主は $S = 8$（各 487 か 488 点）の 8 通りの平均で、開始の秒による最小・最大を並べる
 - **推定量**（Facco ら 2017）: 各点の最近傍と 2 番目の距離 $r_1$、$r_2$、$\mu_i = r_2/r_1$。$\mu$ を昇順に並べて $F_i = i/N$、大きい側の 10% を捨て（$i \le \lfloor 0.9 N \rfloor$）、$y_i = -\log(1 - F_i)$ を $x_i = \log \mu_i$ に原点を通る直線で当てはめた傾き $\hat d = \sum x_i y_i / \sum x_i^2$。捨てる割合は固定し、捨てない版として最尤 $\hat d_{\mathrm{ML}} = (N - 1)/\sum_i \log \mu_i$ を感度に並べる
-- **重複**: 距離が float64 で 0 の点は 1 つにまとめ、数を記録する。$r_1 \le 10^{-6} R$（$R = \sqrt{2\,\mathrm{tr}\,C_{\mathrm{eval}}}$）の点も重複とみなしてまとめる。$\mu_i < 1 + 10^{-6}$ の割合（$r_1 \simeq r_2$）を記録する。定数の符号は幾何では 0 次元だが、TwoNN は定義されない（採点できない）
+- **重複**: 距離が float64 で 0 の点は 1 つにまとめ、数を記録する（`n_exact`）。$r_1 \le 10^{-6} R$（$R = \sqrt{2\,\mathrm{tr}\,C_{\mathrm{eval}}}$）の点も重複とみなしてまとめる（まとめた点の総数が `n_dup`）。$\mu_i < 1 + 10^{-6}$ の割合（$r_1 \simeq r_2$）を記録する。定数の符号は幾何では 0 次元だが、TwoNN は定義されない（採点できない）
 - **測る空間**: 主は PCA64・白色化の前（$y$）。「観測の尺度での局所の次元」と呼ぶ（白色化の前は VAE の異方性や分散の小さい有用な信号も値に効く）。感度に、白色化の後（$w$、$\epsilon$ と末尾の固有値を添える）と $k$ = 16・256。前後の差が大きい符号は「計量に依存する」と書く
 - **尺度**: $\rho = \mathrm{median}(r_2) / \sqrt{2\,\mathrm{tr}\,C_{\mathrm{eval}}}$（無作為な 2 点の RMS 距離に対する近傍の半径）。$C_{\mathrm{eval}}$ は各計量で、1 秒おきの格子の 3899 点から求める
 - **間引きの曲線**: $(N, \hat d)$ と $(\rho, \hat d)$ を $S$ = 8・16・32・64 で並べる（Facco ら 2017 の間引き）
 - **時間の近い近傍**: $S = 8$ で、最近傍か 2 番目が 64 秒未満の時刻にある点の割合と、近傍の候補から 64 秒未満の点を外したときの $\hat d$（感度）
-- **揺れ**: 復元抽出は同じ点を複製して距離 0 を作るので使わない。128 秒のブロック（$S = 8$ で約 16 点）30 個から 15 個を非復元で 200 回引き（seed 103）、同じ部分標本での 2 符号の $\hat d$ の差の標準偏差を出す。非復元の半分の標本の平均の分散は、線形な量なら全体の標本の分散とほぼ同じ（$\frac{\sigma^2}{m}(1 - \frac{m}{N}) = \frac{\sigma^2}{N}$、$m = N/2$）なので、全体の差の SE の目安にする。$\hat d$ は $N$ で偏るので、差どうしの比べにだけ使う
+- **揺れ**: 復元抽出は同じ点を複製して距離 0 を作るので使わない。128 秒のブロック（$S = 8$ で約 16 点）30 個から 15 個を非復元で 200 回引き（seed 103）、同じ部分標本での 2 符号の $\hat d$ の差の標準偏差を出す。非復元の半分の標本の平均の分散は、線形な量なら全体の標本の分散とほぼ同じ（$\frac{\sigma^2}{m}(1 - \frac{m}{N}) = \frac{\sigma^2}{N}$、$m = N/2$）なので、全体の差の SE の目安にする。$\hat d$ は $N$ で偏るので、差どうしの比べにだけ使う。ただしこの根拠は点ごとの寄与が固定された線形な量の話で、TwoNN はブロックを除くと残った点の近傍が引き直される（半分の標本の $\hat d$ は $N/2$ 点での新しい推定に近い）ので、全体の SE を最大で $\sqrt2$ 倍ほど大きく見積もりうる。$\Delta_*$ の材料には「おそらく保守側の目安」と書き添える（実装のレビューを受けた直し）
 
 ### 読む場所
 
@@ -1778,11 +1778,11 @@ checkpoint は NAS の `/nas/geson/mujou-exp/runs/` から。step は `jepa_diag
 | `pca` | 画素の PCA（`jepa_eval.PCACode`、参照の組で 1024 成分、`PCA_SEED`） | 1024 | — | — | 確かめ |
 | `color` | `ColorCode(16)` | 384 | — | — | 確かめ |
 | `mean8` | 8 枚の時間の平均の画像（3 × 64 × 64）の PCA（参照の組で 1024 成分） | 1024 | — | — | 確かめ |
-| `init` | V18 P16 の step 0 の $z$ | 1024 | あり | `v18-long/v18-long-lr1e-4-lam0.5-r0.25-s0` の step 0 | 確かめ |
+| `init` | V18 P16 の step 0 の $z$（各 run の step 0 の checkpoint を読む。行に `source` と `t`） | 1024 | あり | `v18-long/v18-long-lr1e-4-lam0.5-r0.25-s0` の step 0 | 確かめ |
 | `init_f` | V18b F の step 0 の $z$ | 1024 | あり | `v18b-long/v18b-long-f-lr1e-4-lam0.5-r0.25-s0` の step 0 | 確かめ |
 | `init_m` | V18b M の step 0 の `zpca` | 1024 | あり | `v18b-long/v18b-long-m-lr3e-5-lam0.8-r0.25-s0` の step 0 | 確かめ |
-| `init_c`・`init_c1` | V18c の step 0 の $z$（seed 0・1） | 1024 | あり | `v18c-long/v18c-lr1e-4-lam0.5-r0.5-s0`・`-s1` の step 0。同じ seed の 6 本の step 0 がビットまで同じことを `self_eval same` で確かめる（違えば 12 本とも物差しとして回す） | 確かめ |
-| `init_v16` | V16 の VAE の学習前の $\mu$ | 256 | あり | `v16-iid/iid-all-lr3e-4-s0` の $t = 0$ | 確かめ |
+| `init_c`・`init_c1` | V18c の step 0 の $z$（seed 0・1） | 1024 | あり | `v18c-long/v18c-lr1e-4-lam0.5-r0.5-s0`・`-s1` の step 0。同じ seed の 6 本の step 0 がビットまで同じことを `self_eval.same_weights` で確かめる（`yard` の `--same-c`・`--same-c1`、`vd.json` の `step0_same`。違えば各 run の step 0 も物差し `<init>@<run>` として回す） | 確かめ |
+| `init_v16` | V16 の VAE の学習前の $\mu$ | 256 | あり | `v16-iid/iid-all-lr3e-4-s0` の $t = 0$（最初の checkpoint が $t = 0$ でなければ止める） | 確かめ |
 | `v16` | VAE（BP、i.i.d.） | 256 | あり | `v16-iid/iid-all-lr3e-4-s0/ckpt/600000.0.pt` | 適用 |
 | `v17` | VAE（ストリームの PC-ALM） | 256 | あり | `v17-chunk/v0-base-49b81800-s0/ckpt/04800.0.pt` | 適用 |
 | V18 P16 | JEPA | 1024（$z$） | あり | `v18-long/v18-long-lr1e-4-lam0.5-r{0.25,0.5,0.75}-s0`・`-r0.25-s1` の step 60000 | 適用 |
@@ -1798,10 +1798,10 @@ checkpoint は NAS の `/nas/geson/mujou-exp/runs/` から。step は `jepa_diag
 
 | 名前 | 作り方 | 理論の値 | 役目 |
 | -- | -- | -- | -- |
-| `pca_perm` | `pca` の評価の符号の時間の順を、一様な並べ替え（seed 211）で入れ替える | $E[s] = N/(N-1)$（$N$ = 38989）、$G_{\mathrm{mid}}$ の分子と分母の期待値の比が 3/4。TwoNN は時間の構造によらない | 雑音の床 |
+| `pca_perm` | `pca` の評価の符号の時間の順を、一様な並べ替え（seed 211）で入れ替える | $E[s] = N/(N-1)$（$N$ = 38989）、$G_{\mathrm{mid}}$ の分子と分母の期待値の比が 3/4。TwoNN は時間の構造によらない | 雑音の床。TwoNN の点は全 stack からの一様な部分標本で、8 秒の格子より時間の近い対を多く含む（近い近傍の割合と `d_far` は並べ替える前の時刻で数える） |
 | `ou_mix_c` | 白色化の座標で 64 次元、半分が OU（$\rho = e^{-\tau/3.2\,\mathrm{s}}$、AR(1) で厳密）、半分がガウスの自己相関（$\sigma = 3.2c$ 秒、白い雑音を $e^{-u^2/\sigma^2}$ の核で畳み込む、$\lvert u \rvert \le 5\sigma$）、$c \in \{1, 3, 10, 30\}$（seed 301 + $c$） | 定常: $G_{\mathrm{mid}} = 1 - \bar s(2\Delta)/(4 \bar s(\Delta))$、$\bar s$ は 2 種の $1 - \rho$ の平均（$\rho$ は離散の核の自己相関から厳密に） | 時間尺度の混ぜ方の効き方 |
 | `cheb_a`・`cheb_b`・`cheb_c` | $\theta_t = \Theta + \omega t$、$z_j = \sqrt2 \cos(j \theta_t)$ の 64 成分。(a) $j = 1, \dots, 64$、(b) $j = 1000, \dots, 1063$、(c) $[10^8, 10^8 + 10^6)$ から一様に引いた整数 64 個（seed 7）。$\omega = 2\pi / (20\,\mathrm{s} \cdot \bar j)$（搬送波の周期 20 秒）、$\Theta$ は seed 503 | 定常: $s = 1 - \overline{\cos(j\omega\Delta)}$、$G_{\mathrm{mid}} = 1 - s(2\Delta)/(4s(\Delta))$。(b)・(c) は下限の線のほぼ上。TwoNN は独立な位相で約 1・2・35（Codex さん、$N = 490$） | 真の次元 1 の符号の失敗の形 |
-| `k3_z` | 各 V18c の checkpoint（と `init_c`）の各トークンを位置の平均で置き換えた $W\,\mathrm{vec}(1 \otimes \bar t)$（`sem_eval.K3Code` と同じ） | 階数 $\le 16$ なので $k = 64$ では採点できない。$k = 16$ は記述 | 崩壊が見えるか（射影の後） |
+| `k3_z` | 各 V18c の checkpoint（`run` の job が `posthoc_geom/k3/<step>.json` に書く）と `init_c`（`yard`）の各トークンを位置の平均で置き換えた $W\,\mathrm{vec}(1 \otimes \bar t)$（`sem_eval.K3Code` と同じ） | 階数 $\le 16$ なので $k = 64$ では採点できない。$k = 16$ は記述 | 崩壊が見えるか（射影の後） |
 | `k3_hmean` | 同じ置き換えを $h$ にして `h_mean` を取る | 位置の平均の位置の平均は元の位置の平均なので、`h_mean` とビットまで同じ値（評価は K3 を捕まえない。捕まえるのは `token_r2`） | 崩壊が見えないことの確かめ |
 
 TwoNN の合成の標本は 2 通りを記録する。(i) 時間の軸の 8 秒おきの規則格子（実データと同じ取り方。不安定でありうる）、(ii) 位相を独立に一様に引いた 487 点（Codex さんの形、seed 601〜608 の 8 回の平均）。
@@ -1866,7 +1866,7 @@ $$G_\nu = \frac{s G + \tfrac34 \nu}{s + \nu}, \qquad s_\nu = \frac{s + \nu}{1 + 
 - `runs/v18c-geom/sets.pt`・`sets.json`: カット（$d_i$、$\theta$、カットの位置）、ブロック、刻みと層ごとの三つ組の中心、`slow`・`mid`・`fast` の境、TwoNN の間引きの集合、参照の組の `ident`、`key`（以下のファイルは `key` を照合し、違えば止まる）
 - `runs/v18c-geom/checks/rows.json`: V-d0a〜V-d0f の行（値・理論の値・$t$・合否）
 - `runs/v18c-geom/yard/rows/<code>.json`: 物差しと合成の対照の行（下）、`runs/v18c-geom/yard/vd.json`: V-d0h〜V-d3 の合否と材料
-- 適用: JEPA は各 run の `posthoc_geom/rows/<step>.json`、VAE は `runs/v18c-geom/vae/rows/<name>.json`
+- 適用: JEPA は各 run の `posthoc_geom/rows/<step>.json`（V18c は K3 の行も `posthoc_geom/k3/<step>.json`）、VAE は `runs/v18c-geom/vae/rows/<name>.json`
 - 行: `code`、`place`（`own`・`h_mean`）、`k`、`eps`、`ref`（`all`・`front`・`back`）、`part`（`mid`・`twonn`・`spec`）。`mid` は `lag`・`stratum`・`n_triples`・`n_blocks`・`G`・`s`・`D`・`a2`・`b2`・`V` とブロック和 `num_b`・`den_b`・`w_b`・`ww_b`。`twonn` は `metric`（`pre`・`white`）・`spacing`・`offset`・`N`・`d`・`d_ml`・`rho`・`n_dup`・`tie_share`・`near_share`・`d_far`。`spec` は上位 $k$ の固有値・$\lambda_k/\lambda_1$・$\lambda_k/(\lambda_k + \epsilon)$・残る分散の割合・採点できるか。行に snapshot（`CODE.json` の `snap`）を書く
 - 集計: `exp/vision/results/v18c/judge_geom.py`。確かめの段では V-d0〜V-d3 の表と $\Delta_*$ の材料、適用の段では README の表（読む場所ごとの曲線の値と $2\,\mathrm{SE}^*$、物差しとの対の差の同時区間、言葉づかいの規則の分類、TwoNN の表）と `judge_geom.json`
 
@@ -1881,7 +1881,9 @@ python -m exp.vision.geom_eval yard --config runs/v18c-long/v18c-lr1e-4-lam0.5-r
     --init-f runs/v18b-long/v18b-long-f-lr1e-4-lam0.5-r0.25-s0 \
     --init-m runs/v18b-long/v18b-long-m-lr3e-5-lam0.8-r0.25-s0 \
     --init-c runs/v18c-long/v18c-lr1e-4-lam0.5-r0.5-s0 --init-c1 runs/v18c-long/v18c-lr1e-4-lam0.5-r0.5-s1 \
-    --init-v16 runs/v16-iid/iid-all-lr3e-4-s0
+    --init-v16 runs/v16-iid/iid-all-lr3e-4-s0 \
+    --same-c runs/v18c-long/v18c-lr{1e-4,1e-5}-lam{0.5,0.8,0.95}-r0.5-s0 \
+    --same-c1 runs/v18c-long/v18c-lr{1e-4,1e-5}-lam{0.5,0.8,0.95}-r0.5-s1
 # ここで止めて、ユーザーと Δ* を決める
 # 適用（JEPA の run、VAE の checkpoint）
 python -m exp.vision.geom_eval run <run_dir> --steps 6000,60000 --sets runs/v18c-geom
@@ -1922,13 +1924,13 @@ uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard --json e
 | 組 | Zurich の全フレームの差と 20000 組、三つ組の添字 | 数分 |
 | 1 つの符号 | 評価 38989 と参照 5998 の stack を 1 回符号化、PCA（$D \le 1024$）、刻み 6 × 層 6 の和、TwoNN（487 点 × 間引きの全通り）、$k$・$\epsilon$・参照の半分の感度（確かめの段の物差しだけ） | 4090 で 1〜3 分 |
 | 確かめの段 | 物差し 9 と各 init の `h_mean`、合成の対照 | GPU 1 枚で 30〜60 分 |
-| 適用の段 | VAE 2、V18・V18b 8、V18c 24、各 2 つの読む場所（1 回の通過） | 4 枚で 30 分〜1 時間 |
+| 適用の段 | VAE 2、V18・V18b 8、V18c 24、各 2 つの読む場所（1 回の通過）。V18c の 24 は K3 の行の通過がもう 1 回ずつ | 4 枚で 40 分〜1.5 時間 |
 
 ### 実行の順
 
 1. 実装とテスト（`just run`）
 2. `checks`（V-d0a〜V-d0f、CPU）。外れたら止める
-3. `yard`（組、V-d0h、V-d1、V-d2、V-d3）。V-d0h〜V-d2 が外れたら止める
+3. `yard`（組、step 0 の一致、V-d0h、V-d1、V-d2、V-d3）。V-d0h〜V-d2 が外れたら止める
 4. **ここで止める。** V-d3 の材料と V-d2 の回収率を表にしてユーザーに示し、$G_{\mathrm{mid}}$ の $\Delta_*$ と $\hat d$ の $\Delta_*$ を別々に決める。決定を README に記録する
 5. 適用: VAE 2 本、V18・V18b の 8 本の 60000、V18c の 12 本の 6000・60000
 6. 集計（`judge_geom`）と README の結果。V18c の seed 0・1 の差は、ここで再現性の確認として並べる
@@ -1959,6 +1961,19 @@ uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard --json e
 
 - **`cheb_b`・`cheb_c` は、評価の長さ（38989 歩）では $k = 64$ で採点できない。** 参照の $\lambda_{64}/\lambda_1$ が数値的に 0（$-3.7 \times 10^{-15}$・$-2.0 \times 10^{-15}$）で、$10^{-12}\lambda_1$ を超える固有値は 30 個・18 個しかない。周波数の帯が狭く（`cheb_b` で全体の長さの中の位相の差が約 12 周期分）、64 本の列が少ない次元に集まるためである（帯の幅と長さの積で次元が決まる、Slepian の集中）。上の表の理論の値（定常・無限の長さ）は、このままでは $k = 64$ の行に出ない。$k = 16$ では両方とも採点できる（$\lambda_{16}/\lambda_1$ = 0.50・$2.6 \times 10^{-9}$）。規則どおり $k = 64$ の欄は欠測にし、刻み・長さ・周波数は変えていない
 - `cheb_a`・`ou_mix_1`・`ou_mix_30` の理論の値は、README の表と 3 桁まで一致した（`test_judge_geom.py`）
+
+### 実装のレビューを受けた直し（数値を読む前、2026-11-25）
+
+理由と、合成の符号だけで確かめた値は、README の「V18c: 時間の線形性と情報の幅（回す前に決めたこと）」の同じ名前の節に書いた。合否の条件は変えていない。手続きの変更は次のとおりで、上の各項に反映した。
+
+- 合成の対照の主の比べを、母集団の共分散 $I$ の白色化（`geom_eval.population_whitener`、`ref` = `population`）にした。参照の実現の白色化は記録。`judge_geom` の (e) は、母集団の行を主に、参照の白色化の $k$ = 64・16・256 の行を記録として並べる
+- `run` の job が、V18c の各 checkpoint の `k3_z`・`k3_hmean` の行を書く（`posthoc_geom/k3/<step>.json`）
+- 物差しの学習前は、各 run の step 0 の checkpoint から読む。`yard` が同じ seed の step 0 の一致を確かめる（`--same-c`・`--same-c1`）。`init_v16` は $t = 0$ でなければ止める。行に `source` と `t`
+- `spread` の行に、白色化した評価の分散の診断（`V_over_k`・`var_max`・`top_share`、上位 5 方向）を足した。`judge_geom` の (f)。「大きく離れる」の境は $\Delta_*$ と一緒にユーザーと決める（ユーザーの確認待ち）
+- `pca_perm` の TwoNN の近い近傍は、並べ替える前の時刻で数える
+- K3 の `h_mean` の複製の平均を 2 つずつ足す形にした（$T$ が 2 のべきならビットまで同じ。V-d0h は丸めで外れない）。条件は変えていない
+- 保存した組の照合に `data_version`・`held_out`・フレーム数・`stack`・`stride` を足した。TwoNN の距離 0 の重複を `n_exact` として別に数える。分母 0 の引き直しを除いて $\mathrm{SE}^*$ を取る（`in` は変わらない）
+- V-d0b の `two_bands` の 2 本目の帯は、32 本の周波数を 5 倍したもの（中心 $5\omega_0$、幅も 5 倍）と読んだ。上の表は幅を書いていない。閉じた式は同じ周波数から計算する
 
 ## V19: ストリームで標準の SIGReg
 
