@@ -10,10 +10,13 @@ to the whole by their variance, 0 for the real and 1 for the reference's
 mean on the reference; the locality's $a_U$, $a_V$ of tokens built to move
 by $\alpha \delta$ inside and $\beta \delta$ outside (Codex's seam code),
 of a local code (1, 0), of a mirror code ($a_U$ 0), of a K3 ($L$ 0) and of
-a position-only code (none). On synthetic sets: a tiny JEPA passes the
-implementation checks V-s0, V-s1, V-s3 and V-s6, ``const`` ties all
-(V-s2), ``oracle`` is found at 1; the local colour code and its mirror pass
-V-s4 and V-s5; and the run's job end to end.
+a position-only code (none). On synthetic sets: ``pred`` and
+``pool`` are their definitions computed apart (V-s3 checks only the scores'
+path of ``pool``); a tiny JEPA passes the implementation checks V-s0, V-s1,
+V-s3 (with $L$) and V-s6, ``const`` ties all (V-s2), ``oracle`` is found at
+1; the local colour code and its mirror pass V-s4 and V-s5, and the
+mirror's ``swap`` is the local code's per query; and the run's job end to
+end.
 """
 
 import json
@@ -28,12 +31,15 @@ from torch import Tensor
 from exp.lib.metrics import pair_wins
 from exp.lib.regions import EVAL_MASKS
 from exp.vision.gen_eval import hard_sets
-from exp.vision.jepa import build_jepa, expand_masks
+from exp.vision.jepa import build_jepa, expand_masks, predict
 from exp.vision.jepa_eval import ColorCode
+from exp.vision.models import early_fusion
 from exp.vision.self_eval import (
+    MASKS,
     MirrorColorCode,
     SelfConf,
     SelfSets,
+    _mask_stages,
     band_ratios,
     check_rows,
     evaluate_checks,
@@ -258,7 +264,7 @@ def synthetic_sets(grid: int = 20, n_cand: int = 8, refs: int = 16) -> SelfSets:
     )
 
 
-SCONF = SelfConf(contexts=2, noise_draws=4)
+SCONF = SelfConf(contexts=2)  # V-s6's registered 16 draws and tolerance
 
 
 @pytest.fixture(scope="module")
@@ -269,15 +275,40 @@ def tiny_rows():
     )
 
 
+class TestMaskStages:
+    """``pred`` and ``pool`` against their definitions computed apart:
+    ``jepa.predict``'s outputs at $Q_q$ in order of position, and the mean
+    over the visible positions of ``proj(encoder(x, keep))``."""
+
+    @pytest.mark.parametrize(("q", "k"), [("tl", 4), ("br", 8), ("tr", 12)])
+    def test_pred_and_pool_are_their_definitions(self, q, k):
+        mods = build_jepa(conf_of(), seed=0, token_dim=4)
+        x = synthetic_sets().grid[:5]
+        mask = MASKS[(q, k)]
+        q_pos = EVAL_MASKS[f"Q_{q}"].nonzero().flatten()
+        u = torch.zeros(len(x), 4, dtype=torch.float64)
+        got = _mask_stages(mods, x, u, mask, q_pos, None, CPU)
+        images = early_fusion(x)
+        with torch.no_grad():
+            z_hat, hide = predict(mods, images, mask[None].expand(len(x), -1))
+            keep = (~mask).nonzero().flatten()[None].expand(len(x), -1)
+            ctx = mods.proj(mods.encoder(images, keep)).double()
+        full = torch.zeros(len(x), len(mask), 4, dtype=torch.float64)
+        full.scatter_(1, hide[..., None].expand(-1, -1, 4), z_hat.double())
+        assert torch.equal(got["pred"], full[:, q_pos].flatten(1))
+        pool = ctx.mean(1, keepdim=True).expand(-1, len(q_pos), -1).flatten(1)
+        torch.testing.assert_close(got["pool"], pool, rtol=0, atol=1e-12)
+        assert set(got) == {"pred", "pool", "flat", "pred_k3", "flat_k3", "pool_k3"}
+
+
 class TestStepRows:
     def test_the_implementation_checks_pass(self, tiny_rows):
         checks = {r["name"]: r for r in by(tiny_rows, part="check")}
-        assert {"V-s0", "V-s1", "V-s2", "V-s3", "V-s6"} <= set(checks)
-        for name in ("V-s0", "V-s1", "V-s2", "V-s3"):
+        assert {"V-s0", "V-s1", "V-s2", "V-s3", "V-s3-L", "V-s6"} == set(checks)
+        for name in checks:
             assert checks[name]["pass"], (name, checks[name])
-        # V-s6 is of the noise: its deviations are finite and small
-        for z in checks["V-s6"]["z"]:
-            assert math.isfinite(z) and abs(z) < 6
+        assert checks["V-s3-L"]["max_abs_L"] <= 1e-9
+        assert all(math.isfinite(z) for z in checks["V-s6"]["z"])
 
     def test_the_oracle_is_found_and_the_constant_ties(self, tiny_rows):
         rows = by(tiny_rows, part="id", cand="nat", metric="cos", quarter="mean")
@@ -325,6 +356,16 @@ class TestChecks:
         assert checks["V-s5"]["pass"], checks["V-s5"]
         mirror = by(rows, part="local", code="mirror", quarter="mean", j="mean")[0]
         assert mirror["a_U"] == 0.0
+
+    def test_the_mirrors_swap_is_the_local_codes(self):
+        # the mirror's quarter A is the local code's B, its positions reversed:
+        # <rev r_B - rev r_A, rev r_B> = <r_B - r_A, r_B>, both directions
+        # averaged; swap is described only (no identity of the real's value)
+        rows = check_rows(synthetic_sets(), SCONF, patch=4, dev=CPU)
+        local = by(rows, part="swap", code="local")[0]
+        mirror = by(rows, part="swap", code="mirror")[0]
+        assert mirror["swap_i"] == local["swap_i"]
+        assert "swap" not in by(rows, part="check", name="V-s5")[0]["each"]
 
 
 # -- the jobs ----------------------------------------------------------------------------

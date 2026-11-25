@@ -6,13 +6,16 @@ Reads ``<run>/posthoc_self/rows/<step>.json`` and ``<step>-tr.json`` of the
 registered runs and ``runs/v18c-self/checks/rows.json``, and lays out, with
 no verdict (V18c judges nothing):
 
-1. the implementation checks V-s0 to V-s6 of every checkpoint (a failure
-   stops the reading: the tables after it are printed for the record only);
+1. the implementation checks V-s0 to V-s6 of every checkpoint and V-s4,
+   V-s5 of ``checks`` (the README: a failure of V-s5 leaves the transplant's
+   columns (c) unread, ``—（V-s5）``; any other, or V-s4 not run, stops the
+   reading: the tables after it are printed for the record only);
 2. of each run and step, at the run's own $k$ (``in_dist``), the cosine, the
    quarters' per-query mean: the hard candidates' $A$ of ``pred``,
    ``pool``, ``flat``, ``interp`` and ``oracle``, the differences ``pred``
    $-$ ``pool``, $-$ ``flat``, $-$ ``interp``, the easy $A$, ``top1``,
-   ``swap``, the transplanted candidates' $A$ (``fwd``, ``rev``, the mean
+   ``swap`` (``†`` where its $k$ = 8 is not the run's), the transplanted
+   candidates' $A$ (``fwd``, ``rev``, the mean
    over the contexts) and ``fwd``'s ``pred`` $-$ ``flat`` (Fable's
    candidate), and the pooled locality ($a_U$, $a_V$, $L$, $\rho_V$,
    $\eta_U$);
@@ -24,6 +27,10 @@ no verdict (V18c judges nothing):
 5. the companions: the bands' ``pred_ratio``, the complement's $A$ and the
    spectrum's participation; and ``fwd``'s ``pred`` $-$ ``flat`` of each
    context (Codex's condition (2)).
+
+The screen's step 0 is evaluated once where its 15 runs' weights are the
+same to the bit (``self_eval same``); where one run alone has its rows, they
+are marked as the 15's (``shared step 0``).
 
 $\mathrm{SE}^*$ is the larger of the block bootstraps of 8 and 16 consecutive
 queries (``metrics.block_bootstrap`` with $e$ = 1 − value, $v$ = 1, so its
@@ -50,6 +57,7 @@ Row = dict[str, Any]
 BLOCKS = (8, 16)
 BOOT, BOOT_SEED = 2000, 101
 CHECKS = ("V-s0", "V-s1", "V-s2", "V-s3", "V-s6")
+TRANSPLANT_COLS = ("fwd pred", "fwd pred−flat", "rev pred", "L")  # the part (c)
 STAGES = ("pred", "pool", "flat", "interp", "oracle")
 DIFFS = (("pred", "pool"), ("pred", "flat"), ("pred", "interp"))
 LONG_CKPT = (0, 2000, 6000, 10000, 20000, 30000, 40000, 50000, 60000)
@@ -167,6 +175,7 @@ def describe(rows: Sequence[Row]) -> dict[str, Any]:
     out["hard_c_pred"] = _value(_id(rows, set="hard_c", cand="nat", stage="pred"))
     swap = _one(rows, part="swap", stage="pred")
     out["swap"] = _value(swap, "swap_i")
+    out["swap_in_dist"] = bool(swap and swap["in_dist"])
     for kind in ("fwd", "rev"):
         pred = _id(rows, set="hard", cand=kind, j="mean", stage="pred")
         out[f"{kind}_pred"] = _value(pred)
@@ -241,6 +250,12 @@ def words(a: dict[str, float] | None, b: dict[str, float] | None) -> str:
     return "区別できない"
 
 
+def _swap(d: dict[str, Any]) -> str:
+    """``swap``'s cell, ``†`` out of the run's distribution of $k$."""
+    cell = _fmt(d["swap"])
+    return cell if d["swap"] is None or d["swap_in_dist"] else cell + " †"
+
+
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--runs", type=Path, default=Path("runs"))
@@ -251,12 +266,23 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     out["checks_once"] = {r["name"]: r["pass"] for r in once if r["part"] == "check"}
     print("## 実装の確かめ\n")
     print("V-s4・V-s5:", out["checks_once"] or "未実行", "\n")
-    stop = False
+    stop = out["checks_once"].get("V-s4") is not True  # stops all, as unrun
+    read_c = out["checks_once"].get("V-s5") is True  # else (c) unread
+    out["shared_step0"] = None
+
+    def label(name: str, s: int) -> str:
+        shared = s == 0 and name == out["shared_step0"]
+        return Path(name).name + ("（step 0 は 15 本で共有）" if shared else "")
+
     for group, (names, steps) in GROUPS.items():
         got: dict[str, dict[int, Any]] = {}
         for name in names:
             run = a.runs / name
             got[name] = {s: describe(_rows(run, s)) for s in steps}
+        if group == "screen":
+            have = [name for name in names if got[name][0]]
+            if len(have) == 1:
+                out["shared_step0"] = have[0]
         out["groups"][group] = got
         print(f"### {group}\n")
         print("| run | step | " + " | ".join(CHECKS) + " | V-s3-L |")
@@ -268,11 +294,17 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 c = d["checks"]
                 cells = [_fmt(c.get(x)) for x in (*CHECKS, "V-s3-L")]
                 stop |= not all(c.get(x, True) for x in (*CHECKS, "V-s3-L"))
-                print(f"| {Path(name).name} | {s} | " + " | ".join(cells) + " |")
+                print(f"| {label(name, s)} | {s} | " + " | ".join(cells) + " |")
         print()
-    if stop or not all(out["checks_once"].values()):
-        print("**実装の確かめが外れた。以下は記録のためだけに出す。**\n")
-    out["stop"] = stop
+    if stop:
+        print(
+            "**実装の確かめが外れた（か V-s4 が未実行）。以下は記録のためだけに出す。**\n"
+        )
+    if not read_c:
+        print("**V-s5 が外れた（か未実行）。移植の列 (c) は読まない。**\n")
+    if out["shared_step0"]:
+        print(f"掃引の step 0 は {out['shared_step0']} の行を 15 本で共有する。\n")
+    out["stop"], out["read_c"] = stop, read_c
     cols = (
         ("hard pred", lambda d: d["hard"]["pred"]),
         ("pool", lambda d: d["hard"]["pool"]),
@@ -283,7 +315,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         ("pred−interp", lambda d: d["hard_pred-interp"]),
         ("easy pred", lambda d: d["easy_pred"]),
         ("top1 hard", lambda d: d["top1_hard_pred"]),
-        ("swap", lambda d: d["swap"]),
+        ("swap", _swap),
         ("fwd pred", lambda d: d["fwd_pred"]),
         ("fwd pred−flat", lambda d: d["fwd_pred-flat"]),
         ("rev pred", lambda d: d["rev_pred"]),
@@ -296,8 +328,14 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         for name, by_step in got.items():
             for s, d in by_step.items():
                 if d:
-                    cells = [_fmt(f(d)) for _, f in cols]
-                    print(f"| {Path(name).name} | {s} | " + " | ".join(cells) + " |")
+                    cells = [
+                        _fmt(f(d))
+                        if read_c or c not in TRANSPLANT_COLS
+                        else "—（V-s5）"
+                        for c, f in cols
+                    ]
+                    print(f"| {label(name, s)} | {s} | " + " | ".join(cells) + " |")
+    print("\n† は `swap` の k = 8 がその run の分布の外（r が 0.5 でない）。\n")
     print("\n## 同じ run の step の間の変化（難しい候補の pred の A）\n")
     out["steps"] = {}
     for group, (names, steps) in GROUPS.items():
@@ -325,7 +363,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 d0, d1 = long[pair[0]].get(s), long[pair[1]].get(s)
                 if not d0 or not d1:
                     continue
-                said = [words(d0.get(k), d1.get(k)) for k in keys]
+                said = [
+                    words(d0.get(k), d1.get(k))
+                    if read_c or k != "fwd_pred-flat"
+                    else "—（V-s5）"
+                    for k in keys
+                ]
                 st = [out["steps"].get(f"{x}:60000-6000") for x in pair]
                 change = words(*st) if s == 60000 else "—"
                 out["seeds"][f"lr{lr}-lam{lam}@{s}"] = dict(
@@ -342,9 +385,13 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     continue
                 band = d["band"] and ", ".join(f"{x:.2f}" for x in d["band"]["ratio"])
                 comp = ", ".join(f"{k} {_fmt(v)}" for k, v in d["comp"].items())
-                per_j = ", ".join(_fmt(x) for x in d["fwd_pred-flat_j"])
+                per_j = (
+                    ", ".join(_fmt(x) for x in d["fwd_pred-flat_j"])
+                    if read_c
+                    else "—（V-s5）"
+                )
                 print(
-                    f"- {Path(name).name} {s}: band [{band}]; comp {comp}; "
+                    f"- {label(name, s)} {s}: band [{band}]; comp {comp}; "
                     f"participation {_fmt(d['participation'])}; fwd pred−flat by j [{per_j}]"
                 )
     if a.json is not None:

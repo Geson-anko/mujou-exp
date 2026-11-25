@@ -65,7 +65,9 @@ the real's) has ``pred`` and ``flat`` the same values, ``pool`` and
 10^{-9}$; V-s6 the noisy real $r_n + \sigma \xi$ at the closed form
 ``expected_pair_wins``. V-s4 and V-s5 (``check_rows``, once on real data):
 the local colour code (``jepa_eval.ColorCode``) and its mirror
-(``MirrorColorCode``) with the real as the prediction.
+(``MirrorColorCode``) with the real as the prediction (``swap`` only
+described). V-s3's ``pool`` and ``flat`` check the scores' path only: their
+K3 vectors are built from the real's means, not through the projection.
 
 Into ``<run_dir>/posthoc_self/`` (``config.json``, ``rows/<step>.json`` and,
 of ``--transplant-steps``, ``rows/<step>-tr.json``; compact JSON)::
@@ -155,19 +157,28 @@ type Scores = dict[tuple[str, str], dict[str, Any]]
 
 @dataclass(frozen=True)
 class SelfConf:
-    """The settings (module docstring), by default the plan's: the
+    r"""The settings (module docstring), by default the plan's: the
     transplants' ``contexts``, the bands' upper ``edges`` (4 times apart),
     the complements' ``comp_k``, V-s6's targets, draws and tolerance (in
     standard errors), the spectrum's ``spec_top`` eigenvalues, $10^{-9}$ of
     V-s3 and V-s4, and the bootstrap's ``blocks``, ``boot``, ``boot_seed``
-    (of ``results/v18c/judge_self.py``, recorded here)."""
+    (of ``results/v18c/judge_self.py``, recorded here).
+
+    V-s6's tolerance: the standard error is of the same ``noise_draws`` = 16
+    draws, so a correct implementation's $z$ is $t$ of 15 degrees of
+    freedom. The registered campaign checks 24 of them (4 quarters, 2 sets,
+    3 targets) at each of at most 170 checkpoints; Bonferroni of a
+    family-wise chance of a false stop of 0.01 over those 4080 is $P(\lvert
+    t_{15} \rvert > \tau) = 0.01 / 4080$, $\tau = 7.34$ (the closed form of
+    $t$'s tail of odd degrees of freedom; README, the self-space
+    identification's review)."""
 
     contexts: int = 4
     edges: tuple[int, ...] = (4, 16, 64, 256)
     comp_k: tuple[int, ...] = (4, 16)
     noise_targets: tuple[float, ...] = (0.6, 0.75, 0.9)
     noise_draws: int = 16
-    noise_tol: float = 3.0
+    noise_tol: float = 7.34
     spec_top: int = 64
     local_tol: float = 1e-9
     blocks: tuple[int, ...] = (8, 16)
@@ -1115,10 +1126,16 @@ def _local_rows(
 def check_rows(
     sets: SelfSets, sconf: SelfConf, *, patch: int, dev: torch.device
 ) -> list[dict[str, Any]]:
-    """V-s4 and V-s5 (module docstring): the local colour code of ``patch``
+    r"""V-s4 and V-s5 (module docstring): the local colour code of ``patch``
     (``jepa_eval.ColorCode``) and its mirror, the real as the prediction, on
-    the natural and the transplanted candidates, ``swap`` and the
-    locality."""
+    the natural and the transplanted candidates and the locality; ``swap``
+    of the real only described (no identity: its value is $[\lVert \tilde
+    r_A \rVert^2 > \langle \tilde r_B, \tilde r_A \rangle]$, and the
+    mirror's per query is the local code's, the positions' order reversed).
+
+    Run on the CPU (the CLI's default): the checks need the transplanted
+    tokens equal to the bit to those of $t_j$ and of the natural, computed
+    in batches of other sizes, which a device's reductions need not keep."""
     size = sets.grid.shape[-1]
     s = size // patch // COARSE
     picks: dict[str, Any] = {
@@ -1151,11 +1168,9 @@ def check_rows(
                 swaps.append(
                     _swap_values(real[a][0], real[b][0], real[a][1], real[b][1], r_a)
                 )
-        per = torch.stack(swaps).mean(0)
+        per = torch.stack(swaps).mean(0)  # of no check: not an identity
         rows.append({"part": "swap", "code": code_name, "set": "easy", "stage": "oracle",
-                     "swap": float(per.mean())})  # fmt: skip
-        if code_name == "mirror":
-            ok["swap"] = bool((per == 1.0).all())
+                     "swap": float(per.mean()), "swap_i": per.tolist()})  # fmt: skip
         groups = {}
         store: dict[tuple[Any, ...], dict[str, Scores]] = {}
         for q in QUARTER_NAMES:
@@ -1242,8 +1257,11 @@ def check_rows(
 def _write(
     path: Path, rows: Sequence[Mapping[str, Any]], stamp: Mapping[str, Any]
 ) -> None:
-    """``rows`` with ``stamp`` as compact JSON to ``path`` atomically."""
+    """``rows`` with ``stamp`` and the code's snapshot ``snap`` (``CODE.json``'s,
+    None outside a snapshot) as compact JSON to ``path`` atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    code = of_diagnosis({})["code"]
+    stamp = {"snap": code and code.get("snap")} | dict(stamp)
     data = json.dumps([dict(stamp) | dict(r) for r in rows], separators=(",", ":"))
     with atomic_open(path) as f:
         f.write((data + "\n").encode())
@@ -1433,8 +1451,8 @@ def main(argv: Sequence[str] | None = None) -> Path | bool:
             a.run_dir, steps=a.steps, transplant_steps=a.transplant_steps,
             root=a.root, device=a.device,
         )  # fmt: skip
-    if a.job == "checks":
-        conf = _conf_of(a.config, a.device)
+    if a.job == "checks":  # on the CPU by default (``check_rows``)
+        conf = _conf_of(a.config, a.device or "cpu")
         return evaluate_checks(conf, a.out, root=a.root)
     got = same_weights([run_ckpts(d)[a.step] for d in a.run_dirs])
     print(json.dumps({"same": got, "runs": [d.name for d in a.run_dirs]}))
