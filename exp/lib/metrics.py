@@ -421,7 +421,9 @@ def pair_wins(
         at = own
         if among is not None:
             dots, sq = dots.gather(1, among), sq.gather(1, among)
-            at = (among == own[:, None]).int().argmax(1)
+            found = among == own[:, None]
+            assert bool(found.any(1).all()), "each row of among holds its own"
+            at = found.int().argmax(1)
     if metric == "cos":
         sims = dots / sq.sqrt().clamp(min=1e-300)
     else:

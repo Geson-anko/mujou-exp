@@ -328,6 +328,12 @@ class TestPairWins:
             _, own, _ = pair_wins(pred, real[among], metric=metric)  # own column 0
             torch.testing.assert_close(shared, own, rtol=0, atol=1e-12)
 
+    def test_a_row_of_among_without_its_own_is_refused(self):
+        real, pred = _features(30).double(), _features(2, seed=1).double()
+        among = torch.tensor([[0, 1, 2], [3, 4, 5]])
+        with pytest.raises(AssertionError, match="holds its own"):
+            pair_wins(pred, real, truth=torch.tensor([1, 9]), among=among)
+
     def test_its_top1_is_identifications(self):
         # a hit (no candidate as near, a tie not a hit) is a share of 1
         real = _features(40).double()
