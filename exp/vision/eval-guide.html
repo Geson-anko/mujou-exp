@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JEPA の評価指標</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one reading column of about 46rem; figures widen to 60rem. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #13171e;
+  --ink-2: #4b5462;
+  --ink-3: #6f7886;
+  --rule: #d7dce4;
+  --grid: #e6e9ee;
+  --accent: #2a78d6;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --neutral: #9aa3af;
+  --good: #0a7d0a;
+  --bad: #c03434;
+  --warn: #9a6400;
+  --good-bg: #e3f3e3;
+  --bad-bg: #fbe5e5;
+  --warn-bg: #fbf0d9;
+  --why-bg: #e8f0fb;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+    --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+    --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+    --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+  --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+  --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+  --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.9;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+main { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.4; margin: 0; }
+h1 { font-weight: 900; font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: 0.01em; }
+h2 { font-weight: 900; font-size: 1.5rem; }
+h3 { font-weight: 700; font-size: 1.1rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--grid); padding: 0.05em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+var { font-style: italic; font-family: "Times New Roman", serif; font-size: 1.05em; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+section { display: flex; flex-direction: column; gap: 20px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-3); }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-top: 2px solid var(--ink); padding-top: 14px; max-width: 46rem; }
+.prose { display: flex; flex-direction: column; gap: 14px; max-width: 46rem; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 0.88rem; }
+
+header.hero { padding-top: 48px; display: flex; flex-direction: column; gap: 18px; max-width: 46rem; }
+.hero .lead { font-size: 1.08rem; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-3); }
+nav.toc { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 18px; }
+nav.toc ol { margin: 6px 0 0; padding-left: 1.4em; font-size: 0.92rem; columns: 2 16rem; column-gap: 2rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+
+.why { max-width: 46rem; background: var(--why-bg); border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+.why .k { font-weight: 700; font-size: 0.86rem; color: var(--accent); }
+.status { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.status ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+
+/* the flow of this guide */
+.flow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-width: 46rem; counter-reset: step; }
+.flow li { position: relative; padding: 10px 0 10px 52px; border-left: 2px solid var(--rule); margin-left: 17px; }
+.flow li::before { counter-increment: step; content: counter(step); position: absolute; left: -18px; top: 10px; width: 34px; height: 34px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); color: var(--accent); font-family: var(--font-mono); font-weight: 500; display: flex; align-items: center; justify-content: center; }
+.flow li b { display: block; }
+.flow .grp { margin: 14px 0 4px 0; font-size: 0.8rem; color: var(--ink-3); font-family: var(--font-mono); letter-spacing: 0.06em; padding-left: 0; border: 0; }
+.flow .grp::before { content: none; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.card .k { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.card h3 { font-size: 1rem; }
+.card p { font-size: 0.92rem; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); line-height: 1.75; max-width: 46rem; }
+.tag { display: inline-block; font-size: 0.74rem; font-weight: 700; border-radius: 3px; padding: 0 6px; margin-right: 6px; vertical-align: 1px; }
+.tag.schema { background: var(--warn-bg); color: var(--warn); }
+.tag.data { background: var(--good-bg); color: var(--good); }
+.chart { width: 100%; max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; }
+.chart svg { display: block; width: 100%; height: auto; }
+
+/* diagrams */
+.dg text { font-family: var(--font-body); fill: var(--ink-2); font-size: 15px; }
+.dg text.strong { fill: var(--ink); font-weight: 700; }
+.dg text.small { font-size: 13px; }
+.dg text.mono { font-family: var(--font-mono); }
+.dg text.big { font-size: 22px; font-weight: 900; fill: var(--ink); }
+.dg text.accent { fill: var(--accent); }
+.dg text.warn { fill: var(--warn); }
+.dg text.onbar { fill: #ffffff; }
+.dg .box { fill: var(--bg); stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .ln { stroke: var(--ink-3); stroke-width: 1.5; fill: none; }
+.dg .axis { stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .gridline { stroke: var(--grid); stroke-width: 1; }
+.dg .chance { stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.dg .tick { stroke-width: 2; }
+.dg .ray { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.dg .cross { stroke: var(--ink); stroke-width: 2.5; }
+.dg .cell { stroke: var(--panel); stroke-width: 1; }
+.dg .c1 { fill: var(--s1); } .dg .c2 { fill: var(--s2); } .dg .c3 { fill: var(--s3); } .dg .c4 { fill: var(--s4); } .dg .cn { fill: var(--neutral); }
+.dg .c2s { stroke: var(--s2); } .dg .c4s { stroke: var(--s4); }
+.dg .hatch { fill: url(#hatch); }
+.dg .qline { fill: none; stroke: var(--ink); stroke-width: 2.5; }
+.defs .hl { stroke: var(--ink-2); stroke-width: 2; }
+.defs .hbg { fill: var(--panel); }
+.defs .ah { fill: var(--ink-3); }
+
+.eq { font-family: var(--font-mono); font-size: 0.9rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; overflow-x: auto; max-width: 46rem; line-height: 1.8; }
+.tbl { width: 100%; max-width: 46rem; overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; line-height: 1.65; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 700; background: var(--grid); }
+tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.badge { display: inline-block; font-size: 0.76rem; font-weight: 700; border-radius: 3px; padding: 0 6px; white-space: nowrap; }
+.badge.ok { background: var(--good-bg); color: var(--good); }
+.badge.ng { background: var(--bad-bg); color: var(--bad); }
+.badge.wait { background: var(--warn-bg); color: var(--warn); }
+blockquote { margin: 0; max-width: 46rem; border-left: 4px solid var(--rule); padding: 6px 16px; color: var(--ink-2); }
+dl.gloss { max-width: 46rem; margin: 0; display: grid; grid-template-columns: minmax(7rem, 11rem) 1fr; gap: 8px 18px; font-size: 0.92rem; }
+dl.gloss dt { font-weight: 700; }
+dl.gloss dd { margin: 0; color: var(--ink-2); }
+@media (max-width: 560px) {
+  dl.gloss { grid-template-columns: 1fr; gap: 2px; }
+  dl.gloss dd { margin-bottom: 10px; }
+  th, td { padding: 6px 8px; }
+}
+</style>
+
+<svg class="defs" width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect class="hbg" width="7" height="7"/>
+      <line class="hl" x1="0" y1="0" x2="0" y2="7"/>
+    </pattern>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+  </defs>
+</svg>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">exp/vision · V18c · 評価指標の解説</div>
+  <h1>JEPA の評価指標を、一歩ずつ</h1>
+  <p class="lead">この資料は、exp/vision の V18c で使っている評価指標を説明します。読み手には、機械学習の基礎を学んだ学部生を想定しています。何を学ばせているかから始め、なぜ今の指標にたどり着いたのか、その指標で何が言えて何が言えないのかまでを、順に説明します。</p>
+  <div class="meta"><span>2026-11-25 時点</span><span>出典: exp/vision/README.md の V18c の節、exp/vision/plans/jepa.md</span></div>
+</header>
+
+<section class="status" aria-label="いまの状況">
+  <h3>いまの状況（2026-11-25 時点）</h3>
+  <ul>
+    <li>主に使う指標は「自分の表現空間での補完の同定」です。数値を出す前に、定義と確かめ方を README に登録しました。</li>
+    <li>実装の確かめのうち、V-s4 と V-s5 が通りました。各 checkpoint の値はまだ出ていません。</li>
+    <li>V18c では、この指標で学習の良し悪しを判定しません。数値を並べて記述し、V19 で主の指標にするかを決めます。</li>
+  </ul>
+</section>
+
+<nav class="toc" aria-label="目次">
+  <b>目次</b>
+  <ol>
+    <li><a href="#flow">この資料の流れ</a></li>
+    <li><a href="#s1">何を学ばせているか</a></li>
+    <li><a href="#s2">評価で何を見たいか</a></li>
+    <li><a href="#s3">表現を当てる学習の落とし穴</a></li>
+    <li><a href="#s4">これまでの 3 回の試み</a></li>
+    <li><a href="#s5">自分の表現空間での補完の同定</a></li>
+    <li><a href="#s6">逃げ道の塞ぎ方</a></li>
+    <li><a href="#s7">局所性の確かめ（移植）</a></li>
+    <li><a href="#s8">実装の確かめと事前登録</a></li>
+    <li><a href="#s9">言えること・言えないこと</a></li>
+    <li><a href="#gloss">用語集</a></li>
+  </ol>
+</nav>
+
+<section id="flow">
+  <div class="sec-head"><div class="eyebrow">00</div><h2>この資料の流れ</h2></div>
+  <div class="prose">
+    <p>評価指標の形には、どれも理由があります。その理由は、前の段を知らないと見えません。そこで、次の 9 つの段階を順に説明します。各節の始めには「なぜこれを測るのか」を書きます。</p>
+  </div>
+  <ol class="flow">
+    <li class="grp">前提をそろえる</li>
+    <li><b>何を学ばせているか</b>JEPA は、見えている部分から、隠した部分の「表現」を予測するように学びます。</li>
+    <li><b>評価で何を見たいか</b>主に見るのは、隠した部分を補う力です。再構成も分類も人のラベルも、主の評価にしません。</li>
+    <li><b>表現を当てる学習の落とし穴</b>どの画像にも同じ表現を出せば、予測は必ず当たります。これを崩壊と呼び、K1・K2・K3 で見張ります。</li>
+    <li class="grp">ここまでの経緯</li>
+    <li><b>これまでの 3 回の試み</b>外部の物差しで測る方法を 3 回試し、どれも事前に決めた確かめで止まりました。</li>
+    <li class="grp">今の指標の中身</li>
+    <li><b>自分の表現空間での補完の同定</b>隠した所の予測が、本物の表現を、他のフレームの候補の中から言い当てられるかを測ります。</li>
+    <li><b>逃げ道の塞ぎ方</b>「周りを平均しただけ」で当たる分などを、対照と比べて差し引きます。</li>
+    <li><b>局所性の確かめ（移植）</b>画素を入れ替える介入で、隠した所のトークンがその場所の画素を映しているかを確かめます。</li>
+    <li class="grp">確かさと限界</li>
+    <li><b>実装の確かめと事前登録</b>答えの分かっている合成の例で実装を確かめ、数値を見る前に規則を決めます。</li>
+    <li><b>言えること・言えないこと</b>V18c では判定せずに数値を並べ、V19 で主の指標の候補にします。</li>
+  </ol>
+</section>
+
+<section id="s1">
+  <div class="sec-head"><div class="eyebrow">01</div><h2>何を学ばせているか</h2></div>
+  <div class="why">
+    <div class="k">なぜここから始めるのか</div>
+    <p>この実験では、評価の物差しを学習の目的に合わせて選びます。そのため、まず学習が何を目指しているかを押さえます。</p>
+  </div>
+  <div class="prose">
+    <h3>入力：動画の短い切れ端</h3>
+    <p>データは、街を歩きながら撮った動画です。連続する 8 フレーム（0.8 秒分）を 64×64 画素に縮めて重ねたものを、1 つの入力にします。この単位を stack と呼びます。学習には Zurich 以外の動画を使い、Zurich の動画は評価だけに使います。</p>
+    <h3>トークン・エンコーダ・予測器</h3>
+    <p>stack を 8×8 画素の小区画（パッチ）に切ると、縦横 8 個ずつ、計 64 個になります。各パッチの画素を並べたベクトルを、トークンと呼びます。</p>
+    <p>エンコーダは、64 個のトークンを受け取り、位置ごとに 1024 個の数の並び（ベクトル）を出すネットワークです。このベクトルを「表現」と呼びます。表現は、その場所に何が写っているかを数で表したものです。</p>
+    <p>学習では、画像の一部を隠します。隠し方は、画像を 4×4 の粗いマスに分け、そのうち 4・8・12 マスを隠すというものです（隠す割合 <var>r</var> = 0.25・0.5・0.75）。1 マスは 2×2 のパッチなので、隠すトークンは 16・32・48 個になります。</p>
+    <p>予測器は、見えている部分の表現から、隠した位置の表現を推し量る小さなネットワークです。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 640 285" role="img" aria-label="JEPA の学習の模式図"><text x="12" y="28" text-anchor="start" class="strong">入力の stack（64×64 画素）</text><rect class="cell cn" x="20" y="40" width="20" height="20" fill-opacity="0.24"/><rect class="cell cn" x="40" y="40" width="20" height="20" fill-opacity="0.7"/><rect class="cell cn" x="60" y="40" width="20" height="20" fill-opacity="0.65"/><rect class="cell cn" x="80" y="40" width="20" height="20" fill-opacity="0.32"/><rect class="cell cn" x="100" y="40" width="20" height="20" fill-opacity="0.47"/><rect class="cell cn" x="120" y="40" width="20" height="20" fill-opacity="0.44"/><rect class="cell cn" x="140" y="40" width="20" height="20" fill-opacity="0.57"/><rect class="cell cn" x="160" y="40" width="20" height="20" fill-opacity="0.66"/><rect class="cell cn" x="20" y="60" width="20" height="20" fill-opacity="0.21"/><rect class="cell cn" x="40" y="60" width="20" height="20" fill-opacity="0.17"/><rect class="cell cn" x="60" y="60" width="20" height="20" fill-opacity="0.69"/><rect class="cell cn" x="80" y="60" width="20" height="20" fill-opacity="0.43"/><rect class="cell cn" x="100" y="60" width="20" height="20" fill-opacity="0.65"/><rect class="cell cn" x="120" y="60" width="20" height="20" fill-opacity="0.15"/><rect class="cell cn" x="140" y="60" width="20" height="20" fill-opacity="0.44"/><rect class="cell cn" x="160" y="60" width="20" height="20" fill-opacity="0.62"/><rect class="cell cn" x="20" y="80" width="20" height="20" fill-opacity="0.3"/><rect class="cell cn" x="40" y="80" width="20" height="20" fill-opacity="0.76"/><rect class="cell cn" x="60" y="80" width="20" height="20" fill-opacity="0.74"/><rect class="cell cn" x="80" y="80" width="20" height="20" fill-opacity="0.17"/><rect class="cell cn" x="100" y="80" width="20" height="20" fill-opacity="0.17"/><rect class="cell cn" x="120" y="80" width="20" height="20" fill-opacity="0.5"/><rect class="cell cn" x="140" y="80" width="20" height="20" fill-opacity="0.76"/><rect class="cell cn" x="160" y="80" width="20" height="20" fill-opacity="0.4"/><rect class="cell cn" x="20" y="100" width="20" height="20" fill-opacity="0.29"/><rect class="cell cn" x="40" y="100" width="20" height="20" fill-opacity="0.42"/><rect class="cell cn" x="60" y="100" width="20" height="20" fill-opacity="0.17"/><rect class="cell cn" x="80" y="100" width="20" height="20" fill-opacity="0.29"/><rect class="cell cn" x="100" y="100" width="20" height="20" fill-opacity="0.43"/><rect class="cell cn" x="120" y="100" width="20" height="20" fill-opacity="0.47"/><rect class="cell cn" x="140" y="100" width="20" height="20" fill-opacity="0.3"/><rect class="cell cn" x="160" y="100" width="20" height="20" fill-opacity="0.3"/><rect class="cell cn" x="20" y="120" width="20" height="20" fill-opacity="0.29"/><rect class="cell cn" x="40" y="120" width="20" height="20" fill-opacity="0.45"/><rect class="cell cn" x="60" y="120" width="20" height="20" fill-opacity="0.34"/><rect class="cell cn" x="80" y="120" width="20" height="20" fill-opacity="0.16"/><rect class="cell cn" x="100" y="120" width="20" height="20" fill-opacity="0.69"/><rect class="cell cn" x="120" y="120" width="20" height="20" fill-opacity="0.51"/><rect class="cell cn" x="140" y="120" width="20" height="20" fill-opacity="0.57"/><rect class="cell cn" x="160" y="120" width="20" height="20" fill-opacity="0.27"/><rect class="cell cn" x="20" y="140" width="20" height="20" fill-opacity="0.8"/><rect class="cell cn" x="40" y="140" width="20" height="20" fill-opacity="0.71"/><rect class="cell cn" x="60" y="140" width="20" height="20" fill-opacity="0.23"/><rect class="cell cn" x="80" y="140" width="20" height="20" fill-opacity="0.37"/><rect class="cell cn" x="100" y="140" width="20" height="20" fill-opacity="0.62"/><rect class="cell cn" x="120" y="140" width="20" height="20" fill-opacity="0.61"/><rect class="cell cn" x="140" y="140" width="20" height="20" fill-opacity="0.76"/><rect class="cell cn" x="160" y="140" width="20" height="20" fill-opacity="0.42"/><rect class="cell cn" x="20" y="160" width="20" height="20" fill-opacity="0.69"/><rect class="cell cn" x="40" y="160" width="20" height="20" fill-opacity="0.59"/><rect class="cell cn" x="60" y="160" width="20" height="20" fill-opacity="0.35"/><rect class="cell cn" x="80" y="160" width="20" height="20" fill-opacity="0.53"/><rect class="cell cn" x="100" y="160" width="20" height="20" fill-opacity="0.72"/><rect class="cell cn" x="120" y="160" width="20" height="20" fill-opacity="0.7"/><rect class="cell cn" x="140" y="160" width="20" height="20" fill-opacity="0.48"/><rect class="cell cn" x="160" y="160" width="20" height="20" fill-opacity="0.53"/><rect class="cell cn" x="20" y="180" width="20" height="20" fill-opacity="0.17"/><rect class="cell cn" x="40" y="180" width="20" height="20" fill-opacity="0.31"/><rect class="cell cn" x="60" y="180" width="20" height="20" fill-opacity="0.67"/><rect class="cell cn" x="80" y="180" width="20" height="20" fill-opacity="0.42"/><rect class="cell cn" x="100" y="180" width="20" height="20" fill-opacity="0.26"/><rect class="cell cn" x="120" y="180" width="20" height="20" fill-opacity="0.51"/><rect class="cell cn" x="140" y="180" width="20" height="20" fill-opacity="0.61"/><rect class="cell cn" x="160" y="180" width="20" height="20" fill-opacity="0.59"/><rect class="hatch" x="100" y="120" width="80" height="80"/><rect class="qline" x="100" y="120" width="80" height="80"/><text x="100" y="222" text-anchor="middle" class="small">8×8 のパッチに分ける</text><text x="100" y="240" text-anchor="middle" class="small">斜線：隠した四半分</text><line class="ln" x1="182" y1="80" x2="218" y2="80" marker-end="url(#ah)"/><rect class="box" x="220" y="55" width="150" height="50" rx="6"/><text x="295.0" y="76.0" text-anchor="middle" class="strong">エンコーダ</text><text x="295.0" y="94.0" text-anchor="middle" class="small">見える部分だけ</text><line class="ln" x1="370" y1="80" x2="398" y2="80" marker-end="url(#ah)"/><rect class="box" x="400" y="55" width="90" height="50" rx="6"/><text x="445.0" y="85.0" text-anchor="middle" class="strong">予測器</text><line class="ln" x1="490" y1="80" x2="512" y2="80" marker-end="url(#ah)"/><rect class="cell c1" x="515" y="44" width="18" height="18" fill-opacity="0.87"/><rect class="cell c1" x="533" y="44" width="18" height="18" fill-opacity="0.87"/><rect class="cell c1" x="551" y="44" width="18" height="18" fill-opacity="0.33"/><rect class="cell c1" x="569" y="44" width="18" height="18" fill-opacity="0.35"/><rect class="cell c1" x="515" y="62" width="18" height="18" fill-opacity="0.8"/><rect class="cell c1" x="533" y="62" width="18" height="18" fill-opacity="0.74"/><rect class="cell c1" x="551" y="62" width="18" height="18" fill-opacity="0.7"/><rect class="cell c1" x="569" y="62" width="18" height="18" fill-opacity="0.48"/><rect class="cell c1" x="515" y="80" width="18" height="18" fill-opacity="0.66"/><rect class="cell c1" x="533" y="80" width="18" height="18" fill-opacity="0.66"/><rect class="cell c1" x="551" y="80" width="18" height="18" fill-opacity="0.65"/><rect class="cell c1" x="569" y="80" width="18" height="18" fill-opacity="0.4"/><rect class="cell c1" x="515" y="98" width="18" height="18" fill-opacity="0.56"/><rect class="cell c1" x="533" y="98" width="18" height="18" fill-opacity="0.54"/><rect class="cell c1" x="551" y="98" width="18" height="18" fill-opacity="0.73"/><rect class="cell c1" x="569" y="98" width="18" height="18" fill-opacity="0.9"/><text x="551" y="34" text-anchor="middle" class="strong">予測</text><polyline class="ln" points="182,160 200,160 200,215 218,215" marker-end="url(#ah)"/><rect class="box" x="220" y="190" width="150" height="50" rx="6"/><text x="295.0" y="211.0" text-anchor="middle" class="strong">エンコーダ</text><text x="295.0" y="229.0" text-anchor="middle" class="small">全体を見る</text><line class="ln" x1="370" y1="215" x2="393" y2="215" marker-end="url(#ah)"/><rect class="box" x="395" y="190" width="112" height="50" rx="6"/><text x="451.0" y="211.0" text-anchor="middle" class="strong">R（固定）</text><text x="451.0" y="229.0" text-anchor="middle" class="small">1024 → 16 次元</text><line class="ln" x1="507" y1="215" x2="513" y2="215" marker-end="url(#ah)"/><rect class="cell c1" x="515" y="179" width="18" height="18" fill-opacity="0.44"/><rect class="cell c1" x="533" y="179" width="18" height="18" fill-opacity="0.63"/><rect class="cell c1" x="551" y="179" width="18" height="18" fill-opacity="0.52"/><rect class="cell c1" x="569" y="179" width="18" height="18" fill-opacity="0.66"/><rect class="cell c1" x="515" y="197" width="18" height="18" fill-opacity="0.68"/><rect class="cell c1" x="533" y="197" width="18" height="18" fill-opacity="0.34"/><rect class="cell c1" x="551" y="197" width="18" height="18" fill-opacity="0.31"/><rect class="cell c1" x="569" y="197" width="18" height="18" fill-opacity="0.8"/><rect class="cell c1" x="515" y="215" width="18" height="18" fill-opacity="0.46"/><rect class="cell c1" x="533" y="215" width="18" height="18" fill-opacity="0.44"/><rect class="cell c1" x="551" y="215" width="18" height="18" fill-opacity="0.9"/><rect class="cell c1" x="569" y="215" width="18" height="18" fill-opacity="0.58"/><rect class="cell c1" x="515" y="233" width="18" height="18" fill-opacity="0.8"/><rect class="cell c1" x="533" y="233" width="18" height="18" fill-opacity="0.59"/><rect class="cell c1" x="551" y="233" width="18" height="18" fill-opacity="0.68"/><rect class="cell c1" x="569" y="233" width="18" height="18" fill-opacity="0.39"/><text x="551" y="268" text-anchor="middle" class="strong">本物 t（的）</text><line class="ln" x1="551" y1="126" x2="551" y2="174" marker-start="url(#ah)" marker-end="url(#ah)"/><text x="540" y="155" text-anchor="end" class="small">L_pred：差を小さくする</text><line class="ln" x1="295" y1="107" x2="295" y2="188" stroke-dasharray="3 4"/><text x="303" y="152" text-anchor="start" class="small">同じ重み</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>JEPA の学習の流れ。上の段では、見えている部分だけをエンコーダに通し、予測器が隠した位置の表現を出します。下の段では、同じエンコーダが画像全体を見て、本物の表現を作ります。予測を本物に近づけるように学びます。色の濃さは説明のためのもので、実際の値ではありません。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>的（正解）と損失</h3>
+    <p>予測の的は、全体を見たエンコーダの出力 <var>h<sub>p</sub></var>（1024 次元）を、固定の乱数の行列 <var>R</var> で 16 次元に縮めた <var>t<sub>p</sub></var> = <var>R h<sub>p</sub></var> です。<var>R</var> は学習しません。学習で写し方を選べると、当てやすい方向だけを残す恐れがあるからです。</p>
+    <p>損失は 2 つの項の和です。</p>
+    <div class="eq">損失 = (1 − λ) · L_pred + λ · S</div>
+    <ul>
+      <li><code>L_pred</code> は、隠した位置での予測と的の二乗誤差です。</li>
+      <li><code>S</code> は SIGReg です。各 stack の 64 個の <var>t</var> を並べ、別の固定の乱数の行列 <var>W</var> で写したものを <var>z</var>（1024 次元）とします。SIGReg は、1 回に使う 128 個の <var>z</var> の分布が、標準正規分布にどれだけ近いかを測ります。崩壊（3 節）を防ぐための項です。</li>
+      <li>λ は、2 つの項の釣り合いを決める数です。V18c では 0.5・0.8・0.95 を試しました。</li>
+    </ul>
+    <h3>なぜ画素ではなく表現を当てるのか</h3>
+    <p>画素には、見えている部分からは決まらない細部が多く含まれます。葉の一枚一枚の形や、通行人の正確な位置などです。画素を当てさせると、モデルは当てられない細部にも力を割きます。表現を当てさせると、モデルは予測できる内容、つまり場面の構造や種類のような抽象的な特徴に集中できます。これが JEPA（Joint-Embedding Predictive Architecture）の考え方です。</p>
+    <p class="small muted">学習の単位: 重みを 1 回更新することを 1 step と呼び、1 回に 128 個の stack を使います。長い run は 60000 step 学びます。学習の途中で保存した重みを checkpoint と呼びます。乱数の種（seed）だけを変えて同じ設定を 2 回回し、結果の揺れを見ます。</p>
+  </div>
+</section>
+
+<section id="s2">
+  <div class="sec-head"><div class="eyebrow">02</div><h2>評価で何を見たいか</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを決めるのか</div>
+    <p>何を測るかを先に決めないと、数値が良くなったのか悪くなったのかを言えません。物差しが学習の目的と食い違うと、正しく学べていても「悪化した」と読んでしまいます。この実験でも、実際にそうなりました。</p>
+  </div>
+  <div class="prose">
+    <h3>描き戻しの誤差で起きたこと</h3>
+    <p>前の V18・V18b では、表現から画像を描き戻すデコーダの誤差（<code>recon_blur</code>）を主に見ていました。長く学ぶと、この誤差は 6000 step から悪くなりました（パッチ 16 の run で +0.14〜+0.18）。私たちは、これを「表現が情報を失った」と読みました。</p>
+    <p>ユーザーは、描き戻した画像を見て判断しました。誤差は悪化しても、どの画像かを見分けられる程度には描けています。JEPA は細部を捨てて抽象的な特徴を残す仕組みなので、描き戻しの精度が上がることは期待できません。そのため、<code>recon_blur</code> を判定から外しました（2026-11-24）。</p>
+    <h3>ユーザーの方針</h3>
+    <p>その後、主の指標を 3 回作り直し、どれも事前の確かめで止まりました（4 節）。それを受けて、ユーザーは次の方針を示しました（2026-11-25）。</p>
+  </div>
+  <blockquote>下手に人間のドメイン知識を入れても問題。マスク部の補完能力こそ真に見られるべき（未来予測タスクも含めて）。再構成も、分類も、本質的なモデルの評価とは言い難い。</blockquote>
+  <div class="prose">
+    <p>この方針を、評価の決まりに直すと次のとおりです。</p>
+    <ul>
+      <li>主に見るのは、隠した部分（後には未来）を、見えている部分からどれだけ補えるかです。</li>
+      <li>外部の分類器の特徴、人が付けたラベル、画素の描き戻しを、正解にしません。</li>
+      <li>数値が悪化したら、学習の目的を変える前に、物差しが目的に合っているかを疑います。</li>
+    </ul>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>評価の型</th><th>正解に使うもの</th><th>この実験での扱い</th></tr></thead>
+      <tbody>
+        <tr><td>再構成</td><td>元の画素</td><td>主にしない。JEPA は細部を残すことを目指していない</td></tr>
+        <tr><td>分類</td><td>人が付けたラベル</td><td>主にしない。ラベルの粒度が場面と合わないことがある</td></tr>
+        <tr><td>外部の特徴での同定</td><td>別に学習した分類器の特徴</td><td>主にしない。物差しの側の癖が混ざる</td></tr>
+        <tr><td>補完の同定</td><td>モデル自身が全体を見て作った表現</td><td>主の候補（5〜8 節）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="s3">
+  <div class="sec-head"><div class="eyebrow">03</div><h2>表現を当てる学習の落とし穴：崩壊</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを測るのか</div>
+    <p>表現を当てる学習には、ずるい近道があります。近道に落ちたモデルは、補完の力がなくても予測の誤差を小さくできます。補完の力を測る前に、近道に落ちていないことを確かめます。</p>
+  </div>
+  <div class="prose">
+    <p>JEPA では、正解の表現もモデル自身が作ります。そのため、エンコーダがどの画像にも同じ表現を出せば、予測は必ず当たり、<code>L_pred</code> は 0 になります。このように、表現が画像の違いを映さなくなることを「崩壊」と呼びます。</p>
+    <p>SIGReg は、崩壊を防ぐための項です。健全な表現なら <var>z</var> は標準正規分布に近く、<code>S</code> は約 1.05 になります。全部が同じ値なら、<code>S</code> は約 52.3 に大きくなります。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 660 215" role="img" aria-label="崩壊した表現の模式図"><text x="110" y="22" text-anchor="middle" class="strong">健全な表現</text><rect class="cell c1" x="20" y="36" width="20" height="20" fill-opacity="0.37"/><rect class="cell c1" x="40" y="36" width="20" height="20" fill-opacity="0.27"/><rect class="cell c1" x="60" y="36" width="20" height="20" fill-opacity="0.48"/><rect class="cell c1" x="80" y="36" width="20" height="20" fill-opacity="0.31"/><rect class="cell c1" x="20" y="56" width="20" height="20" fill-opacity="0.25"/><rect class="cell c1" x="40" y="56" width="20" height="20" fill-opacity="0.48"/><rect class="cell c1" x="60" y="56" width="20" height="20" fill-opacity="0.84"/><rect class="cell c1" x="80" y="56" width="20" height="20" fill-opacity="0.76"/><rect class="cell c1" x="20" y="76" width="20" height="20" fill-opacity="0.74"/><rect class="cell c1" x="40" y="76" width="20" height="20" fill-opacity="0.36"/><rect class="cell c1" x="60" y="76" width="20" height="20" fill-opacity="0.58"/><rect class="cell c1" x="80" y="76" width="20" height="20" fill-opacity="0.39"/><rect class="cell c1" x="20" y="96" width="20" height="20" fill-opacity="0.32"/><rect class="cell c1" x="40" y="96" width="20" height="20" fill-opacity="0.27"/><rect class="cell c1" x="60" y="96" width="20" height="20" fill-opacity="0.35"/><rect class="cell c1" x="80" y="96" width="20" height="20" fill-opacity="0.85"/><rect class="cell c1" x="120" y="36" width="20" height="20" fill-opacity="0.64"/><rect class="cell c1" x="140" y="36" width="20" height="20" fill-opacity="0.72"/><rect class="cell c1" x="160" y="36" width="20" height="20" fill-opacity="0.76"/><rect class="cell c1" x="180" y="36" width="20" height="20" fill-opacity="0.86"/><rect class="cell c1" x="120" y="56" width="20" height="20" fill-opacity="0.72"/><rect class="cell c1" x="140" y="56" width="20" height="20" fill-opacity="0.85"/><rect class="cell c1" x="160" y="56" width="20" height="20" fill-opacity="0.22"/><rect class="cell c1" x="180" y="56" width="20" height="20" fill-opacity="0.53"/><rect class="cell c1" x="120" y="76" width="20" height="20" fill-opacity="0.86"/><rect class="cell c1" x="140" y="76" width="20" height="20" fill-opacity="0.65"/><rect class="cell c1" x="160" y="76" width="20" height="20" fill-opacity="0.83"/><rect class="cell c1" x="180" y="76" width="20" height="20" fill-opacity="0.28"/><rect class="cell c1" x="120" y="96" width="20" height="20" fill-opacity="0.53"/><rect class="cell c1" x="140" y="96" width="20" height="20" fill-opacity="0.37"/><rect class="cell c1" x="160" y="96" width="20" height="20" fill-opacity="0.58"/><rect class="cell c1" x="180" y="96" width="20" height="20" fill-opacity="0.6"/><text x="60" y="134" text-anchor="middle" class="small">stack 1</text><text x="160" y="134" text-anchor="middle" class="small">stack 2</text><text x="110" y="166" text-anchor="middle" class="small">位置ごと・stack ごとに</text><text x="110" y="186" text-anchor="middle" class="small">違う値になる</text><text x="330" y="22" text-anchor="middle" class="strong">K1：定数に崩壊</text><rect class="cell cn" x="240" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="260" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="280" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="300" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="240" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="260" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="280" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="300" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="240" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="260" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="280" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="300" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="240" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="260" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="280" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="300" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="340" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="360" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="380" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="400" y="36" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="340" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="360" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="380" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="400" y="56" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="340" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="360" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="380" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="400" y="76" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="340" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="360" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="380" y="96" width="20" height="20" fill-opacity="0.55"/><rect class="cell cn" x="400" y="96" width="20" height="20" fill-opacity="0.55"/><text x="280" y="134" text-anchor="middle" class="small">stack 1</text><text x="380" y="134" text-anchor="middle" class="small">stack 2</text><text x="330" y="166" text-anchor="middle" class="small">どの stack でも同じ値。</text><text x="330" y="186" text-anchor="middle" class="small">SIGReg が約 52 に跳ね上がる</text><text x="550" y="22" text-anchor="middle" class="strong">K3：stack の中で一定</text><rect class="cell c1" x="460" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="480" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="500" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="520" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="460" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="480" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="500" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="520" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="460" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="480" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="500" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="520" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="460" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="480" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="500" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c1" x="520" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="560" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="580" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="600" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="620" y="36" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="560" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="580" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="600" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="620" y="56" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="560" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="580" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="600" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="620" y="76" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="560" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="580" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="600" y="96" width="20" height="20" fill-opacity="0.7"/><rect class="cell c2" x="620" y="96" width="20" height="20" fill-opacity="0.7"/><text x="500" y="134" text-anchor="middle" class="small">stack 1</text><text x="600" y="134" text-anchor="middle" class="small">stack 2</text><text x="550" y="166" text-anchor="middle" class="small">stack ごとには違うが、</text><text x="550" y="186" text-anchor="middle" class="small">中の位置はみな同じ情報</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>崩壊の 2 つの形。各マスは 1 つのトークンの表現を色の濃さで表します。K1 では、どの stack でも同じ値になります。K3 では、stack ごとには違いますが、同じ stack の中のどの位置も同じ情報になります。実際の K3 では、位置ごとに線形に変換された同じ情報なので、見た目の値は違っていてもかまいません。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>崩壊は、学習の最後の checkpoint で次の 3 つの量を見て検出します。どれか 1 つでも当てはまれば崩壊とします。線の値は、V18c の掃引の物差しから決まりました。</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>名前</th><th>何を見るか</th><th>崩壊とする線</th></tr></thead>
+      <tbody>
+        <tr><td>K1（定数）</td><td><code>sigreg_heldin</code>：学習に使っていないデータで測った SIGReg の値</td><td class="n">26.69 以上</td></tr>
+        <tr><td>K2（次元）</td><td><code>rank</code>：<var>z</var> が実質的に使っている方向の数（実効ランク）</td><td class="n">12.5 未満</td></tr>
+        <tr><td>K3（stack の中で一定）</td><td><code>token_r2</code>：ある位置の表現から、別の位置の表現を線形に当てたときの当てはまり（全部が同じ情報なら 1、独立なら 0）</td><td class="n">0.490 以上</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <ul>
+      <li>K1 の線は、健全な値 1.046 と定数の値 52.34 の中点です。</li>
+      <li>K2 の線は、パッチごとの平均の色を表現とみなした物差し（12.5）と、学習前の表現（95.2）の小さい方です。</li>
+      <li>K3 の線は、物差しの値の大きい方（−0.020）と、崩壊したときの値 1 の中点です。</li>
+    </ul>
+    <h3>的を 16 次元に縮めた理由</h3>
+    <p>的を縮めずに 1024 次元のまま当てさせると、K3 の形の崩壊でも <code>S</code> は 1.08 にとどまり、健全な表現と区別がつきません。そのうえ <code>L_pred</code> は 0 になるので、K3 がどの λ でも損失の最小になってしまいます。的を 16 次元に縮めると、K3 の <var>z</var> は 16 方向に縮み、<code>S</code> は 2.9〜3.0 になります。これで λ が 0.5 以上なら、K3 は最小になりません。</p>
+    <p>V18c の掃引の 15 本（6000 step）は、どれも崩壊しませんでした。<code>sigreg_heldin</code> は 1.31〜1.40、<code>rank</code> は 119〜145、<code>token_r2</code> は 0.004〜0.013 でした。</p>
+    <h3>この検出で分かること</h3>
+    <p>K1〜K3 は、近道に落ちていないことを確かめるだけです。通ったからといって、表現が良いとは言えません。また、見えるトークン全体で 1 つの情報を分け持つ「大域の解」は、batch 128 の SIGReg ではほとんど罰せられず、K1〜K3 でも捕まりにくい形です。これは 6 節の <code>swap</code> で見張ります。</p>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="sec-head"><div class="eyebrow">04</div><h2>これまでの 3 回の試み</h2></div>
+  <div class="why">
+    <div class="k">なぜ経緯を知る必要があるのか</div>
+    <p>今の指標には、外部の物差しを使わない、数値を見る前に確かめ方を決める、といった特徴があります。どれも、前の 3 回の失敗を受けて決めたものです。経緯を知ると、指標の形の理由が分かります。</p>
+  </div>
+  <div class="prose">
+    <p>3 回とも、同じ手順で進めました。まず、数値を読む前に「有効性の確かめ」を決めます。これは、正解の分かっている物差し（画素の主成分分析や VAE など、情報を持つと分かっている表現）で、指標が理屈どおりの順に並ぶかを調べるものです。確かめが外れたら、その指標の数値は読まずに止めます。</p>
+  </div>
+  <div class="cards">
+    <div class="card">
+      <div class="k">1 回目 · 2026-11-24</div>
+      <h3>画像を生成し、Inception で当てる</h3>
+      <p>表現から拡散モデルで画像を描き、画像分類のネットワーク Inception V3 の特徴で、512 個の候補から元の画像を当てました（<code>top1</code>、偶然は 0.002）。</p>
+      <p>確かめは通りましたが、目盛りが狭すぎました。情報を持つ物差しでも 0.020〜0.024 にとどまりました。同時に試した E1 は、事前の確かめ V-E1・V-E3 で外れました。</p>
+    </div>
+    <div class="card">
+      <div class="k">2 回目 · 2026-11-25</div>
+      <h3>高解像度の四半分の Inception 特徴</h3>
+      <p>元の動画から 320×320 画素で切り直したフレームを四半分に分け、それぞれの Inception の特徴を的にしました。表現からこの的を線形に当てたときの当てはまり（中心化した <var>R</var>²）を測りました。</p>
+      <p>物差しの値が −0.023〜0.016 で、ほぼ 0 でした。確かめ V-m0・V-m2・V-m3・V-m4・V-m6 が外れました。的は、1 画素のぼかしで、別の場面に替えたときの 0.76 倍も動きました。</p>
+    </div>
+    <div class="card">
+      <div class="k">3 回目 · 2026-11-25</div>
+      <h3>Places365 の場面カテゴリ</h3>
+      <p>場面を分類するネットワーク（Places365）で各フレームに場面の群を付け、表現から群を当てました。9 都市の動画で 5 つの群が残りました。</p>
+      <p>教師と独立に判定した監査（V-c2）で外れました。群ごとの一致率は 0.97・0.80・0.47・0.47・0.20 で、3 つの群が閾値 0.7 に届きませんでした。</p>
+    </div>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 640 302.0" role="img" aria-label="生成と Inception による同定の正解率"><line class="gridline" x1="175.0" y1="24.0" x2="175.0" y2="272.0"/><text x="175.0" y="290.0" text-anchor="middle" class="mono small">0.00</text><line class="gridline" x1="315.0" y1="24.0" x2="315.0" y2="272.0"/><text x="315.0" y="290.0" text-anchor="middle" class="mono small">0.01</text><line class="gridline" x1="455.0" y1="24.0" x2="455.0" y2="272.0"/><text x="455.0" y="290.0" text-anchor="middle" class="mono small">0.02</text><line class="gridline" x1="595.0" y1="24.0" x2="595.0" y2="272.0"/><text x="595.0" y="290.0" text-anchor="middle" class="mono small">0.03</text><text x="167.0" y="47.0" text-anchor="end" class="small">本物の 1 秒後（参照）</text><rect class="c3" x="175.0" y="34.0" width="420.0" height="18" fill-opacity="0.85" rx="2"/><text x="589.0" y="48.0" text-anchor="end" class="mono small onbar">0.840（目盛りの外）</text><text x="167.0" y="81.0" text-anchor="end" class="small">v16（VAE）</text><rect class="cn" x="175.0" y="68.0" width="336.0" height="18" fill-opacity="0.85" rx="2"/><text x="517.0" y="82.0" text-anchor="start" class="mono small">0.024</text><text x="167.0" y="115.0" text-anchor="end" class="small">pca（画素の PCA）</text><rect class="cn" x="175.0" y="102.0" width="322.0" height="18" fill-opacity="0.85" rx="2"/><text x="503.0" y="116.0" text-anchor="start" class="mono small">0.023</text><text x="167.0" y="149.0" text-anchor="end" class="small">v17（VAE）</text><rect class="cn" x="175.0" y="136.0" width="280.0" height="18" fill-opacity="0.85" rx="2"/><text x="461.0" y="150.0" text-anchor="start" class="mono small">0.020</text><text x="167.0" y="183.0" text-anchor="end" class="small">color（色の平均）</text><rect class="cn" x="175.0" y="170.0" width="196.0" height="18" fill-opacity="0.85" rx="2"/><text x="377.0" y="184.0" text-anchor="start" class="mono small">0.014</text><text x="167.0" y="217.0" text-anchor="end" class="small">JEPA の 60000 step</text><rect class="c1" x="287.0" y="204.0" width="126.0" height="18" fill-opacity="0.85" rx="2"/><text x="419.0" y="218.0" text-anchor="start" class="mono small">0.008〜0.017</text><text x="167.0" y="251.0" text-anchor="end" class="small">uncond（条件なし）</text><rect class="cn" x="175.0" y="238.0" width="28.0" height="18" fill-opacity="0.85" rx="2"/><text x="209.0" y="252.0" text-anchor="start" class="mono small">0.002</text><line class="chance" x1="202.34375" y1="24.0" x2="202.34375" y2="272.0"/><text x="206.34375" y="20.0" text-anchor="start" class="small">偶然 1/512</text></svg></div>
+    <figcaption><span class="tag data">実データ</span>1 回目の指標（生成した画像の Inception の特徴で、512 個の候補から元の画像を当てた割合 <code>top1</code>）。物差しの間の幅は 0.002〜0.024 しかなく、JEPA の 60000 step の値（パッチ 16 と 4 の run、2 種類の符号、2 seed の 8 つ。0.008〜0.017）はその下側にありました。本物の 1 秒後のフレームなら 0.840 当たるので、Inception そのものは場面を見分けます。出典: README「V18c: 生成と Inception・未観測の部分の評価の結果」の結果 2・3 と、「主の指標を作り直す」の背景。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>3 回から分かったこと</h3>
+    <p>3 回とも、JEPA の表現を測る前に、外部の物差しの側の癖が先に出ました。1 回目は小さい画像を拡大して Inception に入れたこと、2 回目は的が細かい質感の影響を強く受けたこと、3 回目はラベルの分け方が街歩きの場面に合わなかったことです。</p>
+    <p>外部の物差しを持ち込むと、その物差しの癖も一緒に測ってしまいます。そこで、外部の特徴もラベルも使わず、モデル自身の表現空間の中で補完の力を測る方法に移りました。この方法で当てはめるのは、中心化に使う平均と、6 節の主成分の基底だけです。</p>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="sec-head"><div class="eyebrow">05</div><h2>自分の表現空間での補完の同定</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを測るのか</div>
+    <p>補完の力を、外部から何も持ち込まずに測りたいからです。正解には、同じエンコーダが画像全体を見て作った表現（本物）を使います。ただし、予測が本物に近いかだけを見ると、平均的な表現を出すだけでも誤差は小さくなります。そこで「他のフレームではなく、このフレームの本物だ」と言い当てられるかを測ります。これを同定と呼びます。</p>
+  </div>
+  <div class="prose">
+    <h3>手順 1：隠して予測する</h3>
+    <p>画像の四半分 <var>Q</var>（粗いマスの 2×2）をいつも隠します。隠すマスの数 <var>k</var> は 4・8・12 の 3 通りで、4 なら <var>Q</var> だけ、8 なら <var>Q</var> を含む上か下の半分、12 なら対角の四半分だけを残して隠します。採点するのは、いつも <var>Q</var> の位置だけです。V18c の長い run は <var>r</var> = 0.5 で学んだので、<var>k</var> = 8 を主に読みます。</p>
+    <p><var>Q</var> には 16 個のトークンがあり、各トークンの的は 16 次元です。これを並べた 256 次元のベクトルを、予測と本物で比べます。</p>
+    <h3>手順 2：候補を並べる</h3>
+    <p>候補は、Zurich の動画から 1 秒おきに取った 3899 個の stack の、同じ位置 <var>Q</var> の本物の表現です。易しい候補と難しい候補の 2 種類を使います。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 640 190" role="img" aria-label="易しい候補と難しい候補の模式図"><line class="axis" x1="20" y1="60" x2="620" y2="60"/><text x="320" y="24" text-anchor="middle" class="strong">Zurich の動画（1 秒おきの格子 3899 個）</text><line class="tick c2s" x1="20" y1="48" x2="20" y2="60"/><line class="tick c2s" x1="40" y1="48" x2="40" y2="60"/><line class="tick c2s" x1="60" y1="48" x2="60" y2="60"/><line class="tick c2s" x1="80" y1="48" x2="80" y2="60"/><line class="tick c2s" x1="100" y1="48" x2="100" y2="60"/><line class="tick c2s" x1="120" y1="48" x2="120" y2="60"/><line class="tick c2s" x1="140" y1="48" x2="140" y2="60"/><line class="tick c2s" x1="160" y1="48" x2="160" y2="60"/><line class="tick c2s" x1="180" y1="48" x2="180" y2="60"/><line class="tick c2s" x1="200" y1="48" x2="200" y2="60"/><line class="tick c2s" x1="220" y1="48" x2="220" y2="60"/><line class="tick c2s" x1="240" y1="48" x2="240" y2="60"/><line class="tick c2s" x1="260" y1="48" x2="260" y2="60"/><line class="tick c2s" x1="280" y1="48" x2="280" y2="60"/><line class="tick c2s" x1="300" y1="48" x2="300" y2="60"/><line class="tick c2s" x1="320" y1="48" x2="320" y2="60"/><line class="tick c2s" x1="340" y1="48" x2="340" y2="60"/><line class="tick c2s" x1="360" y1="48" x2="360" y2="60"/><line class="tick c2s" x1="380" y1="48" x2="380" y2="60"/><line class="tick c2s" x1="400" y1="48" x2="400" y2="60"/><line class="tick c2s" x1="420" y1="48" x2="420" y2="60"/><line class="tick c2s" x1="440" y1="48" x2="440" y2="60"/><line class="tick c2s" x1="460" y1="48" x2="460" y2="60"/><line class="tick c2s" x1="480" y1="48" x2="480" y2="60"/><line class="tick c2s" x1="500" y1="48" x2="500" y2="60"/><line class="tick c2s" x1="520" y1="48" x2="520" y2="60"/><line class="tick c2s" x1="540" y1="48" x2="540" y2="60"/><line class="tick c2s" x1="560" y1="48" x2="560" y2="60"/><line class="tick c2s" x1="580" y1="48" x2="580" y2="60"/><line class="tick c2s" x1="600" y1="48" x2="600" y2="60"/><line class="tick c2s" x1="620" y1="48" x2="620" y2="60"/><text x="320" y="42" text-anchor="middle" class="small">易しい候補：全体から等間隔に 512 個（7〜8 秒おき）</text><circle class="c1" cx="330" cy="60" r="6"/><line class="ln" x1="318" y1="66" x2="138" y2="120" stroke-dasharray="3 4"/><line class="ln" x1="342" y1="66" x2="522" y2="120" stroke-dasharray="3 4"/><line class="axis" x1="130" y1="125" x2="530" y2="125"/><line class="tick c4s" x1="138" y1="117" x2="138" y2="133"/><line class="tick c4s" x1="150" y1="117" x2="150" y2="133"/><line class="tick c4s" x1="162" y1="117" x2="162" y2="133"/><line class="tick c4s" x1="174" y1="117" x2="174" y2="133"/><line class="tick c4s" x1="186" y1="117" x2="186" y2="133"/><line class="tick c4s" x1="198" y1="117" x2="198" y2="133"/><line class="tick c4s" x1="210" y1="117" x2="210" y2="133"/><line class="tick c4s" x1="222" y1="117" x2="222" y2="133"/><line class="tick c4s" x1="234" y1="117" x2="234" y2="133"/><line class="tick c4s" x1="246" y1="117" x2="246" y2="133"/><line class="tick c4s" x1="258" y1="117" x2="258" y2="133"/><line class="tick c4s" x1="270" y1="117" x2="270" y2="133"/><line class="tick c4s" x1="282" y1="117" x2="282" y2="133"/><line class="tick c4s" x1="294" y1="117" x2="294" y2="133"/><line class="tick c4s" x1="306" y1="117" x2="306" y2="133"/><line class="tick c4s" x1="318" y1="117" x2="318" y2="133"/><line class="tick c4s" x1="342" y1="117" x2="342" y2="133"/><line class="tick c4s" x1="354" y1="117" x2="354" y2="133"/><line class="tick c4s" x1="366" y1="117" x2="366" y2="133"/><line class="tick c4s" x1="378" y1="117" x2="378" y2="133"/><line class="tick c4s" x1="390" y1="117" x2="390" y2="133"/><line class="tick c4s" x1="402" y1="117" x2="402" y2="133"/><line class="tick c4s" x1="414" y1="117" x2="414" y2="133"/><line class="tick c4s" x1="426" y1="117" x2="426" y2="133"/><line class="tick c4s" x1="438" y1="117" x2="438" y2="133"/><line class="tick c4s" x1="450" y1="117" x2="450" y2="133"/><line class="tick c4s" x1="462" y1="117" x2="462" y2="133"/><line class="tick c4s" x1="474" y1="117" x2="474" y2="133"/><line class="tick c4s" x1="486" y1="117" x2="486" y2="133"/><line class="tick c4s" x1="498" y1="117" x2="498" y2="133"/><line class="tick c4s" x1="510" y1="117" x2="510" y2="133"/><line class="tick c4s" x1="522" y1="117" x2="522" y2="133"/><circle class="c1" cx="330" cy="125" r="6"/><text x="138" y="150" text-anchor="middle" class="mono small">−32 秒</text><text x="522" y="150" text-anchor="middle" class="mono small">+32 秒</text><text x="330" y="150" text-anchor="middle" class="small">問い合わせ（自分）</text><text x="330" y="176" text-anchor="middle" class="small">難しい候補：同じ動画の前後 ±2〜±32 秒、2 秒おきの 32 個と自分（計 33 個）</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>2 種類の候補。易しい候補は、動画全体から等間隔に取った 512 個で、互いに候補になります（偶然の <code>top1</code> は 1/512）。難しい候補は、約 503 個の問い合わせのそれぞれについて、同じ動画の前後 ±2〜±32 秒から 2 秒おきに取った 32 個と自分です（偶然の <code>top1</code> は 1/33）。目盛りの数は模式で、実際の数とは違います。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>難しい候補は、場面・天気・日の当たり方が似ています。そのため、場面の大まかな情報だけでは当てにくくなります。ただし、ゆっくり変わる成分だけを持つ予測でも、2 秒離れれば自分を当てることがあります。そのため、難しい候補で偶然を上回っても、それだけでは位置ごとの補完の証拠にしません。その役目は 6 節の対照との差が受け持ちます。</p>
+    <h3>手順 3：平均を引いてから、向きで比べる</h3>
+    <p>予測と本物のそれぞれから、決まった平均を引きます（中心化）。平均は、Zurich 以外の学習の動画から取った約 6000 個の stack（参照の組）で計算し、段・四半分・マスクごとに固定します。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 640 270" role="img" aria-label="中心化の模式図"><text x="160" y="22" text-anchor="middle" class="strong">中心化の前</text><text x="480" y="22" text-anchor="middle" class="strong">参照の平均を引いた後</text><line class="axis" x1="30" y1="220" x2="300" y2="220"/><line class="axis" x1="30" y1="220" x2="30" y2="40"/><text x="26" y="224" text-anchor="end" class="small">原点</text><line class="ray" x1="30" y1="220" x2="175" y2="80"/><line class="ray" x1="30" y1="220" x2="228" y2="98"/><circle class="c1" cx="175" cy="80" r="5" fill-opacity="0.85"/><circle class="c1" cx="218" cy="68" r="5" fill-opacity="0.85"/><circle class="c1" cx="205" cy="110" r="5" fill-opacity="0.85"/><circle class="c1" cx="188" cy="115" r="5" fill-opacity="0.85"/><circle class="c1" cx="228" cy="98" r="5" fill-opacity="0.85"/><circle class="c1" cx="170" cy="102" r="5" fill-opacity="0.85"/><circle class="c1" cx="210" cy="85" r="5" fill-opacity="0.85"/><circle class="c1" cx="222" cy="116" r="5" fill-opacity="0.85"/><path class="cross" d="M193 90 h14 M200 83 v14"/><text x="240" y="140" text-anchor="start" class="small">参照の組の平均</text><text x="160" y="256" text-anchor="middle" class="small">どの点も同じ向きにずれ、cos はほぼ 1</text><line class="axis" x1="350" y1="130" x2="610" y2="130"/><line class="axis" x1="480" y1="40" x2="480" y2="220"/><line class="ray" x1="480" y1="130" x2="420.0" y2="106.0"/><line class="ray" x1="480" y1="130" x2="547.2" y2="149.2"/><circle class="c1" cx="420.0" cy="106.0" r="5" fill-opacity="0.85"/><circle class="c1" cx="523.2" cy="77.2" r="5" fill-opacity="0.85"/><circle class="c1" cx="492.0" cy="178.0" r="5" fill-opacity="0.85"/><circle class="c1" cx="451.2" cy="190.0" r="5" fill-opacity="0.85"/><circle class="c1" cx="547.2" cy="149.2" r="5" fill-opacity="0.85"/><circle class="c1" cx="408.0" cy="158.8" r="5" fill-opacity="0.85"/><circle class="c1" cx="504.0" cy="118.0" r="5" fill-opacity="0.85"/><circle class="c1" cx="532.8" cy="192.4" r="5" fill-opacity="0.85"/><text x="480" y="256" text-anchor="middle" class="small">違いが向きに出る（2.4 倍に拡大して描いた）</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>中心化の働き。どの表現にも共通のずれがあると、どの点も原点から見て同じ向きになり、向きの似ている度合い（cos）では区別できません。共通のずれを引くと、違いが向きに出ます。</figcaption>
+  </figure>
+  <div class="prose">
+    <ul>
+      <li>平均を引かないと、どの問い合わせも同じ候補に引き寄せられます。1 回目の指標では、1 つの候補に選択の 8〜11% が集まりました（偏りがなければ約 0.2%）。</li>
+      <li>平均を参照の組から固定するのは、問い合わせや候補の選び方で値が変わらないようにするためです。問い合わせの組ごとに平均を取ると、完全な予測でも得点が下がる例があります（Codex さんの反例）。</li>
+    </ul>
+    <p>比べるときは、ベクトルの長さではなく向きの近さ（cos）を使います。二乗誤差を小さくするように学んだ予測は、本物より短くなりがちです。その縮み方は当てやすさで決まり、「どのフレームか」とは別の量だからです。</p>
+    <h3>手順 4：対の勝率 <var>A</var> で採点する</h3>
+    <p>問い合わせ 1 つについて、正解の候補（自分の本物）との類似度と、他の候補 1 つずつとの類似度を比べます。正解の方が高ければ勝ち、同じなら半分の勝ちとします。勝った割合がその問い合わせの <var>A<sub>n</sub></var> で、すべての問い合わせで平均したものが対の勝率 <var>A</var> です。</p>
+    <div class="eq">A<sub>n</sub> = 1/(c − 1) · Σ<sub>m≠n</sub> ( [s(n,n) &gt; s(n,m)] + ½ · [s(n,n) = s(n,m)] )　　c は候補の数</div>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 640 275" role="img" aria-label="対の勝率の模式図"><text x="80" y="60" text-anchor="middle" class="strong">問い合わせ</text><text x="80" y="80" text-anchor="middle" class="small">フレーム n の予測</text><rect class="cell c1" x="44" y="96" width="18" height="18" fill-opacity="0.78"/><rect class="cell c1" x="62" y="96" width="18" height="18" fill-opacity="0.79"/><rect class="cell c1" x="80" y="96" width="18" height="18" fill-opacity="0.59"/><rect class="cell c1" x="98" y="96" width="18" height="18" fill-opacity="0.46"/><rect class="cell c1" x="44" y="114" width="18" height="18" fill-opacity="0.3"/><rect class="cell c1" x="62" y="114" width="18" height="18" fill-opacity="0.7"/><rect class="cell c1" x="80" y="114" width="18" height="18" fill-opacity="0.58"/><rect class="cell c1" x="98" y="114" width="18" height="18" fill-opacity="0.76"/><rect class="cell c1" x="44" y="132" width="18" height="18" fill-opacity="0.52"/><rect class="cell c1" x="62" y="132" width="18" height="18" fill-opacity="0.76"/><rect class="cell c1" x="80" y="132" width="18" height="18" fill-opacity="0.46"/><rect class="cell c1" x="98" y="132" width="18" height="18" fill-opacity="0.78"/><rect class="cell c1" x="44" y="150" width="18" height="18" fill-opacity="0.74"/><rect class="cell c1" x="62" y="150" width="18" height="18" fill-opacity="0.55"/><rect class="cell c1" x="80" y="150" width="18" height="18" fill-opacity="0.62"/><rect class="cell c1" x="98" y="150" width="18" height="18" fill-opacity="0.71"/><line class="ln" x1="126" y1="132" x2="168" y2="132" marker-end="url(#ah)"/><text x="620" y="22" text-anchor="end" class="small warn">値は説明のための例</text><text x="178" y="54" text-anchor="start" class="small">本物：フレーム n（正解）</text><rect class="c3" x="370" y="40" width="136.4" height="18" fill-opacity="0.85" rx="2"/><text x="512.4" y="54" text-anchor="start" class="mono small">0.62</text><text x="620" y="54" text-anchor="end" class="strong">—</text><text x="178" y="94" text-anchor="start" class="small">本物：フレーム a</text><rect class="cn" x="370" y="80" width="156.2" height="18" fill-opacity="0.85" rx="2"/><text x="532.2" y="94" text-anchor="start" class="mono small">0.71</text><text x="620" y="94" text-anchor="end" class="strong">負け</text><text x="178" y="134" text-anchor="start" class="small">本物：フレーム b</text><rect class="cn" x="370" y="120" width="88.0" height="18" fill-opacity="0.85" rx="2"/><text x="464.0" y="134" text-anchor="start" class="mono small">0.40</text><text x="620" y="134" text-anchor="end" class="strong">勝ち</text><text x="178" y="174" text-anchor="start" class="small">本物：フレーム c</text><rect class="cn" x="370" y="160" width="33.0" height="18" fill-opacity="0.85" rx="2"/><text x="409.0" y="174" text-anchor="start" class="mono small">0.15</text><text x="620" y="174" text-anchor="end" class="strong">勝ち</text><text x="178" y="214" text-anchor="start" class="small">本物：フレーム d</text><rect class="cn" x="370" y="200" width="72.60000000000001" height="18" fill-opacity="0.85" rx="2"/><text x="448.6" y="214" text-anchor="start" class="mono small">0.33</text><text x="620" y="214" text-anchor="end" class="strong">勝ち</text><line class="chance" x1="506.4" y1="34" x2="506.4" y2="236"/><text x="320" y="262" text-anchor="middle" class="strong">対の勝率 Aₙ = 3 / 4 = 0.75　　top1 = 外れ（a が上にいる）</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>対の勝率の数え方。値は説明のための例です。正解（緑）より類似度の高い候補 a が 1 つあるので、最も近い候補が正解かを見る <code>top1</code> は外れです。それでも、他の 3 つの候補には勝っているので、<var>A<sub>n</sub></var> は 0.75 になります。点線は正解の類似度の位置です。</figcaption>
+  </figure>
+  <div class="prose">
+    <ul>
+      <li><var>A</var> は、偶然なら 0.5、完全なら 1 です。候補の数によらないので、易しい候補と難しい候補で同じ目盛りになります。</li>
+      <li><code>top1</code> は副に並べます。33 個の候補でいつも 1 つだけ正解より上にある予測は、<var>A</var> = 31/32 でも <code>top1</code> = 0 になります。<code>top1</code> だけでは、この差が見えません。</li>
+      <li>主に読むのは、難しい候補の <var>A</var> です。副として、<code>top1</code>、ユークリッド距離で比べた版（<code>l2</code>）、難しい候補の 33 個の平均で中心化し直した版（<code>hard_c</code>）も並べます。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s6">
+  <div class="sec-head"><div class="eyebrow">06</div><h2>逃げ道の塞ぎ方：対照との差</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを測るのか</div>
+    <p><var>A</var> が高くても、隠した所を補ったからとは限りません。周りの平均を写すだけで当たる場合や、場面の明るさだけで当たる場合があるからです。そこで、それぞれの近道だけでどこまで当たるかを「対照」で測り、予測の値と比べます。読むのは、予測と対照の差です。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 700 230" role="img" aria-label="対照の段の模式図"><text x="10" y="18" text-anchor="start" class="strong">隠した四半分 Q の 16 トークンに何を置くか</text><rect class="cell c1" x="38" y="32" width="16" height="16" fill-opacity="0.49"/><rect class="cell c1" x="54" y="32" width="16" height="16" fill-opacity="0.39"/><rect class="cell c1" x="70" y="32" width="16" height="16" fill-opacity="0.69"/><rect class="cell c1" x="86" y="32" width="16" height="16" fill-opacity="0.34"/><rect class="cell c1" x="38" y="48" width="16" height="16" fill-opacity="0.62"/><rect class="cell c1" x="54" y="48" width="16" height="16" fill-opacity="0.52"/><rect class="cell c1" x="70" y="48" width="16" height="16" fill-opacity="0.33"/><rect class="cell c1" x="86" y="48" width="16" height="16" fill-opacity="0.6"/><rect class="cell c1" x="38" y="64" width="16" height="16" fill-opacity="0.32"/><rect class="cell c1" x="54" y="64" width="16" height="16" fill-opacity="0.56"/><rect class="cell c1" x="70" y="64" width="16" height="16" fill-opacity="0.34"/><rect class="cell c1" x="86" y="64" width="16" height="16" fill-opacity="0.35"/><rect class="cell c1" x="38" y="80" width="16" height="16" fill-opacity="0.55"/><rect class="cell c1" x="54" y="80" width="16" height="16" fill-opacity="0.8"/><rect class="cell c1" x="70" y="80" width="16" height="16" fill-opacity="0.37"/><rect class="cell c1" x="86" y="80" width="16" height="16" fill-opacity="0.43"/><text x="70" y="120" text-anchor="middle" class="mono strong">pred</text><text x="70" y="142" text-anchor="middle" class="small">予測器の出力</text><text x="70" y="190" text-anchor="middle" class="small accent">測りたいもの</text><rect class="cell c1" x="178" y="32" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="194" y="32" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="210" y="32" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="226" y="32" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="178" y="48" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="194" y="48" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="210" y="48" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="226" y="48" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="178" y="64" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="194" y="64" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="210" y="64" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="226" y="64" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="178" y="80" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="194" y="80" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="210" y="80" width="16" height="16" fill-opacity="0.48"/><rect class="cell c1" x="226" y="80" width="16" height="16" fill-opacity="0.48"/><text x="210" y="120" text-anchor="middle" class="mono strong">flat</text><text x="210" y="142" text-anchor="middle" class="small">予測の四半分の</text><text x="210" y="159" text-anchor="middle" class="small">平均を全位置に</text><text x="210" y="190" text-anchor="middle" class="small accent">四半分の平均だけ</text><text x="210" y="207" text-anchor="middle" class="small accent">で当たる分</text><rect class="cell c3" x="318" y="32" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="334" y="32" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="350" y="32" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="366" y="32" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="318" y="48" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="334" y="48" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="350" y="48" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="366" y="48" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="318" y="64" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="334" y="64" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="350" y="64" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="366" y="64" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="318" y="80" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="334" y="80" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="350" y="80" width="16" height="16" fill-opacity="0.6"/><rect class="cell c3" x="366" y="80" width="16" height="16" fill-opacity="0.6"/><text x="350" y="120" text-anchor="middle" class="mono strong">pool</text><text x="350" y="142" text-anchor="middle" class="small">見える部分の</text><text x="350" y="159" text-anchor="middle" class="small">平均を全位置に</text><text x="350" y="190" text-anchor="middle" class="small accent">周りを写すだけ</text><text x="350" y="207" text-anchor="middle" class="small accent">で当たる分</text><rect class="cell c4" x="458" y="32" width="16" height="16" fill-opacity="0.25"/><rect class="cell c4" x="474" y="32" width="16" height="16" fill-opacity="0.31"/><rect class="cell c4" x="490" y="32" width="16" height="16" fill-opacity="0.37"/><rect class="cell c4" x="506" y="32" width="16" height="16" fill-opacity="0.43"/><rect class="cell c4" x="458" y="48" width="16" height="16" fill-opacity="0.31"/><rect class="cell c4" x="474" y="48" width="16" height="16" fill-opacity="0.37"/><rect class="cell c4" x="490" y="48" width="16" height="16" fill-opacity="0.43"/><rect class="cell c4" x="506" y="48" width="16" height="16" fill-opacity="0.49"/><rect class="cell c4" x="458" y="64" width="16" height="16" fill-opacity="0.37"/><rect class="cell c4" x="474" y="64" width="16" height="16" fill-opacity="0.43"/><rect class="cell c4" x="490" y="64" width="16" height="16" fill-opacity="0.49"/><rect class="cell c4" x="506" y="64" width="16" height="16" fill-opacity="0.55"/><rect class="cell c4" x="458" y="80" width="16" height="16" fill-opacity="0.43"/><rect class="cell c4" x="474" y="80" width="16" height="16" fill-opacity="0.49"/><rect class="cell c4" x="490" y="80" width="16" height="16" fill-opacity="0.55"/><rect class="cell c4" x="506" y="80" width="16" height="16" fill-opacity="0.61"/><text x="490" y="120" text-anchor="middle" class="mono strong">interp</text><text x="490" y="142" text-anchor="middle" class="small">画素を補間して</text><text x="490" y="159" text-anchor="middle" class="small">エンコーダへ</text><text x="490" y="190" text-anchor="middle" class="small accent">滑らかな延長</text><text x="490" y="207" text-anchor="middle" class="small accent">で当たる分</text><rect class="cell c1" x="598" y="32" width="16" height="16" fill-opacity="0.44"/><rect class="cell c1" x="614" y="32" width="16" height="16" fill-opacity="0.88"/><rect class="cell c1" x="630" y="32" width="16" height="16" fill-opacity="0.38"/><rect class="cell c1" x="646" y="32" width="16" height="16" fill-opacity="0.72"/><rect class="cell c1" x="598" y="48" width="16" height="16" fill-opacity="0.35"/><rect class="cell c1" x="614" y="48" width="16" height="16" fill-opacity="0.45"/><rect class="cell c1" x="630" y="48" width="16" height="16" fill-opacity="0.9"/><rect class="cell c1" x="646" y="48" width="16" height="16" fill-opacity="0.43"/><rect class="cell c1" x="598" y="64" width="16" height="16" fill-opacity="0.69"/><rect class="cell c1" x="614" y="64" width="16" height="16" fill-opacity="0.58"/><rect class="cell c1" x="630" y="64" width="16" height="16" fill-opacity="0.57"/><rect class="cell c1" x="646" y="64" width="16" height="16" fill-opacity="0.6"/><rect class="cell c1" x="598" y="80" width="16" height="16" fill-opacity="0.42"/><rect class="cell c1" x="614" y="80" width="16" height="16" fill-opacity="0.8"/><rect class="cell c1" x="630" y="80" width="16" height="16" fill-opacity="0.35"/><rect class="cell c1" x="646" y="80" width="16" height="16" fill-opacity="0.44"/><text x="630" y="120" text-anchor="middle" class="mono strong">oracle</text><text x="630" y="142" text-anchor="middle" class="small">全体を見た本物</text><text x="630" y="190" text-anchor="middle" class="small accent">天井（A = 1）</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>対照の段。どれも、隠した四半分 <var>Q</var> の 16 個の位置に置く値の作り方が違います。<code>pred</code> と各対照の差が、その近道では説明できない分になります。<code>oracle</code> は本物そのもので、天井にあたります。</figcaption>
+  </figure>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>対照</th><th>作り方</th><th>差し引くもの</th></tr></thead>
+      <tbody>
+        <tr><td><code>pool</code></td><td>見えている部分のトークンの平均を、<var>Q</var> のすべての位置に置く</td><td>周りの平均を写すだけで当たる分</td></tr>
+        <tr><td><code>flat</code></td><td>予測の <var>Q</var> の 16 個を、その平均で置き換える</td><td>四半分の平均だけで当たる分。<code>pred</code> − <code>flat</code> は四半分の中の配置の分</td></tr>
+        <tr><td><code>interp</code></td><td>隠した画素を、見えている画素から滑らかに補間した画像を、全体を見るエンコーダに通す</td><td>学習の要らない滑らかな延長で当たる分</td></tr>
+        <tr><td>難しい候補</td><td>同じ動画の前後 ±2〜±32 秒の候補で比べる</td><td>場面・照明だけで当たる分</td></tr>
+        <tr><td><code>swap</code></td><td>対角の 2 つの四半分を同時に隠し、予測が場所を取り違えないかを見る（下の図）</td><td>位置によらない予測で当たる分</td></tr>
+        <tr><td><code>oracle</code> / <code>const</code></td><td>本物そのもの / どの問い合わせにも同じ値</td><td>天井（<var>A</var> = 1）と床（<var>A</var> = 0.5）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p><code>flat</code> は四半分の中の配置まで求める、高い基準です。<code>pred</code> − <code>flat</code> が 0 に近くても、補完がないとは言いません。そのときは <code>pool</code>・<code>interp</code> との差と <code>swap</code> で読みます。</p>
+    <h3><code>swap</code>：場所を取り違えないか</h3>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 660 220" role="img" aria-label="swap の模式図"><rect class="cell cn" x="20" y="40" width="30" height="30" fill-opacity="0.4"/><rect class="cell cn" x="50" y="40" width="30" height="30" fill-opacity="0.36"/><rect class="cell cn" x="80" y="40" width="30" height="30" fill-opacity="0.23"/><rect class="cell cn" x="110" y="40" width="30" height="30" fill-opacity="0.63"/><rect class="cell cn" x="20" y="70" width="30" height="30" fill-opacity="0.15"/><rect class="cell cn" x="50" y="70" width="30" height="30" fill-opacity="0.43"/><rect class="cell cn" x="80" y="70" width="30" height="30" fill-opacity="0.64"/><rect class="cell cn" x="110" y="70" width="30" height="30" fill-opacity="0.19"/><rect class="cell cn" x="20" y="100" width="30" height="30" fill-opacity="0.45"/><rect class="cell cn" x="50" y="100" width="30" height="30" fill-opacity="0.49"/><rect class="cell cn" x="80" y="100" width="30" height="30" fill-opacity="0.17"/><rect class="cell cn" x="110" y="100" width="30" height="30" fill-opacity="0.36"/><rect class="cell cn" x="20" y="130" width="30" height="30" fill-opacity="0.54"/><rect class="cell cn" x="50" y="130" width="30" height="30" fill-opacity="0.4"/><rect class="cell cn" x="80" y="130" width="30" height="30" fill-opacity="0.55"/><rect class="cell cn" x="110" y="130" width="30" height="30" fill-opacity="0.24"/><rect class="hatch" x="20" y="40" width="60" height="60"/><rect class="hatch" x="80" y="100" width="60" height="60"/><rect class="qline" x="20" y="40" width="60" height="60"/><rect class="qline" x="80" y="100" width="60" height="60"/><text x="50" y="76" text-anchor="middle" class="big">A</text><text x="110" y="136" text-anchor="middle" class="big">B</text><text x="80" y="186" text-anchor="middle" class="small">対角の 2 つの四半分を</text><text x="80" y="204" text-anchor="middle" class="small">同時に隠す（k = 8）</text><line class="ln" x1="150" y1="100" x2="188" y2="100" marker-end="url(#ah)"/><text x="300" y="70" text-anchor="middle" class="mono strong">d = p_A − p_B</text><text x="300" y="94" text-anchor="middle" class="small">（参照の平均を引く）</text><text x="300" y="132" text-anchor="middle" class="small">d と A の本物 r_A の内積が</text><text x="300" y="152" text-anchor="middle" class="small">正なら 1、0 なら ½、負なら 0</text><line class="ln" x1="410" y1="100" x2="438" y2="70" marker-end="url(#ah)"/><line class="ln" x1="410" y1="100" x2="438" y2="150" marker-end="url(#ah)"/><rect class="box" x="440" y="30" width="210" height="70" rx="6"/><text x="545.0" y="52.0" text-anchor="middle" class="strong">位置ごとに違う予測</text><text x="545.0" y="70.0" text-anchor="middle" class="small">A の本物に向けば</text><text x="545.0" y="88.0" text-anchor="middle" class="small">1 に近づく</text><rect class="box" x="440" y="120" width="210" height="70" rx="6"/><text x="545.0" y="142.0" text-anchor="middle" class="strong">複製の K3</text><text x="545.0" y="160.0" text-anchor="middle" class="small">d = 0 で必ず引き分け</text><text x="545.0" y="178.0" text-anchor="middle" class="small">→ ちょうど 0.5</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span><code>swap</code> の考え方。四半分 A と B を同時に隠し、2 つの位置の予測の差 <var>d</var> が、A の本物の向きを指すかを見ます。予測が位置によらない（A と B で同じ）なら、<var>d</var> はちょうど 0 になり、必ず引き分けの 0.5 になります。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><code>swap</code> は、(A, B) と (B, A) の 2 つの向きで平均します。差を先に作るので、位置によらない予測（複製の K3）では、値がちょうど 0.5 になります。3 節の「大域の解」もこの形で見張ります。ただし、位置ごとに符号を反転させるような崩壊（K3 の仲間）では 0.5 になりません。K3 の仲間すべてを捕まえる量ではないので、3 節の K1〜K3 と並べて読みます。</p>
+    <h3>相方：空間がどれだけのことを表しているか</h3>
+    <p>同定には弱点があります。候補を見分けるのに足る成分が 1 つあれば、満点になります。たとえば、予測が本物の一部の成分だけを当て、残りをまったく当てなくても、<var>A</var> は 1 になりえます。そこで、<var>A</var> が高いことを「隠した所の多様な成分を補った」とは読みません。次の 3 つを「相方」として必ず並べます。</p>
+    <ul>
+      <li>スペクトルと <code>participation</code>：本物の表現が、いくつの方向に広がっているか。</li>
+      <li>帯ごとの <code>pred_ratio</code>：本物の主成分を 1〜4・5〜16・17〜64・65〜256 番目の帯に分け、帯ごとに予測の誤差の比を出したもの。<code>pred_ratio</code> は、参照の組の平均を予測とみなしたときの誤差に対する、予測の誤差の比です。1 なら平均と同じ、0 なら完全です。</li>
+      <li>補空間での同定：分散の大きい上位 4 個・16 個の主成分を取り除いた残りで、同定をやり直したもの。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s7">
+  <div class="sec-head"><div class="eyebrow">07</div><h2>局所性の確かめ：画素の移植</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを測るのか</div>
+    <p>5・6 節の同定と対照との差で満点を取れる、ずるい表現があります。隠した所のトークンに、その場所の中身ではなく、周りの情報を詰めておく表現です。これを見抜けるのは、画素を入れ替える介入だけです。</p>
+  </div>
+  <div class="prose">
+    <p>例として「鏡の符号」を考えます。各マスのトークンが、自分のマスではなく、180° 回した反対側のマスの画素を表す表現です。この表現では、隠した四半分 <var>Q</var> の本物は、反対側の見えている四半分の画素で決まります。予測器はそれを写すだけで本物を当てられるので、同定も、<code>pool</code>・<code>flat</code> との差も満点になります。しかし、隠した所を補ったわけではありません。</p>
+    <h3>移植のしかた</h3>
+    <p>そこで、<var>Q</var> の画素だけを別の画像のものに入れ替えた画像を作り、全体を見るエンコーダに通します。その <var>Q</var> のトークンを候補にして、同定をやり直します。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 300" role="img" aria-label="移植の模式図"><text x="74" y="30" text-anchor="middle" class="strong">文脈 j（別の動画）</text><g transform="translate(30,40)"><rect class="cell c3" x="0" y="0" width="22" height="22" fill-opacity="0.59"/><rect class="cell c3" x="22" y="0" width="22" height="22" fill-opacity="0.51"/><rect class="cell c3" x="44" y="0" width="22" height="22" fill-opacity="0.6"/><rect class="cell c3" x="66" y="0" width="22" height="22" fill-opacity="0.37"/><rect class="cell c3" x="0" y="22" width="22" height="22" fill-opacity="0.74"/><rect class="cell c3" x="22" y="22" width="22" height="22" fill-opacity="0.74"/><rect class="cell c3" x="44" y="22" width="22" height="22" fill-opacity="0.64"/><rect class="cell c3" x="66" y="22" width="22" height="22" fill-opacity="0.35"/><rect class="cell c3" x="0" y="44" width="22" height="22" fill-opacity="0.56"/><rect class="cell c3" x="22" y="44" width="22" height="22" fill-opacity="0.45"/><rect class="cell c3" x="44" y="44" width="22" height="22" fill-opacity="0.4"/><rect class="cell c3" x="66" y="44" width="22" height="22" fill-opacity="0.82"/><rect class="cell c3" x="0" y="66" width="22" height="22" fill-opacity="0.85"/><rect class="cell c3" x="22" y="66" width="22" height="22" fill-opacity="0.28"/><rect class="cell c3" x="44" y="66" width="22" height="22" fill-opacity="0.77"/><rect class="cell c3" x="66" y="66" width="22" height="22" fill-opacity="0.61"/><rect class="qline" x="0" y="0" width="44" height="44"/></g><text x="74" y="150" text-anchor="middle" class="strong">候補 m（Zurich）</text><g transform="translate(30,160)"><rect class="cell c2" x="0" y="0" width="22" height="22" fill-opacity="0.52"/><rect class="cell c2" x="22" y="0" width="22" height="22" fill-opacity="0.59"/><rect class="cell c2" x="44" y="0" width="22" height="22" fill-opacity="0.8"/><rect class="cell c2" x="66" y="0" width="22" height="22" fill-opacity="0.53"/><rect class="cell c2" x="0" y="22" width="22" height="22" fill-opacity="0.55"/><rect class="cell c2" x="22" y="22" width="22" height="22" fill-opacity="0.6"/><rect class="cell c2" x="44" y="22" width="22" height="22" fill-opacity="0.36"/><rect class="cell c2" x="66" y="22" width="22" height="22" fill-opacity="0.56"/><rect class="cell c2" x="0" y="44" width="22" height="22" fill-opacity="0.63"/><rect class="cell c2" x="22" y="44" width="22" height="22" fill-opacity="0.73"/><rect class="cell c2" x="44" y="44" width="22" height="22" fill-opacity="0.31"/><rect class="cell c2" x="66" y="44" width="22" height="22" fill-opacity="0.43"/><rect class="cell c2" x="0" y="66" width="22" height="22" fill-opacity="0.3"/><rect class="cell c2" x="22" y="66" width="22" height="22" fill-opacity="0.74"/><rect class="cell c2" x="44" y="66" width="22" height="22" fill-opacity="0.67"/><rect class="cell c2" x="66" y="66" width="22" height="22" fill-opacity="0.28"/><rect class="qline" x="0" y="0" width="44" height="44"/></g><text x="354" y="30" text-anchor="middle" class="strong">順向き（j ← m）</text><g transform="translate(310,40)"><rect class="cell c2" x="0" y="0" width="22" height="22" fill-opacity="0.52"/><rect class="cell c2" x="22" y="0" width="22" height="22" fill-opacity="0.59"/><rect class="cell c3" x="44" y="0" width="22" height="22" fill-opacity="0.6"/><rect class="cell c3" x="66" y="0" width="22" height="22" fill-opacity="0.37"/><rect class="cell c2" x="0" y="22" width="22" height="22" fill-opacity="0.55"/><rect class="cell c2" x="22" y="22" width="22" height="22" fill-opacity="0.6"/><rect class="cell c3" x="44" y="22" width="22" height="22" fill-opacity="0.64"/><rect class="cell c3" x="66" y="22" width="22" height="22" fill-opacity="0.35"/><rect class="cell c3" x="0" y="44" width="22" height="22" fill-opacity="0.56"/><rect class="cell c3" x="22" y="44" width="22" height="22" fill-opacity="0.45"/><rect class="cell c3" x="44" y="44" width="22" height="22" fill-opacity="0.4"/><rect class="cell c3" x="66" y="44" width="22" height="22" fill-opacity="0.82"/><rect class="cell c3" x="0" y="66" width="22" height="22" fill-opacity="0.85"/><rect class="cell c3" x="22" y="66" width="22" height="22" fill-opacity="0.28"/><rect class="cell c3" x="44" y="66" width="22" height="22" fill-opacity="0.77"/><rect class="cell c3" x="66" y="66" width="22" height="22" fill-opacity="0.61"/><rect class="qline" x="0" y="0" width="44" height="44"/></g><text x="354" y="150" text-anchor="middle" class="strong">逆向き（m ← j）</text><g transform="translate(310,160)"><rect class="cell c3" x="0" y="0" width="22" height="22" fill-opacity="0.59"/><rect class="cell c3" x="22" y="0" width="22" height="22" fill-opacity="0.51"/><rect class="cell c2" x="44" y="0" width="22" height="22" fill-opacity="0.8"/><rect class="cell c2" x="66" y="0" width="22" height="22" fill-opacity="0.53"/><rect class="cell c3" x="0" y="22" width="22" height="22" fill-opacity="0.74"/><rect class="cell c3" x="22" y="22" width="22" height="22" fill-opacity="0.74"/><rect class="cell c2" x="44" y="22" width="22" height="22" fill-opacity="0.36"/><rect class="cell c2" x="66" y="22" width="22" height="22" fill-opacity="0.56"/><rect class="cell c2" x="0" y="44" width="22" height="22" fill-opacity="0.63"/><rect class="cell c2" x="22" y="44" width="22" height="22" fill-opacity="0.73"/><rect class="cell c2" x="44" y="44" width="22" height="22" fill-opacity="0.31"/><rect class="cell c2" x="66" y="44" width="22" height="22" fill-opacity="0.43"/><rect class="cell c2" x="0" y="66" width="22" height="22" fill-opacity="0.3"/><rect class="cell c2" x="22" y="66" width="22" height="22" fill-opacity="0.74"/><rect class="cell c2" x="44" y="66" width="22" height="22" fill-opacity="0.67"/><rect class="cell c2" x="66" y="66" width="22" height="22" fill-opacity="0.28"/><rect class="qline" x="0" y="0" width="44" height="44"/></g><line class="ln" x1="124" y1="95" x2="304" y2="95" marker-end="url(#ah)"/><line class="ln" x1="124" y1="215" x2="304" y2="215" marker-end="url(#ah)"/><line class="ln" x1="76" y1="182" x2="304" y2="62" stroke-dasharray="4 4" marker-end="url(#ah)"/><line class="ln" x1="76" y1="62" x2="304" y2="182" stroke-dasharray="4 4" marker-end="url(#ah)"/><text x="200" y="170" text-anchor="middle" class="small">Q だけ入れ替え</text><text x="416" y="70" text-anchor="start" class="small">Q だけが m の画素</text><text x="416" y="90" text-anchor="start" class="small">→ 候補どうしの違いは</text><text x="416" y="110" text-anchor="start" class="small">　Q の画素から来る</text><text x="416" y="190" text-anchor="start" class="small">Q 以外が m の画素</text><text x="416" y="210" text-anchor="start" class="small">→ 候補どうしの違いは</text><text x="416" y="230" text-anchor="start" class="small">　文脈から来る</text><text x="20" y="270" text-anchor="start" class="small">太線の枠が四半分 Q。入れ替えた画像を全体を見るエンコーダに通し、</text><text x="20" y="288" text-anchor="start" class="small">Q の位置のトークンを候補にする</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>移植の 2 つの向き。順向きでは、文脈 <var>j</var> の画像の <var>Q</var> だけを候補 <var>m</var> の画素にします。候補どうしの違いは <var>Q</var> の画素だけから来ます。逆向きでは、<var>m</var> の画像の <var>Q</var> だけを <var>j</var> の画素にします。候補どうしの違いは <var>Q</var> の外の文脈だけから来ます。</figcaption>
+  </figure>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>表現の種類</th><th>順向きの候補での同定</th><th>逆向きの候補での同定</th></tr></thead>
+      <tbody>
+        <tr><td>局所な符号（各トークンが自分のパッチの画素だけを表す）</td><td>自然な候補と同じ値</td><td>全部が引き分け（<var>A</var> = 0.5）</td></tr>
+        <tr><td>鏡の符号（周りの情報を詰めた表現）</td><td>全部が引き分け（<var>A</var> = 0.5）</td><td>自然な候補と同じ値</td></tr>
+        <tr><td>複製の K3</td><td><code>flat</code> と同じ値</td><td><code>flat</code> と同じ値</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p>逆に、複製の K3 は移植では捕まりません。こちらは <code>flat</code>・<code>swap</code> と、下の <var>L</var> が受け持ちます。どの対照も、それぞれ別の逃げ道を塞いでいます。</p>
+    <h3>局所性の量</h3>
+    <p>移植したとき、トークンがどこで動いたかも測ります。<var>Q</var> の画素を <var>m</var> のものに替えたときのトークンの変化 Δ<sub>p</sub> と、画像全体を <var>m</var> に替えたときの変化 δ<sub>p</sub> を比べます。</p>
+    <ul>
+      <li><var>a<sub>U</sub></var>：<var>Q</var> の中で、Δ が δ に沿う割合。局所な符号では 1、鏡の符号では 0 です。</li>
+      <li><var>a<sub>V</sub></var>：<var>Q</var> の外で、Δ が δ に沿う割合。局所な符号では 0 です。</li>
+      <li><var>L</var> = <var>a<sub>U</sub></var> − <var>a<sub>V</sub></var>：入れ替えた場所のトークンだけが動くほど 1 に近づきます。複製の K3 では 0 です。</li>
+      <li>このほか、外で動いた大きさ ρ<sub>V</sub>、内積に出ない <var>Q</var> の中の変化 η<sub>U</sub>、継ぎ目に接するマスとそれ以外の別も記録します。</li>
+    </ul>
+    <h3>画素は介入にだけ使う</h3>
+    <p>移植では画素を扱いますが、画素を正解にはしません。正解はいつも、エンコーダが作った表現です。画素は「この場所の中身を変えたら、どのトークンが動くか」を調べるための介入にだけ使います。2 節の方針（画素の再構成を正解にしない）と食い違わないのは、このためです。</p>
+    <h3>文脈 <var>j</var> の選び方</h3>
+    <p>文脈には、学習のデータの順で最初に現れる 4 本の動画の、それぞれ最初の stack を使います。Amsterdam のフレーム 100、Bangkok のフレーム 9、Chiang_Mai のフレーム 9、Istanbul のフレーム 22 です。同じ動画の近い時刻の stack は使いません。近い時刻だと、正解の候補を移植した画像がいちばん自然に見えてしまい、それだけで正解が当たりやすくなるからです。</p>
+    <h3>読むときの注意</h3>
+    <ul>
+      <li>移植した画像は、エンコーダが学習で見たことのないパッチの組み合わせです。継ぎ目に反応する表現では、移植の値はどんな値にもなりえます。</li>
+      <li>周りの文脈をよく混ぜる健全なエンコーダでも、移植の値は下がります。そのため、移植で値が下がっても、ずるい表現の証拠とはしません。「同定のうち <var>Q</var> の画素で説明できる分がそれだけだった」と読みます。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s8">
+  <div class="sec-head"><div class="eyebrow">08</div><h2>実装の確かめと事前登録</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを測るのか</div>
+    <p>物差しの実装が間違っていれば、出てきた数値はどれも意味を持ちません。そこで、答えが式で厳密に決まる合成の例を物差しに通し、その答えが出るかを確かめます。外れたら止めて報告し、条件を変えて通るまで探すことはしません。</p>
+  </div>
+  <div class="prose">
+    <h3>2 種類の対照を分ける</h3>
+    <p>対照には 2 種類あります。1 つは、恒等式や閉じた式で値が厳密に決まるものです（定数、局所な符号、鏡の符号など）。これだけを合否に使います。もう 1 つは、学習前のモデルや崩壊した run のように、値が厳密には決まらない実物の対照です。こちらは数値を並べるだけにします。</p>
+    <p>この区別は、1 回目の失敗がもとになっています。前の評価 E1 は、別のフレームの予測（<code>shuf</code>）と崩壊した run（M）を合否に使い、どちらも外れました。調べると、<code>shuf</code> の偏りは動画のゆっくりした変化によるもので、M は厳密な K3 ではありませんでした。実装の誤りではなく、値の決まらない対照を合否に使った設計の問題でした。</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>名前</th><th>確かめること</th><th>状況</th></tr></thead>
+      <tbody>
+        <tr><td>V-s0</td><td>隠した画素を乱数に替えても、<code>pred</code>・<code>pool</code>・<code>flat</code>・<code>interp</code> がビットまで同じ（隠した画素が漏れていない）</td><td><span class="badge wait">checkpoint は未計算</span></td></tr>
+        <tr><td>V-s1</td><td>本物そのもの（<code>oracle</code>）の <code>top1</code> と <var>A</var> がちょうど 1</td><td><span class="badge wait">checkpoint は未計算</span></td></tr>
+        <tr><td>V-s2</td><td>どの問い合わせにも同じ値（<code>const</code>）や位置だけの符号で、<code>top1</code> = 0・<var>A</var> = 0.5・全部が引き分け</td><td><span class="badge wait">checkpoint は未計算</span></td></tr>
+        <tr><td>V-s3</td><td>合成の複製 K3 で、<code>pred</code> と <code>flat</code> が一致、<code>swap</code> = 0.5、<code>pool</code> と <code>oracle</code> が一致、<var>L</var> = 0</td><td><span class="badge wait">checkpoint は未計算</span></td></tr>
+        <tr><td>V-s4</td><td>局所な符号で、<var>a<sub>U</sub></var> = 1・<var>a<sub>V</sub></var> = 0、順向きが自然な候補と同じ、逆向きが全部の引き分け</td><td><span class="badge ok">通過（実データ）</span></td></tr>
+        <tr><td>V-s5</td><td>鏡の符号で、自然な候補の <code>top1</code> = 1、順向きが全部の引き分け、逆向きが自然な候補と同じ、<var>a<sub>U</sub></var> = 0</td><td><span class="badge ok">通過（実データ）</span></td></tr>
+        <tr><td>V-s6</td><td>本物に雑音を足した合成の予測の <var>A</var> が、閉じた式の値と標準誤差の 7.34 倍以内で一致</td><td><span class="badge wait">未計算</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p class="small muted">V-s0〜V-s5 は、小さな合成のデータでのテスト（26 本）にもしてあり、すべて通りました。V-s4・V-s5 は、実データで 1 回だけ確かめるもので、どちらも通りました。V-s0・V-s1・V-s3・V-s6 は、各 checkpoint に評価をかけたときに初めて値が出ます。</p>
+    <h3>V-s4・V-s5 の結果</h3>
+    <ul>
+      <li>V-s4（局所な符号）：順向きの候補は <var>A</var> = 1・<code>top1</code> = 1 で、自然な候補とビットまで同じでした。逆向きの候補は、易しい 512 個・難しい 502 個のすべての問い合わせが、すべての候補と引き分けました。<var>a<sub>U</sub></var> の 1 からのずれは最大 2.2 × 10<sup>−16</sup>、<var>a<sub>V</sub></var> はどれも 0 でした。</li>
+      <li>V-s5（鏡の符号）：自然な候補の <code>top1</code> は 1、順向きの候補は <var>A</var> = 0.5・<code>top1</code> = 0 ですべて引き分け、逆向きの候補は自然な候補とビットまで同じでした。<var>a<sub>U</sub></var> はどれも 0 でした。</li>
+    </ul>
+    <h3>数値を出す前に決めたこと・変えたこと</h3>
+    <p>次の 3 つは、数値を 1 つも出す前に、ユーザーが承認・決定しました。</p>
+    <ol>
+      <li><b>V-s6 の閾値を 3 から 7.34 にしました。</b>元の「標準誤差の 3 倍以内」では、実装が正しくても 1 個が偶然外れる確率が 0.009 あります。調べる個数は、最大 170 個の checkpoint × 24 個 = 4080 個なので、約 30 個が偶然外れる見込みでした。1 つ外れれば全体が止まる規則なので、4080 個全体で偶然に止まる確率を 0.01 以下にする閾値（Bonferroni の補正）を求めると、7.34 になります。checkpoint ごとに補正する案（4.51）では、170 個のどこかで偶然に止まる確率が約 0.82 になるので、採りませんでした。</li>
+      <li><b><code>swap</code> を V-s5 の合否から外し、記述にしました。</b>鏡の符号の <code>swap</code> は、位置の順を反転すると局所な符号の <code>swap</code> と同じ量になり、鏡の符号を何も見分けていません。実データでも、2 つの符号の <code>swap</code> はどちらも 0.948 で、512 個の問い合わせのすべてで一致しました。合否に入れていたら、512 個のうち 94 個が 1 にならず、V-s5 は外れていました。</li>
+      <li><b>文脈 <var>j</var> の取り方を直しました。</b>最初の登録は「参照の組の 4 本の動画から 1 つずつ」でした。しかし参照の組（5998 stack）は Amsterdam（4905）と Bangkok（1093）の 2 本だけで、確かめのプログラムが止まりました。そこで、7 節のとおり、学習のデータの順で最初に現れる 4 本の動画から取ることにしました。参照の組そのものは変えていません。</li>
+    </ol>
+    <h3>事前登録をする理由</h3>
+    <p>結果を見てから規則を変えると、望む結果が出るまで物差しを直せてしまいます。それでは、物差しが学習の良し悪しではなく、私たちの期待を測ることになります。そのため、規則と閾値は数値を見る前に README に書き、結果を見た後の変更は、理由とともに別に書きます。上の 3 つの変更も、数値を出す前の決定として記録しました。</p>
+  </div>
+</section>
+
+<section id="s9">
+  <div class="sec-head"><div class="eyebrow">09</div><h2>言えること・言えないこと</h2></div>
+  <div class="why">
+    <div class="k">なぜこれを確かめるのか</div>
+    <p>どの指標にも、届く範囲があります。範囲の外のことを読むと、数値は正しくても結論を誤ります。そこで、言えることと言えないことを、数値を見る前に分けておきます。</p>
+  </div>
+  <div class="prose">
+    <h3>言えること</h3>
+    <ul>
+      <li>それぞれの run の表現空間の中で、予測が本物を他のフレームから見分けるかどうか。</li>
+      <li>対照（<code>pool</code>・<code>flat</code>・<code>interp</code>・難しい候補・<code>swap</code>・移植）ごとに、予測がどれだけ上回るか。</li>
+    </ul>
+    <h3>言えないこと</h3>
+    <ul>
+      <li>表現空間の違う run どうしの大小。学習した射影と固定の <var>R</var>、パッチの大きさが違えば、空間が表せる情報の量も違います。</li>
+      <li>step をまたぐ単純な比べ。step ごとに正解（本物）も変わるので、「それぞれの課題での同定の移り変わり」として読みます。</li>
+      <li>「同定が高いので、隠した所の多様な成分を補った」という読み。識別に足る成分が 1 つあれば満点になるからです（6 節の相方と並べて読みます）。</li>
+      <li>「移植で値が下がったので、ずるい表現だ」という読み（7 節）。</li>
+      <li>画素の主成分分析や VAE のような外部の物差しとの大小。原理的に同じ目盛りに載りません。</li>
+    </ul>
+    <h3>数値の書き方</h3>
+    <p>揺れは、連続した問い合わせのまとまり（8 個、約 61 秒と、16 個）を単位に引き直すブートストラップ（2000 回）で求め、大きい方を標準誤差 SE* とします。差を「上回る」と書くのは、2 つの seed がどちらも同じ向きで、それぞれ 2 SE* を超えるときだけです。それ以外は「区別できない」と書きます。これは記述の言葉づかいで、仮説の支持や棄却ではありません。</p>
+    <h3>V18c と V19 での使い方</h3>
+    <ul>
+      <li>V18c では、この指標で長い run の良し悪しを判定せず、設定も選びません。値と揺れを並べて記述します。</li>
+      <li>V19 では、主の指標の候補にします。見分けたい最小の差 Δ* は理論では決まらないので、V18c の値と揺れを見てから、ユーザーと決めます。</li>
+      <li>主の量を何にするかも、V19 で決めます。Fable さんは「移植した難しい候補での <var>A</var> の <code>pred</code> − <code>flat</code>」を推しました。Codex さんは、1 つの量だけを主にすることに反対し、継ぎ目や文脈 <var>j</var> を変えても読みが変わらないこと、比べたい差の区間の幅が Δ* より小さいこと、床や天井に張り付いていないことを条件に挙げました。</li>
+      <li>未来の予測も、同じ枠組みで V19 から測る予定です。</li>
+    </ul>
+    <h3>評価をかける checkpoint</h3>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>組</th><th>run</th><th>step</th></tr></thead>
+      <tbody>
+        <tr><td>V18 の長い run（パッチ 16）</td><td>4 本（<var>r</var> = 0.25 の 2 seed、0.5、0.75）</td><td class="n">0・6000・20000・60000</td></tr>
+        <tr><td>V18b の長い run（パッチ 4）</td><td>F の 2 本と、K3 に崩れた M の 2 本</td><td class="n">0・6000・20000・60000</td></tr>
+        <tr><td>V18c の掃引（パッチ 8）</td><td>15 本</td><td class="n">0・6000</td></tr>
+        <tr><td>V18c の長い run</td><td>12 本（学習率 10<sup>−4</sup>・10<sup>−5</sup> × λ 0.5・0.8・0.95 × 2 seed、<var>r</var> = 0.5）</td><td class="n">0〜60000 の 9 つ</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p class="small muted">移植と局所性は、そのうち step 0・6000・60000（掃引は 0・6000）にだけかけます。M は 1 マスが 1024 次元と大きく、SIGReg のかけ方も違うので、記述だけにします。</p>
+  </div>
+</section>
+
+<section id="gloss">
+  <div class="sec-head"><div class="eyebrow">10</div><h2>用語集</h2></div>
+  <dl class="gloss">
+    <dt>stack</dt><dd>連続する 8 フレーム（0.8 秒分）を 64×64 画素で重ねた、1 回分の入力。</dd>
+    <dt>パッチ・トークン</dt><dd>画像を区切った小区画がパッチで、その画素を並べたベクトルがトークン。V18c のパッチは 8×8 画素で、1 つの stack に 64 個ある。</dd>
+    <dt>エンコーダ</dt><dd>トークンの並びを受け取り、位置ごとの表現を出すネットワーク。V18c では ViT-S（幅 1024）。</dd>
+    <dt>表現</dt><dd>その場所に何が写っているかを、数の並び（ベクトル）で表したもの。</dd>
+    <dt>予測器</dt><dd>見えている部分の表現から、隠した位置の表現を推し量る小さなネットワーク（幅 256、4 段）。</dd>
+    <dt>的・<var>R</var>・<var>t</var></dt><dd>予測の正解。全体を見たエンコーダの出力を、固定の乱数の行列 <var>R</var> で 16 次元に縮めた <var>t</var>。</dd>
+    <dt><var>W</var>・<var>z</var></dt><dd>64 個の <var>t</var> を並べた 1024 次元を、固定の乱数の行列 <var>W</var> で写したものが <var>z</var>。SIGReg をかける対象。</dd>
+    <dt>SIGReg</dt><dd><var>z</var> の分布が標準正規分布からどれだけ離れているかを測る項。健全なら約 1.05、全部が同じ値なら約 52.3。</dd>
+    <dt>λ</dt><dd>損失の 2 つの項（予測の誤差と SIGReg）の釣り合いを決める数。</dd>
+    <dt><var>r</var>・<var>k</var></dt><dd><var>r</var> は学習で隠す割合（0.25・0.5・0.75）。<var>k</var> は評価で隠す粗いマスの数（4・8・12）。</dd>
+    <dt>step・checkpoint・seed</dt><dd>step は重みの更新 1 回。checkpoint は途中で保存した重み。seed は乱数の種で、seed だけを変えた 2 本で揺れを見る。</dd>
+    <dt>run・掃引</dt><dd>run は 1 回の学習。掃引は、学習率・λ・<var>r</var> を変えた短い run（6000 step）をまとめて回すこと。</dd>
+    <dt>崩壊</dt><dd>表現が画像の違いを映さなくなること。予測が自明に当たるようになる。</dd>
+    <dt>K1・K2・K3</dt><dd>崩壊の検出。K1 は定数、K2 は次元の縮み、K3 は stack の中で一定の情報になる形を捕まえる。</dd>
+    <dt><code>sigreg_heldin</code>・<code>rank</code>・<code>token_r2</code></dt><dd>K1・K2・K3 で見る量。それぞれ、学習外のデータでの SIGReg、<var>z</var> の実効ランク、位置どうしの線形の当てはまり。</dd>
+    <dt>大域の解</dt><dd>見えるトークン全体で 1 つの情報を分け持つ解。batch 128 の SIGReg ではほとんど罰せられない。</dd>
+    <dt>同定</dt><dd>予測が、どのフレームの本物かを、候補の中から言い当てること。</dd>
+    <dt>問い合わせ・候補</dt><dd>問い合わせは比べる側の予測。候補は、正解を含む本物の表現の集まり。</dd>
+    <dt>易しい候補・難しい候補</dt><dd>易しい候補は動画全体から等間隔の 512 個。難しい候補は同じ動画の前後 ±2〜±32 秒の 33 個。</dd>
+    <dt>参照の組</dt><dd>Zurich 以外の学習の動画から取った約 6000 個の stack。中心化の平均、主成分の基底、移植の平均に使う。</dd>
+    <dt>中心化</dt><dd>参照の組で求めた平均を引くこと。共通のずれを除き、違いを向きに出す。</dd>
+    <dt>cos</dt><dd>2 つのベクトルの向きの近さ。長さによらない。</dd>
+    <dt>対の勝率 <var>A</var></dt><dd>正解との類似度が、他の候補 1 つずつとの類似度を上回る割合（引き分けは半分）。偶然 0.5、完全 1。</dd>
+    <dt><code>top1</code></dt><dd>最も類似度の高い候補が正解だった割合。偶然は候補の数分の 1。</dd>
+    <dt><code>pred</code></dt><dd>予測器の出力。測りたいもの。</dd>
+    <dt><code>pool</code>・<code>flat</code>・<code>interp</code></dt><dd>対照。それぞれ、見えている部分の平均、予測の四半分の平均、画素の滑らかな補間で作る。</dd>
+    <dt><code>oracle</code>・<code>const</code></dt><dd>本物そのもの（天井）と、どの問い合わせにも同じ値（床）。</dd>
+    <dt><code>swap</code></dt><dd>対角の 2 つの四半分を同時に隠し、予測が場所を取り違えないかを見る量。位置によらない予測ではちょうど 0.5。</dd>
+    <dt>移植（順向き・逆向き）</dt><dd>四半分 <var>Q</var> の画素だけを別の画像のものに入れ替えること。順向きは文脈 <var>j</var> に候補 <var>m</var> の <var>Q</var> を、逆向きは <var>m</var> に <var>j</var> の <var>Q</var> を入れる。</dd>
+    <dt>局所な符号・鏡の符号</dt><dd>確かめに使う合成の表現。局所な符号は各トークンが自分のパッチの画素を表し、鏡の符号は 180° 反対側のマスの画素を表す。</dd>
+    <dt><var>a<sub>U</sub></var>・<var>a<sub>V</sub></var>・<var>L</var></dt><dd>移植のときに、<var>Q</var> の中と外のトークンがどれだけ動いたかの量。<var>L</var> = <var>a<sub>U</sub></var> − <var>a<sub>V</sub></var>。</dd>
+    <dt>相方</dt><dd>同定と並べて読む量（スペクトル、帯ごとの <code>pred_ratio</code>、補空間での同定）。空間がどれだけのことを表しているかを見る。</dd>
+    <dt><code>pred_ratio</code></dt><dd>予測の誤差を、参照の組の平均を予測とみなしたときの誤差で割った比。1 なら平均と同じ、0 なら完全。</dd>
+    <dt>有効性の確かめ・実装の確かめ</dt><dd>数値を読む前に、物差しが働くかを確かめること。今の指標では、答えが式で決まる合成の例だけを合否に使い、実装の確かめと呼ぶ。</dd>
+    <dt>事前登録</dt><dd>数値を見る前に、規則・閾値・予想を README に書いておくこと。</dd>
+    <dt>ブートストラップ・SE*</dt><dd>データを引き直して値の揺れを見積もる方法。SE* は、まとまりの長さ 8 と 16 のうち大きい方の標準誤差。</dd>
+    <dt>Bonferroni の補正</dt><dd>多くの確かめをまとめて行うとき、どれかが偶然外れる確率を抑えるために、1 つずつの閾値を厳しくする方法。</dd>
+    <dt>P16・F・M</dt><dd>前の実験の長い run。P16 は V18（パッチ 16）、F は V18b（パッチ 4）、M は V18b で K3 に崩れた run。</dd>
+  </dl>
+</section>
+</main>
+</html>
