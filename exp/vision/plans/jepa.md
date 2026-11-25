@@ -1887,7 +1887,8 @@ python -m exp.vision.geom_eval yard --config runs/v18c-long/v18c-lr1e-4-lam0.5-r
 python -m exp.vision.geom_eval run <run_dir> --steps 6000,60000 --sets runs/v18c-geom
 python -m exp.vision.geom_eval vae <ckpt> --name v16 --sets runs/v18c-geom
 # 集計
-uv run python -m exp.vision.results.v18c.judge_geom --stage checks|apply --json exp/vision/results/v18c/judge_geom.json
+uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard --json exp/vision/results/v18c/judge_geom.json
+# apply の段は Δ* を決めた後に書く（下の「実装の記録」）
 ```
 
 ### ファイルの置き場所（3 層の規則）
@@ -1939,6 +1940,25 @@ uv run python -m exp.vision.results.v18c.judge_geom --stage checks|apply --json 
 - 等速の外挿 $2z_t - z_{t-\Delta}$ は、学習の要らない未来の予測で、空間のマスクの `interp` にあたる対照になる。学習した線形の予測器 $A z_t + b$ も対照に置く（回転のような線形の作用は、等速の外挿に勝てる。Codex さん）
 - $G_{\mathrm{ext}} \ge 2s$ は、外挿の誤差を対称な分母 $\bar D$ で割ったときの**定常の**下限である。未来の copy の誤差と比べるときの分母は後半の $E\lVert b \rVert^2$ で、一般の予測器の下限としては扱わない
 - `exp/lib/midpoint.py` の三つ組の和は、そのまま使える
+
+### 実装の記録（2026-11-25。モデルの値は計算していない）
+
+実装は上の「ファイルの置き場所」のとおり。`checks`・`yard`・`run`・`vae` の 4 つの job と、集計の `judge_geom` を作った。テストは `tests/lib/test_midpoint.py`・`test_twonn.py`・`test_synth_series.py`・`test_metrics.py`（追加分）、`tests/vision/test_geom_eval.py`、`tests/vision/results/v18c/test_judge_geom.py`。`checks`・`yard` は、まだ回していない。
+
+計画に書いていなかったので、私たち（Claude）が決めたこと（ユーザーが覆せる）:
+
+- `judge_geom` の段は `checks` と `yard` の 2 つにした。`apply` の段（モデルの値と言葉づかいの分類）は、分類に $\Delta_*$ が要るので、$\Delta_*$ を決めた後に書く
+- 乱数の seed: V-d0b の過程は 901 + 過程の順番（白い雑音 0、ランダムウォーク 1、OU 2、ガウス 3、`ou_mix_c` 4〜7、1 つの帯 8、2 つの帯 9、帯と雑音 10、並べ替え 11）、V-d0a の直線 900、V-d0c の OU と行列 23（計画の seed）、V-d0d 899、V-d0e 898。合成の対照（`ou_mix_c`・`cheb_*`）の参照は、評価の seed に 1000 を足した独立な実現（評価と同じ長さ）
+- 層は計画の「層 6」に合わせ、`all`・`in`・`cross`・`slow`・`mid`・`fast` の 6 つにした
+- $V$ は刻みと層によらないので、ブロック和 $\sum w$・$\sum \lVert w \rVert^2$・個数を、`mid` 行ではなく白色化ごとの `spread` 行に置いた
+- V-d0h の逆順は、各刻みの `all` の三つ組で調べる
+- TwoNN の半分の部分標本（`twonn_sub`）は、主の $k = 64$ の `pre`・`white` だけで作る
+- `h_mean` の位置の平均は float64 で取る。理由: float32 では、$T$ 個の同じ値の平均が元の値と最後の 1 ビットでずれる（乱数のトークンで成分の約 7 割）。そのままでは V-d0h の「`k3_hmean` が `h_mean` とビットまで同じ」が、性質ではなく丸めで外れる。float64 なら、float32 の $T$ 個の和は、成分の指数の広がりが $29 - \log_2 T$ ビット以下のとき厳密になる。乱数のトークンでは $T = 16$ で全て一致し、$T \ge 64$ では 20 回に 1〜2 回の成分がずれた。テストの小さな JEPA（$T = 64$）では一致した。実データでも外れることはありうるので、行に最大の相対差 `max_rel` を残す。外れたら、規則どおり止めて報告する
+
+実装中に分かったこと（合成の符号だけ。モデルの値ではない）:
+
+- **`cheb_b`・`cheb_c` は、評価の長さ（38989 歩）では $k = 64$ で採点できない。** 参照の $\lambda_{64}/\lambda_1$ が数値的に 0（$-3.7 \times 10^{-15}$・$-2.0 \times 10^{-15}$）で、$10^{-12}\lambda_1$ を超える固有値は 30 個・18 個しかない。周波数の帯が狭く（`cheb_b` で全体の長さの中の位相の差が約 12 周期分）、64 本の列が少ない次元に集まるためである（帯の幅と長さの積で次元が決まる、Slepian の集中）。上の表の理論の値（定常・無限の長さ）は、このままでは $k = 64$ の行に出ない。$k = 16$ では両方とも採点できる（$\lambda_{16}/\lambda_1$ = 0.50・$2.6 \times 10^{-9}$）。規則どおり $k = 64$ の欄は欠測にし、刻み・長さ・周波数は変えていない
+- `cheb_a`・`ou_mix_1`・`ou_mix_30` の理論の値は、README の表と 3 桁まで一致した（`test_judge_geom.py`）
 
 ## V19: ストリームで標準の SIGReg
 
