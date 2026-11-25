@@ -69,6 +69,7 @@ from exp.lib.png import tile, write_png
 from exp.lib.provenance import configure_determinism, of_diagnosis
 from exp.lib.readout import (
     CONST,
+    LIMIT,
     SCENE_SCALES,
     balanced_accuracy,
     class_auc,
@@ -385,10 +386,12 @@ def _analysis(
     sup = support(t, blocks, k)
     shares = torch.tensor(record["share"])
     dropped = float((t < 0).double().mean())
-    biggest = float(shares[kept].max())  # of all the stacks
+    # of the kept stacks: the readout and BA see these alone
+    biggest = float(torch.bincount(t[t >= 0], minlength=k).max()) / int((t >= 0).sum())
     checks = {
         "K_ge_3": k >= 3,
         "max_group": biggest,
+        "max_group_of_all": float(shares[kept].max()),
         "max_group_ok": biggest <= sconf.max_group,
         "dropped": dropped,
         "dropped_ok": dropped <= sconf.max_dropped,
@@ -619,7 +622,9 @@ def find_labels(base: Path, grid: Grid, sconf: SceneConf) -> Path:
 
 
 def _scale_name(c: float) -> float | str:
-    return "const" if c == CONST else c
+    if c == CONST:
+        return "const"
+    return "limit" if c >= LIMIT else c
 
 
 def score(
@@ -653,7 +658,9 @@ def score(
             "dim": x.shape[1],
             "scale_by_video": {str(v): _scale_name(c) for v, c in chosen.items()},
             "const_folds": sum(c == CONST for c in chosen.values()),
-            "edge_folds": sum(c == SCENE_SCALES[0] for c in chosen.values()),
+            "limit_folds": sum(LIMIT <= c < CONST for c in chosen.values()),
+            "top_folds": sum(c == SCENE_SCALES[-1] for c in chosen.values()),
+            "bottom_folds": sum(c == SCENE_SCALES[0] for c in chosen.values()),
         }
         if jack:
             jp = torch.full((len(chosen), len(t)), -1, dtype=torch.long)
@@ -791,7 +798,7 @@ class _Context:
             "K": full["K"],
             "kept": full["kept"],
             "L": full["L"],
-            "scales": list(SCENE_SCALES),
+            "scales": [*SCENE_SCALES, LIMIT],
             "seeds": {"pixels_pca": PCA_SEED, "rand": RAND_SEED, "syn": SYN_SEED},
         }
         d = json.loads(json.dumps(d))
@@ -958,10 +965,14 @@ def evaluate_audit(
     of each kept group of ``full``, ``AUDIT_N`` frames of its label (and of
     each kept group of the quarters, ``AUDIT_N_QUAD`` quarters, the four
     pooled) by video (``audit_sample``, ``AUDIT_SEED``), in a random order,
-    at 320 px (a quarter enlarged) and, apart, at 64 px enlarged;
-    ``key.json`` (each number's place, quarter and teacher's group: not for
-    the judge), ``groups.json`` (the groups and their classes: for the
-    judge) and ``view-<g>.png`` (16 of each group, the visual check)."""
+    at 320 px (a quarter enlarged) and, apart, at 64 px enlarged. What the
+    judge is given is apart from the teacher's: ``judge/`` (the 320 px
+    sheets and ``groups.json``, each group's ``id``, name and classes; the
+    judge answers by the ids) and ``judge64/`` (the 64 px sheets and
+    ``groups.json``, shown after the 320 px answers); ``out`` itself holds
+    ``key.json`` (each number's sheet, place, quarter and teacher's group
+    ``teacher`` and ``teacher_id``) and ``view-<g>.png`` (16 of each group,
+    the visual check), neither for the judge."""
     conf = _yard_conf("cpu") if conf is None else conf
     ctx = _Context(conf, out, sconf=sconf, root=root, labels=labels, cache=cache)
     lab, grid = ctx.labels, ctx.grid
@@ -1010,22 +1021,27 @@ def evaluate_audit(
             lo = quarters(lo[None])[it["quarter"]][0]
         factor = x.shape[-1] // lo.shape[-1]
         small.append(lo.repeat_interleave(factor, 1).repeat_interleave(factor, 2))
-    out.mkdir(parents=True, exist_ok=True)
-    sheets = _sheets(torch.stack(big), out, "sheet320")
-    sheets64 = _sheets(torch.stack(small), out, "sheet64")
+    judge, judge64 = out / "judge", out / "judge64"
+    for d in (judge, judge64):
+        d.mkdir(parents=True, exist_ok=True)
+    sheets = _sheets(torch.stack(big), judge, "sheet320")
+    sheets64 = _sheets(torch.stack(small), judge64, "sheet64")
     key = [
-        {"number": i + 1, "sheet": sheets[i // 16], "sheet64": sheets64[i // 16],
+        {"number": i + 1, "sheet": f"judge/{sheets[i // 16]}",
+         "sheet64": f"judge64/{sheets64[i // 16]}",
          "place": list(grid.places[it["row"]]), "quarter": it["quarter"],
-         "teacher": names[it["group"]]}
+         "teacher": names[it["group"]], "teacher_id": it["group"]}
         for i, it in enumerate(items)
     ]  # fmt: skip
     write_json(out / "key.json", key)
     kept = sorted(set(full["kept"]) | set(quad_groups))
-    groups = {
-        names[g]: [classes[c] for c in member[:, g].nonzero().flatten().tolist()]
+    groups = [
+        {"id": g, "name": names[g],
+         "classes": [classes[c] for c in member[:, g].nonzero().flatten().tolist()]}
         for g in kept
-    }
-    write_json(out / "groups.json", groups)
+    ]  # fmt: skip
+    for d in (judge, judge64):
+        write_json(d / "groups.json", groups)
     for c, g in enumerate(full["kept"]):
         rows = (lab.t() == c).nonzero().flatten()
         pick = rows[torch.randperm(len(rows), generator=gen)[:16]]
@@ -1171,7 +1187,8 @@ def evaluate_checks(
     draws: int = N_RAND,
 ) -> Path:
     """V-c4 (``rand-<code>-<i>``: ``color`` and ``inc64`` to ``draws``
-    random labels, ``random_labels``) and V-c5 (``syn_<q>``: the synthetic
+    random labels, ``random_labels``; each row with its labels ``t`` beside
+    its ``pred``, for its own bootstrap) and V-c5 (``syn_<q>``: the synthetic
     codes, ``synthetic_codes``, with their true $m^*(S_q)$ and the
     jackknife) into ``out_dir / rows``. Returns ``out_dir``."""
     conf = _yard_conf(None) if conf is None else conf
@@ -1199,8 +1216,7 @@ def evaluate_checks(
         x = _yard_codes(base, ctx, {}, {}, features=features)
         for i in todo:
             t0 = time.time()
-            row = ctx.score(x, t=rand[i])
-            row.pop("pred")
+            row = ctx.score(x, t=rand[i]) | {"t": rand[i].tolist()}
             ctx.write(f"rand-{base}-{i:02d}", {"code": base, "draw": i} | row, t0)
     return ctx.out
 

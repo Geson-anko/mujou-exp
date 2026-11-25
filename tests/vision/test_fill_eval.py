@@ -610,3 +610,21 @@ class TestWhitening:
         u = Space.fit(raw, 5, seed=97, whiten=True)(raw)
         torch.testing.assert_close(u.std(0), torch.ones(5, dtype=torch.float64))
         torch.testing.assert_close(u.mean(0), torch.zeros(5, dtype=torch.float64))
+
+
+class TestSceneTargetCLI:
+    def test_labels_reach_scene_evals_fill_and_need_the_scene_target(
+        self, monkeypatch, tmp_path
+    ):
+        from exp.vision import scene_eval
+
+        got = {}
+        monkeypatch.setattr(
+            scene_eval, "evaluate_fill", lambda run_dir, **kw: got.update(kw)
+        )
+        lab = tmp_path / "v18c-scene-x"
+        fill_eval.main(["run", "r", "--steps", "0", "--target", "scene",
+                        "--labels", str(lab)])  # fmt: skip
+        assert got["labels"] == lab
+        with pytest.raises(SystemExit):
+            fill_eval.main(["run", "r", "--steps", "0", "--labels", str(lab)])

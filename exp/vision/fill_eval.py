@@ -2264,6 +2264,7 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     run.add_argument(
         "--target", choices=("scene",), help="E1f of scene_eval's labels (e1f only)"
     )
+    run.add_argument("--labels", type=Path, help="scene_eval's labels (--target scene)")
     diag = sub.add_parser("diag", help="E1's diagnosis of shuf (old checkpoints)")
     diag.add_argument("run_dir", type=Path)
     diag.add_argument("--steps", type=_ints, required=True)
@@ -2284,6 +2285,8 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     for p in (tg, gen):
         p.add_argument("--inception", type=Path, help="FID's weights")
     args = ap.parse_args(argv)
+    if args.cmd == "run" and args.labels is not None and args.target != "scene":
+        ap.error("--labels is of --target scene")
     if args.cmd == "run" and args.target == "scene":
         if args.parts not in (None, ("e1f",)) or args.split is not None:
             ap.error("--target scene is E1f alone, without --split")
@@ -2294,6 +2297,7 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
             args.run_dir,
             steps=args.steps,
             root=args.root,
+            labels=args.labels,
             cache=args.cache,
             device=args.device,
         )

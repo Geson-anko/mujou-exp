@@ -33,6 +33,7 @@ from exp.vision.scene_eval import (
     YARD_PREFIX,
     SceneConf,
     SceneLabels,
+    _analysis,
     audit_sample,
     block_length,
     e1f_scene_rows,
@@ -89,6 +90,21 @@ class TestKeptGroups:
         y[0, 50:52] = 0
         kept, _ = kept_groups(y.flatten(), video.flatten(), 4, sconf)
         assert kept == [0, 1]
+
+    def test_v_c1s_largest_group_is_of_the_kept_stacks(self):
+        # 2 videos of 100: group 0 60 %, 1 30 %, 2 10 % (left out at 15 %);
+        # of the kept 90 stacks per video, group 0 holds 60/90
+        sconf = SceneConf(videos=("a", "b"), keep_share=0.15, keep_videos=2,
+                          min_blocks=1, l_min=1)  # fmt: skip
+        y = torch.zeros(2, 100, dtype=torch.long)
+        y[:, 60:90] = 1
+        y[:, 90:] = 2
+        video = torch.arange(2)[:, None].expand(2, 100).flatten()
+        got = _analysis(y.flatten(), video, 3, sconf, None)
+        assert got["kept"] == [0, 1]
+        assert got["checks"]["max_group"] == pytest.approx(60 / 90)
+        assert got["checks"]["max_group_of_all"] == pytest.approx(0.6)
+        assert got["checks"]["dropped"] == pytest.approx(0.1)
 
 
 class TestBlockLength:
@@ -289,7 +305,16 @@ class TestEvaluate:
         counts = torch.bincount(lab.t()[lab.t() >= 0], minlength=k)
         full_items = [it for it in key if it["quarter"] is None]
         assert len(full_items) == int(counts.clamp(max=AUDIT_N).sum())
-        assert (audit / key[0]["sheet"]).is_file() and (audit / "groups.json").is_file()
+        # the judge's directories hold neither the key nor the teacher's views
+        assert (audit / key[0]["sheet"]).is_file() and (
+            audit / key[0]["sheet64"]
+        ).is_file()
+        judged = {p.name for d in ("judge", "judge64") for p in (audit / d).iterdir()}
+        assert "key.json" not in judged and not any(
+            n.startswith("view") for n in judged
+        )
+        groups = json.loads((audit / "judge" / "groups.json").read_text())
+        assert {it["teacher_id"] for it in key} <= {g["id"] for g in groups}
         # the yardsticks: mean 0, label 1 - B, the videos 0
         run = tiny_run(root, tmp_path, *V18C)
         yard = evaluate_yardsticks(
@@ -316,6 +341,9 @@ class TestEvaluate:
         names = sorted(p.stem for p in (checks / "rows").iterdir())
         assert sum(nm.startswith("syn_") for nm in names) == 4
         assert {"rand-color-01", "rand-inc64-00"} <= set(names)
+        # a null row keeps its predictions and labels for its own bootstrap
+        rand = json.loads((checks / "rows" / "rand-color-01.json").read_text())
+        assert len(rand["pred"]) == n and len(rand["t"]) == n
         syn0 = json.loads((checks / "rows" / "syn_0.0000.json").read_text())
         assert syn0["q"] == 0.0 and "m_true" in syn0
         # a run: its step 0 is the yardstick init_c

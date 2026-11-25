@@ -7,8 +7,8 @@ Reads ``runs/v18c-scene/``: ``labels.json`` (the labels' cache's: the kept
 labels ``t`` of ``full`` and the quarters, the videos, $L$, $L_{\max}$, V-c1
 and V-E1'5), ``places_check.json`` (``python -m exp.lib.places365 check
 --out``), ``audit/key.json`` and ``audit/answers.json`` (the judge's: number
--> a list of 1 or 2 group names, or ``"判定不能"``), ``yardsticks/rows`` and
-``checks/rows``; and of each long run ``runs/v18c-long/<run>/``
+-> a list of 1 or 2 group ids of ``audit/judge/groups.json``, or
+``"判定不能"``), ``yardsticks/rows`` and ``checks/rows``; and of each long run ``runs/v18c-long/<run>/``
 ``posthoc_scene/rows`` (``z``), ``posthoc_scene_fill/rows`` (E1f),
 ``posthoc_fill_sem/rows`` (the frozen E1, V-E1'1) and ``posthoc_fill/rows``
 (``e1diag``, V-E1'2); L1 and its premise from ``judge_long``'s JSON
@@ -22,8 +22,17 @@ video $u$ are ``scene_m`` of its ``jack_pred[u]`` on the other videos
 (classes of 10 rows or more). A comparison $d$ against a threshold $\delta$
 reads (README 「比べの 3 つの読み」): ``above`` ($d > \delta$ and $d_{(u)} >
 0$ for every $u$), ``below`` ($d < -\delta$ and every $d_{(u)} < 0$),
-``excl`` ($d + \delta < \Delta_*$, alongside ``below`` possibly), else
-``undecided``. Prints markdown; ``--json`` also writes the numbers::
+``excl`` ($d + \delta < \Delta_*$ and every $d_{(u)} < \Delta_*$,
+alongside ``below`` possibly), else ``undecided``; without the jackknife's
+values, none of the three.
+
+V-c4's $\mathrm{SE}^*$ is that of its own comparison, $m$ of the random
+labels against 0: each null row's $\mathrm{SE}^*$ of its own predictions and
+labels, pooled as $\sqrt{\overline{\mathrm{SE}^{*2}}}$ (the law of total
+variance, $\mathbb E[m \mid \hat y] = 0$). E1f is read when V-c0, V-c3,
+V-c4, V-E1'5 and V-E1'6 pass, each run's when its V-E1'1 to V-E1'3 hold and
+V-E1'4 is ``above``; L2, L3 and the settings when V-c0 to V-c6 pass.
+Prints markdown; ``--json`` also writes the numbers::
 
     uv run python -m exp.vision.results.v18c.judge_scene [--runs runs] \
         [--long exp/vision/results/v18c/judge_long.json] [--json out.json]
@@ -43,7 +52,14 @@ from torch import Tensor
 from exp.lib.metrics import contiguous_blocks, scene_bootstrap, scene_resamples
 from exp.lib.readout import scene_m
 from exp.vision.results.v18c.judge_screen import run_name
-from exp.vision.scene_eval import BOOT, BOOT_SEED, DELTA_STAR, N_RAND, YARD_PREFIX
+from exp.vision.scene_eval import (
+    BOOT,
+    BOOT_SEED,
+    DELTA_STAR,
+    N_RAND,
+    YARD_PREFIX,
+    block_length,
+)
 
 Row = dict[str, Any]
 
@@ -58,6 +74,9 @@ RESID = 1e-9  # V-E1'2
 AGREE, UNSURE = 0.7, 0.2  # V-c2, V-E1'6
 UNSURE_LABEL = "判定不能"
 LISTED = ("init_c", "pca1024", "color8", "v16", "inc64")  # set against the runs
+HIT_TAU = ("color", "color8", "inc64")  # the hits' integrated time, recorded
+SUB_MIN = 10  # a subset's classes of fewer rows are left out (plans/jepa.md)
+FOLDS = ("const_folds", "limit_folds", "top_folds", "bottom_folds")
 LONG_JSON = Path(__file__).with_name("judge_long.json")
 
 
@@ -84,12 +103,18 @@ class Scene:
         self.held = labels["videos"].index(labels["held_out"])
 
     def se(
-        self, preds: Sequence[Tensor], coef: Sequence[float], *, quad: bool = False
+        self,
+        preds: Sequence[Tensor],
+        coef: Sequence[float],
+        *,
+        quad: bool = False,
+        y: Tensor | None = None,
     ) -> float:
         r"""$\mathrm{SE}^*$ of $\sum_c a_c m_c$ of the predictions ``preds``
-        (each ``(N,)``, or ``(4, N)`` of the quarters with ``quad``)."""
+        (each ``(N,)``, or ``(4, N)`` of the quarters with ``quad``) of the
+        labels ``y`` (default: the kept labels)."""
         p = torch.stack(list(preds))
-        lab = torch.stack(self.quads) if quad else self.t
+        lab = torch.stack(self.quads) if quad else self.t if y is None else y
         c = torch.tensor([list(coef)], dtype=torch.float64)
         out = []
         for blocks in self.blocks.values():
@@ -99,11 +124,15 @@ class Scene:
             )
         return max(out)
 
-    def resamples(self, preds: Sequence[Tensor], y: Tensor, ell: int) -> Tensor:
+    def resamples(
+        self, preds: Sequence[Tensor], y: Tensor, ell: int, min_count: int = 1
+    ) -> Tensor:
         """The resampled $m$ ``(BOOT, C)`` at the block length ``ell``."""
         gen = torch.Generator().manual_seed(BOOT_SEED)
         p = torch.stack(list(preds))
-        return scene_resamples(p, y, self.video, self.blocks[ell], BOOT, gen)
+        return scene_resamples(
+            p, y, self.video, self.blocks[ell], BOOT, gen, min_count=min_count
+        )
 
     def jack(self, jack_pred: Tensor, *, quad: bool = False) -> list[float]:
         """The values without each video $u$ of a code's ``jack_pred``
@@ -118,19 +147,20 @@ class Scene:
         for u in range(jp.shape[0]):
             on = (self.video != u) & (y >= 0)
             out.append(scene_m(jp[u][on], y[on], self.video[on], int(y.max()) + 1,
-                               min_count=10))  # fmt: skip
+                               min_count=SUB_MIN))  # fmt: skip
         return out
 
 
 def reading(d: float, delta: float, d_jack: Sequence[float] | None) -> list[str]:
-    """The readings of a comparison (module docstring)."""
+    """The readings of a comparison (module docstring): each of the three
+    claims holds on all the videos and on each 8 of them alike."""
     out = []
     jack = list(d_jack or [])
     if d > delta and jack and all(x > 0 for x in jack):
         out.append("above")
     if d < -delta and jack and all(x < 0 for x in jack):
         out.append("below")
-    if d + delta < DELTA_STAR:
+    if d + delta < DELTA_STAR and jack and all(x < DELTA_STAR for x in jack):
         out.append("excl")
     return out or ["undecided"]
 
@@ -172,26 +202,46 @@ def compare(sc: Scene, a: Row, b: Row | None, factor: float = 2.0,
 # -- the validity checks -----------------------------------------------------------------
 
 
+def _ids(given: Any) -> list[int] | None:
+    """An answer's group ids (a list of 1 or 2 ints), else None."""
+    if not isinstance(given, list) or not 1 <= len(given) <= 2:
+        return None
+    if not all(isinstance(g, int) and not isinstance(g, bool) for g in given):
+        return None
+    return given
+
+
 def audit(key: list[Row] | None, answers: Row | None, quarter: bool) -> Row:
-    """V-c2 (``quarter`` False) or V-E1'6: of each teacher's group, the share
-    of the judge's answers holding it (the unsure left out), and the unsure's
-    share."""
+    """V-c2 (``quarter`` False) or V-E1'6: of each teacher's group (by its
+    id), the share of the judge's answers holding it (the unsure left out;
+    a group with no answer but the unsure fails), and the unsure's share.
+    An answer missing or not of the ids leaves the check undecided (``pass``
+    None) until the answers are complete."""
     if key is None or answers is None:
         return {"pass": None}
     items = [it for it in key if (it["quarter"] is not None) == quarter]
-    by: dict[str, list[int]] = {}
-    unsure = 0
+    names = {it["teacher_id"]: it["teacher"] for it in items}
+    by: dict[int, list[int]] = {g: [] for g in sorted(names)}
+    unsure, bad = 0, []
     for it in items:
         given = answers.get(str(it["number"]))
-        if given is None or given == UNSURE_LABEL:
+        if given == UNSURE_LABEL:
             unsure += 1
             continue
-        hit = it["teacher"] in given
-        by.setdefault(it["teacher"], []).append(int(hit))
-    agree = {g: sum(v) / len(v) for g, v in by.items()}
+        ids = _ids(given)
+        if ids is None:
+            bad.append(it["number"])
+            continue
+        by[it["teacher_id"]].append(int(it["teacher_id"] in ids))
+    agree = {str(g): sum(v) / len(v) if v else None for g, v in by.items()}
     share = unsure / len(items) if items else None
-    ok = bool(agree) and min(agree.values()) >= AGREE and share is not None
-    return {"agree": agree, "unsure": share, "pass": ok and (share or 0.0) <= UNSURE}
+    out: Row = {"agree": agree, "judged": {str(g): len(v) for g, v in by.items()},
+                "names": {str(g): n for g, n in names.items()}, "unsure": share,
+                "bad": bad}  # fmt: skip
+    if bad or share is None:
+        return out | {"pass": None}
+    ok = all(a is not None and a >= AGREE for a in agree.values())
+    return out | {"pass": ok and share <= UNSURE}
 
 
 def validity(sc: Scene, yard: dict[str, Row], checks: dict[str, Row],
@@ -220,22 +270,16 @@ def validity(sc: Scene, yard: dict[str, Row], checks: dict[str, Row],
     else:
         out["V-c3"] = {"pass": None}
     out["V-c4"] = {}
-    v4 = True
+    oks = []
     for base in ("color", "inc64"):
-        row = yard.get(f"{YARD_PREFIX}-{base}")
-        ms = [checks[f"rand-{base}-{i:02d}"]["m"] for i in range(N_RAND)
-              if f"rand-{base}-{i:02d}" in checks]  # fmt: skip
-        if row is None or len(ms) < N_RAND:
-            out["V-c4"][base] = None
-            v4 = False
-            continue
-        se = sc.se([_pred(row)], [1.0])
-        mean_m = sum(ms) / len(ms)
-        sd = float(torch.tensor(ms).std())
-        ok = abs(mean_m) <= 3 * se / math.sqrt(N_RAND) and 0.5 * se <= sd <= 2 * se
-        out["V-c4"][base] = {"mean": mean_m, "sd": sd, "se": se, "pass": ok}
-        v4 &= ok
-    out["V-c4"]["pass"] = v4
+        rows = [checks.get(f"rand-{base}-{i:02d}") for i in range(N_RAND)]
+        got = null_check(sc, rows)
+        real = yard.get(f"{YARD_PREFIX}-{base}")
+        if got is not None and real is not None:
+            got["se_real"] = sc.se([_pred(real)], [1.0])  # listed only
+        out["V-c4"][base] = got
+        oks.append(None if got is None else got["pass"])
+    out["V-c4"]["pass"] = False if False in oks else None if None in oks else True
     syn = sorted(
         (r for n, r in checks.items() if n.startswith("syn_")), key=lambda r: r["q"]
     )
@@ -244,7 +288,10 @@ def validity(sc: Scene, yard: dict[str, Row], checks: dict[str, Row],
         lo, hi = syn[1], syn[2]
         c = compare(sc, hi, lo)
         truth = hi["m_true"] - lo["m_true"]
-        ok = all(near) and "above" in c["read"] and abs(c["d"] - truth) <= c["delta"]
+        # the step's error is the fit's (truth is of the same frames), so
+        # its budget is the fit's, the same as each q's: Delta*/2
+        ok = (all(near) and "above" in c["read"]
+              and abs(c["d"] - truth) <= DELTA_STAR / 2)  # fmt: skip
         out["V-c5"] = {"rows": [{k: r[k] for k in ("q", "m", "m_true")} for r in syn],
                        "step": c, "truth_step": truth, "pass": ok}  # fmt: skip
     else:
@@ -263,7 +310,46 @@ def validity(sc: Scene, yard: dict[str, Row], checks: dict[str, Row],
     else:
         out["V-c6"] = {"pass": None}
     out["valid"] = all(out[f"V-c{i}"]["pass"] is True for i in range(7))
+    out["record"] = {
+        "L": sc.length,
+        "2L": sc.l2,
+        "tau_labels": sc.meta["full"].get("tau"),
+        "hit_tau": {c: hit_tau(sc, yard[f"{YARD_PREFIX}-{c}"]) for c in HIT_TAU
+                    if f"{YARD_PREFIX}-{c}" in yard},
+    }  # fmt: skip
     return out
+
+
+def null_check(sc: Scene, rows: Sequence[Row | None]) -> Row | None:
+    r"""V-c4 of one code's ``N_RAND`` null rows (None if one is missing): the
+    mean and sd of their $m$ against $\mathrm{SE}^* = \sqrt{\overline{
+    \mathrm{SE}_i^{*2}}}$, $\mathrm{SE}_i^*$ the bootstrap of row $i$'s own
+    predictions and random labels (module docstring); ``pass`` None if that
+    is 0 (every draw constant: the size is not checked)."""
+    if len(rows) < N_RAND or any(r is None or "t" not in r for r in rows):
+        return None
+    ok_rows = [r for r in rows if r is not None]
+    ms = [r["m"] for r in ok_rows]
+    ses = [sc.se([_pred(r)], [1.0], y=torch.tensor(r["t"])) for r in ok_rows]
+    se = math.sqrt(sum(x * x for x in ses) / len(ses))
+    mean_m = sum(ms) / len(ms)
+    sd = float(torch.tensor(ms, dtype=torch.float64).std())
+    ok = abs(mean_m) <= 3 * se / math.sqrt(N_RAND) and 0.5 * se <= sd <= 2 * se
+    return {"mean": mean_m, "sd": sd, "se": se, "se_rows": ses,
+            "pass": ok if se > 0 else None}  # fmt: skip
+
+
+def hit_tau(sc: Scene, row: Row) -> float | None:
+    r"""The integrated time of a code's hits $[\hat y = y]$ on the grid
+    (``scene_eval.block_length`` of the hits as 2 classes: the centred
+    one-hot's autocorrelation is the hits' own), to set against $L$; None
+    if the hits are constant within every video."""
+    pred, t = _pred(row), sc.t
+    on = t >= 0
+    hits = torch.where(on, (pred == t).long(), -1)
+    if all(hits[on & (sc.video == u)].unique().numel() < 2 for u in sc.video.unique()):
+        return None
+    return block_length(hits, sc.video, 2, 1)["tau"]
 
 
 # -- the long runs -------------------------------------------------------------------------
@@ -282,10 +368,12 @@ type Key = tuple[float, float, int]
 
 
 def long_runs(
-    sc: Scene, runs: Path, l1: dict[str, Row]
+    sc: Scene, runs: Path, l1: dict[str, Row], *, main_ok: bool, e1f_ok: bool
 ) -> tuple[list[Row], dict[Key, dict[int, Row]]]:
-    """L2, L3, the gain on Zurich and the other 8, and E1f's C1', C4' and
-    V-E1'1 to V-E1'4 of each long run; and its ``z`` rows by step."""
+    """Of each long run: its $m$ by step, L2, L3 and the gain on Zurich and
+    the other 8 (with ``main_ok``, V-c0 to V-c6 passed), E1f's C1', C4' and
+    V-E1'1 to V-E1'4 (with ``e1f_ok``, E1f's premises passed); and its
+    ``z`` rows by step."""
     out = []
     zrows: dict[Key, dict[int, Row]] = {}
     for lr, lam, s in itertools.product(LRS, LAMS, SEEDS):
@@ -298,28 +386,37 @@ def long_runs(
                     "ba": {str(k): v["ba"] for k, v in sorted(z.items())},
                     "premise": l1.get(name, {}).get("premise"),
                     "L1": l1.get(name, {}).get("L1")}  # fmt: skip
-        if all(k in z for k in (0, SHORT, LONG)):
+        if main_ok and all(k in z for k in (0, SHORT, LONG)):
             row["L2"] = compare(sc, z[LONG], z[SHORT])
             row["L3"] = compare(sc, z[LONG], z[0])
             row["seen"] = _seen(sc, z[LONG], z[SHORT])
-        row["e1f"] = e1f(sc, runs / "v18c-long" / name)
+        if e1f_ok:
+            row["e1f"] = e1f(sc, runs / "v18c-long" / name)
         out.append(row)
     return out, zrows
 
 
 def _seen(sc: Scene, a: Row, b: Row) -> Row:
     """The gain $\\Delta = m(60000) - m(6000)$ on the other 8 less that on
-    Zurich, with its paired $2\\,\\mathrm{SE}^*$ (README 「学習で見た動画」)."""
+    Zurich, with its paired $2\\,\\mathrm{SE}^*$ (README 「学習で見た動画」):
+    the rows' ``m_zurich`` and ``m_seen8`` (classes of ``SUB_MIN`` rows or
+    more), the bootstrap leaving out the same in each resample; None where
+    a subset has no such class."""
+    vals = [a["m_zurich"], b["m_zurich"], a["m_seen8"], b["m_seen8"]]
+    if any(x is None for x in vals):
+        return {"gain_zurich": None, "gain_seen8": None, "d": None, "2se": None,
+                "seen_only": None}  # fmt: skip
     on_z = sc.video == sc.held
     sub = {
         "zurich": torch.where(on_z, sc.t, -1),
         "seen8": torch.where(~on_z, sc.t, -1),
     }
-    d_z = (a["m_zurich"] or 0.0) - (b["m_zurich"] or 0.0)
-    d_8 = (a["m_seen8"] or 0.0) - (b["m_seen8"] or 0.0)
+    d_z = a["m_zurich"] - b["m_zurich"]
+    d_8 = a["m_seen8"] - b["m_seen8"]
     ses = []
     for ell in sc.blocks:
-        res = {k: sc.resamples([_pred(a), _pred(b)], y, ell) for k, y in sub.items()}
+        res = {k: sc.resamples([_pred(a), _pred(b)], y, ell, SUB_MIN)
+               for k, y in sub.items()}  # fmt: skip
         diff = (res["seen8"][:, 0] - res["seen8"][:, 1]) - (
             res["zurich"][:, 0] - res["zurich"][:, 1]
         )
@@ -394,6 +491,15 @@ def e1f(sc: Scene, run: Path) -> Row:
         conds = {q: x["quarters"][q].get("cond") for x in by_step[LONG]
                  if (x["k"], x["stage"]) == (8, "pool") for q in "tl tr bl br".split()}  # fmt: skip
         out["cond_pool_60000"] = conds
+    # README: a run's E1f is not read unless its checks hold
+    v4 = out.get("V-E1'4")
+    out["readable"] = all(out[c] is True for c in ("V-E1'1", "V-E1'2", "V-E1'3")) and (
+        v4 is not None and "above" in v4["read"]
+    )
+    if not out["readable"]:
+        for c in ("C1_pool", "C1_color", "C4"):
+            if c in out:
+                out[c]["read"] = None
     return out
 
 
@@ -405,13 +511,21 @@ def settings(
     set against the runs (README 「設定ごとの読み」「学習率ごとの読み」)."""
     by = {(r["lr"], r["lam"], r["seed"]): r for r in rows}
     pairs = [(by.get((lr, lam, 0)), by.get((lr, lam, 1))) for lr in LRS for lam in LAMS]
-    var = [(a["m"][str(LONG)] - b["m"][str(LONG)]) ** 2 / 2 for a, b in pairs
-           if a and b and str(LONG) in a["m"] and str(LONG) in b["m"]]  # fmt: skip
-    s2 = sum(var) / len(var) if var else None
-    s2_short = [(a["m"][str(SHORT)] - b["m"][str(SHORT)]) ** 2 / 2 for a, b in pairs
-                if a and b and str(SHORT) in a["m"] and str(SHORT) in b["m"]]  # fmt: skip
-    out: Row = {"sigma_seed": None if s2 is None else math.sqrt(s2), "dof": len(var),
-                "sigma_seed_6000": math.sqrt(sum(s2_short) / len(s2_short)) if s2_short else None}  # fmt: skip
+    s2, dof = seed_var(pairs, lambda m: m.get(str(LONG)))
+    s2_short, _ = seed_var(pairs, lambda m: m.get(str(SHORT)))
+    # the gains' own: Var_seed(m60 - m6) is not Var_seed(m60) (README δ_2)
+    s2_gain, dof_gain = seed_var(
+        pairs,
+        lambda m: (
+            None
+            if str(LONG) not in m or str(SHORT) not in m
+            else m[str(LONG)] - m[str(SHORT)]
+        ),
+    )
+    out: Row = {"sigma_seed": None if s2 is None else math.sqrt(s2), "dof": dof,
+                "sigma_seed_6000": None if s2_short is None else math.sqrt(s2_short),
+                "sigma_seed_gain": None if s2_gain is None else math.sqrt(s2_gain),
+                "dof_gain": dof_gain}  # fmt: skip
     per: list[Row] = []
     for lr in LRS:
         for lam in LAMS:
@@ -432,7 +546,7 @@ def settings(
                         "verdict": verdict})  # fmt: skip
     out["per_setting"] = per
     out["v19"] = any(p.get("verdict") == "supported" for p in per)
-    if s2 is None:
+    if s2 is None or s2_gain is None:
         return out
     z = zrows
 
@@ -473,7 +587,7 @@ def settings(
                 for s in SEEDS
             ]
             lam_cmp.append({"lr": lr, "pair": [l2, l1], "level": mean_cmp(lvl, s2),
-                            "gain": mean_cmp(gain, s2), "seeds_agree": len(set(signs)) == 1})  # fmt: skip
+                            "gain": mean_cmp(gain, s2_gain), "seeds_agree": len(set(signs)) == 1})  # fmt: skip
     out["lambda"] = lam_cmp
     lr_cmp = []
     for lam in LAMS:
@@ -481,25 +595,29 @@ def settings(
         if not all(k in z and z[k] for k in keys):
             continue
         a, b = LRS
-        for ref, tag in ((SHORT, "L2"), (0, "L3")):
+        # L3's step 0 is the same for a seed whatever the rate: it cancels,
+        # and the level's variance is the one; L2's is the gain's
+        for ref, tag, var in ((SHORT, "L2", s2_gain), (0, "L3", s2)):
             terms = [(z[(a, lam, s)][LONG], 0.5) for s in SEEDS]
             terms += [(z[(a, lam, s)][ref], -0.5) for s in SEEDS]
             terms += [(z[(b, lam, s)][LONG], -0.5) for s in SEEDS]
             terms += [(z[(b, lam, s)][ref], 0.5) for s in SEEDS]
-            lr_cmp.append({"lam": lam, "gain": tag, "cmp": mean_cmp(terms, s2)})
+            lr_cmp.append({"lam": lam, "gain": tag, "cmp": mean_cmp(terms, var)})
     out["lr"] = lr_cmp
     listed = []
     for lr in LRS:
         for lam in LAMS:
             keys = [(lr, lam, s) for s in SEEDS]
-            if not all(k in z and z[k] for k in keys):
+            if not all(k in z and 0 in z[k] and LONG in z[k] for k in keys):
                 continue
             for code in LISTED:
-                ys = [r for n, r in yard.items() if n == f"{YARD_PREFIX}-{code}"
-                      or n.startswith(f"{YARD_PREFIX}-{code}-")]  # fmt: skip
-                if not ys:
+                terms = [(z[k][LONG], 0.5) for k in keys]
+                if code == "init_c":  # each seed's own step 0 (its init_c)
+                    terms += [(z[k][0], -0.5) for k in keys]
+                elif f"{YARD_PREFIX}-{code}" in yard:
+                    terms += [(yard[f"{YARD_PREFIX}-{code}"], -1.0)]
+                else:
                     continue
-                terms = [(z[k][LONG], 0.5) for k in keys] + [(ys[0], -1.0)]
                 c = mean_cmp(terms, s2 / 2)
                 listed.append(
                     {
@@ -512,6 +630,22 @@ def settings(
                 )
     out["yardsticks"] = listed
     return out
+
+
+def seed_var(
+    pairs: Sequence[tuple[Row | None, Row | None]], value: Any
+) -> tuple[float | None, int]:
+    r"""The pooled seed variance $\frac1S \sum_s (a_s - b_s)^2 / 2$ of the
+    settings' two seeds' ``value(run["m"])`` (None where absent) and its
+    degrees of freedom $S$."""
+    var = []
+    for a, b in pairs:
+        if a is None or b is None:
+            continue
+        x, y = value(a["m"]), value(b["m"])
+        if x is not None and y is not None:
+            var.append((x - y) ** 2 / 2)
+    return (sum(var) / len(var) if var else None), len(var)
 
 
 def main(argv: Sequence[str] | None = None) -> Row:
@@ -531,27 +665,38 @@ def main(argv: Sequence[str] | None = None) -> Row:
     v["V-E1'5"] = all(sc.meta[f"quad/{q}"]["passed"] for q in "tl tr bl br".split())
     v["V-E1'6"] = audit(_load(base / "audit" / "key.json"),
                         _load(base / "audit" / "answers.json"), quarter=True)  # fmt: skip
-    result: Row = {"validity": v, "yardsticks": {n: {k: r.get(k) for k in ("m", "ba", "chance", "m_zurich", "const_folds")} for n, r in yard.items()}}  # fmt: skip
+    v["e1f_premise"] = e1f_premise(v)
+    result: Row = {"validity": v, "yardsticks": {n: {k: r.get(k) for k in ("m", "ba", "chance", "m_zurich", *FOLDS)} for n, r in yard.items()}}  # fmt: skip
     _print_validity(v)
     if not v["valid"]:
         print("\n有効性の確かめが外れた: m を判定に使わない（README）。")
-    else:
+    if v["valid"] or v["e1f_premise"]:
         long = _load(args.long) or {"runs": []}
         l1 = {r["name"]: r for r in long["runs"]}
-        rows, zrows = long_runs(sc, args.runs, l1)
+        rows, zrows = long_runs(
+            sc, args.runs, l1, main_ok=v["valid"], e1f_ok=v["e1f_premise"]
+        )
         result["runs"] = rows
-        result["settings"] = settings(sc, rows, zrows, yard)
-        _print_runs(rows, result["settings"])
+        if v["valid"]:
+            result["settings"] = settings(sc, rows, zrows, yard)
+            _print_runs(rows, result["settings"])
     if args.json is not None:
         args.json.write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
     return result
+
+
+def e1f_premise(v: Row) -> bool:
+    """E1f's premises (README 「``e1f`` の有効性の確かめ」): V-c0, V-c3 and
+    V-c4 of the main measure, V-E1'5 and V-E1'6."""
+    main = all(v[c]["pass"] is True for c in ("V-c0", "V-c3", "V-c4"))
+    return main and v["V-E1'5"] is True and v["V-E1'6"]["pass"] is True
 
 
 def _print_validity(v: Row) -> None:
     print("## 有効性の確かめ\n")
     print("| 名前 | 合否 |")
     print("| -- | -- |")
-    for k in (*(f"V-c{i}" for i in range(7)), "V-E1'5", "V-E1'6"):
+    for k in (*(f"V-c{i}" for i in range(7)), "V-E1'5", "V-E1'6", "e1f_premise"):
         x = v.get(k)
         ok = x.get("pass") if isinstance(x, dict) else x
         print(f"| {k} | {ok} |")
