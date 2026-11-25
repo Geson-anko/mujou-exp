@@ -67,7 +67,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import yaml
@@ -86,8 +86,9 @@ from exp.lib.readout import (
     select_ridge,
 )
 from exp.lib.rundir import write_json
-from exp.lib.tours.hires import MAX_DIFF, HiresFrames
+from exp.lib.tours.hires import MOVING, HiresFrames
 from exp.lib.tours.stacks import DATA_ENV, StackedTourFrames, tours_root
+from exp.lib.video_io import U8Reader
 from exp.vision.compose import from_dict
 from exp.vision.eval import PCA_SEED
 from exp.vision.fill_eval import Space, Targets, _apply
@@ -117,11 +118,13 @@ __all__ = [
     "SENS_SEED",
     "SPLITS",
     "YARDSTICKS",
+    "Frames",
     "K3Code",
     "SemConf",
     "SemSets",
     "blur",
     "build_targets",
+    "check_places",
     "evaluate_frames",
     "evaluate_run",
     "evaluate_targets",
@@ -481,6 +484,63 @@ def targets_key(sets: SemSets, sconf: SemConf, hires_name: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
+class Frames(Protocol):
+    """The prepared frames of one video (``video_io.U8Reader``): u8 ``(3,
+    S, S)`` by number."""
+
+    def __len__(self) -> int: ...
+
+    def __getitem__(self, i: int, /) -> Tensor: ...
+
+
+def _mad(a: Tensor, b: Tensor) -> Tensor:
+    """The mean absolute differences of the frames ``(B, 3, S, S)``."""
+    return (a.double() - b.double()).abs().mean((-3, -2, -1))
+
+
+def check_places(
+    name: str,
+    places: Sequence[tuple[str, int]],
+    last: Tensor,
+    small: Tensor,
+    prepared: Mapping[str, Frames],
+) -> dict[str, float]:
+    r"""The place of each stack (V-m0): ``last`` u8 ``(B, 3, S, S)`` (the
+    stacks' last frames) is the prepared frame at its place ``places``, bit
+    for bit; and ``small`` ``(B, 3, S, S)`` (the hires frames read at the
+    places, shrunk by their means) is nearer to it than to the prepared
+    frames $g = f \pm 1$ that the video moves to (``hires`` (b), on the hires
+    data's reading). Returns the largest $d$ to the own frame (it holds the
+    colour conversion's order: ``hires``) and the smallest margin of (b).
+
+    Raises:
+        ValueError: A stack's last frame is not the prepared frame at its
+            place, or a hires frame is not nearer to its own.
+    """
+    own = torch.stack([prepared[v][f] for v, f in places])
+    if not torch.equal(own, last):
+        bad = next(i for i in range(len(places)) if not torch.equal(own[i], last[i]))
+        raise ValueError(
+            f"{name}'s stack {bad} is not the prepared frame at its place "
+            f"{places[bad]}: not its stacks' last frames"
+        )
+    d = _mad(small, own)
+    margin = math.inf
+    for i, (v, f) in enumerate(places):
+        frames = prepared[v]
+        for g in (f - 1, f + 1):
+            if not 0 <= g < len(frames) or float(_mad(own[i], frames[g])) <= MOVING:
+                continue
+            m = float(_mad(small[i], frames[g]) - d[i])
+            if m <= 0:
+                raise ValueError(
+                    f"the hires frame of {name}'s place {places[i]} is not its "
+                    f"stacks' last frames: nearer to frame {g} by {-m:.3f}"
+                )
+            margin = min(margin, m)
+    return {"max_diff": float(d.max()), "b_margin": margin}
+
+
 def build_targets(
     sets: SemSets,
     hires: HiresFrames,
@@ -488,33 +548,34 @@ def build_targets(
     sconf: SemConf,
     *,
     dev: torch.device,
+    prepared: Mapping[str, Frames],
     record: Mapping[str, Any] | None = None,
 ) -> Targets:
     """The targets (module docstring) of ``sets`` from ``hires`` by
     ``features`` (FID's Inception in use, ``record`` its weights' path and
-    sha256).
+    sha256), the places checked first against the prepared frames
+    ``prepared`` by video (``check_places``).
 
     Raises:
-        ValueError: A hires frame's means of ``factor`` x ``factor``
-            (unrounded) are not the last frame of its stack (``SemSets.last``)
-            to ``MAX_DIFF`` levels on average: a place is not of its stack.
+        ValueError: A place is not of its stack (``check_places``).
     """
     raw: dict[str, dict[str, Tensor]] = {}
     factor = hires.size // sets.fit.shape[-1]
-    worst = 0.0
+    worst, margin = 0.0, math.inf
     for name in ("fit", "grid"):
         places, last = sets.places[name], sets.last(name)
         parts = []
         for i in range(0, len(places), sconf.batch):
             x = hires.frames(places[i : i + sconf.batch]).to(dev)
             small = F.avg_pool2d(x.double(), factor).cpu()
-            diff = (small - last[i : i + sconf.batch].double()).abs().mean((1, 2, 3))
-            worst = max(worst, float(diff.max()))
-            if worst > MAX_DIFF:
-                raise ValueError(
-                    f"the hires frames of {name}'s places {i}.. are not its "
-                    f"stacks' last frames: a mean difference of {worst:.3f}"
-                )
+            got = check_places(
+                name,
+                places[i : i + sconf.batch],
+                last[i : i + sconf.batch],
+                small,
+                prepared,
+            )
+            worst, margin = max(worst, got["max_diff"]), min(margin, got["b_margin"])
             parts.append(_pool3(features, x))
         raw[name] = {k: torch.cat([p[k] for p in parts]) for k in (*QUARTERS, "whole")}
     spaces: dict[str, Space] = {}
@@ -559,7 +620,9 @@ def build_targets(
         "sem": asdict(sconf),
         "inception": dict(record or {}),
         "hires": {"name": hires.root.name, "index": hires.index},
-        "places_max_diff": worst,
+        "places_max_diff": worst,  # to the prepared frames: the colours' order
+        "places_b_margin": margin,
+        "places_checked": True,
         "provenance": {k: v for k, v in of_diagnosis({}).items() if k != "settings"},
         "seeds": {"pca": SEM_PCA_SEED, "sens": SENS_SEED},
         "explained": explained,
@@ -884,8 +947,15 @@ def evaluate_targets(
             raise ValueError(f"the targets at {path} are of another Inception")
         return path
     data = HiresFrames(hires)
+    videos = {v for name in ("fit", "grid") for v, _ in sets.places[name]}
     got = build_targets(
-        sets, data, features, sconf, dev=torch.device(conf.device), record=record
+        sets,
+        data,
+        features,
+        sconf,
+        dev=torch.device(conf.device),
+        prepared={v: U8Reader(root / v) for v in videos},
+        record=record,
     )
     got.meta["key"] = path.name
     got.save(path)

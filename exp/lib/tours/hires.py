@@ -6,31 +6,42 @@ frames only (V18c's main measure, ``exp/vision/plans/jepa.md``, 「高解像度�
 The prepared frames are the largest centered square of a video (``video_io.
 ffmpeg_filter``): for a source of $W$ x $c$ ($W \ge c$) the columns $[x_0,
 x_0 + c)$, $x_0 = (W - c) / 2$, shrunk by the area average to the data's
-size $s$. Here the same square is shrunk to ``size`` $= f s$ ($f$ a whole
-number, 5 for 320 of 64; ``hires_filter``), so that the $f \times f$ means
-of a frame here are the prepared frame up to rounding: the area average of
-$c / s$ source pixels a side is the mean of the $f \times f$ area averages
-of $c / (f s)$ pixels whose bounds fall on its own. The two differ by the u8
-rounding of each (at most 1/2 a level, less on average) and ffmpeg's
-placement of the 4:2:0 colors.
+size $s$. Here the same square is turned into RGB first and then shrunk to
+``size`` $= f s$ ($f$ a whole number, 5 for 320 of 64; ``hires_filter``).
+The reference of the check (a) is the same square shrunk the same way to
+$s$ (``hires_filter`` of ``size`` $s$): the area average of $c / s$ source
+pixels a side is the mean of the $f \times f$ area averages of $c / (f s)$
+pixels whose bounds fall on its own, so the $f \times f$ means of a frame
+here are the reference up to the u8 rounding of each (at most 1/2 a level,
+less on average). The prepared data shrink the 4:2:0 YUV before turning it
+into RGB, so their colours differ from both by the conversion's order (2 to
+3 levels on average on the three videos; README 「V18c: 作り直した主の指標の
+有効性」): the data are checked only relatively, (b) and (c).
 
 ``prepare`` decodes a video, keeps the frames of a list (``frames.json``
 of ``python -m exp.vision.sem_eval frames``) into ``<out>/<video>/``
-(``video_io.U8Writer``; ``frames.json`` there: the numbers and the largest
-$d(f)$), and checks
-the place of every kept frame $f$ against the prepared data $x$ before it
-is written (``position_check``; else it stops, writing no index): with $d(g)$
-the mean absolute difference of the frame's $f \times f$ means (unrounded)
-and $x_g$,
+(``video_io.U8Writer``; ``frames.json`` there: the numbers, the largest
+$d$ of (a) and each kept frame's checks, ``CHECK_LOG``), and checks the
+place of every kept frame $f$ before it is written (``position_check``;
+else it stops, writing no index). With
+$\bar x$ the frame's $f \times f$ means (unrounded), $r_f$ the reference,
+$x_g$ the prepared data, and $d(u, v)$ the mean absolute difference:
 
-- (a) $d(f) \le$ ``MAX_DIFF`` (1.0 levels);
+- (a) $d(\bar x, r_f) \le$ ``MAX_DIFF`` (1.0 levels);
 - (b) for each neighbour $g = f \pm 1$ that the video moves to
-  ($\langle \lvert x_f - x_g \rvert \rangle >$ ``MOVING`` = 2 levels),
-  $d(f) < d(g)$: a frame one off in time is told apart.
+  ($d(x_f, x_g) >$ ``MOVING`` = 2 levels), $d(\bar x, x_f) < d(\bar x,
+  x_g)$: a frame one off in time is told apart;
+- (c) for each shift $\sigma$ of ``SHIFTS`` (1 pixel up, down, left or
+  right at the frame's size before the means, and at the data's size after
+  them) that changes the means ($d(\bar x^\sigma, \bar x) >$ ``MOVING`` on
+  the interior), $d(\bar x, x_f) < d(\bar x^\sigma, x_f)$ on the interior
+  (``BORDER`` data pixels off each edge, where the roll wraps): a place
+  one pixel off is told apart. A shift that leaves the means as they are
+  cannot be told apart, as a neighbour that does not move in (b).
 
 Once the videos are there, ``finalize`` writes ``<out>/index.json`` (each
-video's frame numbers and the sha256 of its index; the source data, fps,
-size and filter) and renames ``<out>`` to ``hires-<12 hex>`` of that index.
+video's frame numbers, the checks in brief and the sha256 of its index; the
+source data, fps, size and filter) and renames ``<out>`` to ``hires-<12 hex>`` of that index.
 ``HiresFrames`` reads the frames at (video, frame) places::
 
     python -m exp.lib.tours.hires prepare <video> --src /datasets/walking_tours \
@@ -57,9 +68,11 @@ from exp.lib.video_io import INDEX, U8Reader, U8Writer, ffmpeg_frames, ffmpeg_ve
 
 __all__ = [
     "FRAME_LIST",
+    "BORDER",
     "MAX_DIFF",
     "MOVING",
     "PREFIX",
+    "SHIFTS",
     "SIZE",
     "HiresFrames",
     "finalize",
@@ -73,7 +86,13 @@ SIZE = 320  # 5 x 64
 PREFIX = "hires-"
 FRAME_LIST = "frames.json"  # a video's kept frames and d(f)'s largest, in its directory
 MAX_DIFF = 1.0  # (a): levels of u8
-MOVING = 2.0  # (b): levels of u8 between neighbouring prepared frames
+MOVING = 2.0  # (b), (c): levels of u8 that make a neighbour or a shift tell
+SHIFTS = (  # (c): (where, dy, dx); "big" before the means, "small" after
+    *(("big", dy, dx) for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1))),
+    *(("small", dy, dx) for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1))),
+)
+BORDER = 2  # (c): data pixels off each edge, past the rolls' wrap
+CHECK_LOG = ("diff", "data_diff", "b_margin", "c_margin", "c_margin_all", "c_compared")
 
 
 def hires_geometry(width: int, height: int, *, size: int = SIZE) -> dict[str, int]:
@@ -90,22 +109,34 @@ def hires_geometry(width: int, height: int, *, size: int = SIZE) -> dict[str, in
     return {"side": c, "x0": (width - c) // 2, "size": size}
 
 
-def hires_filter(geometry: dict[str, int], *, fps: float) -> str:
+def hires_filter(
+    geometry: dict[str, int], *, fps: float, size: int | None = None
+) -> str:
     """The ffmpeg filter of ``geometry`` (``hires_geometry``): ``fps``
-    frames per second, the square cropped and shrunk by the area average."""
-    c, x0, size = geometry["side"], geometry["x0"], geometry["size"]
-    return f"fps={fps:g},crop={c}:{c}:{x0}:0,scale={size}:{size}:flags=area"
+    frames per second, the square cropped, turned into RGB and shrunk by the
+    area average to ``size`` (default the geometry's; the data's size for
+    the reference of (a))."""
+    c, x0 = geometry["side"], geometry["x0"]
+    s = geometry["size"] if size is None else size
+    return f"fps={fps:g},crop={c}:{c}:{x0}:0,format=rgb24,scale={s}:{s}:flags=area"
 
 
 def _diff(a: Tensor, b: Tensor) -> float:
     return float((a.double() - b.double()).abs().mean())
 
 
-def position_check(frame: Tensor, f: int, ref: U8Reader) -> dict[str, Any]:
-    """The checks (a) and (b) (module docstring) of the frame u8 ``(3,
-    size, size)`` as frame ``f`` of the prepared frames ``ref``:
-    ``diff`` $d(f)$, ``neighbours`` $d(g)$ of the moving neighbours $g$
-    (by frame), ``a`` and ``b`` whether each holds.
+def position_check(
+    frame: Tensor, f: int, ref: U8Reader, reference: Tensor
+) -> dict[str, Any]:
+    r"""The checks (a), (b) and (c) (module docstring) of the frame u8 ``(3,
+    size, size)`` as frame ``f`` of the prepared frames ``ref``, of the
+    reference u8 ``(3, s, s)`` (``hires_filter`` at the data's size):
+    ``diff`` $d(\bar x, r_f)$, ``data_diff`` $d(\bar x, x_f)$,
+    ``neighbours`` $d(\bar x, x_g)$ of the moving neighbours $g$ (by frame),
+    ``shifts`` (by ``where,dy,dx``) each shift's ``change`` $d(\bar
+    x^\sigma, \bar x)$ and ``margin`` $d(\bar x^\sigma, x_f) - d(\bar x,
+    x_f)$ on the interior ((c) reads the margins of the changes over
+    ``MOVING``); ``a``, ``b`` and ``c`` whether each holds.
 
     Raises:
         ValueError: ``size`` is not a whole multiple of the prepared size.
@@ -114,18 +145,36 @@ def position_check(frame: Tensor, f: int, ref: U8Reader) -> dict[str, Any]:
     k = frame.shape[-1] // s
     if k * s != frame.shape[-1]:
         raise ValueError(f"a frame of {frame.shape[-1]} is not a multiple of {s}")
-    down = F.avg_pool2d(frame.double()[None], k)[0]
-    d = _diff(down, ref[f])
+    big = frame.double()[None]
+    down = F.avg_pool2d(big, k)[0]
+    x = ref[f]
+    d_data = _diff(down, x)
     moving = {
         g: _diff(down, ref[g])
         for g in (f - 1, f + 1)
-        if 0 <= g < len(ref) and _diff(ref[f], ref[g]) > MOVING
+        if 0 <= g < len(ref) and _diff(x, ref[g]) > MOVING
     }
+    inner = (..., slice(BORDER, -BORDER), slice(BORDER, -BORDER))
+    d0 = _diff(down[inner], x[inner])
+    shifts = {}
+    for where, dy, dx in SHIFTS:
+        if where == "big":
+            moved = F.avg_pool2d(torch.roll(big, (dy, dx), (2, 3)), k)[0]
+        else:
+            moved = torch.roll(down, (dy, dx), (1, 2))
+        shifts[f"{where},{dy},{dx}"] = {
+            "change": _diff(moved[inner], down[inner]),
+            "margin": _diff(moved[inner], x[inner]) - d0,
+        }
+    d = _diff(down, reference)
     return {
         "diff": d,
+        "data_diff": d_data,
         "neighbours": moving,
+        "shifts": shifts,
         "a": d <= MAX_DIFF,
-        "b": all(d < dg for dg in moving.values()),
+        "b": all(d_data < dg for dg in moving.values()),
+        "c": all(v["margin"] > 0 for v in shifts.values() if v["change"] > MOVING),
     }
 
 
@@ -150,7 +199,7 @@ def prepare(
         ValueError: The manifest refuses ``video``, the file's size is not
             the manifest's, a frame number is not of the prepared data, the
             video has another number of frames than the prepared data, or a
-            frame fails (a) or (b).
+            frame fails (a), (b) or (c).
         FileExistsError: ``out/<video>`` exists.
     """
     entry = manifest_entry(video, manifest)
@@ -166,6 +215,8 @@ def prepare(
     fps = ref.index["meta"]["fps"]
     geometry = hires_geometry(entry["width"], entry["height"], size=size)
     vf = hires_filter(geometry, fps=fps)
+    small = ref.shape[-1]
+    vf_ref = hires_filter(geometry, fps=fps, size=small)
     final = out / video
     if final.exists():
         raise FileExistsError(final)
@@ -181,35 +232,83 @@ def prepare(
         "fps": fps,
         "geometry": geometry,
         "filter": vf,
+        "reference_filter": vf_ref,
         "ffmpeg": ffmpeg_version(),
     }
     wanted = set(keep)
-    worst_a, total = 0.0, 0
+    total = 0
+    log: dict[str, list[Any]] = {k: [] for k in CHECK_LOG}
     decoded = ffmpeg_frames(
         path, fps=fps, width=size, height=size, threads=threads, vf=vf
     )
-    with closing(decoded), U8Writer(tmp, (3, size, size), meta) as w:
-        for i, frame in enumerate(decoded):
+    refs = ffmpeg_frames(
+        path, fps=fps, width=small, height=small, threads=threads, vf=vf_ref
+    )
+    with closing(decoded), closing(refs), U8Writer(tmp, (3, size, size), meta) as w:
+        for i, (frame, reference) in enumerate(zip(decoded, refs, strict=True)):
             total = i + 1
             if i not in wanted:
                 continue
-            check = position_check(frame, i, ref)
-            if not (check["a"] and check["b"]):
-                failed = [c for c in ("a", "b") if not check[c]]
+            check = position_check(frame, i, ref, reference)
+            if not (check["a"] and check["b"] and check["c"]):
+                failed = [c for c in ("a", "b", "c") if not check[c]]
                 raise ValueError(
                     f"frame {i} of {video} fails the position check "
                     f"{', '.join(f'({c})' for c in failed)}: d(f) {check['diff']:.3f}, "
-                    f"moving neighbours {check['neighbours']}"
+                    f"to the data {check['data_diff']:.3f}, moving neighbours "
+                    f"{check['neighbours']}, shifts {check['shifts']}"
                 )
-            worst_a = max(worst_a, check["diff"])
+            _log(log, check)
             w.append(frame)
         if total != len(ref):
             raise ValueError(f"{video}: {total} frames, the prepared data {len(ref)}")
         if w.frames != len(keep):
             raise ValueError(f"{video}: {w.frames} of {len(keep)} frames kept")
-    (tmp / FRAME_LIST).write_text(json.dumps({"frames": keep, "max_diff": worst_a}))
+    worst_a = max(log["diff"], default=0.0)
+    (tmp / FRAME_LIST).write_text(
+        json.dumps({"frames": keep, "max_diff": worst_a, "checks": log})
+    )
     os.rename(tmp, final)
     return final
+
+
+def _log(log: dict[str, list[Any]], check: dict[str, Any]) -> None:
+    r"""Append a kept frame's checks to ``log`` (``CHECK_LOG``): (a)'s
+    ``diff``, ``data_diff``, (b)'s smallest margin $d(\bar x, x_g) - d(\bar
+    x, x_f)$ (None without a moving neighbour), (c)'s smallest margin over
+    the shifts it reads (None without one) and over all shifts, and the
+    number of shifts it reads."""
+    d = check["data_diff"]
+    near = [v - d for v in check["neighbours"].values()]
+    read = [v["margin"] for v in check["shifts"].values() if v["change"] > MOVING]
+    log["diff"].append(check["diff"])
+    log["data_diff"].append(d)
+    log["b_margin"].append(min(near, default=None))
+    log["c_margin"].append(min(read, default=None))
+    log["c_margin_all"].append(min(v["margin"] for v in check["shifts"].values()))
+    log["c_compared"].append(len(read))
+
+
+def _summary(log: dict[str, list[Any]] | None) -> dict[str, Any] | None:
+    """The kept frames' checks (``CHECK_LOG``) in brief: (a)'s mean,
+    ``data_diff``'s mean and largest, (b)'s and (c)'s smallest margins and
+    the frames each read, (c)'s smallest margin over all shifts."""
+    if log is None:
+        return None
+    n = len(log["diff"])
+    b = [m for m in log["b_margin"] if m is not None]
+    c = [m for m in log["c_margin"] if m is not None]
+    return {
+        "frames": n,
+        "diff_mean": sum(log["diff"]) / n if n else None,
+        "data_diff_mean": sum(log["data_diff"]) / n if n else None,
+        "data_diff_max": max(log["data_diff"], default=None),
+        "b_margin_min": min(b, default=None),
+        "b_frames": len(b),
+        "c_margin_min": min(c, default=None),
+        "c_frames": len(c),
+        "c_margin_all_min": min(log["c_margin_all"], default=None),
+    }
 
 
 def finalize(root: Path) -> Path:
@@ -245,6 +344,7 @@ def finalize(root: Path) -> Path:
         entries[d.name] = {
             "frames": kept["frames"],
             "max_diff": kept["max_diff"],
+            "checks": _summary(kept.get("checks")),
             "index_sha256": hashlib.sha256(raw).hexdigest(),
             "filter": meta["filter"],
         }

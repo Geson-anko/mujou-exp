@@ -3,8 +3,9 @@ r"""Why the hires frames of V18c's main measure fail the position check (a)
 check of ``exp.lib.tours.hires`` over every frame ``sem_eval frames`` lists,
 with nothing written, and its parts.
 
-For one video, decodes the hires frames as ``hires.prepare`` does
-(``hires_filter``) and, for each listed frame $f$, the check's $d(f)$ (the
+For one video, decodes the hires frames as ``hires.prepare`` did then
+(``yuv_filter``: the 4:2:0 YUV shrunk before RGB; ``hires_filter`` turns the
+square into RGB first since, README 「V18c: 作り直した主の指標の有効性」) and, for each listed frame $f$, the check's $d(f)$ (the
 mean absolute difference of the frame's 5 x 5 means, unrounded, and the
 prepared frame $x_f$), $d(f \pm 1)$ of the moving neighbours (b), the mean
 signed difference per channel and the difference of the luma (BT.601
@@ -39,13 +40,19 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from exp.lib.tours.hires import MAX_DIFF, MOVING, hires_filter, hires_geometry
+from exp.lib.tours.hires import MAX_DIFF, MOVING, hires_geometry
 from exp.lib.tours.walking_tours import MANIFEST, manifest_entry
 from exp.lib.video_io import U8Reader, ffmpeg_frames
 
 FACTOR = 5  # 320 / 64
 LUMA = (0.299, 0.587, 0.114)  # BT.601
 SHIFTS = range(-5, 6)
+
+
+def yuv_filter(geometry: dict[str, int], *, fps: float) -> str:
+    """The hires filter of the run this script diagnosed (module docstring)."""
+    c, x0, size = geometry["side"], geometry["x0"], geometry["size"]
+    return f"fps={fps:g},crop={c}:{c}:{x0}:0,scale={size}:{size}:flags=area"
 
 
 def _d(a: Tensor, b: Tensor) -> float:
@@ -80,7 +87,7 @@ def _parts(
 
     data = torch.stack([ref[i] for i in range(n)]).double()
     fresh = take(f"{base},scale={small}:{small}:flags=area", small)
-    hires = take(hires_filter(geometry, fps=fps), geometry["size"])
+    hires = take(yuv_filter(geometry, fps=fps), geometry["size"])
     rgb_big = take(
         f"{base},format=rgb24,scale={geometry['size']}:{geometry['size']}:flags=area",
         geometry["size"],
@@ -120,7 +127,7 @@ def check(
     wanted = set(frames)
     rows: list[dict[str, Any]] = []
     with closing(
-        _decode(path, hires_filter(geometry, fps=fps), geometry["size"], fps, None)
+        _decode(path, yuv_filter(geometry, fps=fps), geometry["size"], fps, None)
     ) as it:
         for i, frame in enumerate(it):
             if i not in wanted:

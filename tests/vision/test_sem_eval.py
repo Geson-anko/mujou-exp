@@ -37,6 +37,7 @@ from exp.vision.sem_eval import (
     _nuisance,
     blur,
     build_targets,
+    check_places,
     evaluate_frames,
     evaluate_run,
     evaluate_targets,
@@ -208,22 +209,42 @@ class TestPlaces:
         }
         sets = SemSets(fit, grid, torch.zeros(6), places, {})
         last = torch.cat([fit[:, -1], grid[:, -1]])
+        prepared = {"A": fit[:, -1], "H": grid[:, -1]}
         right = {p: i for i, p in enumerate(places["fit"] + places["grid"])}
         wrong = right | {("A", 2): 3, ("A", 3): 2}  # two places swapped
+        moved = dict(prepared) | {"A": prepared["A"].roll(1, 0)}  # the stacks late
 
         def no_features(x: torch.Tensor) -> torch.Tensor:
             raise AssertionError("no target before the places are checked")
 
+        def build(hires: _Hires, frames: dict[str, torch.Tensor]) -> None:
+            build_targets(
+                sets, hires, no_features, TINY_SEM,  # type: ignore[arg-type]
+                dev=torch.device("cpu"), prepared=frames,
+            )  # fmt: skip
+
         with pytest.raises(ValueError, match="not its stacks' last frames"):
-            build_targets(
-                sets, _Hires(last, wrong), no_features, TINY_SEM,  # type: ignore[arg-type]
-                dev=torch.device("cpu"),
-            )  # fmt: skip
+            build(_Hires(last, wrong), prepared)  # the hires frames swapped
+        with pytest.raises(ValueError, match="not the prepared frame at its place"):
+            build(_Hires(last, right), moved)  # the stacks not at their places
         with pytest.raises(AssertionError, match="no target"):  # the check passed
-            build_targets(
-                sets, _Hires(last, right), no_features, TINY_SEM,  # type: ignore[arg-type]
-                dev=torch.device("cpu"),
-            )  # fmt: skip
+            build(_Hires(last, right), prepared)
+
+    def test_a_colour_offset_passes_and_a_neighbour_nearer_fails(self):
+        # the hires frames off the prepared ones by a constant (the colours'
+        # order) still tell their place; a frame nearer to f - 1 does not
+        g = torch.Generator().manual_seed(1)
+        last = torch.randint(20, 236, (5, 3, SIZE, SIZE), generator=g)
+        places = [("A", i) for i in range(5)]
+        small = last.double() + 3.0
+        got = check_places("fit", places, last.to(torch.uint8), small,
+                           {"A": last.to(torch.uint8)})  # fmt: skip
+        assert got["max_diff"] == 3.0 and got["b_margin"] > 0
+        late = small.clone()
+        late[4] = last[3].double()  # the last place's frame is its f - 1
+        with pytest.raises(ValueError, match="nearer to frame 3"):
+            check_places("fit", places, last.to(torch.uint8), late,
+                         {"A": last.to(torch.uint8)})  # fmt: skip
 
 
 # -- end to end ---------------------------------------------------------------------------

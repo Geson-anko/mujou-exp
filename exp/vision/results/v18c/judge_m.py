@@ -154,15 +154,20 @@ class Boot:
 def validity(meta: Row, yard: dict[str, Row], boot: Boot) -> Row:
     """V-m0 to V-m4 and V-m6 (V-m5 needs sigma_seed: ``choose``)."""
     out: Row = {}
-    diffs = [v["max_diff"] for v in meta["hires"]["index"]["videos"].values()]
-    places = meta["places_max_diff"]  # the place of each stack's last frame
+    videos = meta["hires"]["index"]["videos"]
+    diffs = [v["max_diff"] for v in videos.values()]
+    # (b) and (c) held on every kept frame, or hires.prepare wrote no index;
+    # the places to the stacks were checked, or build_targets made no targets
+    # (the user's decision of 2026-11-25: (a) against the RGB reference)
+    places = meta.get("places_checked") is True
     out["V-m0"] = {
         "max_diff": max(diffs),
-        "places_max_diff": places,
+        "checks": {k: v.get("checks") for k, v in videos.items()},
+        "places_checked": places,
+        "places_max_diff": meta["places_max_diff"],
+        "places_b_margin": meta.get("places_b_margin"),
         "shift_top1": meta["shift_top1"],
-        "pass": max(diffs) <= MAX_DIFF
-        and places <= MAX_DIFF
-        and meta["shift_top1"] >= 0.5,
+        "pass": max(diffs) <= MAX_DIFF and places and meta["shift_top1"] >= 0.5,
     }
     mean, k3 = yard.get("mean"), yard.get("init_c_k3")
     out["V-m1"] = {
