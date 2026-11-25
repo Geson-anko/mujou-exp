@@ -29,6 +29,8 @@ from torch.nn import functional as F
 
 from exp.lib import ckpt
 from exp.lib.png import read_png
+from exp.lib.readout import centered_r2, fit_ridge, predict
+from exp.lib.regions import EVAL_MASKS
 from exp.lib.tours.wide import finalize as wide_finalize
 from exp.lib.video_io import INDEX, U8Reader, U8Writer
 from exp.vision import fill_eval, gen_eval
@@ -42,16 +44,20 @@ from exp.vision.fill_eval import (
     block_colors,
     build_targets,
     e1_rows,
+    e1diag_rows,
+    e1f_inputs,
+    e1f_masks,
     evaluate_gen,
     evaluate_run,
     evaluate_targets,
     evaluate_yardsticks,
     fill_sets,
     gain,
+    shift_curves,
     targets_key,
 )
 from exp.vision.gen_eval import hard_sets
-from exp.vision.jepa import JEPAModules, build_jepa, take
+from exp.vision.jepa import JEPAModules, build_jepa, mask_family, take
 from exp.vision.jepa_eval import W_SEED, RandProjCode
 from exp.vision.models import build_vae
 from tests.vision.test_eval import SIZE, N
@@ -452,3 +458,118 @@ class TestEvaluate:
         run = tiny_run(root, tmp_path)
         with pytest.raises(FileNotFoundError, match="fill_eval targets"):
             evaluate_run(run, steps=(4,), root=root, cache=tmp_path / "none", **KW)
+
+
+# -- E1's repair ----------------------------------------------------------------------------
+
+
+class TestShiftCurves:
+    def test_codexs_counterexample(self):
+        # 1-d D = T = (-5, 1, -1, 5, 1, -1): half a turn, the inner products'
+        # mean is -23/3 while 2 of 3 win
+        x = torch.tensor([-5.0, 1, -1, 5, 1, -1], dtype=torch.float64)[:, None]
+        got = shift_curves(x, torch.zeros_like(x), x)
+        assert got["C"][3] == pytest.approx(-23 / 3, abs=1e-12)
+        assert got["s"][3] == pytest.approx(2 / 3, abs=1e-12)
+
+    def test_equal_parts_tie_at_every_shift(self):
+        g = torch.Generator().manual_seed(0)
+        a = torch.randn(70, 3, generator=g, dtype=torch.float64)
+        t = torch.randn(70, 3, generator=g, dtype=torch.float64)
+        got = shift_curves(a, a.clone(), t)
+        assert set(got["s"]) == {0.5} and set(got["C"]) == {0.0}
+        assert set(got["s_nw"]) == {0.5} and got["s_off"] == 0.5
+        assert len(got["C_nw"]) == 70 - 63
+
+    def test_the_diagnosis_of_e1_its_swap_and_identity(self):
+        sets = synthetic(skewed(12, 4))
+        targets = build_targets(sets, features, replace(TINY, readout_dim=1024))
+        mods = mods_of(PatchTokens())
+        conf = replace(TINY, readout_dim=1024)
+        cpu = torch.device("cpu")
+        rows = e1diag_rows(mods, sets, targets, conf, expand=1, dev=cpu)
+        e1 = run_e1(mods, sets, targets)
+        assert {(r["target"], r["stage"]) for r in rows} == {
+            (k, s) for k in ("incep", "color") for s in ("oracle", "pred")
+        }
+        for r in rows:
+            (want,) = by(e1, mask="S", target=r["target"], stage=r["stage"])
+            assert r["swap"] == pytest.approx(want["swap"], abs=1e-12)
+            assert r["resid"] <= 1e-9  # the parts are centred: sum_j P_ji = 0
+            assert len(r["C"]) == len(r["s"]) == len(sets.cand)
+
+
+class TestK3Stages:
+    def test_the_copied_means_swap_at_exactly_one_half(self):
+        sets = synthetic(skewed(12, 4))
+        conf = replace(TINY, readout_dim=1024)
+        targets = build_targets(sets, features, conf)
+        rows = e1_rows(
+            mods_of(PatchTokens()), sets, targets, conf, expand=1, k_run=4,
+            dev=torch.device("cpu"), k3=True,
+        )  # fmt: skip
+        n = len(sets.cand)
+        for stage in ("mean", "oracle_k3", "pred_k3"):
+            for r in by(rows, mask="S", stage=stage):
+                assert r["swap"] == 0.5 and r["n_tie"] == n
+        # patch tokens still choose their own quarter
+        (r,) = by(rows, mask="S", target="color", stage="oracle")
+        assert r["swap"] > 0.9 and r["n_tie"] < n
+        assert {r["stage"] for r in by(rows, mask="Q_tl")} == {
+            "oracle",
+            "pred",
+            "mean",
+            "shuf",
+            "pred_k3",
+            "oracle_k3",
+            "interp",
+        }
+
+
+class TestE1f:
+    def test_the_masks_hide_their_quarter_and_are_of_the_family(self):
+        masks = e1f_masks()
+        assert len(masks) == 12
+        for (q, k), m in masks.items():
+            family = {tuple(r.tolist()) for r in mask_family(k, 4)}
+            assert tuple(m.tolist()) in family
+            assert bool((m & EVAL_MASKS[f"Q_{q}"]).sum() == 4)
+            if k == 12:
+                diagonal = {"tl": "br", "tr": "bl", "bl": "tr", "br": "tl"}[q]
+                assert torch.equal(~m, EVAL_MASKS[f"Q_{diagonal}"])
+
+    @staticmethod
+    def fit_set_m(x: Tensor, y: Tensor) -> float:
+        return centered_r2(predict(fit_ridge(x, y, 1e-8), x), y)
+
+    def test_a_k3_family_reads_as_much_as_its_pool(self):
+        # t_p = A_p u: pred = A u and pool = mean(A) u span the same columns
+        n, p, d = 200, 16, 4
+        g = torch.Generator().manual_seed(1)
+        a = torch.randn(p, d, d, generator=g, dtype=torch.float64) + 2 * torch.eye(d)
+        u = torch.randn(n, d, generator=g, dtype=torch.float64)
+        y = u @ torch.randn(d, 3, generator=g, dtype=torch.float64)
+        y = y + 0.5 * torch.randn(n, 3, generator=g, dtype=torch.float64)
+        x = e1f_inputs(torch.einsum("pij,nj->npi", a, u))
+        m_pred, m_pool = self.fit_set_m(x["pred"], y), self.fit_set_m(x["pool"], y)
+        assert m_pred == pytest.approx(m_pool, abs=1e-8)
+        assert self.fit_set_m(x["pred_k3"], y) == pytest.approx(m_pool, abs=1e-8)
+
+    def test_position_wise_contents_read_more_than_the_pool(self):
+        n, p, d = 200, 16, 4
+        g = torch.Generator().manual_seed(2)
+        u = torch.randn(n, d, generator=g, dtype=torch.float64)
+        w = torch.randn(n, p, d, generator=g, dtype=torch.float64)
+        z = u[:, None] + w  # each position its own part
+        y = w[:, 3] @ torch.randn(d, 3, generator=g, dtype=torch.float64)
+        x = e1f_inputs(z)
+        assert self.fit_set_m(x["pred"], y) > self.fit_set_m(x["pool"], y) + 0.5
+
+
+class TestWhitening:
+    def test_a_whitened_space_has_unit_sds_on_the_fit_set(self):
+        g = torch.Generator().manual_seed(0)
+        raw = torch.randn(60, 9, generator=g, dtype=torch.float64) * 3 + 1
+        u = Space.fit(raw, 5, seed=97, whiten=True)(raw)
+        torch.testing.assert_close(u.std(0), torch.ones(5, dtype=torch.float64))
+        torch.testing.assert_close(u.mean(0), torch.zeros(5, dtype=torch.float64))

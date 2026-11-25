@@ -65,6 +65,22 @@ to Zurich is common to every candidate).
   yardsticks ``ext`` (``C``), ``interp`` (``BI``) and ``mean``. ``side`` and
   ``outer`` are the means of ``L``, ``R`` and of ``L_out``, ``R_out``.
 
+E1's repair (``plans/jepa.md``, 「E1 の修理」):
+
+- ``diag`` (``e1diag_rows``, on the sets and targets as they are): of
+  ``swap``'s pairs, directions, kinds and the stages ``oracle`` and
+  ``pred``, the curves of the inner products and the wins of every shift
+  of the candidates (``shift_curves``), into ``rows/<step>-e1diag.json``
+  and ``e1diag-<step>.png``.
+- ``--split sem --sem <targets>`` (``evaluate_sem_split``): on the split of
+  ``sem_eval``'s targets (``sem_split_sets``: the ridges' scales chosen on
+  its calib grid stacks, the candidates of sel and final), E1 of the
+  targets ``color`` and ``quad`` (the quarters' hires features) with the
+  stages ``oracle_k3`` and ``pred_k3`` (the position means copied: ``swap``
+  exactly 1/2, ``n_tie`` every candidate), and E1f (``e1f_rows``): the
+  readouts fit on the predictor's outputs themselves, scored by
+  ``centered_r2``.
+
 Into ``<run_dir>/posthoc_fill/`` (``config.json``, ``rows/<step>-<part>.json``
 a list of rows, the pictures ``g-<step>-<mask>.png``) and
 ``<run_dir>/posthoc_side/`` (``rows/<step>-<code>.json``); the yardsticks
@@ -79,6 +95,9 @@ checked against the settings the rows depend on (``_Context.depends``)::
     python -m exp.vision.fill_eval gen <run_dir> --steps 0,6000,20000,60000
     python -m exp.vision.fill_eval yardsticks --out runs/v18c-fill/yardsticks \
         --v16 <ckpt> --v17 <ckpt> --m-run <run_dir>
+    python -m exp.vision.fill_eval diag <run_dir> --steps 0,6000,60000
+    python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 \
+        --parts e1,e1f --split sem --sem <sem_eval's targets>
 """
 
 import argparse
@@ -87,7 +106,7 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -100,9 +119,16 @@ from torch.nn import functional as F
 from exp.lib import ckpt, pca
 from exp.lib.flow_decoder import FlowUNet, euler_sample
 from exp.lib.metrics import identification, swap
-from exp.lib.png import tile, write_png
+from exp.lib.png import draw_polyline_, tile, write_png
 from exp.lib.provenance import configure_determinism, of_diagnosis
-from exp.lib.readout import Ridge, predict, r2, select_ridge
+from exp.lib.readout import (
+    Ridge,
+    centered_r2,
+    centered_terms,
+    predict,
+    r2,
+    select_ridge,
+)
 from exp.lib.regions import (
     COARSE,
     EVAL_MASKS,
@@ -154,12 +180,16 @@ from exp.vision.stream_eval import Code, StreamEvaluator, spanned
 
 __all__ = [
     "BANDS",
+    "E1F_K",
+    "E1F_STAGES",
     "E1_MASKS",
     "KINDS",
     "OUT",
     "OUT_SIDE",
     "PARTS",
+    "QUARTER_NAMES",
     "READOUT_PCA_SEED",
+    "SEM_PARTS",
     "TARGET_PCA_SEED",
     "FillConf",
     "FillSets",
@@ -169,17 +199,26 @@ __all__ = [
     "block_colors",
     "build_targets",
     "e1_rows",
+    "e1diag_rows",
     "e1e_rows",
+    "e1f_inputs",
+    "e1f_masks",
+    "e1f_rows",
     "e1g_rows",
     "e2_rows",
+    "evaluate_diag",
     "evaluate_gen",
     "evaluate_run",
+    "evaluate_sem_split",
     "evaluate_targets",
     "evaluate_yardsticks",
     "fill_sets",
     "gain",
     "main",
     "score",
+    "sem_split_sets",
+    "sem_split_targets",
+    "shift_curves",
     "targets_key",
 ]
 
@@ -192,6 +231,7 @@ KINDS = ("incep", "color")
 BANDS = ("L", "R", "L_out", "R_out")
 BAND_MEANS = {"side": ("L", "R"), "outer": ("L_out", "R_out")}
 PARTS = ("e1", "e1e", "e2")  # of a run; E1g is ``gen``
+SEM_PARTS = ("e1", "e1f")  # of a run with the split of sem_eval (--split sem)
 SETS = ("fit", "calib", "grid")
 E1G_STAGES = ("full", "oracle", "pred", "mean")
 PICTURE_MASKS = ("Q_br", "R")
@@ -306,11 +346,12 @@ def fill_sets(
 @dataclass(frozen=True)
 class Space:
     """A target's space: raw features $f$ to $((f - \\mu) W^\\top) / s$
-    (without $W$ for ``comps`` None), float64."""
+    (without $W$ for ``comps`` None), float64; $s$ one scale, or one per
+    coordinate ``(K,)`` (whitened)."""
 
     mean: Tensor
     comps: Tensor | None
-    scale: float
+    scale: float | Tensor
 
     def __call__(self, raw: Tensor) -> Tensor:
         u = raw.double() - self.mean
@@ -319,17 +360,27 @@ class Space:
         return u / self.scale
 
     @classmethod
-    def fit(cls, raw: Tensor, dim: int | None) -> Space:
+    def fit(
+        cls,
+        raw: Tensor,
+        dim: int | None,
+        *,
+        seed: int = TARGET_PCA_SEED,
+        whiten: bool = False,
+    ) -> Space:
         """The space of the fit set's raw features ``raw`` ``(m, F)``: their
-        PCA of ``dim`` components from ``TARGET_PCA_SEED`` (or None: their
-        mean only), and the root mean square of the coordinates' sds."""
+        PCA of ``dim`` components from ``seed`` (or None: their mean only),
+        and the root mean square of the coordinates' sds, or with ``whiten``
+        each coordinate's sd."""
         x = raw.double()
         if dim is None:
             mean, comps = x.mean(0), None
         else:
-            gen = torch.Generator().manual_seed(TARGET_PCA_SEED)
+            gen = torch.Generator().manual_seed(seed)
             mean, comps = pca.fit_pca(x, dim, gen=gen)
         u = x - mean if comps is None else (x - mean) @ comps.T
+        if whiten:
+            return cls(mean, comps, u.std(0))
         return cls(mean, comps, math.sqrt(float(u.var(0).mean())))
 
     def state(self) -> dict[str, Any]:
@@ -736,6 +787,72 @@ def _fine(name: str, expand: int, dev: torch.device) -> Tensor:
 # -- E1 ------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _Fitted:
+    """Of an E1 mask: its fine positions ``pos``, the reducer and the
+    readouts by kind, the candidates' flat target side's tokens there
+    ``cand`` ``(n, k d)``, the fit set's mean of them ``fit_mean`` and of
+    them reduced ``x_mean`` ``(1, ·)``; with
+    the K3 stages, the same of the tokens replaced by their mean over all
+    the positions (``red_k3``, ``ridges_k3``, ``cand_k3``)."""
+
+    pos: Tensor
+    red: Reducer
+    ridges: dict[str, Ridge]
+    cand: Tensor
+    fit_mean: Tensor
+    x_mean: Tensor
+    red_k3: Reducer | None = None
+    ridges_k3: dict[str, Ridge] | None = None
+    cand_k3: Tensor | None = None
+
+
+def _k3_tokens(z: Tensor) -> Tensor:
+    """The tokens ``(B, T, d)`` all replaced by their mean over the
+    positions."""
+    return z.mean(1, keepdim=True).expand_as(z)
+
+
+def _target_tokens(
+    mods: JEPAModules, sets: FillSets, dev: torch.device
+) -> dict[str, Tensor]:
+    """The target side's tokens ``(N, T, d)`` of ``fit``, ``calib`` and the
+    candidates (``cand``)."""
+    stacks = (("fit", sets.fit), ("calib", sets.calib), ("cand", sets.cand_stacks))
+    return {s: _apply(mods.tokens, x, dev) for s, x in stacks}
+
+
+def _fit_mask(
+    m: str,
+    tok: Mapping[str, Tensor],
+    targets: Targets,
+    fconf: FillConf,
+    kinds: Sequence[str],
+    *,
+    expand: int,
+    k3: bool,
+    dev: torch.device,
+) -> _Fitted:
+    """The readouts $g_U$ of the mask ``m`` of each of ``kinds`` (module
+    docstring), of the target side's tokens ``tok`` (and with ``k3``, of
+    their position means')."""
+    pos = _fine(m, expand, dev).nonzero().flatten()
+    flat = {s: z[:, pos].flatten(1) for s, z in tok.items()}
+    red = Reducer.fit(flat["fit"], fconf.readout_dim)
+    x_fit, x_cal = red(flat["fit"]), red(flat["calib"])
+    ridges = {k: _readout(x_fit, x_cal, targets, f"U/{m}/{k}") for k in kinds}
+    fitted = _Fitted(
+        pos, red, ridges, flat["cand"], flat["fit"].mean(0), x_fit.mean(0, keepdim=True)
+    )
+    if not k3:
+        return fitted
+    flat3 = {s: _k3_tokens(z)[:, pos].flatten(1) for s, z in tok.items()}
+    red3 = Reducer.fit(flat3["fit"], fconf.readout_dim)
+    x3_fit, x3_cal = red3(flat3["fit"]), red3(flat3["calib"])
+    ridges3 = {k: _readout(x3_fit, x3_cal, targets, f"U/{m}/{k}") for k in kinds}
+    return replace(fitted, red_k3=red3, ridges_k3=ridges3, cand_k3=flat3["cand"])
+
+
 @torch.no_grad()
 def e1_rows(
     mods: JEPAModules,
@@ -746,62 +863,63 @@ def e1_rows(
     expand: int,
     k_run: int,
     dev: torch.device,
+    kinds: Mapping[str, Sequence[str]] | None = None,
+    k3: bool = False,
 ) -> list[dict[str, Any]]:
     """E1's rows (module docstring) of the JEPA ``mods`` (masks spread by
-    ``expand``; ``in_dist`` where a mask hides the run's ``k_run``)."""
-    tok = {
-        s: _apply(mods.tokens, x, dev)
-        for s, x in (
-            ("fit", sets.fit),
-            ("calib", sets.calib),
-            ("cand", sets.cand_stacks),
-        )
-    }
+    ``expand``; ``in_dist`` where a mask hides the run's ``k_run``); the
+    targets of each mask ``kinds[mask]`` (default ``KINDS``); with ``k3``
+    the stages ``oracle_k3`` (the tokens replaced by their mean over all the
+    positions, its own readout) and ``pred_k3`` (the predictor's hidden
+    positions replaced by their mean, $g_U$), and ``swap``'s ``n_tie``."""
+    tok = _target_tokens(mods, sets, dev)
     n = len(sets.cand)
     rows: list[dict[str, Any]] = []
     fitted: dict[str, _Fitted] = {}
     for m in E1_MASKS:
+        mask_kinds = KINDS if kinds is None else kinds[m]
+        f = fitted[m] = _fit_mask(
+            m, tok, targets, fconf, mask_kinds, expand=expand, k3=k3, dev=dev
+        )
         mask = _fine(m, expand, dev)
-        pos = mask.nonzero().flatten()
-        flat = {s: z[:, pos].flatten(1) for s, z in tok.items()}
-        red = Reducer.fit(flat["fit"], fconf.readout_dim)
-        x_fit, x_cal = red(flat["fit"]), red(flat["calib"])
-        pred = red(_apply(_predicted(mods, mask), sets.cand_stacks, dev))
+        k_d = _apply(_predicted(mods, mask), sets.cand_stacks, dev)
+        pred = f.red(k_d)
         stages = {
-            "oracle": red(flat["cand"]),
+            "oracle": f.red(f.cand),
             "pred": pred,
-            "mean": x_fit.mean(0, keepdim=True).expand(n, -1),
+            "mean": f.x_mean.expand(n, -1),
             "shuf": pred.roll(n // 2, 0),
         }
+        if k3:
+            z_hat = k_d.reshape(n, len(f.pos), -1)
+            stages["pred_k3"] = f.red(_k3_tokens(z_hat).flatten(1))
         in_dist = int(EVAL_MASKS[m].sum()) == k_run
-        ridges = {}
-        for kind in KINDS:
+        for kind in mask_kinds:
             key = f"U/{m}/{kind}"
-            g = ridges[kind] = _readout(x_fit, x_cal, targets, key)
+            g = f.ridges[kind]
             labels = {"target": kind, "mask": m, "in_dist": in_dist}
             for stage, x in stages.items():
                 row = labels | {"stage": stage, "alpha": g.alpha}
                 rows.append(row | score(predict(g, x), targets, key, sets))
-            interp = targets.y(f"I/{m}/{kind}", "grid")[sets.cand]
-            row = labels | {"stage": "interp", "alpha": None}
-            rows.append(row | score(interp, targets, key, sets))
-        fitted[m] = _Fitted(pos, red, ridges, flat["cand"], flat["fit"].mean(0))
+            if k3:
+                assert f.red_k3 is not None and f.ridges_k3 is not None
+                assert f.cand_k3 is not None
+                g3 = f.ridges_k3[kind]
+                row = labels | {"stage": "oracle_k3", "alpha": g3.alpha}
+                rows.append(
+                    row | score(predict(g3, f.red_k3(f.cand_k3)), targets, key, sets)
+                )
+            if f"I/{m}/{kind}" in targets.values:
+                interp = targets.y(f"I/{m}/{kind}", "grid")[sets.cand]
+                row = labels | {"stage": "interp", "alpha": None}
+                rows.append(row | score(interp, targets, key, sets))
     rows += _means(rows, "mask", MEANS, ("target", "stage"))
-    rows += _swap_rows(mods, sets, targets, fitted, expand=expand, k_run=k_run, dev=dev)
+    swap_kinds = KINDS if kinds is None else kinds[SWAP_PAIRS["S_1"][0]]
+    rows += _swap_rows(
+        mods, sets, targets, fitted, swap_kinds, expand=expand, k_run=k_run,
+        dev=dev, k3=k3,
+    )  # fmt: skip
     return rows
-
-
-@dataclass(frozen=True)
-class _Fitted:
-    """Of an E1 mask: its fine positions ``pos``, the reducer and the
-    readouts by kind, the candidates' flat target side's tokens there
-    ``cand`` ``(n, k d)`` and the fit set's mean of them ``fit_mean``."""
-
-    pos: Tensor
-    red: Reducer
-    ridges: dict[str, Ridge]
-    cand: Tensor
-    fit_mean: Tensor
 
 
 def _deviation(x: Tensor) -> Tensor:
@@ -812,18 +930,85 @@ def _deviation(x: Tensor) -> Tensor:
     return d - d.mean(0)
 
 
+def _swap_parts(
+    mods: JEPAModules,
+    sets: FillSets,
+    targets: Targets,
+    fitted: Mapping[str, _Fitted],
+    kinds: Sequence[str],
+    *,
+    expand: int,
+    dev: torch.device,
+    stages: Sequence[str] = ("oracle", "pred", "mean", "shuf"),
+) -> Iterator[tuple[str, str, Tensor, Tensor, Tensor]]:
+    r"""Of each pair of ``SWAP_PAIRS``, each direction $(A, B)$, each kind
+    and each of ``stages`` (``_swap_rows``): the kind, the stage, the
+    readout's parts $u_A B_A$, $u_B B_A$ ``(n, K)`` and the truth $t$ ``(n,
+    K)`` (CPU, float64). The K3 stages: ``oracle_k3`` of the tokens'
+    position means through their own reducer and readout, ``pred_k3`` of the
+    predictor's hidden positions replaced by their mean (both quarters'),
+    through $A$'s; the inputs at $A$ and at $B$ are then the same tensor."""
+    n = len(sets.cand)
+    for s, (a, b) in SWAP_PAIRS.items():
+        mask = _fine(s, expand, dev)
+        hide = mask.nonzero().flatten()
+        k_d = _apply(_predicted(mods, mask), sets.cand_stacks, dev)  # (n, k d)
+        z_hat = k_d.reshape(n, len(hide), -1)
+        z_k3 = _k3_tokens(z_hat)
+        at = {q: z_hat[:, torch.isin(hide, fitted[q].pos)].flatten(1) for q in (a, b)}
+        at3 = {q: z_k3[:, torch.isin(hide, fitted[q].pos)].flatten(1) for q in (a, b)}
+        for u, w in ((a, b), (b, a)):
+            own, other, red = fitted[u], fitted[w], fitted[u].red
+            pred = {q: red(at[q]) for q in (u, w)}
+            inputs: dict[str, tuple[Tensor, Tensor]] = {
+                "oracle": (red(own.cand), red(other.cand)),
+                "pred": (pred[u], pred[w]),
+                "mean": (
+                    red(own.fit_mean[None]).expand(n, -1),
+                    red(other.fit_mean[None]).expand(n, -1),
+                ),
+                "shuf": (pred[u].roll(n // 2, 0), pred[w].roll(n // 2, 0)),
+            }
+            if "pred_k3" in stages:
+                inputs["pred_k3"] = (red(at3[u]), red(at3[w]))
+            if "oracle_k3" in stages:
+                assert own.red_k3 is not None and own.cand_k3 is not None
+                assert other.cand_k3 is not None
+                inputs["oracle_k3"] = (
+                    own.red_k3(own.cand_k3),
+                    own.red_k3(other.cand_k3),
+                )
+            for kind in kinds:
+                grid = targets.y(f"U/{u}/{kind}", "grid")
+                truth = grid[sets.cand] - grid.mean(0)
+                for stage in stages:
+                    if stage == "oracle_k3":
+                        assert own.ridges_k3 is not None
+                        b_u = own.ridges_k3[kind].b
+                    else:
+                        b_u = own.ridges[kind].b
+                    x_u, x_w = inputs[stage]
+                    part_u, part_w = (
+                        (_deviation(x) @ b_u.to(x.device)).cpu() for x in (x_u, x_w)
+                    )
+                    yield kind, stage, part_u, part_w, truth
+
+
 def _swap_rows(
     mods: JEPAModules,
     sets: FillSets,
     targets: Targets,
     fitted: Mapping[str, _Fitted],
+    kinds: Sequence[str] = KINDS,
     *,
     expand: int,
     k_run: int,
     dev: torch.device,
+    k3: bool = False,
 ) -> list[dict[str, Any]]:
     r"""The rows of ``swap`` (mask ``S``; module docstring) of each kind and
-    stage but ``interp``.
+    stage but ``interp`` (``_swap_parts``), and with ``k3`` of ``oracle_k3``
+    and ``pred_k3`` too, with ``n_tie`` (the candidates tied in all four).
 
     Of the pair $(A, B)$ and a stage: the inputs at $A$ and at $B$ (flat in
     order of position, the two quarters of the same shape) through $A$'s
@@ -837,51 +1022,274 @@ def _swap_rows(
     as in the stub's test). So does ``mean`` (0 for both). Parts at $A$ and
     $B$ that differ by what is unrelated to $t$ give 1/2 in expectation,
     whatever their sizes (``metrics.swap``)."""
-    n = len(sets.cand)
+    stages = ("oracle", "pred", "mean", "shuf")
+    if k3:
+        stages += ("oracle_k3", "pred_k3")
     values: dict[tuple[str, str], list[Tensor]] = {}
-    for s, (a, b) in SWAP_PAIRS.items():
-        mask = _fine(s, expand, dev)
-        hide = mask.nonzero().flatten()
-        k_d = _apply(_predicted(mods, mask), sets.cand_stacks, dev)  # (n, k d)
-        z_hat = k_d.reshape(n, len(hide), -1)
-        at = {q: z_hat[:, torch.isin(hide, fitted[q].pos)].flatten(1) for q in (a, b)}
-        for u, w in ((a, b), (b, a)):
-            own, other, red = fitted[u], fitted[w], fitted[u].red
-            pred = {q: red(at[q]) for q in (u, w)}
-            inputs = {
-                "oracle": (red(own.cand), red(other.cand)),
-                "pred": (pred[u], pred[w]),
-                "mean": (
-                    red(own.fit_mean[None]).expand(n, -1),
-                    red(other.fit_mean[None]).expand(n, -1),
-                ),
-                "shuf": (pred[u].roll(n // 2, 0), pred[w].roll(n // 2, 0)),
-            }
-            for kind in KINDS:
-                grid = targets.y(f"U/{u}/{kind}", "grid")
-                truth = grid[sets.cand] - grid.mean(0)
-                b_u = own.ridges[kind].b
-                for stage, (x_u, x_w) in inputs.items():
-                    part_u, part_w = (
-                        (_deviation(x) @ b_u.to(x.device)).cpu() for x in (x_u, x_w)
-                    )
-                    values.setdefault((kind, stage), []).append(
-                        swap(part_u, part_w, truth)[1]
-                    )
+    for kind, stage, part_u, part_w, truth in _swap_parts(
+        mods, sets, targets, fitted, kinds, expand=expand, dev=dev, stages=stages
+    ):
+        values.setdefault((kind, stage), []).append(swap(part_u, part_w, truth)[1])
     in_dist = int(EVAL_MASKS["S_1"].sum()) == k_run
     rows = []
     for (kind, stage), v in values.items():
         per = torch.stack(v).mean(0)
-        rows.append(
-            {
-                "target": kind,
-                "mask": "S",
-                "in_dist": in_dist,
-                "stage": stage,
-                "swap": float(per.mean()),
-                "swap_i": per.tolist(),
-            }
-        )
+        row = {
+            "target": kind,
+            "mask": "S",
+            "in_dist": in_dist,
+            "stage": stage,
+            "swap": float(per.mean()),
+            "swap_i": per.tolist(),
+        }
+        if k3:
+            row["n_tie"] = int((torch.stack(v) == 0.5).all(0).sum())
+        rows.append(row)
+    return rows
+
+
+# -- E1's diagnosis of shuf ------------------------------------------------------------------
+
+
+def _wins(x: Tensor) -> Tensor:
+    """1 where positive, 1/2 where 0, 0 where negative (``metrics.swap``'s)."""
+    return (x > 0).double() + 0.5 * (x == 0).double()
+
+
+def shift_curves(part_u: Tensor, part_w: Tensor, truth: Tensor) -> dict[str, Any]:
+    r"""The diagnosis of ``shuf`` (``plans/jepa.md``, 「ずらしの診断」) of one
+    pair, direction, kind and stage: $D$ = ``part_u`` − ``part_w``, $T$ =
+    ``truth`` ``(n, K)``, $P = D T^\top$ ``(n, n)`` float64 ($P_{ji} = d_j
+    \cdot t_i$). ``C`` $C(\tau) = \frac1n \sum_i P_{(i + \tau) \bmod n,
+    i}$ and ``s`` $s(\tau)$ the mean of their wins (1, 1/2 on 0, 0),
+    $\tau = 0, \dots, n - 1$ ($s(0)$ is ``swap``); ``C_nw``, ``s_nw`` the
+    same of $i + \tau < n$ only, $\tau \le n - 64$; ``C_off``, ``s_off``
+    over all $i \ne j$; ``resid`` $\max_i \lvert \sum_j P_{ji} \rvert /
+    \max \lvert P \rvert$ (0 up to rounding: ``_deviation`` centres $d$)."""
+    d = part_u.double() - part_w.double()
+    p = d @ truth.double().T  # (n, n)
+    n = len(p)
+    i = torch.arange(n)
+    taus = torch.arange(n)
+    shifted = p[(i[None] + taus[:, None]) % n, i[None].expand(n, -1)]  # (tau, i)
+    c_nw, s_nw = [], []
+    for tau in range(max(n - 63, 1)):
+        diag = p[i[: n - tau] + tau, i[: n - tau]]
+        c_nw.append(float(diag.mean()))
+        s_nw.append(float(_wins(diag).mean()))
+    off = ~torch.eye(n, dtype=torch.bool)
+    return {
+        "C": shifted.mean(1).tolist(),
+        "s": _wins(shifted).mean(1).tolist(),
+        "C_nw": c_nw,
+        "s_nw": s_nw,
+        "C_off": float(p[off].mean()),
+        "s_off": float(_wins(p[off]).mean()),
+        "resid": float(p.sum(0).abs().max() / p.abs().max().clamp(min=1e-300)),
+    }
+
+
+DIAG_STAGES = ("oracle", "pred")
+
+
+@torch.no_grad()
+def e1diag_rows(
+    mods: JEPAModules,
+    sets: FillSets,
+    targets: Targets,
+    fconf: FillConf,
+    *,
+    expand: int,
+    dev: torch.device,
+) -> list[dict[str, Any]]:
+    """The rows of ``shift_curves`` of each kind (``KINDS``) and stage of
+    ``DIAG_STAGES``, averaged over the 2 pairs and 2 directions of
+    ``swap`` (``resid`` their largest), of the JEPA ``mods``."""
+    tok = _target_tokens(mods, sets, dev)
+    quarters = sorted({q for pair in SWAP_PAIRS.values() for q in pair})
+    fitted = {
+        m: _fit_mask(m, tok, targets, fconf, KINDS, expand=expand, k3=False, dev=dev)
+        for m in quarters
+    }
+    got: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for kind, stage, part_u, part_w, truth in _swap_parts(
+        mods, sets, targets, fitted, KINDS, expand=expand, dev=dev, stages=DIAG_STAGES
+    ):
+        got.setdefault((kind, stage), []).append(shift_curves(part_u, part_w, truth))
+    rows = []
+    for (kind, stage), curves in got.items():
+        row: dict[str, Any] = {"target": kind, "stage": stage}
+        for key in ("C", "s", "C_nw", "s_nw"):
+            row[key] = torch.tensor([c[key] for c in curves]).mean(0).tolist()
+        for key in ("C_off", "s_off"):
+            row[key] = sum(c[key] for c in curves) / len(curves)
+        row["resid"] = max(c["resid"] for c in curves)
+        row["swap"] = row["s"][0]
+        rows.append(row)
+    return rows
+
+
+def _diag_picture(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """``e1diag-<step>.png``: of each row (kind, stage), a panel of $C$ and
+    one of $s$ over $\\tau$ (one pixel each), with the shift (blue) and
+    without the wrap (orange); grey the line of 0 (of $C$) or 1/2 (of $s$),
+    green $s_{\\mathrm{off}}$. Each panel spans its curves' range."""
+    height, gap = 96, 4
+    width = len(rows[0]["C"])
+    panels = []
+    for r in rows:
+        for key, ref in (("C", 0.0), ("s", 0.5)):
+            canvas = torch.full((height, width, 3), 255, dtype=torch.uint8)
+            curves = [torch.tensor(r[key]), torch.tensor(r[f"{key}_nw"])]
+            lines = [ref] + ([r["s_off"]] if key == "s" else [])
+            lo = min(min(float(c.min()) for c in curves), *lines)
+            hi = max(max(float(c.max()) for c in curves), *lines)
+            span = hi - lo if hi > lo else 1.0
+
+            def ys(v: Tensor, lo: float = lo, span: float = span) -> Tensor:
+                return (1 - (v - lo) / span) * (height - 1)
+
+            for value, color in zip(
+                lines, ((160, 160, 160), (0, 150, 0)), strict=False
+            ):
+                xy = torch.tensor([[0.0, 0.0], [width - 1.0, 0.0]])
+                xy[:, 1] = ys(torch.tensor(value))
+                draw_polyline_(canvas, xy, color)
+            for c, color in zip(curves, ((30, 60, 200), (230, 120, 0)), strict=True):
+                xy = torch.stack([torch.arange(len(c)).double(), ys(c.double())], 1)
+                draw_polyline_(canvas, xy, color)
+            panels.append(canvas)
+            panels.append(torch.full((gap, width, 3), 200, dtype=torch.uint8))
+    write_png(path, torch.cat(panels[:-1]))
+
+
+# -- E1f: the readouts fit on the predictions ---------------------------------------------------
+
+
+QUARTER_NAMES = ("tl", "tr", "bl", "br")  # the quarters Q_<q> (sem_eval's order)
+E1F_K = (4, 8, 12)
+E1F_STAGES = ("pred", "pool", "pred_k3", "vis_color", "oracle", "mean")
+_ROW_HALF = {"tl": "H_t", "tr": "H_t", "bl": "H_b", "br": "H_b"}
+_COL_HALF = {"tl": "H_l", "tr": "H_r", "bl": "H_l", "br": "H_r"}
+
+
+def e1f_masks() -> dict[tuple[str, int], Tensor]:
+    """The coarse masks ``(16,)`` of E1f by (quarter, $k$): $k$ = 4 the
+    quarter $Q_q$, 8 its row's half, 12 that and its column's half (the
+    diagonal quarter alone visible)."""
+    out = {}
+    for q in QUARTER_NAMES:
+        row, col = EVAL_MASKS[_ROW_HALF[q]], EVAL_MASKS[_COL_HALF[q]]
+        out[(q, 4)] = EVAL_MASKS[f"Q_{q}"]
+        out[(q, 8)] = row
+        out[(q, 12)] = row | col
+    return out
+
+
+def e1f_inputs(z_hat: Tensor) -> dict[str, Tensor]:
+    r"""The inputs of the stages ``pred``, ``pool`` and ``pred_k3`` of the
+    predictor's outputs at a quarter's positions $\hat t_p$ ``(n, P, d)``
+    (in order of position): them flat ``(n, P d)``, their mean over the
+    positions ``(n, d)``, and them all replaced by that mean ``(n, P d)``.
+
+    For a K3 family $\hat t_p = A_p u$, ``pred`` is $A u$ ($A$ the $A_p$
+    stacked) and ``pool`` $\bar A u$: with $\bar A$ invertible both are
+    one-to-one linear functions of $u$, of the same column space, so a
+    readout fit on either predicts the same."""
+    pool = z_hat.mean(1)
+    return {
+        "pred": z_hat.flatten(1),
+        "pool": pool,
+        "pred_k3": pool[:, None].expand_as(z_hat).flatten(1),
+    }
+
+
+@torch.no_grad()
+def e1f_rows(
+    mods: JEPAModules,
+    stacks: Mapping[str, Tensor],
+    targets: Targets,
+    *,
+    expand: int,
+    k_run: int,
+    dev: torch.device,
+) -> list[dict[str, Any]]:
+    r"""E1f's rows (``plans/jepa.md``, 「当てはめ直す補完のゲート」) of the JEPA
+    ``mods`` (masks spread by ``expand``): the stacks of ``fit`` and of the
+    split's ``calib``, ``sel``, ``final``; the targets ``quad/<q>`` (their
+    ``fit`` and ``grid``, the split in ``meta["sets_split"]``). Of each
+    $k$ of ``E1F_K`` and stage of ``E1F_STAGES``: of each quarter $q$ under
+    ``e1f_masks()[(q, k)]``, a ridge from the stage's inputs (``vis_color``
+    the visible coarse cells' mean colors, ``oracle`` the target side's
+    tokens at $Q_q$) to ``quad/<q>``, its scale chosen by ``centered_r2``
+    on calib; the items' $e_i$ and $v_i$ of sel and final summed over the
+    quarters into one $m$. ``mean`` is the constant ($m$ exactly 0).
+    ``id_easy_sel``: the quarters' predictions side by side among sel's."""
+    split = targets.meta["sets_split"]
+    idx = {s: torch.tensor(split[s]["idx"]) for s in ("calib", "sel", "final")}
+    sets = ("fit", "calib", "sel", "final")
+    size = stacks["fit"].shape[-1]
+    tok = {s: _apply(mods.tokens, stacks[s], dev) for s in sets}
+    color = ColorCode(size // COARSE)
+    cells = {s: _apply(color.tokens, stacks[s], dev) for s in sets}  # (N, 16, 3n)
+    masks = e1f_masks()
+    sums: dict[tuple[int, str], dict[str, Any]] = {}
+    preds: dict[tuple[int, str], dict[str, Tensor]] = {}
+    for (q, k), coarse in masks.items():
+        fine = expand_masks(coarse[None], expand)[0].to(dev)
+        hide = fine.nonzero().flatten()
+        quarter = expand_masks(EVAL_MASKS[f"Q_{q}"][None], expand)[0].to(dev)
+        at = torch.isin(hide, quarter.nonzero().flatten())
+        visible = (~coarse).nonzero().flatten().to(dev)
+        key = f"quad/{q}"
+        y = {"fit": targets.y(key, "fit")}
+        grid = targets.y(key, "grid")
+        y |= {s: grid[idx[s]] for s in ("calib", "sel", "final")}
+        inputs: dict[str, dict[str, Tensor]] = {}
+        for s in sets:
+            k_d = _apply(_predicted(mods, fine), stacks[s], dev)
+            z_hat = k_d.reshape(len(k_d), len(hide), -1)[:, at]
+            got = e1f_inputs(z_hat)
+            got["vis_color"] = cells[s][:, visible].flatten(1)
+            got["oracle"] = tok[s][:, quarter].flatten(1)
+            for stage, x in got.items():
+                inputs.setdefault(stage, {})[s] = x
+        for stage in E1F_STAGES:
+            acc = sums.setdefault((k, stage), {"alpha": {}})
+            if stage == "mean":
+                p = {s: torch.zeros(len(y[s]), 1, dtype=torch.float64) for s in sets}
+                alpha = None
+            else:
+                x = inputs[stage]
+                g = select_ridge(
+                    x["fit"], y["fit"].to(dev), x["calib"], y["calib"].to(dev),
+                    score=centered_r2,
+                )  # fmt: skip
+                p = {s: predict(g, x[s]).cpu() for s in sets}
+                alpha = g.alpha
+            acc["alpha"][q] = alpha
+            for s in ("calib", "sel", "final"):
+                e, v = centered_terms(p[s], y[s])
+                acc[f"e_{s}"] = acc.get(f"e_{s}", 0) + e
+                acc[f"v_{s}"] = acc.get(f"v_{s}", 0) + v
+            preds.setdefault((k, stage), {})[q] = p["sel"]
+    center = torch.cat([targets.y(f"quad/{q}", "grid") for q in QUARTER_NAMES], 1)
+    truth = center[idx["sel"]]
+    rows = []
+    for (k, stage), acc in sums.items():
+        row: dict[str, Any] = {"k": k, "stage": stage, "in_dist": k == k_run}
+        row["alpha"] = acc["alpha"]
+        for s in ("calib", "sel", "final"):
+            row[f"m_{s}"] = float(1 - acc[f"e_{s}"].sum() / acc[f"v_{s}"].sum())
+        for s in ("sel", "final"):
+            row[f"e_{s}"] = acc[f"e_{s}"].tolist()
+            row[f"v_{s}"] = acc[f"v_{s}"].tolist()
+        row["id_easy_sel"] = None
+        if stage != "mean":
+            side = torch.cat([preds[(k, stage)][q] for q in QUARTER_NAMES], 1)
+            found = identification(side, truth, center=center.mean(0))
+            row["id_easy_sel"] = found["top1"]
+        rows.append(row)
     return rows
 
 
@@ -1160,6 +1568,7 @@ class _Context:
         root: Path | None,
         cache: Path | None,
         spacing: Mapping[str, float] | None,
+        span: float = SPAN,
     ) -> None:
         self.conf, self.fconf = conf, fconf
         self.dev = torch.device(conf.device)
@@ -1167,7 +1576,8 @@ class _Context:
         root = tours_root(conf.data.tours.data_version) if root is None else root
         self.root = root
         self.fill, self.side = out_dir / OUT, out_dir / OUT_SIDE
-        self.sets = fill_sets(conf, root, fconf, spacing=spacing)
+        self.extra: dict[str, Any] = {}  # of the sem split: its name and targets
+        self.sets = fill_sets(conf, root, fconf, span=span, spacing=spacing)
         self.key = targets_key(self.sets, fconf)
         base = _default_base() if cache is None else cache
         self.targets = Targets.load(cache_path(base, self.key))
@@ -1192,6 +1602,7 @@ class _Context:
                     "cand": self.sets.cand.tolist(),
                     "n_hard": len(self.sets.hard_q),
                 }
+                | self.extra
             )
         )
 
@@ -1245,11 +1656,12 @@ def evaluate_targets(
     features: Features | None = None,
     inception: Path | None = None,
     spacing: Mapping[str, Any] | None = None,
+    span: float = SPAN,
 ) -> Path:
     """The targets' cache (module docstring) of ``conf`` (default
     ``v16_config`` on CUDA) under ``cache`` (default ``$MUJOU_EXP_DATA``),
-    E2's too with the wide data ``wide``; parts there are kept. Returns
-    its directory."""
+    E2's too with the wide data ``wide``; parts there are kept; ``span``
+    the fit set's (tests). Returns its directory."""
     conf = _yard_conf(None) if conf is None else conf
     configure_determinism(conf.device)
     root = tours_root(conf.data.tours.data_version) if root is None else root
@@ -1257,7 +1669,7 @@ def evaluate_targets(
     if features is None:
         features, record = inception_features(inception, conf.device)
     base = _default_base() if cache is None else cache
-    sets = fill_sets(conf, root, fconf, spacing=spacing)
+    sets = fill_sets(conf, root, fconf, span=span, spacing=spacing)
     path = cache_path(base, targets_key(sets, fconf))
     have = Targets.load(path) if (path / "targets.pt").is_file() else None
     if have and record and have.meta["inception"].get("sha256") != record["sha256"]:
@@ -1291,14 +1703,26 @@ def evaluate_run(
     device: str | None = None,
     spacing: Mapping[str, Any] | None = None,
     zpca_dim: int = ZPCA_DIM,
+    split: str | None = None,
+    sem: Path | None = None,
+    span: float = SPAN,
 ) -> Path:
     """E1, E1e and E2 (``parts``) of the checkpoints of ``steps`` of the
-    JEPA run in ``run_dir`` (module docstring). Returns ``run_dir / OUT``.
+    JEPA run in ``run_dir`` (module docstring); with ``split`` ``"sem"``,
+    E1 and E1f of ``SEM_PARTS`` on the split of the targets ``sem``
+    (``evaluate_sem_split``). Returns ``run_dir / OUT``.
 
     Raises:
         ValueError: A part is not of ``PARTS``, or a step has no
             checkpoint.
     """
+    if split is not None:
+        if sem is None:
+            raise ValueError(f"the split {split!r} needs its targets (--sem)")
+        return evaluate_sem_split(
+            run_dir, sem, steps=steps, parts=parts, fconf=fconf, root=root,
+            cache=cache, device=device, spacing=spacing, split=split, span=span,
+        )  # fmt: skip
     unknown = [p for p in parts if p not in PARTS]
     if unknown:
         raise ValueError(f"the parts are of {PARTS}, not {unknown}")
@@ -1307,7 +1731,9 @@ def evaluate_run(
     missing = [s for s in steps if s not in ckpts]
     if missing:
         raise ValueError(f"no checkpoint of steps {missing} (of {list(ckpts)})")
-    ctx = _Context(conf, run_dir, fconf=fconf, root=root, cache=cache, spacing=spacing)
+    ctx = _Context(
+        conf, run_dir, fconf=fconf, root=root, cache=cache, spacing=spacing, span=span
+    )
     settings, arm_m, expand, k_run = _run_settings(run_dir)
     mods = build_run_jepa(conf, settings)
     w_code = RandProjCode(mods)
@@ -1370,6 +1796,193 @@ def evaluate_run(
                     name, _sets_apply(code.mu, sets, dev), sets, targets, fconf
                 )
                 _write_rows(ctx.side / "rows" / f"{prefix}-{name}.json", rows, stamp)
+    return ctx.fill
+
+
+def sem_split_sets(
+    sets: FillSets, zurich: Zurich, meta: Mapping[str, Any], fconf: FillConf
+) -> tuple[FillSets, dict[str, Tensor]]:
+    """The sets of the split of ``sem_eval``'s targets (their ``meta``) and
+    its indices of the grid by set: ``calib`` its calib stacks (no longer
+    the calib windows, which overlap the grid), the candidates those of
+    sel or final (chance $1/n_{\\mathrm{cand}}$), the hard ones those whose
+    neighbours are of their own segment.
+
+    Raises:
+        ValueError: The targets are not of these sets.
+    """
+    for k in ("fit_ks", "grid_starts"):
+        if meta["sets"][k] != json.loads(json.dumps(sets.ident[k])):
+            raise ValueError(f"sem_eval's targets are of other sets ({k})")
+    split = meta["sets_split"]
+    idx = {s: torch.tensor(split[s]["idx"]) for s in ("calib", "sel", "final")}
+    segment = torch.tensor(meta["segment"])
+    scored = torch.isin(sets.cand, torch.cat([idx["sel"], idx["final"]]))
+    cand = sets.cand[scored]
+    hard_q, among = hard_sets(cand, len(segment), fconf.hard_reach, fconf.hard_stride)
+    seg = segment[among]
+    own = (seg == seg[:, :1]).all(1) & (seg[:, 0] >= 0)
+    ident = dict(sets.ident) | {"split": "sem", "calib_idx": idx["calib"].tolist()}
+    out = replace(
+        sets,
+        calib=zurich.stacks(idx["calib"]),
+        cand=cand,
+        cand_stacks=sets.cand_stacks[scored],
+        hard_q=hard_q[own],
+        hard_among=among[own],
+        ident=ident,
+    )
+    return out, idx
+
+
+def sem_split_targets(
+    fill: Targets, sem: Targets, calib: Tensor
+) -> tuple[Targets, dict[str, tuple[str, ...]]]:
+    """The targets of E1 on the sem split: ``color`` of ``fill`` and, of the
+    quarters, ``quad`` (``sem``'s ``quad/<q>``), their ``calib`` the grid's
+    at ``calib``; and the kinds of each mask (``incep`` of 32 px left out:
+    not even the whole view's tokens read it)."""
+    values: dict[str, dict[str, Tensor]] = {}
+    for m in E1_MASKS:
+        u = fill.values[f"U/{m}/color"]
+        values[f"U/{m}/color"] = {"fit": u["fit"], "calib": u["grid"][calib]} | {
+            "grid": u["grid"]
+        }
+        values[f"I/{m}/color"] = fill.values[f"I/{m}/color"]
+    for q in QUARTER_NAMES:
+        v = sem.values[f"quad/{q}"]
+        values[f"U/Q_{q}/quad"] = {
+            "fit": v["fit"],
+            "calib": v["grid"][calib],
+            "grid": v["grid"],
+        }
+    kinds = {
+        m: ("color", "quad") if m.startswith("Q_") else ("color",) for m in E1_MASKS
+    }
+    return Targets({}, values, dict(fill.meta)), kinds
+
+
+def evaluate_sem_split(
+    run_dir: Path,
+    sem: Path,
+    *,
+    steps: Sequence[int],
+    parts: Sequence[str] = SEM_PARTS,
+    fconf: FillConf = FillConf(),
+    root: Path | None = None,
+    cache: Path | None = None,
+    device: str | None = None,
+    spacing: Mapping[str, Any] | None = None,
+    split: str = "sem",
+    span: float = SPAN,
+) -> Path:
+    """E1 (its targets ``color`` and ``quad``, with the K3 stages and
+    ``n_cand``) and E1f (``e1f_rows``) of ``parts`` of the checkpoints of
+    ``steps`` of the JEPA run in ``run_dir``, on the split of ``sem_eval``'s
+    targets at ``sem``. Returns ``run_dir / OUT``.
+
+    Raises:
+        ValueError: ``split`` is not ``"sem"``, a part is not of
+            ``SEM_PARTS``, a step has no checkpoint, or the targets are not
+            of these sets.
+    """
+    if split != "sem":
+        raise ValueError(f"the split is 'sem', not {split!r}")
+    unknown = [p for p in parts if p not in SEM_PARTS]
+    if unknown:
+        raise ValueError(
+            f"the parts of the sem split are of {SEM_PARTS}, not {unknown}"
+        )
+    conf = _conf_of(run_dir, device)
+    ckpts = run_ckpts(run_dir)
+    missing = [s for s in steps if s not in ckpts]
+    if missing:
+        raise ValueError(f"no checkpoint of steps {missing} (of {list(ckpts)})")
+    ctx = _Context(
+        conf, run_dir, fconf=fconf, root=root, cache=cache, spacing=spacing, span=span
+    )
+    sem_t = Targets.load(sem)
+    ctx.extra = {"split": "sem", "sem": sem.name}
+    zurich = Zurich(conf, ctx.root, fconf.grid_step)
+    sets, idx = sem_split_sets(ctx.sets, zurich, sem_t.meta, fconf)
+    targets, kinds = sem_split_targets(ctx.targets, sem_t, idx["calib"])
+    stacks = {"fit": sets.fit, "calib": sets.calib}
+    stacks |= {s: zurich.stacks(idx[s]) for s in ("sel", "final")}
+    settings, _, expand, k_run = _run_settings(run_dir)
+    mods = build_run_jepa(conf, settings)
+    ctx.check(ctx.fill)
+    extra = {"run": run_dir.name, "k": k_run, "expand": expand}
+    for step in steps:
+        prefix = f"{step:06d}"
+        todo = [
+            p for p in parts if not (ctx.fill / "rows" / f"{prefix}-{p}.json").exists()
+        ]
+        if not todo:
+            continue
+        stamp = {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)}
+        ckpt.load_eval(ckpts[step], mods.modules())
+        ctx.start(ctx.fill, extra)
+        if "e1" in todo:
+            rows = e1_rows(
+                mods, sets, targets, fconf, expand=expand, k_run=k_run,
+                dev=ctx.dev, kinds=kinds, k3=True,
+            )  # fmt: skip
+            rows = [r | {"n_cand": len(sets.cand)} for r in rows]
+            _write_rows(ctx.fill / "rows" / f"{prefix}-e1.json", rows, stamp)
+        if "e1f" in todo:
+            rows = e1f_rows(
+                mods, stacks, sem_t, expand=expand, k_run=k_run, dev=ctx.dev
+            )
+            _write_rows(ctx.fill / "rows" / f"{prefix}-e1f.json", rows, stamp)
+    return ctx.fill
+
+
+def evaluate_diag(
+    run_dir: Path,
+    *,
+    steps: Sequence[int],
+    fconf: FillConf = FillConf(),
+    root: Path | None = None,
+    cache: Path | None = None,
+    device: str | None = None,
+    spacing: Mapping[str, Any] | None = None,
+    span: float = SPAN,
+) -> Path:
+    """The diagnosis of ``shuf`` (``e1diag_rows``) of the checkpoints of
+    ``steps`` of the JEPA run in ``run_dir``, on E1's sets and targets as
+    they are: ``rows/<step>-e1diag.json`` and ``e1diag-<step>.png``.
+    Returns ``run_dir / OUT``.
+
+    Raises:
+        ValueError: A step has no checkpoint.
+    """
+    conf = _conf_of(run_dir, device)
+    ckpts = run_ckpts(run_dir)
+    missing = [s for s in steps if s not in ckpts]
+    if missing:
+        raise ValueError(f"no checkpoint of steps {missing} (of {list(ckpts)})")
+    ctx = _Context(
+        conf, run_dir, fconf=fconf, root=root, cache=cache, spacing=spacing, span=span
+    )
+    settings, arm_m, expand, k_run = _run_settings(run_dir)
+    mods = build_run_jepa(conf, settings)
+    ctx.check(ctx.fill)
+    for step in steps:
+        prefix = f"{step:06d}"
+        path = ctx.fill / "rows" / f"{prefix}-e1diag.json"
+        if path.exists():
+            continue
+        ckpt.load_eval(ckpts[step], mods.modules())
+        ctx.start(
+            ctx.fill,
+            {"run": run_dir.name, "k": k_run, "expand": expand, "arm_m": arm_m},
+        )
+        rows = e1diag_rows(
+            mods, ctx.sets, ctx.targets, fconf, expand=expand, dev=ctx.dev
+        )
+        stamp = {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)}
+        _write_rows(path, rows, stamp)
+        _diag_picture(ctx.fill / f"e1diag-{prefix}.png", rows)
     return ctx.fill
 
 
@@ -1595,7 +2208,12 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     run = sub.add_parser("run", help="E1, E1e and E2 of a JEPA run")
     run.add_argument("run_dir", type=Path)
     run.add_argument("--steps", type=_ints, required=True)
-    run.add_argument("--parts", type=_names, default=PARTS)
+    run.add_argument("--parts", type=_names, default=None)
+    run.add_argument("--split", choices=("sem",), help="sem_eval's split (E1, E1f)")
+    run.add_argument("--sem", type=Path, help="sem_eval's targets (--split sem)")
+    diag = sub.add_parser("diag", help="E1's diagnosis of shuf (old checkpoints)")
+    diag.add_argument("run_dir", type=Path)
+    diag.add_argument("--steps", type=_ints, required=True)
     gen = sub.add_parser("gen", help="E1g of a JEPA run (after gen_eval)")
     gen.add_argument("run_dir", type=Path)
     gen.add_argument("--steps", type=_ints, required=True)
@@ -1606,7 +2224,7 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     yard.add_argument("--v16", type=Path, help="a VAE checkpoint")
     yard.add_argument("--v17", type=Path, help="a VAE checkpoint")
     yard.add_argument("--m-run", type=Path, help="arm M's run (init_m)")
-    for p in (tg, vid, run, gen, yard):
+    for p in (tg, vid, run, gen, yard, diag):
         p.add_argument("--root", type=Path, help="the data (default: tours_root)")
         p.add_argument("--cache", type=Path, help="(default: $MUJOU_EXP_DATA)")
         p.add_argument("--device", help="(default: the run's, or cuda)")
@@ -1614,10 +2232,21 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
         p.add_argument("--inception", type=Path, help="FID's weights")
     args = ap.parse_args(argv)
     if args.cmd == "run":
+        default = PARTS if args.split is None else SEM_PARTS
         return evaluate_run(
             args.run_dir,
             steps=args.steps,
-            parts=args.parts,
+            parts=default if args.parts is None else args.parts,
+            root=args.root,
+            cache=args.cache,
+            device=args.device,
+            split=args.split,
+            sem=args.sem,
+        )
+    if args.cmd == "diag":
+        return evaluate_diag(
+            args.run_dir,
+            steps=args.steps,
             root=args.root,
             cache=args.cache,
             device=args.device,
