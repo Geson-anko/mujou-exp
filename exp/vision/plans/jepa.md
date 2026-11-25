@@ -862,7 +862,7 @@ python -m exp.vision.jepa_iid --patch 8 --token-dim 16 --proj fixed --sigreg-on 
 - **要るフレームだけを残す**: 当てはめの組の stack の最後のフレーム（`FillSets.places["fit"]`、約 6000）と、Zurich の格子の全 stack の最後のフレーム（`places["grid"]`、3899）。動画は E2 と同じ求め方（当てはめの組が触れる動画と Zurich）
 - `sem_eval frames --out <json>`: 動画ごとに、要るフレームの番号を重複を除いて昇順に並べた一覧を書く
 - `hires prepare <video> --src … --data $MUJOU_EXP_DATA/ad6e56b5995e --frames <json> --out <dir>`: `video_io.ffmpeg_frames(…, vf=…)` で動画を頭から読み、一覧の番号のフレームだけを u8 `(N, 3, 320, 320)` で `U8Writer` に書く。`frames.json` に番号を書く
-- **位置の確かめ**（書き出す前、全フレーム）: 320 のフレームを 5×5 の平均で 64 に縮め（float のまま、丸めない）、いまのデータの同じ動画・同じ番号のフレーム $x^{64}_f$ と比べる
+- **位置の確かめ**（書き出す前、残すすべてのフレーム）: 320 のフレームを 5×5 の平均で 64 に縮め（float のまま、丸めない）、いまのデータの同じ動画・同じ番号のフレーム $x^{64}_f$ と比べる
   - (a) 画素の差の絶対値の平均が 1.0 以下
   - (b) 動いているフレーム（$x^{64}_f$ と $x^{64}_{f \pm 1}$ の差の絶対値の平均が 2 を超えるもの）で、差の平均が $f$ で最小になる（$f \pm 1$ より小さい）。時刻の取り違えを見分ける
   - (a) の根拠: いまの 480 → 64 の area は 7.5×7.5 の面積の平均である。480 → 320 は 1.5 倍で、5×5 の平均と合わせると境界がちょうどそろい、同じ演算になる。違いは 320 を u8 に丸めること（平均すると 1 画素あたり 0.5 以下）と、ffmpeg が色の 4:2:0 を RGB に直す位置の違いだけである。外れたら書き出さずに止める。閾値は緩めない
@@ -936,9 +936,9 @@ $$
 
 - 組 $E$ の格子の番号を、区間の中で長さ $L$ の連続したブロックに分ける（区間の終わりの余りは直前のブロックに足す）。ブロックを重複を許して同じ数だけ引き直す（`BOOT` = 2000 回、`BOOT_SEED` = 101）。どの符号でも同じ引き方を使い、対にする。各回で $m^* = 1 - \sum e^*_i / \sum v^*_i$ を作る。比べ（差、seed の平均の差）は各回で計算し、その標準偏差を $\mathrm{SE}_{\mathrm{blk}}$ とする。中心化は元の組で 1 回だけ行う（引き直しで平均を取り直す効果は $O(1/\lvert E \rvert)$）
 - 関数の形: `block_bootstrap(e: Tensor (C, N), v: Tensor (N,), blocks: Tensor (N,), contrasts: Tensor (Q, C), n: int, gen) -> Tensor (Q,)`。$C$ 個の符号の $e$ を受け取り、係数 `contrasts` で組み合わせた $m$ の差の標準誤差を返す。$m$ の比の形は各回の和から作る
-- **$L$ の決め方**（符号によらず、的だけで 1 回）: 格子の並びの上で、白色化した `sem` の 64 成分の自己相関の平均 $\rho(\ell)$ を求める。積分した相関時間 $\tau = 1 + 2 \sum_{\ell = 1}^{\ell^*} \rho(\ell)$（$\ell^*$ は $\rho$ が初めて 0 以下になる手前）から、$L = \min(\max(\lceil 2\tau \rceil, 16), 155)$ とする
+- **$L$ の決め方**（符号によらず、的だけで 1 回）: 格子の並びの上で、白色化した `sem` の 64 成分の自己相関の平均 $\rho(\ell)$ を求める。積分した相関時間 $\tau = 1 + 2 \sum_{\ell = 1}^{\ell^*} \rho(\ell)$（$\ell^*$ は $\rho$ が初めて 0 以下になる手前）から、$L = \min(\max(\lceil 2\tau \rceil, 16), 154)$ とする
   - ブロックが相関の長さより十分長ければ、ブロックの和はほぼ独立になり、ブロックのブートストラップの標準誤差が成り立つ（Künsch 1989）。$2\tau$ は相関の長さの 2 倍
-  - 155 は、1 組（約 1238 個）に少なくとも 8 個のブロックを残すための上限である。上限に当たったら、標準誤差が小さく出ている恐れがあることを README に書く
+  - 154 は、1 組（約 1238 個）に少なくとも 8 個のブロックを残すための上限である。1 組は 2 つの区間（619 個ずつ。final の後ろの区間だけ 624 個）で、ブロックは区間ごとに切る（余りは直前のブロックに足す）ので、区間ごとに 4 個を残す上限は $\lfloor 619/4 \rfloor = 154$ になる。最初に書いた 155 では区間ごとに 3 個、1 組に 6 個しか残らなかった（数値を読む前のレビューで直した）。上限に当たったら、標準誤差が小さく出ている恐れがあることを README に書く
 - 閾値の式（$\delta_w$・$\delta_1$・$\delta_3$・$\delta_y$・$\delta_{yy}$）は README
 
 ### 的の感度の確かめ（`sens`、Codex さんの (a)）
@@ -987,14 +987,17 @@ pool3 の的が、照明・色・ぼかしより、粗い内容に強く反応�
 - **入力**（どれも自分の入力で `quad/<q>` への ridge を当てはめ、$\alpha$ は calib で `centered_r2` により選ぶ）
   - `pred`: 予測器の出力 $\hat t$ の $Q_q$ の位置（パッチ 8 で 16 個 × 16 次元 = 256 次元、位置の昇順）。当てはめの組と calib でも、同じマスクで予測器を通す
   - `pool`: `pred` の 16 個の位置の平均（16 次元）。位置をまとめた対照
-  - `pred_k3`: `pred` の 16 個を、その平均で置き換えたもの（256 次元。`pool` と同じ情報）。実データの負の対照
+  - `pred_k3`: `pred` の 16 個を、その平均で置き換えたもの（256 次元。`pool` と同じ情報）。実データの負の対照。$\alpha$ の尺度は選ばず、`pool` で選んだ $c$ の $P$ = 16 倍に固定する（下の導出）
   - `vis_color`: 見える粗いマスの、8 枚 × 3 チャネルの平均の色（$k$ = 4・8・12 で 288・192・96 次元）。同じ見える部分から作る、学習しない基準
   - `oracle`: 全体を見たトークンの $Q_q$ の位置（256 次元）。的がトークンから読めるかの確かめ
   - `mean`: 定数（$m$ はちょうど 0）
 - **採点**: `centered_r2` を calib・sel・final で求める。4 つの $q$ は、項目ごとの $e_i$ と $v_i$ をそれぞれ足して 1 つの $m$ にする。sel の候補の `id_easy` は並べるだけ
-- **導出（K3 の族 $\hat t_p = A_p u$ の負の対照）**: `pred` の入力は $(A_1 u, \dots, A_{16} u) = A u$（$A$ は 256 × 16）、`pool` は $\bar A u$（$\bar A = \frac{1}{16} \sum_p A_p$）。$\bar A$ が正則なら、どちらも $u$ の線形な 1 対 1 の関数で、当てはめの組の上で同じ列空間を張る。そのため $\alpha \to 0$ の当てはめの予測はちょうど一致し、母集団でも同じ $m$ になる。Codex さんの例（$A_B = -A_A$ で `swap` が 0.5 にならない族）も含め、K3 の族のすべてで `pred` − `pool` は 0 になる。`pred_k3` は $A_p = I$ の場合で、実データの上での `pool` との差は $\alpha$ の格子の違い（`pred_k3` は 256 次元に複製されるので、同じ $c$ でも $u$ にかかる実効の罰則が 1/16 になる）だけである
+- **導出（K3 の族 $\hat t_p = A_p u$ の負の対照）**: `pred` の入力は $(A_1 u, \dots, A_{16} u) = A u$（$A$ は 256 × 16）、`pool` は $\bar A u$（$\bar A = \frac{1}{16} \sum_p A_p$）。$\bar A$ が正則なら、どちらも $u$ の線形な 1 対 1 の関数で、当てはめの組の上で同じ列空間を張る。そのため $\alpha \to 0$ の当てはめの予測はちょうど一致し、母集団でも同じ $m$ になる。$\bar A$ が正則で条件数がよい K3 の族では、`pred` − `pool` は 0 になる。Codex さんの例（$A_B = -A_A$ で `swap` が 0.5 にならない族）は四半分どうしの符号の反転なので、1 つの四半分の中の平均は $\bar A = A_A$ のままで、ここに入る
+  - **$\bar A$ が特異に近いとき**（レビューで分かった限界）: $A_p = A P_1 + (-1)^p A P_2$（$P_1$・$P_2$ は補い合う射影）は場面だけを持つ K3 の族だが、$\bar A = A P_1$ で $P_2 u$ が `pool` から消え、`pred` が `pool` を上回る。そこで行に `pool` の入力の共分散の条件数 `cond`（四半分ごと、当てはめの組）を残し、C1′ を読むときに見張る
+  - **`pred_k3` と `pool` を同じ当てはめにする**: `pool` を $X$（$n \times d$）、`pred_k3` を $X' = X J$、$J = (I_d, \dots, I_d)$（$d \times P d$、$J J^\top = P I_d$）とする。$\mathrm{tr}(X'^\top X') = P\,\mathrm{tr}(X^\top X)$ なので、尺度 $c'$ の $\alpha' = c'\,\mathrm{tr}(X^\top X)/d$。push-through の恒等式 $(J^\top G J + \alpha' I)^{-1} J^\top = J^\top (P G + \alpha' I)^{-1}$ から $X' (X'^\top X' + \alpha' I)^{-1} X'^\top = X (X^\top X + \frac{\alpha'}{P} I)^{-1} X^\top$。同じ $c$ では $u$ にかかる罰則が `pool` の $1/P$ になり、`ALPHA_SCALES` は 10 倍刻みなので、`pool` と同じ罰則の $c$ は格子の上に無い。そこで $c' = P c$（$c$ は `pool` で選んだもの）に固定すると、$\alpha'/P$ が `pool` の $\alpha$ に等しく、予測は丸めを除いて一致する
+  - **V-E1′3 の許容 $10^{-6}$**: 2 つは厳密な算術では同じ当てはめなので、差は解く操作の丸めだけである。後退安定な float64 の解法の相対誤差は $\varepsilon \kappa$ 程度で、$\kappa = \mathrm{cond}(X^\top X + \alpha I) \le 1 + \lambda_{\max}/\alpha \le 1 + d/c$（$\alpha = c\,\mathrm{tr}/d \ge c\,\lambda_{\max}/d$）。$d$ = 16、$c \ge 10^{-8}$ では $\kappa \le 1.6 \times 10^9$、$\varepsilon \kappa \approx 3.6 \times 10^{-7}$ なので、$\lvert \Delta m \rvert \le 10^{-6}$ とする（`pred_k3` の 256 次元の系も $\kappa \le 1 + 16/c$ で同じ）。前の $\delta_w$ は、ほぼ同じ 2 つの予測の差を対にした $2\,\mathrm{SE}$ でとても小さく、格子の違いによる決定的な差で偽って外れた（レビューの合成の数値例）
 - **対象**: V18c の長い run の step 0・6000・60000（2 学習率 × 2 seed）。選ぶ候補 12 本の step 6000 にもかけて並べる（選ぶのには使わない）
-- 出力: `posthoc_fill/rows/<step>-e1f.json`。行は `k`、`stage`、`alpha`、`m_calib`・`m_sel`・`m_final`、`e_sel`・`e_final`（項目ごと）、`id_easy_sel`
+- 出力: `posthoc_fill_sem/rows/<step>-e1f.json`（`--split sem` の E1 と同じ、分け方専用の場所）。行は `k`、`stage`、`alpha`・`scale`（四半分ごと）、`cond`（`pool` だけ）、`m_calib`・`m_sel`・`m_final`、`e_sel`・`e_final`・`v_sel`・`v_final`（項目ごと）、`id_easy_sel`
 - 費用（推測）: 1 checkpoint で 12 個のマスクの予測器の前向きを約 1 万 stack ずつ（約 12 万 stack 分）。4090 で 3〜5 分
 
 **5. calib の重なりの解消（V18c にかけるとき）**
@@ -1027,7 +1030,7 @@ python -m exp.vision.sem_eval yardsticks --out runs/v18c-sem/yardsticks \
     --v16 <ckpt> --v17 <ckpt> --init-run <V18c の seed 0 の run>
 python -m exp.vision.sem_eval run <run_dir> --steps 0,1000,2000,4000,6000 [--codes z,z_k3,h_mean]
 # E1 の修理
-python -m exp.vision.fill_eval diag <run_dir> --steps 0,6000,60000
+python -m exp.vision.fill_eval diag <run_dir> --steps 0,6000,60000  # 旧 checkpoint と V18c の長い run（V-E1′2）
 python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f --split sem --sem <cache>
 ```
 
@@ -1058,7 +1061,7 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 - **的の感度の変換**: 明るさと白の釣り合いが手計算と一致する。ぼかしの核の和が 1。`match` の後のチャネルの平均と標準偏差が、丸める前に $x$ と $10^{-6}$ の中で一致する
 - **`e1diag`**: 恒等式の残差が $10^{-9}$ 以下。$s(0)$ がいまの `swap` と一致する。Codex さんの反例（1 次元で $D = T = (-5, 1, -1, 5, 1, -1)$）で、半周のずらしの内積の平均が $-23/3$、勝率が 2/3 になる。$d$ がすべて同じなら（中心化で 0）、どの $\tau$ でも 0.5
 - **`oracle_k3`・`pred_k3`**: E1 の合成の組で、`swap` がちょうど 0.5、`n_tie` が候補の数
-- **`e1f`**: 12 個のマスクが `mask_family(k, 4)` に入り、どれも $Q_q$ を隠し、$k$ = 12 で見えるのが対角の四半分だけ。合成の K3 の予測器（ランダムな $A_p$、$\bar A$ が正則）で、$c$ を最小にした当てはめの組の上の `pred` と `pool` の $m$ が $10^{-8}$ の中で一致する。位置ごとに違う成分を持つ合成の予測器では、`pred` が `pool` を上回る。`mean` の $m$ はちょうど 0
+- **`e1f`**: 12 個のマスクが `mask_family(k, 4)` に入り、どれも $Q_q$ を隠し、$k$ = 12 で見えるのが対角の四半分だけ。`e1f_fits` が `select_ridge` の経路で `pool` の尺度を選んだとき（格子の内側に来る雑音の量で）、`pred_k3` の尺度が `pool` の 16 倍で、2 つの予測が $10^{-9}$ の中で一致する。同じ $c$ では一致しない。合成の K3 の予測器（ランダムな $A_p$、$\bar A$ が正則）で、$c$ を最小にした当てはめの組の上の `pred` と `pool` の $m$ が $10^{-8}$ の中で一致する。位置ごとに違う成分を持つ合成の予測器では、`pred` が `pool` を上回る。`mean` の $m$ はちょうど 0
 - **既存の値が変わらない**: `select_ridge` の既定、`Space` の 1 つの尺度、`fill_eval run`（`--split` なし）の行が変更前と一致する
 
 ### 計算量（推測、4090）
@@ -1081,7 +1084,7 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 4. 物差しの $m$ と、有効性の確かめ V-m0〜V-m4・V-m6、目視。外れたら止めて報告する
 5. 掃引の 15 本の step 0・1000・2000・4000・6000 の $m$（seed 0）
 6. 学習率ごとに、seed 0 の $m$（sel）の上位 2 設定に seed 1・2 を足す（8 本、6000 step、`jepa_eval` と $m$）→ $\sigma_{\mathrm{seed}}$ → V-m5 → 僅差の設定にも seed 1・2 を足す → 選ぶ（README の規則）
-7. 長い run 4 本（60000 step）→ `jepa_eval`・$m$（全 checkpoint）・`e1f`・E1・Imagenette
+7. 長い run 4 本（60000 step）→ `jepa_eval`・$m$（全 checkpoint）・`e1f`・E1・`e1diag`（0・6000・60000、V-E1′2）・Imagenette
 8. 集計（`judge_m.py`）
 
 **環境**: これまでと同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`）。`just fleet push` の後、`code/latest` に頼らず snapshot を明示して `code/<snap>` の中で走らせる。std-00〜03 の 4090 と 4060 を使い、mini-00 は使わない。置く前に `nvidia-smi` で GPU が空いていることを確かめ、1 GPU に 1 本。学習（追加の seed・長い run）は 4090 に置く（4060 は 5 倍遅い）。$m$・`e1f` は 4060 にも置いてよく、4060 では `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を付ける。出力は NAS の `runs/v18c-sem/`・`runs/v18c-screen/`（追加の seed）・`runs/v18c-long/` で、ckpt を除いて `./runs/` に pull する
@@ -1098,6 +1101,23 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 - **V-m5 の $\delta_1$**: README の式 $2\sqrt{\mathrm{SE}_{\mathrm{blk}}^2 + 2\sigma_{\mathrm{seed}}^2}$ の $\mathrm{SE}_{\mathrm{blk}}$ を、どの 2 本の差のものにするかは決めていなかった。`judge_m.py` は、同じ学習率の seed 0 の候補のすべての対の差の $\mathrm{SE}_{\mathrm{blk}}$ のうち最大のもの（いちばん厳しい側）を使う
 - **V-E1′3 の組**: $\lvert m(\texttt{pred\_k3}) - m(\texttt{pool}) \rvert \le \delta_w$ は、C1′ と同じ final で確かめる
 - **テストのための引数**: `sem_eval` と `fill_eval` の評価に `span`（当てはめの組の span、既定は `SPAN`）を足した。合成のデータのテストを速くするためだけで、既定の値と振る舞いは変えていない
+
+レビューを受けて、数値を読む前に次を直し、決めた（2026-11-25）。
+
+- **$L$ の上限**: 155 を 154 に直した（上の「揺れ」の節）。実際の分け方（格子 3899、6 区間、先頭 30 を捨てる）で、上限の長さで各組がちょうど 8 個のブロックになることをテストで確かめる
+- **`pred_k3` の $\alpha$**: `pool` で選んだ $c$ の 16 倍に固定し（`fill_eval.e1f_fits`）、V-E1′3 を $\lvert \Delta m \rvert \le 10^{-6}$ の実装の確かめにした（上の導出）
+- **K3 の族の言い過ぎ**: 「K3 の族のすべてで 0」を「$\bar A$ が正則で条件数がよい K3 の族で 0」に直し、`pool` の `cond` を行に残す
+- **`--split sem` の出力の場所**: `posthoc_fill_sem/`（`fill_eval.OUT_SEM`）に分けた。同じ `posthoc_fill/` に書くと、後で `--split` なしの `run` をかけたときに、`config.json` の照合が分け方の鍵を見ずに通り、分け方の E1 を済んだものとして飛ばして、別の分け方の E1e・E2 を混ぜていた。`config.json` の `cand` と `n_hard` も、512 個のままではなく分け方の候補を書く。これで V18c の長い run にも、`--split` なしの `diag` を `posthoc_fill/` にかけられる
+- **V-E1′2**: README どおり V18c の checkpoint で確かめるため、長い run の 0・6000・60000 にも `fill_eval diag` をかけ、その残差で判定する（`judge_m` の `resid`）。旧 checkpoint の残差（`resid_old`）は H-bug の記述に使う
+- **$\sigma_{\mathrm{seed}}$**: 学習率ごとに seed 0 の上位 2 設定（選び方の 2）の、3 seed のそろったものだけから求め、自由度を書く。選び方の 3 で足した設定は入れない。「3 seed の設定が 2 つ未満なら止める」は学習率ごとに数える
+- **足した seed が落ちた設定**: 選び方の 2 と 4 の候補から外し、`removed` に書く。その設定の seed 0 は、選び方の 1 の最大と 3 の $\delta_1$ の比べに残す（seed 0 の値そのものは、足した seed の合否で変わらないため）
+- **選び方の 3 の対象**: seed 0 の最大から $\delta_1$ 以内で、まだ 3 seed がそろわず、落ちた seed も無い設定を `to_add` に書き、それが残る間は選び方の 4 に進まない。選び方の 4 の候補は、最大・選び方の 2・3 の設定のうち 3 seed がそろったもの
+- **C4′ の $\delta_w$**: $(p_{60} - q_{60}) - (p_6 - q_6)$ の、係数 $(1, -1, -1, 1)$ の 4 つの符号（final の $e_i$、同じ $v_i$ とブロック）の差の差の $2\,\mathrm{SE}_{\mathrm{blk}}$。60000 の $p - q$ だけの $\delta_w$ は使わない
+- **H-time と H-skew のまとめ方**（README は行ごとの条件だけを決めていた）: 行は (checkpoint, 的, 段) ごと。H-time は、step > 0 のすべての行（`pred` と `oracle`）が「$C(1) > 0$、$C(2) > 0$、$C(256) < 0$、$s(256) < 0.5$」を満たし、かつ step 0 の `pred` の行の少なくとも 1 つが満たさないとき。H-skew は、行ごとに「$s_{\mathrm{off}} < 0.5$、かつ $C^{\mathrm{nw}} > 0$ の $\tau$ の過半数と $C^{\mathrm{nw}} < 0$ の $\tau$ の過半数で $s^{\mathrm{nw}} < 0.5$」を判定し、その行が全体の過半数のとき。どちらも記述で、合否には使わない
+- **V-m6 の組**: `mean` も含めたすべての物差しの組で確かめる（`mean` の半分の値はちょうど 0）
+- **V-m0 の「全フレーム」**: 高解像度のフレームの (a)・(b) は、残したすべてのフレーム（的が読むフレームのすべて）で確かめる。残さないフレームはどの的にも入らない。そのかわり、的を作る前（`sem_eval.build_targets`）に、5×5 で平均した高解像度のフレームと、符号の見る stack の最後のフレーム（`SemSets.last`）の差の絶対値の平均が 1.0 以下であることを確かめ、外れたら止める（`places_max_diff`）。場所から stack への対応も V-m0 に入る
+- **$\alpha$ の格子の端**: `sem_eval` の行に `alpha_edge`（選んだ $c$ が $10^{-8}$ か 1 か）を書き、`judge_m` が端に当たった物差しを並べる
+- **再現性**: 的のキャッシュを使い回すときも Inception の sha256 を照らし合わせる。`targets.json` にコードの出どころ（`of_diagnosis` の `code` など）を書く。キャッシュの名前と照合は、結果を変えない `batch` を除いた設定で行う。物差しの行に、`v16`・`v17` の checkpoint と `init_c` の run の場所（`source`）を書く
 
 ## V19: ストリームで標準の SIGReg
 
