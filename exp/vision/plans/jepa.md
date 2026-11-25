@@ -1230,7 +1230,7 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 - **標準化**: 符号は、当てはめの組（その fold の当てはめの動画）の平均と標準偏差で標準化してから当てはめる。標準偏差が $10^{-12}$ 以下の次元は 1 で割る
 - **クラスの重み**: $w_i = 1/(K n_k)$（$n_k$ はその fold の当てはめの組のクラス $k$ の数）。BA を最大にする決め方は、事前確率を一様にしたときの事後確率の最大で（再現率の平均は、各クラスの中での正解率の平均だから）、重みつきの最小二乗はその線形近似を当てはめる（Fable さんの導出）
 - **予測**: 出力の最大のクラス。同点は番号の小さいクラス（`torch.argmax` の決まり）
-- **$\alpha$ の候補**: $c \in \{10^{-6}, 10^{-5.5}, \dots, 10^{3}\}$ の 19 点（`SCENE_SCALES`）と、定数の予測（`CONST`。群 0 を予測する。$m$ はちょうど 0）。1 回の固有値分解 $X_c^\top W X_c = U \Lambda U^\top$ から、すべての $c$ の $B$ を出す
+- **$\alpha$ の候補**: $c \in \{10^{-6}, 10^{-5.5}, \dots, 10^{3}\}$ の 19 点（`SCENE_SCALES`）、その極限 $c \to \infty$（`LIMIT`。$\bar y$ は残したクラスで $1/K$ にそろうので、予測は $(x - \bar x) X_c^\top W Y_c$ の最大のクラスに収束する。尺度によらない重みつきの重心の分類器。`pred_k3` の $P$ 倍も極限のまま）と、定数の予測（`CONST`。群 0 を予測する。$m$ はちょうど 0）。1 回の固有値分解 $X_c^\top W X_c = U \Lambda U^\top$ から、すべての $c$ の $B$ を出す
 - **入れ子の交差検証**（`nested_cv(x, y, video, scales) -> NestedResult`、動画が単位）
   - 外側: 動画 $v$ を採点に回し、残りの 8 本で当てはめる（9 通り）。どのフレームもちょうど 1 回採点される
   - 内側: 残りの 8 本の中で 1 本を抜いて 7 本で当てはめ、抜いた 1 本を予測する（8 通り）。8 通りの予測を合わせた $m$（下の式、8 本の上で）が最大の候補を選ぶ。同点は大きい $\alpha$（定数を最大とみる）。選んだ候補で 8 本に当てはめ直し、$v$ を予測する
@@ -1264,18 +1264,19 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 
 ### ランダムのラベルの帰無（V-c4）
 
-- `RAND_SEED` = 113 から 20 回、全フレームのラベルを、残したフレームのクラスの割合から独立に引き直す（入力・動画・時刻と独立）。`color` と `inc64` で、ラベルだけを替えて入れ子の交差検証からやり直す
+- `RAND_SEED` = 113 から 20 回、全フレームのラベルを、残したフレームのクラスの割合から独立に引き直す（入力・動画・時刻と独立）。`color` と `inc64` で、ラベルだけを替えて入れ子の交差検証からやり直す。行には、予測 `pred` と引いたラベル `t` を残す
 - 期待値: 当てはめの組のラベルが入力と独立なので、採点の動画の予測はその動画のラベルと独立で、$m$ の期待値は 0
+- 比べる相手: 各行の予測と引いたラベルのブートストラップの $\mathrm{SE}^*_i$ を 2 乗平均した $\mathrm{SE}^*_0$（README の V-c4。$\mathbb E[m \mid \hat y] = 0$ なので $\mathrm{Var}(m) = \mathbb E[\mathrm{Var}(m \mid \hat y)]$）。本物のラベルの $\mathrm{SE}^*$ は並べるだけ
 - 費用: 40 回の入れ子の交差検証（次元は 384 と 2048）
 
 ### 監査（V-c2、教師と独立なラベルの照合）
 
 - **標本**（`scene_eval audit-sheets`、`AUDIT_SEED` = 109）: 残した群ごとに、教師のラベルがその群の `full` のフレームから 30 枚（`AUDIT_N`）を、動画で層化して（動画ごとの件数に比例、端数は大きい順）無作為に引く。`e1f` のために、四半分のラベルで残した群ごとに 20 枚（`AUDIT_N_QUAD`、4 つの四半分を合わせた中から）。同じフレームの 64 px（最後のフレームを 320 px に最近傍で拡大）も別に作る
 - **見せ方**: 320 px の画像を、教師のラベルの順ではなく乱数の順に並べた 4 × 4 の一覧（番号つき）にする。64 px は別の一覧にし、320 px の判定の後に見せる。教師の出力（ラベル・確率・並べた群）は渡さない
-- **判定する者と指示**（先に固定）: 多モーダルの Claude のサブエージェント（この workflow の外の文脈を持たない新しいもの）。渡すのは、$K$ 個の群の名前と、各群に入る Places365 のクラスの名前の一覧（`places365_hierarchy.csv` から機械的に作る）、「各画像について、場面を表す群を 1 つか 2 つ選ぶ。どれにも当たらないか、画像から判断できなければ『判定不能』」という指示だけ。返すのは JSON（番号 → 群の名前の配列か「判定不能」）
-- **採点**: 教師のラベルが判定の群に入れば一致。群ごとの一致率（判定不能を分母から除く）と、全体の判定不能の割合。64 px の判定と 320 px の判定の一致は記録だけ
+- **判定する者と指示**（先に固定）: 多モーダルの Claude のサブエージェント（この workflow の外の文脈を持たない新しいもの）。渡すのは、`audit/judge/` の中身（320 px の一覧と `groups.json`: 群の番号・名前・各群に入る Places365 のクラスの名前。`places365_hierarchy.csv` から機械的に作る）と、「各画像について、場面を表す群を 1 つか 2 つ選ぶ。どれにも当たらないか、画像から判断できなければ『判定不能』」という指示だけ。返すのは JSON（画像の番号 → 群の番号の配列か「判定不能」）。64 px の一覧は 320 px の答えの後に `audit/judge64/` から渡す。教師の答え `key.json` と目視の `view-*.png` は `audit/` に置き、判定する者には渡さない
+- **採点**: 教師のラベルの群の番号が判定の番号に入れば一致。群ごとの一致率（判定不能を分母から除く。判定のついた標本が 0 の群は不合格）と、全体の判定不能の割合。答えが欠けているか番号の配列でない標本があれば、合否を決めない。64 px の判定と 320 px の判定の一致は記録だけ
 - ユーザーが同じ一覧（顔とナンバーを `deface` でぼかしたもの）を判定したときは、その判定で Claude の判定を置き換える
-- 出力: `runs/v18c-scene/audit/`（一覧の画像、番号と教師のラベルの対応 `key.json`、判定 `answers.json`）。一覧の画像は git に入れない
+- 出力: `runs/v18c-scene/audit/`（判定する者に渡す `judge/`・`judge64/`、番号と教師のラベルの対応 `key.json`、目視の `view-*.png`、判定 `answers.json`）。一覧の画像は git に入れない
 
 ### `e1f` の的（四半分のラベル）
 
@@ -1297,7 +1298,7 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 ### 出力
 
 - `runs/v18c-scene/`: `frames.json`、`labels.json`（キャッシュの写し）、`audit/`、`yardsticks/rows/<code>.json`、`checks/`（V-c4 と V-c5 の行）
-- 各 run の `posthoc_scene/`: `config.json`（定数、ラベルのキャッシュの名前、$K$、$L$、`key`。前と同じ照合の流儀で、違えば止まる）と `rows/<step>-<code>.json`（`step`、`code`、`dim`、`scale_by_video`、`const_folds`（定数を選んだ fold の数）、`m`、`ba`、`chance`、`m_by_video`、`ba_by_video`、`m_zurich`、`m_seen8`、`auc`、`pred`（全フレームの外側の予測、int8）、`jack_pred`（`z` の 0・6000・60000 と `init_c`、物差しの `color`・`color8`・`inc64`、`syn_q` だけ、(9, N) int8）、`sec`、`max_mem`）
+- 各 run の `posthoc_scene/`: `config.json`（定数、ラベルのキャッシュの名前、$K$、$L$、`key`。前と同じ照合の流儀で、違えば止まる）と `rows/<step>-<code>.json`（`step`、`code`、`dim`、`scale_by_video`、`const_folds`・`limit_folds`・`top_folds`・`bottom_folds`（定数・極限・格子の上端・下端を選んだ fold の数）、`m`、`ba`、`chance`、`m_by_video`、`ba_by_video`、`m_zurich`、`m_seen8`、`auc`、`pred`（全フレームの外側の予測、int8）、`jack_pred`（`z` の 0・6000・60000 と `init_c`、物差しの `color`・`color8`・`inc64`、`syn_q` だけ、(9, N) int8）、`sec`、`max_mem`）
 - 集計: `exp/vision/results/v18c/judge_scene.py` が、README の規則（V-c0〜V-c6、`e1f` の確かめ、L1〜L3 と 12 本の比べ、C1′・C4′）をそのまま書いた表と `judge_scene.json` を出す。予測を行に持つので、ブートストラップと jackknife はここで計算する。数値を読む前に書く
 
 ### CLI
@@ -1334,7 +1335,7 @@ uv run python -m exp.vision.results.v18c.judge_scene --json exp/vision/results/v
 | ファイル | 中身 |
 | -- | -- |
 | `exp/lib/places365.py`・`places365_categories.txt`・`places365_hierarchy.csv` | 重みの読み込みと sha256、前処理、群の確率、`check` の CLI |
-| `exp/lib/readout.py` | `fit_weighted_ridge`、`nested_cv`、`nested_cv_jackknife`、`balanced_accuracy`、`video_chance`、`scene_m`、`SCENE_SCALES`・`CONST` |
+| `exp/lib/readout.py` | `fit_weighted_ridge`、`nested_cv`、`nested_cv_jackknife`、`balanced_accuracy`、`video_chance`、`scene_m`、`SCENE_SCALES`・`LIMIT`・`CONST` |
 | `exp/lib/metrics.py` | `scene_bootstrap`、`video_jackknife` |
 | `exp/vision/scene_eval.py` | 格子、ラベルのキャッシュ、残す群と $L$、監査の一覧、符号と物差し、V-c4・V-c5、job の流れ、出力、CLI |
 | `exp/vision/sem_eval.py` | `_shift_top1` の直し |
@@ -1399,6 +1400,7 @@ GPU の時間は合わせて 10〜17 時間で、空いた GPU に 1 本ずつ�
 - **`e1f`**: `scene_eval fill`（`fill_eval run --parts e1f --target scene` も同じ）。行は `posthoc_scene_fill/rows/<step>-e1f.json` の `rows` に、$k$ × 段ごとの 4 つの四半分の行（`pred`、`jack_pred` は `pred`・`pool`・`vis_color` の $k$ = 8 と `oracle` の $k$ = 4 で、どの step にも）。`pred_k3` は外側の fold ごとに `pool` の尺度の $P$ 倍（$P$ は幅の比）
 - **部分集合の値**: 10 行以上のクラスが無い部分集合（短い動画など）の $m$・BA は `None`
 - **`shift_top1`**: `sem_eval.shift_sets`・`shift_top1` に直した。2 回目のキャッシュでの出し直しは fleet の上で行う（未実施）
+- **レビューを受けた直し**（数値を読む前）: V-c4 の比べる相手を帰無の行自身の $\mathrm{SE}^*$ に、V-c5 の段差の許容幅を $\Delta_*/2$ に、「$\Delta_*$ 級の改善を除外」に 9 通りの jackknife の向きを、伸びの比べに伸びの seed 分散 $\sigma_{\mathrm{gain}}$ を、$\alpha$ の候補に極限 `LIMIT` を足し、V-c1 の最大の群を残したフレームの中の割合にし、監査を群の番号で答えて判定する者に渡すディレクトリを分けた。`e1f` の前提を README のとおりにした。理由は README の「レビューを受けた直し」。`scene_resamples` に `min_count`（部分集合の比べで点推定と同じクラスを外す）を、`fill_eval run --target scene` に `--labels` を足した
 
 ## V19: ストリームで標準の SIGReg
 
