@@ -1553,8 +1553,8 @@ $m$ は格子の 3899 個。加えて、動いた大きさ $\rho_V = \sum \sum_{
 | V-s2 | `const` と位置だけの符号（本物と予測を $g_p$ に置き換え）で `top1` = 0・$A$ = 0.5・全部が引き分け。整数値の合成テンソルで、大きな $g_p$（2 のべき）を本物と予測の両方に足しても値がビットまで変わらない | `const` は各 checkpoint、$g_p$ を足す形はテストだけ | 実装の誤り |
 | V-s3 | 合成の複製 K3（本物・予測・文脈の側を全位置の平均で置き換える。`ref` にも同じ操作）で、`pred` と `flat` の問い合わせごとの値が一致、`swap` = 0.5 で引き分けが問い合わせの数、`pool` と `oracle` が一致、$L$ の絶対値が $10^{-9}$ 以下（移植した step） | 各 checkpoint | 実装の誤り |
 | V-s4 | 局所な符号（`jepa_eval.ColorCode(16)`、本物を予測として注入）で $a_U$ = 1・$a_V$ = 0（$10^{-9}$ 以内）、順向きの候補の値が自然な候補とビットまで同じ、逆向きが全部の引き分け | `checks`（実データ、1 回） | 移植の実装の誤り |
-| V-s5 | 鏡の符号（`ColorCode(16)` のマスを 180° 回したもの、本物を予測として注入）で、自然な候補の `top1` = 1、`swap` = 1（注入した oracle の検査）、順向きの候補の `top1` = 0・$A$ = 0.5・全部が引き分け、逆向きの候補が自然な候補と同じ値、$a_U$ = 0 | `checks`（実データ、1 回） | 移植した候補が逃げ道を塞いでいない。(c) を読まない |
-| V-s6 | 各 checkpoint の本物に雑音を足した合成の予測 $r_n + \sigma \xi$（$\xi$ は標準正規、中心化し直さない、候補は固定）の $A$ が、式 $\frac{1}{n(c-1)} \sum_{n} \sum_{m \ne n} \Phi\!\left( \frac{\langle r_n, \tilde r_n - \tilde r_m \rangle}{\sigma \lVert \tilde r_n - \tilde r_m \rVert} \right)$（$\tilde r = r / \lVert r \rVert$、$\tilde r_n = \tilde r_m$ の項は 1/2）と、雑音を 16 回引いた平均の標準誤差の 3 倍以内で一致。$\sigma$ は式の値が 0.6・0.75・0.9 になる 3 つ（分子は $\lVert r_n \rVert (1 - \cos) \ge 0$ なので式は $\sigma$ について単調に減り、二分法で一意に決まる） | 各 checkpoint（自然な候補の易しい・難しい、四半分ごと） | 採点の実装の誤り |
+| V-s5 | 鏡の符号（`ColorCode(16)` のマスを 180° 回したもの、本物を予測として注入）で、自然な候補の `top1` = 1、順向きの候補の `top1` = 0・$A$ = 0.5・全部が引き分け、逆向きの候補が自然な候補と同じ値、$a_U$ = 0 | `checks`（実データ、1 回） | 移植した候補が逃げ道を塞いでいない。(c) を読まない |
+| V-s6 | 各 checkpoint の本物に雑音を足した合成の予測 $r_n + \sigma \xi$（$\xi$ は標準正規、中心化し直さない、候補は固定）の $A$ が、式 $\frac{1}{n(c-1)} \sum_{n} \sum_{m \ne n} \Phi\!\left( \frac{\langle r_n, \tilde r_n - \tilde r_m \rangle}{\sigma \lVert \tilde r_n - \tilde r_m \rVert} \right)$（$\tilde r = r / \lVert r \rVert$、$\tilde r_n = \tilde r_m$ の項は 1/2）と、雑音を 16 回引いた平均の標準誤差の 7.34 倍以内で一致（登録した 170 checkpoint × 24 個の Bonferroni。もとは 3 倍。README の「実装のレビューを受けた直し」）。$\sigma$ は式の値が 0.6・0.75・0.9 になる 3 つ（分子は $\lVert r_n \rVert (1 - \cos) \ge 0$ なので式は $\sigma$ について単調に減り、二分法で一意に決まる） | 各 checkpoint（自然な候補の易しい・難しい、四半分ごと） | 採点の実装の誤り |
 
 V-s6 の導出: 候補を固定すると、問い合わせの cos の正規化は正の共通因子で順位に効かず、$\langle r_n + \sigma\xi, \tilde r_n - \tilde r_m \rangle$ は平均 $\langle r_n, \tilde r_n - \tilde r_m \rangle$、分散 $\sigma^2 \lVert \tilde r_n - \tilde r_m \rVert^2$ の正規分布である。中心化し直すと信号から問い合わせの平均が引かれ、雑音の分散に $1 - 1/N$ がかかって式が変わる。
 
@@ -1568,7 +1568,7 @@ V-s6 の導出: 候補を固定すると、問い合わせの cos の正規化�
 ### CLI
 
 ```bash
-# V-s4・V-s5（符号は ColorCode と鏡の符号。checkpoint によらないので 1 回）
+# V-s4・V-s5（符号は ColorCode と鏡の符号。checkpoint によらないので 1 回。既定で CPU）
 python -m exp.vision.self_eval checks --config <V18c の run_dir> --out runs/v18c-self/checks
 # 各 run（移植と局所性は --transplant-steps だけ）
 python -m exp.vision.self_eval run <run_dir> --steps 0,2000,6000,10000,20000,30000,40000,50000,60000 \
@@ -1596,7 +1596,8 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 - **V-s0〜V-s5**: 上の表を、小さな JEPA（`build_jepa` の小さい設定）と `ColorCode`・`MirrorColorCode` で
 - **中心化の反例**（Codex さん）: 格子の候補 $(\pm 1, 0), (0, \pm 1)$、問い合わせ $(1, 0), (0, 1)$ の完全な予測で、参照から固定した中心化なら `top1` = $A$ = 1
 - **V-s6 の式**: 合成の $r$ でモンテカルロ（$10^4$ 回）と一致
-- **`swap`**: 複製の K3 でちょうど 0.5、局所な符号の本物の注入で 1
+- **`swap`**: 複製の K3 でちょうど 0.5。鏡の符号の値が、問い合わせごとに局所な符号の値と一致（位置の順の反転）。「局所な符号の本物の注入で 1」は恒等式ではない（値は $[\lVert \tilde r_A \rVert^2 > \langle \tilde r_B, \tilde r_A \rangle]$）ので調べない
+- **`pred`・`pool` の経路**: `pred` が `jepa.predict` の出力を位置の順に並べたものとビットまで同じ、`pool` が `proj(encoder(x, keep))` の見える位置の平均と一致（V-s3 の `pool` の項は採点の経路だけを確かめるため）
 - **帯**: 帯の `ratio` を帯の分散で重みづけた平均が全体の `ratio` と $10^{-9}$ の中で一致。予測 = 本物で全帯 0、予測 = `ref` の平均で全帯 1（`ref` 自身で）
 - **既存の値が変わらない**: `identification`・`swap`・`block_bootstrap`・`fill_eval run` の既存の行
 
@@ -1639,6 +1640,8 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 
 1. V-s6 の多重比較。各 checkpoint で、4 つの四半分 × 易しい・難しい × 3 つの $\sigma$ の 24 個を、それぞれ「16 回の平均が式から標準誤差の 3 倍以内」で調べる。標準誤差も同じ 16 回から推定するので、ずれを標準誤差で割った値は自由度 15 の $t$ 分布に従う。$P(\lvert t_{15} \rvert > 3) = 0.0090$（数値積分。モンテカルロ 200 万回でも 0.0090）なので、24 個のどれかが外れる確率は 0.196 になる。かける checkpoint は約 156 個あり、実装が正しくても約 30 個で外れる見込みである。「外れたら止める」のままではほぼ確実に止まる。直し方の候補（どれもユーザーの判断）: (a) 閾値を checkpoint あたりの偶然の外れが 1% になる値にする（Bonferroni で $\lvert t_{15} \rvert$ の閾値 4.51）、(b) 雑音の回数を増やして正規近似で閾値を決める、(c) 24 個を 1 つの検定にまとめる
 2. V-s5 の `swap` = 1。本物を予測として注入したときの値は $[\lVert \tilde r_A \rVert^2 > \langle \tilde r_B, \tilde r_A \rangle]$ である（$\tilde r$ は参照の平均を引いた本物）。これは恒等式ではない。対角の四半分が明るさなどで相関し、$\tilde r_B$ の $\tilde r_A$ 方向の成分が $\lVert \tilde r_A \rVert$ より長い問い合わせでは 0 になる。実データの 512 個すべてで 1 になる保証は無い（鏡の符号でも局所な符号でも同じ）。テストでは一様乱数の画素の合成データでだけ成り立つことを確かめた
+
+レビューを受けて、どちらも数値を読む前に直した（私たち（Claude）の推奨で、ユーザーが覆せる。ユーザーの確認が出るまで `checks` も掃引も回さない）。1 は、閾値を 7.34 にした。登録した checkpoint のどれで外れても全体が止まるので、族は checkpoint ごとではなく、登録した最大 170 checkpoint × 24 個 = 4080 個とした。偶然に止まる確率を 0.01 にする Bonferroni の値である（(a) の 4.51 では、170 個のどこかで偶然に止まる確率が約 0.82 になる）。2 は、`swap` を V-s5 の合否から外し、記述にした（鏡の符号の値は局所な符号の値と同じ量で、鏡の符号を区別しない）。理由と、ほかの直し（集計の止め方、`checks` を CPU で回すこと、snapshot の記録、テスト）は README の「実装のレビューを受けた直し」に書いた。
 
 ## V19: ストリームで標準の SIGReg
 
