@@ -1310,7 +1310,8 @@ python -m exp.lib.tours.hires prepare <video> --src /datasets/walking_tours \
 python -m exp.lib.tours.hires finalize <dir>
 # Places365 の確かめ（V-c0）とラベル（1 回だけ）
 python -m exp.lib.places365 check --weights $MUJOU_EXP_DATA/places365/resnet50_places365.pth.tar \
-    --reference runs/v18c-scene/places_demo_reference.json
+    --image <公式のデモ画像> --reference runs/v18c-scene/places_demo_reference.json \
+    --out runs/v18c-scene/places_check.json
 python -m exp.vision.scene_eval labels --hires <dir>
 # 監査の一覧（判定はサブエージェント）
 python -m exp.vision.scene_eval audit-sheets --out runs/v18c-scene/audit
@@ -1383,6 +1384,21 @@ GPU の時間は合わせて 10〜17 時間で、空いた GPU に 1 本ずつ�
 7. 集計（`judge_scene.py`）と README の結果
 
 **環境**: これまでと同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`）。`just fleet push` の後、snapshot を明示して `code/<snap>` の中で走らせる。std-00〜03 のうち、長い run が使っていない GPU だけを使う（置く前に `nvidia-smi` で空きを確かめ、1 GPU に 1 本、無ければ空くまで待つ）。mini-00 は使わない。4060 では `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を付ける。出力は NAS の `runs/v18c-scene/` と各 run の `posthoc_scene/`・`posthoc_scene_fill/` で、ckpt を除いて `./runs/` に pull する
+
+### 実装の注記（場面のカテゴリ、2026-11-25、数値を読む前）
+
+実装で決めたことと、計画から外れた点。どれも数値を読む前に決めた。
+
+- **公式のデモ画像が無い**: `run_placesCNN_basic.py`（`CSAILVision/places365` の commit `8a953ed5`）が取りに行く `http://places.csail.mit.edu/demo/12.jpg` は 404 で、公式のリポジトリにも無い（2026-11-25 に確かめた）。そこで `places365 check` は画像を `--image` で受け取り、その sha256 を記録し、参照の JSON（`{"image_sha256", "top5": [[クラス, 確率], …]}`）の sha256 と照らす。代わりの画像の候補は、公式のリポジトリにある `cam_example.jpg`（公式の CAM のデモ `demo_pytorch_CAM.py` が使う画像）。**どの画像にするかと、V-c0 のこの部分を置き換えてよいかは、ユーザーに諮る**
+- **参照の出力は未作成**: 公式のスクリプトを `arch = 'resnet50'`・画像・確率の桁（`'{:.3f}'` → `'{:.10f}'`。$10^{-4}$ と比べるのに 3 桁では足りない）だけ替えて走らせる手順。ダウンロードしたスクリプトの実行は、この workflow の自動の許可で止められたので、std-00 で人が走らせるか、許可を得て走らせる
+- **取得したもの**（2026-11-25）: 重み `resnet50_places365.pth.tar` の sha256 `46529c86…74f6c5`（`RESNET50_SHA256`。`state_dict` の 267 個の鍵がそのまま読める）、`categories_places365.txt` `2affba63…a1ea6`、階層の CSV（スプレッドシート `1H7ADoEIGgbF_eXh9kcJjCs5j_r3VJwke4nebhkdzksg` を CSV で書き出したもの）`83bb2688…5ee9`。CSV は見出し 2 行と 365 行、第 2 階層の 16 群（屋内 6・屋外の自然 4・屋外の人工 6）で、名前は順序まで一致し、どのクラスも 1 つ以上の群に入り、63 クラスが複数の群に入る。2 つのファイルはバイト単位で写し、sha256 が変わらないよう pre-commit の対象から外した（末尾の改行が無く、見出しに codespell が誤りとみなす綴りがある）
+- **前処理**: 公式のとおり、PIL の画像にしてから `Resize((256, 256))`・`CenterCrop(224)`・`ToTensor()`・`Normalize`。テンソルの縮小は PIL の縮小とビットまで一致しないので、PIL を通す（320 px の 64 枚で 0.05 秒）
+- **読み出しの計算**: 入れ子の交差検証の 81 回の当てはめは、符号の (動画, クラス) ごとの個数・和・2 次の積率から組み立てる（`readout._Moments`）。重みつきの中心化で標準化の平均は消えるので、当てはめは $x / s$ のものになる。尺度ごとに解いた ridge との一致をテストで確かめた（$10^{-9}$）。定数の予測 `CONST` は $c = \infty$ とし、同点は大きい $c$ を選ぶ
+- **ブロック**: 格子の歩数で切る（`contiguous_blocks` を動画の番号に。残さないフレームも数える）。$2L$ が $L_{\max}$ を超えるときは $L_{\max}$。ブートストラップの各回の値は `metrics.scene_resamples` が返し、引き方はラベルによらない（Zurich と残り 8 本の伸びの差の対の誤差に使う）
+- **行の形**: `pred` は格子のすべての stack の外側の予測（残さない stack は -1）。`scale_by_video` の定数は `"const"`。`jack_pred` は `z` の 0・6000・60000、物差しの `init_c`・`color`・`color8`・`inc64`、`syn_*` につける。`init_c` は長い run ごとに `yardstick-init_c-<run>`。L3 の相手は、その run 自身の step 0 の `z` の行（同じ値）
+- **`e1f`**: `scene_eval fill`（`fill_eval run --parts e1f --target scene` も同じ）。行は `posthoc_scene_fill/rows/<step>-e1f.json` の `rows` に、$k$ × 段ごとの 4 つの四半分の行（`pred`、`jack_pred` は `pred`・`pool`・`vis_color` の $k$ = 8 と `oracle` の $k$ = 4 で、どの step にも）。`pred_k3` は外側の fold ごとに `pool` の尺度の $P$ 倍（$P$ は幅の比）
+- **部分集合の値**: 10 行以上のクラスが無い部分集合（短い動画など）の $m$・BA は `None`
+- **`shift_top1`**: `sem_eval.shift_sets`・`shift_top1` に直した。2 回目のキャッシュでの出し直しは fleet の上で行う（未実施）
 
 ## V19: ストリームで標準の SIGReg
 
