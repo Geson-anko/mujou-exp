@@ -10,6 +10,7 @@ from exp.lib.metrics import (
     effective_rank,
     identification,
     integrated_time,
+    pair_wins,
     probe_accuracy,
     probe_r2,
     scene_bootstrap,
@@ -279,6 +280,65 @@ class TestSwap:
         b = common + 3.0 * _features(n, seed=10)
         value, _ = swap(a, b, t)
         assert abs(value - 0.5) < 4 * math.sqrt(0.25 / n)
+
+
+class TestPairWins:
+    def test_a_small_case_by_hand(self):
+        # cos: s(n, m) = <e_n, r_m> / |r_m|; query 0's own (1, 0) against
+        # (0, 1) (s 0.6 < 0.8: a win) and (2, 0) (s 0.8, a tie)
+        real = torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 0.0]], dtype=torch.float64)
+        pred = torch.tensor([[0.8, 0.6]], dtype=torch.float64)
+        mean, each, ties = pair_wins(pred, real, truth=torch.tensor([0]))
+        assert mean == each[0] == 0.75 and ties.tolist() == [1]
+        # l2: s(n, m) = -|e_n - r_m|^2: 0.4, 0.8 and 1.6 away
+        mean, each, ties = pair_wins(pred, real, truth=torch.tensor([0]), metric="l2")
+        assert mean == 1.0 and ties.tolist() == [0]
+
+    def test_one_prediction_of_no_direction_ties_with_all(self):
+        real = _features(12).double()
+        zero = torch.zeros(12, 6, dtype=torch.float64)
+        mean, each, ties = pair_wins(zero, real)
+        assert mean == 0.5 and torch.all(each == 0.5)
+        assert ties.tolist() == [11] * 12
+
+    def test_the_real_rows_themselves_win_every_pair(self):
+        real = _features(12).double()
+        for metric in ("cos", "l2"):
+            mean, each, ties = pair_wins(real, real, metric=metric)
+            assert mean == 1.0 and torch.all(each == 1.0) and int(ties.sum()) == 0
+
+    def test_the_order_of_the_candidates_and_a_positive_scale_change_nothing(self):
+        real, pred = _features(30).double(), _features(10, seed=1).double()
+        g = torch.Generator().manual_seed(2)
+        among = torch.stack([torch.randperm(30, generator=g)[:7] for _ in range(10)])
+        truth = among[:, 3]
+        _, each, _ = pair_wins(pred, real, truth=truth, among=among)
+        flipped = among.flip(1)
+        _, again, _ = pair_wins(3.5 * pred, real, truth=truth, among=flipped)
+        assert torch.equal(each, again)
+
+    def test_per_query_candidates_are_the_shared_ones_taken_by_among(self):
+        real, pred = _features(30).double(), _features(10, seed=1).double()
+        g = torch.Generator().manual_seed(3)
+        among = torch.stack([torch.randperm(30, generator=g)[:7] for _ in range(10)])
+        for metric in ("cos", "l2"):
+            _, shared, _ = pair_wins(
+                pred, real, truth=among[:, 0], among=among, metric=metric
+            )
+            _, own, _ = pair_wins(pred, real[among], metric=metric)  # own column 0
+            torch.testing.assert_close(shared, own, rtol=0, atol=1e-12)
+
+    def test_its_top1_is_identifications(self):
+        # a hit (no candidate as near, a tie not a hit) is a share of 1
+        real = _features(40).double()
+        pred = real + 0.8 * _features(40, seed=5).double()
+        _, each, _ = pair_wins(pred, real)
+        out = identification(pred, real, center=torch.zeros(6))
+        assert out["hits"] == (each == 1.0).double().tolist()
+
+    def test_the_metric_is_checked(self):
+        with pytest.raises(ValueError, match="cos"):
+            pair_wins(_features(3), _features(3), metric="dot")
 
 
 class TestSceneBootstrap:

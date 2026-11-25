@@ -1,6 +1,7 @@
 """``exp.lib.regions``: the masks' cells and pixels by hand, the regions'
 images, and the harmonic fill against its definition (constants kept, each
-filled pixel the mean of its neighbours, the maximum principle). That the
+filled pixel the mean of its neighbours, the maximum principle), and the
+transplant's pixels. That the
 masks are of the JEPA's mask family is in ``tests/vision/test_jepa.py``."""
 
 import pytest
@@ -13,6 +14,7 @@ from exp.lib.regions import (
     harmonic_fill,
     pixel_mask,
     region_image,
+    transplant,
 )
 
 
@@ -88,3 +90,25 @@ class TestHarmonicFill:
         f = torch.full((1, 3, 16, 16), 77, dtype=torch.uint8)
         out = harmonic_fill(f, pixel_mask(EVAL_MASKS["R"], 16))
         torch.testing.assert_close(out, f.double(), rtol=0, atol=1e-9)
+
+
+class TestTransplant:
+    def stacks(self, b: int, seed: int) -> torch.Tensor:
+        g = torch.Generator().manual_seed(seed)
+        return torch.randint(256, (b, 2, 3, 16, 16), generator=g, dtype=torch.uint8)
+
+    def test_the_region_is_the_sources_and_the_rest_the_destinations(self):
+        dst, src = self.stacks(3, 0), self.stacks(3, 1)
+        hidden = pixel_mask(EVAL_MASKS["Q_br"], 16)
+        out = transplant(dst, src, hidden)
+        assert out.dtype == torch.uint8 and out.shape == dst.shape
+        assert torch.equal(out[..., hidden], src[..., hidden])
+        assert torch.equal(out[..., ~hidden], dst[..., ~hidden])
+        assert torch.equal(transplant(dst, dst, hidden), dst)
+
+    def test_one_destination_takes_each_source(self):
+        dst, src = self.stacks(1, 2), self.stacks(4, 3)
+        hidden = pixel_mask(EVAL_MASKS["Q_tl"], 16)
+        out = transplant(dst, src, hidden)
+        for i in range(4):
+            assert torch.equal(out[i], transplant(dst, src[i : i + 1], hidden)[0])

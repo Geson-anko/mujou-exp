@@ -16,6 +16,10 @@ visible $V$ as its boundary: with $L$ the Laplacian of the 4-neighbour graph
 of the pixels (at the frame's edges only the neighbours there: Neumann's
 condition), $x_U = -L_{UU}^{-1} L_{UV} x_V$, so each filled pixel is the
 mean of its neighbours.
+
+``transplant`` puts a region's pixels of one stack into another (V18c's
+locality of the self-space identification): the intervention leaves every
+pixel natural and changes only which patches sit together.
 """
 
 import torch
@@ -30,6 +34,7 @@ __all__ = [
     "harmonic_matrix",
     "pixel_mask",
     "region_image",
+    "transplant",
 ]
 
 COARSE = 4  # the masks' grid
@@ -108,3 +113,10 @@ def harmonic_fill(frames: Tensor, pixels: Tensor) -> Tensor:
     out = x.clone()
     out[:, :, u] = x[:, :, v] @ m.T.to(x.device)
     return out.reshape(frames.shape)
+
+
+def transplant(dst: Tensor, src: Tensor, pixels: Tensor) -> Tensor:
+    """The stacks u8 ``dst`` ``(B, n, 3, S, S)`` with the pixels ``pixels``
+    ``(S, S)`` bool (True taken) of every frame those of ``src``; ``dst``
+    and ``src`` broadcast (one stack of either to a batch of the other)."""
+    return torch.where(pixels.to(dst.device), src, dst)

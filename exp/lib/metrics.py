@@ -14,6 +14,7 @@ __all__ = [
     "effective_rank",
     "identification",
     "integrated_time",
+    "pair_wins",
     "probe_accuracy",
     "probe_r2",
     "scene_bootstrap",
@@ -370,6 +371,69 @@ def identification(
         counts = torch.bincount(picks.flatten(), minlength=real.shape[0])
         out["pick_max"] = float(counts.max()) / picks.numel()
     return out
+
+
+def pair_wins(
+    pred: torch.Tensor,
+    real: torch.Tensor,
+    *,
+    truth: torch.Tensor | None = None,
+    among: torch.Tensor | None = None,
+    metric: str = "cos",
+) -> tuple[float, torch.Tensor, torch.Tensor]:
+    r"""The pairs' win rate of each query: how often ``pred`` $e_n$ ``(n,
+    F)`` (taken as it is: the caller centres it) is nearer its own real row
+    than another candidate, a tie a half.
+
+    The candidates of query $n$: the rows ``among[n]`` (``among`` ``(n,
+    c)``, by default all $m$) of ``real`` ``(m, F)``, its own
+    ``real[truth[n]]`` (``truth`` ``(n,)``, by default $n$; each row of
+    ``among`` holds it); or ``real`` ``(n, c, F)``, each query's own
+    candidates, its own at column ``truth[n]`` (by default 0). The
+    similarity $s(n, l)$ is ``"cos"`` $\langle e_n, r_l \rangle / \lVert
+    r_l \rVert$ (a row of no length gives 0; $e_n$'s length orders nothing)
+    or ``"l2"`` $-\lVert e_n - r_l \rVert^2$ (computed as $2 \langle e_n,
+    r_l \rangle - \lVert r_l \rVert^2$, the query's own $\lVert e_n
+    \rVert^2$ dropped). With $o$ its own,
+
+    $$A_n = \frac{1}{c - 1} \sum_{l \ne o} \left( [s(n, o) > s(n, l)] +
+    \tfrac12 [s(n, o) = s(n, l)] \right),$$
+
+    in float64. Returns the mean of $A_n$, the values $A_n$ ``(n,)`` and the
+    candidates tied with its own ``(n,)``. $A_n = 1$ exactly where no other
+    candidate is as near (``identification``'s hit: a tie is not one); one
+    prediction of no direction ties with all, $A$ = 1/2.
+
+    Raises:
+        ValueError: ``metric`` is not ``"cos"`` or ``"l2"``.
+    """
+    if metric not in ("cos", "l2"):
+        raise ValueError(f"the metric is 'cos' or 'l2', not {metric!r}")
+    e, r = pred.double(), real.double()
+    n = e.shape[0]
+    if r.dim() == 3:  # (n, c, F): each query's own candidates
+        dots = torch.einsum("nf,ncf->nc", e, r)
+        sq = r.square().sum(2)  # (n, c)
+        at = torch.zeros(n, dtype=torch.long) if truth is None else truth
+    else:
+        dots, sq = e @ r.T, r.square().sum(1)[None].expand(n, -1)  # (n, m)
+        own = torch.arange(n) if truth is None else truth
+        at = own
+        if among is not None:
+            dots, sq = dots.gather(1, among), sq.gather(1, among)
+            at = (among == own[:, None]).int().argmax(1)
+    if metric == "cos":
+        sims = dots / sq.sqrt().clamp(min=1e-300)
+    else:
+        sims = 2 * dots - sq
+    at = at.to(sims.device)
+    own_sim = sims.gather(1, at[:, None])  # (n, 1)
+    other = torch.ones_like(sims, dtype=torch.bool)
+    other.scatter_(1, at[:, None], False)
+    wins = (sims < own_sim).double() + 0.5 * (sims == own_sim).double()
+    each = (wins * other).sum(1) / (sims.shape[1] - 1)
+    ties = ((sims == own_sim) & other).sum(1)
+    return float(each.mean()), each, ties
 
 
 def swap(
