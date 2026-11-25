@@ -41,4 +41,4 @@
 - [手法の前に学習の設定](feedback_learn_setting_first.md) — 2026-11-13、うまくいかないときは optimizer（SGD・RMSProp・Adam）と学習率を 10 倍刻みで掃引して損失が下がる条件を先に探す
 - [結果の書き方](feedback_results_writing.md) — 2026-11-18、体系的に順を追って説明し、日本語は sonnet/haiku に /yomiyasu で推敲させる。文科省の HP の文体が手本
 - [相談相手に敬意を](feedback_respect_collaborators.md) — 2026-11-23、Codex・Fable とは互いに敬意と尊敬をもって協働する
-- [評価は学習目的に合わせる](feedback_eval_matches_objective.md) — JEPA に recon_blur の向上を求めない（2026-11-24）
+- [評価は学習目的に合わせる](feedback_eval_matches_objective.md) — JEPA の主の評価はマスク部・未来の補完能力。再構成・分類・人のラベルを主にしない（2026-11-24/25）
