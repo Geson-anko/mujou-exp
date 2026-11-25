@@ -1404,7 +1404,7 @@ GPU の時間は合わせて 10〜17 時間で、空いた GPU に 1 本ずつ�
 
 ## V18c: 自分の表現空間での補完の同定（2026-11-25）
 
-問い・実装の確かめ（外れたら止める）・閾値・予想・かける checkpoint は、README の「V18c: 自分の表現空間での補完の同定（回す前に決めたこと、2026-11-25）」に書いた。ここには、実装できる粒度の設計と、Fable さんの提案（[memory/agents/fable/self-id.md](../../../memory/agents/fable/self-id.md)）と Codex さんの批判（[memory/agents/codex/self-id-critique.md](../../../memory/agents/codex/self-id-critique.md)）の裁定を書く。コードはまだ無い。
+問い・実装の確かめ（外れたら止める）・閾値・予想・かける checkpoint は、README の「V18c: 自分の表現空間での補完の同定（回す前に決めたこと、2026-11-25）」に書いた。ここには、実装できる粒度の設計と、Fable さんの提案（[memory/agents/fable/self-id.md](../../../memory/agents/fable/self-id.md)）と Codex さんの批判（[memory/agents/codex/self-id-critique.md](../../../memory/agents/codex/self-id-critique.md)）の裁定を書く。コードの置き場所は、この節の末尾の「実装の注記」に書いた。
 
 ### ユーザーが決めたこと（2026-11-25）
 
@@ -1621,6 +1621,24 @@ V18・V18b の長い run は `--steps 0,6000,20000,60000 --transplant-steps 0,60
 **step 0 の注**: 掃引の 15 本はどれも seed 0 で、初期値は学習率・$\lambda$・$r$ によらない（同じ seed の同じ構造）。15 本の step 0 の checkpoint の重みがビットまで同じことを確かめて 1 回だけかけ、同じでなければ 15 本すべてにかける。長い run の seed 0 の step 0 も、掃引の step 0 と同じかを記録する（合否に使わない）。
 
 **環境**: これまでと同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`）。`just fleet push` の後、snapshot を明示して `code/<snap>` の中で走らせる。std-00〜03 のうち、長い run の学習と評価が使っていない GPU だけを使う（置く前に `nvidia-smi` で空きを確かめ、他のプロセスがいる GPU には置かない。1 GPU に 1 本。空きが無ければ待つ）。mini-00 は使わない。4060 では `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を付ける。出力は NAS の各 run の `posthoc_self/` と `runs/v18c-self/` で、ckpt を除いて `./runs/` に pull する
+
+### 実装の注記（2026-11-25、数値を読む前）
+
+- コードは `exp/vision/self_eval.py`（組・段・中心化・`swap`・移植と局所性・相方・実装の確かめ・出力・CLI、`MirrorColorCode`）、`exp/lib/metrics.py` の `pair_wins`、`exp/lib/regions.py` の `transplant`、集計の `exp/vision/results/v18c/judge_self.py` に置いた。テストは `tests/vision/test_self_eval.py`、`tests/lib/test_metrics.py`、`tests/lib/test_regions.py` にある
+- 計画では `pair_wins` の戻り値を `tuple[float, Tensor]` としたが、3 つ目に「正解と引き分けた候補の数」`(n,)` を足した。V-s2 の「全部が引き分け」を数えるためである。引数には `truth` と、問い合わせごとの候補 `(n, c, F)`（`hard_c` で使う）も受ける
+- `top1` は $A_n = 1$ の問い合わせの割合とした。引き分けを当たりにしない点で `identification` の `top1` と同じで、違うのは問い合わせの正規化の丸めだけである。`pick_max` は易しい候補の cos でだけ `identification` から出す
+- `flat` と `pool` の平均は「最初の値 + 最初の値からのずれの平均」で計算する。数学的には普通の平均と同じで、値がすべて等しいときにはビットまで同じ値を返す。そのため、V-s3 の一致が丸めに左右されない。`swap` の 2 つの四半分は予測器を 1 回走らせた出力から取る（GPU で 2 回走らせた値の食い違いを持ち込まないため）
+- V-s3 の合成の K3 では、本物は位置の平均 $u_n$ をすべての位置に置く。予測は隠した位置の予測の平均を置く。文脈の側は $u_n$ を見える位置に置く（計画の「文脈の側も同じ $u_n$ を返す」の形）
+- 出力は、`rows/<step>.json` に自然な候補・対照・`swap`・相方・確かめを、`rows/<step>-tr.json` に移植した候補・局所性・V-s3 の $L$ を書く。問い合わせごとの `A_i` と `hit_i` は cos の四半分の平均の行にだけ残す（ファイルの大きさのため。`A_i` は小数 6 桁に丸める）。四半分の平均の行の `n_tie` は四半分（と文脈）にわたる和である
+- 補空間の $k$ が領域の次元以上のときは行を出さない（何も残らず、丸めだけで順位がつくため）。起こるのはテストの小さな符号だけである
+- 掃引の step 0 の重みがビットまで同じかは、`python -m exp.vision.self_eval same <run_dir> ... --step 0` で確かめる
+
+### 数値を読む前に気づいた、確かめの規則の問題（判断はユーザー）
+
+登録した条件は変えていない。どちらも、実装が正しくても外れうる。
+
+1. V-s6 の多重比較。各 checkpoint で、4 つの四半分 × 易しい・難しい × 3 つの $\sigma$ の 24 個を、それぞれ「16 回の平均が式から標準誤差の 3 倍以内」で調べる。標準誤差も同じ 16 回から推定するので、ずれを標準誤差で割った値は自由度 15 の $t$ 分布に従う。$P(\lvert t_{15} \rvert > 3) = 0.0090$（数値積分。モンテカルロ 200 万回でも 0.0090）なので、24 個のどれかが外れる確率は 0.196 になる。かける checkpoint は約 156 個あり、実装が正しくても約 30 個で外れる見込みである。「外れたら止める」のままではほぼ確実に止まる。直し方の候補（どれもユーザーの判断）: (a) 閾値を checkpoint あたりの偶然の外れが 1% になる値にする（Bonferroni で $\lvert t_{15} \rvert$ の閾値 4.51）、(b) 雑音の回数を増やして正規近似で閾値を決める、(c) 24 個を 1 つの検定にまとめる
+2. V-s5 の `swap` = 1。本物を予測として注入したときの値は $[\lVert \tilde r_A \rVert^2 > \langle \tilde r_B, \tilde r_A \rangle]$ である（$\tilde r$ は参照の平均を引いた本物）。これは恒等式ではない。対角の四半分が明るさなどで相関し、$\tilde r_B$ の $\tilde r_A$ 方向の成分が $\lVert \tilde r_A \rVert$ より長い問い合わせでは 0 になる。実データの 512 個すべてで 1 になる保証は無い（鏡の符号でも局所な符号でも同じ）。テストでは一様乱数の画素の合成データでだけ成り立つことを確かめた
 
 ## V19: ストリームで標準の SIGReg
 
