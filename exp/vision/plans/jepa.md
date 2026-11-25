@@ -1124,6 +1124,266 @@ python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1,e1f
 - **$\alpha$ の格子の端**: `sem_eval` の行に `alpha_edge`（選んだ $c$ が $10^{-8}$ か 1 か）を書き、`judge_m` が端に当たった物差しを並べる
 - **再現性**: 的のキャッシュを使い回すときも Inception の sha256 を照らし合わせる。`targets.json` にコードの出どころ（`of_diagnosis` の `code` など）を書く。キャッシュの名前と照合は、結果を変えない `batch` を除いた設定で行う。物差しの行に、`v16`・`v17` の checkpoint と `init_c` の run の場所（`source`）を書く
 
+## V18c: 主の指標（場面のカテゴリ、2026-11-25）
+
+問い・有効性の確かめ・閾値・予想・長い run の判定は、README の「V18c: 場面のカテゴリで主の指標を作る（回す前に決めたこと、2026-11-25）」に書いた。ここには、実装できる粒度の設計と、Fable さんの提案（[memory/agents/fable/main-metric-v3.md](../../../memory/agents/fable/main-metric-v3.md)）と Codex さんの批判（[memory/agents/codex/main-metric-v3-critique.md](../../../memory/agents/codex/main-metric-v3-critique.md)）の裁定を書く。前の節「V18c: 主の指標の作り直しと E1 の修理」の高解像度のフレーム（`hires`）、`e1f`、ブロックの切り方は、ここで書き換えない部分をそのまま使う。
+
+### ユーザーが決めたこと（2026-11-25）
+
+1. 2 回目の $m$（320 px の四半分の Inception を白色化した PCA 64 への中心化 $R^2$）は、有効性の確かめ V-m0・V-m2・V-m3・V-m4・V-m6 で外れた。主の指標は、Codex さんが事前に次の手としていた「粗い場面のカテゴリ」を的にする。複数の都市の動画（Amsterdam・Bangkok・Zurich、ほかに使えるもの）をまたぐ
+2. Fable さんと Codex さんに詰めてもらい、有効性の確かめを先に決めてから測る
+3. 長い run（学習率 $10^{-4}$・$10^{-5}$ × $r$ = 0.5 × $\lambda$ {0.5, 0.8, 0.95} × seed {0, 1}、60000 step）は指標を待たずに回している。長い run の判定 L1〜L3 は、この指標ができてから 12 本すべてにかける
+
+### 裁定（Fable さんの提案と Codex さんの批判）
+
+両者が合意した点はそのまま採った。食い違った点は、理由を書いて決めた。
+
+| 論点 | Fable さん | Codex さん | 採ったもの | 理由 |
+| -- | -- | -- | -- | -- |
+| 的 | Places365 の ResNet-50 の 365 クラスの確率を、公式の場面の階層の第 2 階層（16 群）でまとめ、最大の群をラベルにする | 妥当。第 2 階層が 16 群で、複数の群に入るクラスがあることを確かめた | **Fable さんの案** | 両者の合意。名前のある公開の分け方で、選ぶ自由は階層の段だけ |
+| 主の採点 | 9 本の外側の予測をまとめた balanced accuracy（BA）。中心化しない | 都市ごとに優勢なクラスが違い、色で都市が分かれば、場面を見分けずに BA が上がる（反例）。動画の中の予測クラス比から求めた偶然値 $B$ を引いた BA を L2・L3 に使う | **$m = \mathrm{BA} - B$ を主、BA を副** | 反例は具体的で、BA では捕まえる手が無い（巡回ずらしも動画ごとのクラス比を保つ）。都市の別は Fable さん自身が案 C で「`color` で当たる」として退けた量で、BA のままだと案 C を混ぜることになる。読み出しは 9 本で 1 つのまま（「都市をまたいで同じ決め方で当たる」は保つ）で、引くのは予測の動画ごとの頻度で説明できる分だけ。代償として、運河の多い Venice を水辺と読む分のような、動画の間にしか無い正当な情報も 0 になる。そのことと、動画の中でほとんど変わらないクラスは $m$ に効かないことを README に書く |
+| $\alpha$ の格子 | $c \in \{10^{-6}, \dots, 10^{3}\}$ の 19 点。上端は「読めない」、下端は格子が足りないので止める | 定数の予測を候補に明示的に入れる。上端を選んだだけで「読めない」と書かない | **19 点に定数の予測を足す。定数が選ばれたときだけ「読めない」と書く。下端は記録だけ** | Codex さんの指摘は正しい（有限の $\alpha$ でも argmax は変わりうる）。下端の $c = 10^{-6}$ は、平均の固有値の $10^{-3}$ より大きい固有値の方向で縮みが $10^{-3}$ 以下で、ほぼ最小二乗である。その下に広げても読み出しは変わらないので、止める理由が無い |
+| V-c0（データとラベル） | sha256、公式のデモ画像の上位クラス、位置の確かめ | 365 クラスの ID と各行の所属を全件検査する。公式のデモの既定は ResNet-18 なので、期待値は ResNet-50 で固定する | **両方** | ResNet-50 の公式の期待値は公開されていないので、公式のデモのスクリプトを `arch = 'resnet50'` で走らせた出力を参照の実装とし、私たちの実装の上位 5 クラスと確率が一致することを求める |
+| ラベルの安定（V-c2） | 照明・色・ぼかしでラベルが変わる割合が、2 秒後のフレームとの間の割合以下 | 2 秒後との比は、場面が変わっても同じ場面で教師が揺れても大きくなり、合格を緩める | **記録に下げる（合否に使わない）** | Codex さんの指摘のとおり、基準が緩む向きにしか働かない。人手で同じ場面の組を作る置き換えは重い。意味の確かめは下の監査が受け持つ |
+| 教師と独立な監査 | 無い（目視は合否に使わない） | 教師の出力を伏せた独立な判定で、クラスごとの一致を許容範囲で固定する | **採る。判定するのは Claude のサブエージェント（教師の出力を伏せる）** | 人手はユーザーしかいない。Codex さんは、指示を先に固定して教師の出力を伏せれば Claude の視覚も別系統の照合になると認めた（共通の手がかりで同じ誤りをする余地は残る）。ユーザーが同じ標本を判定したときは、その判定で置き換える |
+| 64 px からの可読性（V-c3） | 64 px を拡大したラベルと 320 px のラベルの BA ≥ $1/K + 20\,\delta_{yy}$ | 同じ教師の解像度の間の一致にすぎず、係数 20 に根拠が無い | **記録に下げる** | 64 px から読めない的は、下の陽性対照（V-c6）がどの符号でも幅を作れないことで捕まる |
+| 帰無（V-c4） | ラベルを動画の中で巡回してずらす | 動画ごとのクラス比を保つので都市の反例を捕まえない。実装の帰無は入力と独立に生成したラベルにする | **入力・動画・時刻と独立なランダムのラベルを合否に。巡回ずらしは使わない** | 主を $m = \mathrm{BA} - B$ にしたので、都市の経路は「動画の id そのものを符号にすると $m$ がちょうど 0」の恒等式（V-c3）で確かめられる。巡回ずらしの役目は残らない |
+| 雑音のはしご（V-c5） | 独立な雑音を足すと BA が下がる | BA には移らない（母集団の反例: BA 0.50 → 0.579） | **外す。合成の回収試験（Codex さん）に替える** | 反例を Claude が手で確かめた。合成の信号 $S_q$ では $m$ の真値が導出で決まる |
+| 幅（V-c6） | `inc64` − max(`color`, `color8`) ≥ $10\,\delta_{yy}$ | 陽性対照として、対の信頼下限が事前に決めた幅を超えること | **下限 ≥ $2\Delta_*$、かつ動画を 1 本除いた 9 通りのすべてで差が正** | 物差しの真ん中に置いた run を両端から $\Delta_*$ で分けるには、幅が $2\Delta_*$ 要る |
+| 当てはめの組の半分（V-c7） | 交互の半分で順序が変わらない | 同じ長い場面と動画の偏りを共有する。動画を除いたときの差の大きさを見る | **動画を 1 本ずつ除く jackknife に替え、判定の条件に入れる** | 主張が 1 本の動画に頼らないことを直接確かめる |
+| 標準誤差 | $\delta_w$ は 0.016〜0.03 の見込み | 楽観的。クラス比 5/5/5/15/70%、不一致 20% で対の $2\,\mathrm{SE}$ ≈ 0.052（Claude も計算で確かめた）。$L$ と $2L$ の両方で確かめる | **$\mathrm{SE}^* = \max(\mathrm{SE}_{\mathrm{blk}}(L), \mathrm{SE}_{\mathrm{blk}}(2L))$** | ブロックが相関より短いと過小に出る。2 倍の長さでも同じ精度であることを、大きいほうをとる形で入れる |
+| 見分けたい最小の差 $\Delta_*$ | 無い | 「V19 に進む判断が変わる最小の幅」として先に固定。比べごとに「上回る」と「$\Delta_*$ 級の改善を除外できた」を分ける | **$\Delta_*$ = 0.03（$m$ の単位）。各比べを 3 つに分ける** | 理論で決まるのは検出の精度だけで、$\Delta_*$ は判断の選択である。値の理由は README |
+| 物差しの PCA の基底 | 既存の `pca`（学習の動画で当てはめ） | `pca` の基底と標準化は fold の中で当てはめる | **標準化は fold の中。`pca` の基底は既存のまま（学習の動画で、ラベルなし）** | ラベルを使わない基底は、学習の動画で学んだ JEPA のエンコーダと同じ立場にある。fold の中で当てはめ直すと、`pca` だけが JEPA より不利になる |
+| 学習で見た動画 | Zurich だけの値と、Zurich と残り 8 本の伸びの比べを書く | 9 本での改善は「この動画の集合での改善」。未知の都市への一般化は言えない | **両方** | 街歩きで encoder が見ていない動画は Zurich しか無い |
+| K3 | $m$ は K3 を見分けない。L1 に任せる | 同意 | **L1 に任せる。`z_k3` は並べるだけ** | |
+| 副の AUC | 副に AUC | 動画の中で正例と負例がそろうクラスだけ、事前に決めた重みで | **Codex さん** | fold ごとに出力の尺度がずれる |
+| `e1f` の的 | 隠した四半分の 160 px に同じラベル付け。確かめを別に置き、外れたら読まない。次の手はセグメンテーション | 触れていない | **Fable さん。四半分のラベルにも監査と $K_q$ の規則をかける** | 未観測の部分の評価はユーザーが重視する性質で、四半分のラベルは追加の依存なしに作れる。分布の外である弱点は監査で確かめる |
+| `shift_top1` の誤り | 的がラベルになったので外す | 触れていない | **直し方を書き、旧キャッシュで出し直して記録する。新しい $m$ には入れない** | 下の「`shift_top1` の直し方」 |
+
+### 動画と格子
+
+- 動画: `exp/lib/tours/manifest.json` のうち Wildlife を除く 9 本（Amsterdam・Bangkok・Chiang_Mai・Istanbul・Kuala_Lampur・Singapore・Stockholm・Venice・Zurich、合わせて約 48227 秒）。Wildlife は街歩きでない唯一の動画で、ユーザーの決定（都市の動画）の外にある
+- 格子: 各動画の 64 px のデータ（`ad6e56b5995e`）の上で、開始フレームを 20 フレーム（2 秒）おきにとった stack（`SCENE_STRIDE` = 20）。stack は 8 フレーム（0.8 秒）なので隣とフレームを共有しない。stack の最後のフレームの取り方は `SemSets.last` と同じ。動画ごとに約 1950〜5250 個、合わせて約 24100 個
+- `scene_eval frames --out runs/v18c-scene/frames.json`: 動画ごとに、格子の stack の最後のフレームの番号を昇順に書く
+
+### 高解像度のフレーム
+
+- 前の節の `hires prepare`（`fps=10,crop=480:480:187:0,format=rgb24,scale=320:320:flags=area`）と位置の確かめ (a)・(b)・(c) をそのまま使い、9 本の格子のフレームを新しい `hires-<12 桁>` に書く（既存の `hires-165822412e75` は 1 秒おきの Zurich と当てはめの組で、格子が違うので使わない）。std-00 のコンテナの CPU で、動画ごとに並べる
+- 的を作る前の `check_places`（stack の最後のフレームがデータとビットまで一致、(b) の形の近さ）も、9 本のすべての格子でかける
+- 大きさ: 約 24100 枚 × 307 KB ≈ 7.4 GB
+
+### ラベル（`exp/lib/places365.py`）
+
+- **重み**: `resnet50_places365.pth.tar`（`http://places2.csail.mit.edu/models_places365/`、CC BY）。std-00 で 1 回取得し、`$MUJOU_EXP_DATA/places365/` に置き、sha256 をコードの定数 `RESNET50_SHA256` に書く。読むときに照らし合わせ、違えば止める。`torchvision.models.resnet50(num_classes=365)` に `state_dict` を読み込む（`module.` の接頭辞を外す）。読み込みの差分（足りない・余る鍵）が 0 であることを確かめる
+- **クラスの名前**: `categories_places365.txt`（公式の GitHub、MIT）を `exp/lib/places365_categories.txt` に写す
+- **階層**: 公式の「Scene hierarchy」のスプレッドシートを CSV にして `exp/lib/places365_hierarchy.csv` に写し、取得日と sha256 を `places365.py` の docstring と定数に書く。第 2 階層の 16 群の所属 $M_{cg} \in \{0, 1\}$（365 × 16）として読む。入手できない、または 365 行・16 群の形でないときは止めて報告する
+- **前処理**: 公式のデモのスクリプト（`run_placesCNN_basic.py`）を読んで、そのとおりにする（縮小の大きさ、切り出しの有無、ImageNet の平均と標準偏差）。実装の前にスクリプトを読み、読んだ版（commit）を docstring に書く
+- **群の確率とラベル**: 365 クラスの softmax $p_c$ から $q_g = \sum_c p_c M_{cg} / \sum_{g'} M_{cg'}$（複数の群に入るクラスは等分するので $\sum_g q_g = 1$）。ラベルは $\arg\max_g q_g$
+- **引用**: CC BY の表示（Zhou et al., "Places: A 10 million Image Database for Scene Recognition", TPAMI 2017）を `places365.py` の docstring と README に書く
+- 関数: `load_places365(path, device) -> torch.nn.Module`、`preprocess(frames_u8) -> Tensor`、`group_probs(logits, membership) -> Tensor (N, 16)`、`membership() -> Tensor (365, 16)`、`class_names() -> list[str]`、`penultimate(model, x) -> Tensor (N, 2048)`（`places64` の物差し）
+
+### ラベルを付けるもの（`scene_eval labels`、1 回だけ）
+
+| 名前 | 入力 | 使う所 |
+| -- | -- | -- |
+| `full` | 320 px のフレーム | 主の的 |
+| `quad/<q>` | 320 px のフレームの四半分 $q$ ∈ {tl, tr, bl, br}（160 × 160） | `e1f` の的 |
+| `up64` | 64 px の stack の最後のフレームを、公式の前処理にそのまま入れたもの | 記録（64 px から決まるか） |
+| `nuis/<j>` | 320 px のフレームに迷惑の変換 $j$（明るさ × 0.8、白の釣り合い (1.1, 1.0, 0.9)、$\sigma$ = 5 画素のぼかし。前の節の `sens` と同じ関数） | 記録（ラベルの安定） |
+
+- 出力: `$MUJOU_EXP_DATA/v18c-scene-<12 桁>/`（`<12 桁>` は重み・階層・名前の sha256、`hires` の名前、格子の番号の sha256 の先頭）に、群の確率 $q$（float32）とラベル。`labels.json` に、群ごと・動画ごとの件数、残した群（下）、$L$、記録の値を書く。NAS の `/nas/geson/mujou-exp/cache/` に写しを置く
+- 費用（推測）: 約 24100 × 9 枚 ≈ 22 万枚の ResNet-50。4090 で 10 分ほど
+
+### 残す群（$K$）と支持
+
+- 群 $g$ を残すのは、9 本を合わせた `full` のラベルの割合が 5% 以上（`KEEP_SHARE` = 0.05）で、かつ 5 本以上の動画（`KEEP_VIDEOS` = 5）で割合が 1% 以上（`KEEP_VIDEO_SHARE` = 0.01）のとき。残した群の数が $K$
+- 残さなかった群のラベルのフレームは、当てはめにも採点にも使わない
+- **ブロックの長さ $L$**（格子の歩数で数える）: 残したフレームの one-hot のラベルを動画ごとに中心化した $x_t$ から、$\rho(\ell) = \sum_v \sum_t \langle x_t, x_{t + \ell} \rangle / \sum_v \sum_t \lVert x_t \rVert^2$（$t$ と $t + \ell$ が同じ動画の格子のとき。間に残さないフレームがあっても格子の番号で数える）、$\tau = 1 + 2 \sum_{\ell = 1}^{\ell^*} \rho(\ell)$（$\ell^*$ は $\rho$ が初めて 0 以下になる手前）、$L = \min(\max(\lceil 2\tau \rceil, 16), L_{\max})$。$L_{\max} = \lfloor n_{\min} / 8 \rfloor$（$n_{\min}$ は残したフレームが最も少ない動画の格子の数。Zurich で約 1950 なら 243）。上限に当たったら README に書く
+- **支持**: 残した各群が、$L$ のブロック（動画ごとに格子を長さ $L$ に切ったもの）の 40 個以上（`MIN_BLOCKS` = 40）に現れる。40 は、1 つのクラスの再現率の標準誤差を $\sqrt{0.25/40} \approx 0.08$ 以下にする独立な単位の数（Fable さんの 3 節と同じ見積もり）
+- 記録: 群 × 動画の件数の表、群ごとに最も多い動画が占める割合、残さないフレームの割合
+- 止める条件は README の V-c1
+
+### 符号と物差し
+
+| 名前 | 中身 | 次元 | 位置づけ |
+| -- | -- | -- | -- |
+| `z` | V18c の run の $z = W\,\mathrm{vec}(t)$ | 1024 | 測る値（全 checkpoint） |
+| `z_k3` | 全体を見たトークンを位置の平均で置き換えた $z$（前の節と同じ） | 1024 | 並べるだけ（0・6000・60000） |
+| `h_mean` | エンコーダの平均のトークン | 1024 | 並べるだけ（0・6000・60000） |
+| `mean` | 定数の予測（読み出しを当てはめず、すべてのフレームで群 0 を予測する） | — | 0 点（V-c3） |
+| `label` | 残した群の one-hot | $K$ | 天井（V-c3） |
+| `video` | 動画の id の one-hot | 9 | 都市の経路の対照（V-c3）。BA は並べる |
+| `color`・`color8` | `ColorCode(16)`・`ColorCode(8)` | 384・1536 | 物差し（V-c6 の色の側） |
+| `pca16`・`pca64`・`pca256`・`pca1024` | 既存の `pca` の物差しの基底（学習の動画で当てはめ）の先頭 $k$ 成分 | $k$ | 物差し |
+| `v16`・`v17` | VAE の $\mu$ | 256 | 物差し |
+| `init_c` | 長い run の step 0 の `z`（seed 0・1。$\lambda$ と学習率によらず同じ seed なら同じ値であることを確かめ、違えば run ごとにとる） | 1024 | 物差し・L3 の比べの相手 |
+| `inc64` | 64 px の最後のフレームの Inception の pool3 | 2048 | 陽性対照（別のネット・別のデータで学んだ意味の特徴。V-c6） |
+| `places64` | ラベル付けと同じ ResNet-50 の、64 px の最後のフレームの最後の層の前の特徴 | 2048 | 並べるだけ（同じ教師の参考） |
+| `syn_q` | 合成の回収試験の符号（下） | 1024 | V-c5 |
+| `rand_<i>` | ランダムのラベルの帰無（`color`・`inc64` に 20 回ずつ） | — | V-c4 |
+
+- 既存の物差しの部品（`ColorCode`、`pca` の基底、VAE の読み込み、Inception）は、`sem_eval`・`gen_eval`・`fill_eval` のものをそのまま使う
+
+### 読み出し（`exp/lib/readout.py` に足す）
+
+- **重みつきの ridge** `fit_weighted_ridge(x, y_onehot, w, scale) -> Ridge`: 当てはめの組の重み $w_i$ つきの平均で $x$ と $y$ を中心化し、$B = (X_c^\top W X_c + \alpha I)^{-1} X_c^\top W Y_c$、$\alpha = c \cdot \mathrm{tr}(X_c^\top W X_c) / D$（float64）。切片は罰しない
+- **標準化**: 符号は、当てはめの組（その fold の当てはめの動画）の平均と標準偏差で標準化してから当てはめる。標準偏差が $10^{-12}$ 以下の次元は 1 で割る
+- **クラスの重み**: $w_i = 1/(K n_k)$（$n_k$ はその fold の当てはめの組のクラス $k$ の数）。BA を最大にする決め方は、事前確率を一様にしたときの事後確率の最大で（再現率の平均は、各クラスの中での正解率の平均だから）、重みつきの最小二乗はその線形近似を当てはめる（Fable さんの導出）
+- **予測**: 出力の最大のクラス。同点は番号の小さいクラス（`torch.argmax` の決まり）
+- **$\alpha$ の候補**: $c \in \{10^{-6}, 10^{-5.5}, \dots, 10^{3}\}$ の 19 点（`SCENE_SCALES`）と、定数の予測（`CONST`。群 0 を予測する。$m$ はちょうど 0）。1 回の固有値分解 $X_c^\top W X_c = U \Lambda U^\top$ から、すべての $c$ の $B$ を出す
+- **入れ子の交差検証**（`nested_cv(x, y, video, scales) -> NestedResult`、動画が単位）
+  - 外側: 動画 $v$ を採点に回し、残りの 8 本で当てはめる（9 通り）。どのフレームもちょうど 1 回採点される
+  - 内側: 残りの 8 本の中で 1 本を抜いて 7 本で当てはめ、抜いた 1 本を予測する（8 通り）。8 通りの予測を合わせた $m$（下の式、8 本の上で）が最大の候補を選ぶ。同点は大きい $\alpha$（定数を最大とみる）。選んだ候補で 8 本に当てはめ直し、$v$ を予測する
+  - 返すもの: 全フレームの外側の予測 $\hat y_i$、外側の fold ごとに選んだ候補（`scale_by_video`）、内側の $m$ の表
+- **jackknife の予測**（`nested_cv_jackknife(x, y, video, scale_by_video) -> Tensor (9, N)`）: 動画 $u$ を除いた 8 本の上で、各 $v \ne u$ を残りの 7 本で当てはめて予測する。$\alpha$ は外側の fold $v$ で選んだ候補に固定する（選び直すと 9 倍の費用になり、選び方の揺れは主の解析の内側で既に入っている）。$u$ 自身の行は使わない
+
+### 採点（`exp/lib/readout.py` に足す）
+
+- `balanced_accuracy(pred, y, K)`: $\mathrm{BA} = \frac1K \sum_k \#(\hat y = k, y = k) / \#(y = k)$。外側の 9 通りの予測を合わせた 1 つの混同行列から
+- `video_chance(pred, y, video, K)`: $B = \frac1K \sum_k \sum_v P(v \mid y = k)\, P(\hat y = k \mid v)$。$P(v \mid y = k) = n_{vk} / n_k$、$P(\hat y = k \mid v)$ は動画 $v$ の残したフレームのうち $k$ と予測した割合
+- **主の $m$** `scene_m(pred, y, video, K) = BA − B`
+  - 動画の中で予測がラベルと独立なら、$\mathbb E\,\#(\hat y = k, y = k, v) = n_{vk} P(\hat y = k \mid v)$ なので、再現率の期待値は $\sum_v P(v \mid y = k) P(\hat y = k \mid v)$ で、BA の期待値は $B$、$m$ の期待値は 0（導いた）
+  - 動画ごとに予測が一定なら、$\#(\hat y = k, y = k, v) = n_{vk} [\hat y_v = k]$ がちょうど成り立ち、$m$ はちょうど 0
+  - `label`（$\hat y = y$）では BA = 1 で、$m = 1 - B(\texttt{label})$（$B(\texttt{label}) = \frac1K \sum_{v,k} P(v \mid y = k) P(y = k \mid v)$）
+  - 部分集合（Zurich だけ、8 本だけ、動画を除いた jackknife）の $m$ は、その部分集合の残したフレームだけで同じ式を計算する。部分集合に 10 フレーム未満のクラスは BA と $B$ の和から外し、$K$ をその数に読み替える
+- **副**（並べるだけ）: BA、クラスごとの 1 対他の AUC（動画 $v$ でクラス $k$ の正例と負例がどちらも 20 以上ある $(v, k)$ だけ。出力の $k$ 列で順位をとる。クラスごとに $n_{vk}$ で重みづけした平均をとり、クラスで平均する）、動画ごとの $m$ と BA、Zurich だけの $m$、混同行列
+
+### 揺れ（`exp/lib/metrics.py` に足す）
+
+- **層化したブロックのブートストラップ** `scene_bootstrap(preds: Tensor (C, N), y, video, blocks, contrasts: Tensor (Q, C), n, gen) -> Tensor (Q,)`: 動画ごとに格子を長さ $L$ の連続したブロックに切り（動画の終わりの余りは直前のブロックに足す。既存の `contiguous_blocks` を動画の番号で使う）、**動画ごとに**同じ数のブロックを重複を許して引き直す。各回で混同行列、$n_k$、$P(v \mid y = k)$、$P(\hat y = k \mid v)$、BA、$B$、$m$ を作り直し（Codex さんの「クラス別の分母も毎回計算し直す」）、係数 `contrasts` で組み合わせた量の標準偏差を返す。`BOOT` = 2000、`BOOT_SEED` = 101。すべての符号で同じ引き方を使い、対にする。予測は当てはめ直さない（当てはめの揺れは jackknife が見る）
+- $\mathrm{SE}^*$（比べ 1 つにつき）$= \max(\mathrm{SE}_{\mathrm{blk}}(L), \mathrm{SE}_{\mathrm{blk}}(2L))$。$2L$ が $L_{\max}$ を超えるときは $L_{\max}$ を使い、そう書く
+- **jackknife** `video_jackknife(theta_by_u: Tensor (9,)) -> (values, se)`: 動画 $u$ を除いた 9 通りの値と、$\mathrm{SE}_{\mathrm{jack}} = \sqrt{\frac{8}{9} \sum_u (\theta_{(u)} - \bar\theta)^2}$（並べるだけ）。判定に使うのは「9 通りのすべてで差が正か」（README）
+
+### 合成の回収試験（V-c5）
+
+- `SYN_SEED` = 127 で、全フレームに一様乱数 $U_i \in [0, 1)$、一様なクラス $R_i \in \{0, \dots, K-1\}$、標準正規の雑音 $\varepsilon_i \in \mathbb R^{1024 - K}$ を 1 回引く（すべての $q$ で同じ値を使い、対にする）
+- $S_{q,i} = y_i$（$U_i < q$）、$R_i$（それ以外）。符号は $[\mathrm{onehot}(S_q), \varepsilon]$（1024 次元）
+- 真値: $S_q$ そのものを予測として `scene_m` で採点した $m^*(S_q)$（有限の標本でちょうど）。母集団では $m^* = q\,(1 - B(\texttt{label}))$（導いた: $P(S = k \mid v) = q P(y = k \mid v) + (1 - q)/K$ を $B$ の式に入れると $B(S) = q B(\texttt{label}) + (1 - q)/K$、BA は $q + (1 - q)/K$）
+- $q \in \{0, 0.25, 0.25 + \Delta q, 0.5\}$、$\Delta q = \Delta_* / (1 - B(\texttt{label}))$（母集団で $m^*$ の差がちょうど $\Delta_*$）
+- 費用: 4 符号
+
+### ランダムのラベルの帰無（V-c4）
+
+- `RAND_SEED` = 113 から 20 回、全フレームのラベルを、残したフレームのクラスの割合から独立に引き直す（入力・動画・時刻と独立）。`color` と `inc64` で、ラベルだけを替えて入れ子の交差検証からやり直す
+- 期待値: 当てはめの組のラベルが入力と独立なので、採点の動画の予測はその動画のラベルと独立で、$m$ の期待値は 0
+- 費用: 40 回の入れ子の交差検証（次元は 384 と 2048）
+
+### 監査（V-c2、教師と独立なラベルの照合）
+
+- **標本**（`scene_eval audit-sheets`、`AUDIT_SEED` = 109）: 残した群ごとに、教師のラベルがその群の `full` のフレームから 30 枚（`AUDIT_N`）を、動画で層化して（動画ごとの件数に比例、端数は大きい順）無作為に引く。`e1f` のために、四半分のラベルで残した群ごとに 20 枚（`AUDIT_N_QUAD`、4 つの四半分を合わせた中から）。同じフレームの 64 px（最後のフレームを 320 px に最近傍で拡大）も別に作る
+- **見せ方**: 320 px の画像を、教師のラベルの順ではなく乱数の順に並べた 4 × 4 の一覧（番号つき）にする。64 px は別の一覧にし、320 px の判定の後に見せる。教師の出力（ラベル・確率・並べた群）は渡さない
+- **判定する者と指示**（先に固定）: 多モーダルの Claude のサブエージェント（この workflow の外の文脈を持たない新しいもの）。渡すのは、$K$ 個の群の名前と、各群に入る Places365 のクラスの名前の一覧（`places365_hierarchy.csv` から機械的に作る）、「各画像について、場面を表す群を 1 つか 2 つ選ぶ。どれにも当たらないか、画像から判断できなければ『判定不能』」という指示だけ。返すのは JSON（番号 → 群の名前の配列か「判定不能」）
+- **採点**: 教師のラベルが判定の群に入れば一致。群ごとの一致率（判定不能を分母から除く）と、全体の判定不能の割合。64 px の判定と 320 px の判定の一致は記録だけ
+- ユーザーが同じ一覧（顔とナンバーを `deface` でぼかしたもの）を判定したときは、その判定で Claude の判定を置き換える
+- 出力: `runs/v18c-scene/audit/`（一覧の画像、番号と教師のラベルの対応 `key.json`、判定 `answers.json`）。一覧の画像は git に入れない
+
+### `e1f` の的（四半分のラベル）
+
+- 的: `quad/<q>` のラベル。群は、四半分ごとに上の「残す群」と同じ規則で残す（$K_q$）。四半分 $q$ で残さなかった群のフレームは、その $q$ の当てはめと採点から外す
+- 入力（前の節と同じ）: `pred`・`pool`・`pred_k3`・`vis_color`・`oracle`・`mean`。どれも自分の入力で、上の重みつきの ridge と入れ子の交差検証で当てはめる。`pred_k3` の尺度は、外側の fold ごとに `pool` で選んだ $c$ の 16 倍に固定する（`pool` が定数を選んだ fold は `pred_k3` も定数）。クラスの重みと標準化は 2 つで同じものを使う
+  - 標準化の注意: `pred_k3` は `pool` の 16 回の複製なので、次元ごとに標準化すると、複製は同じ平均と標準偏差で割られ、$X' = X J$ の関係が保たれる。push-through の恒等式（前の節）はそのまま成り立つ
+- 採点: 四半分ごとに `scene_m`、4 つの $q$ の平均を 1 つの値にする。揺れは、4 つの $q$ の予測を同じブートストラップの引き方で採点し、各回で平均をとる
+- 対象: 長い run 12 本の step 0・6000・60000、$k$ = 4・8・12（学習の $k$ は 8）
+- 出力: `posthoc_scene_fill/rows/<step>-e1f.json`。C1′・C4′・V-E1′4 の jackknife のために、`pred`・`pool`・`vis_color`（$k$ = 8、6000・60000）と `oracle`（$k$ = 4、step 0）の jackknife の予測も行に書く
+- 凍結した読み出しの E1 は、既存の `--split sem` のまま、的 `color` だけで、長い run の 0・6000・60000 にかける（V-E1′1 の実装の確かめと、並べるだけ）。`quad`（Inception の的）はかけない
+
+### `shift_top1` の直し方
+
+- **誤り**: `sem_eval._shift_top1` は、sel の格子 $g$ について 1 秒後の $g + 1$ の的を問い合わせにし、sel のすべての stack を候補にしていた。sel は 1 秒おきの連続した格子なので、問い合わせ $g + 1$ そのものが候補に入り、$\cos = 1$ で必ず自分を選ぶ（値はちょうど 0）
+- **直し方**: 問い合わせ $g + \Delta$（$\Delta$ = 1）の候補から、正解 $g$ を除いて、問い合わせからの時間の距離が $\Delta$ 以下の sel の stack をすべて除く（問い合わせ自身と $g + 2$）。正解より問い合わせに近いか同じだけ近い stack を候補に残すと、「1 秒離れた同じ場面を当てる」問いの上限が 1 より下がる（$g + 2$ も問い合わせから 1 秒）ため。実装は `identification` の `among` を使う。候補の数をそろえるため、問い合わせは $g + 1$ と $g + 2$ がどちらも sel に入る $g$ に限り、`among[i]` は sel から $g + 1$ と $g + 2$ を除いた $n_{\mathrm{sel}} - 2$ 個（$g$ を含む）。偶然の値は $1/(n_{\mathrm{sel}} - 2)$。関数の docstring に偶然の値を書く
+- **テスト（オラクル）**: (1) 的が互いに独立な乱数のとき、問い合わせが候補に入っていなければ、`top1` の期待値は $1/(n_{\mathrm{sel}} - 2)$（モンテカルロの誤差の中で一致）。直す前の実装はちょうど 0 を返す。(2) $y_{g+1} = y_g + $ 小さな雑音（$g$ ごとに独立な的）なら、`top1` はちょうど 1。(3) どの問い合わせでも、`among[i]` が $g + 1$ と $g + 2$ を含まず $g$ を含む
+- **出し直し**: 2 回目の的のキャッシュ（`v18c-sem-2b0606cfec24`）で、直した値を記述として出し直して記録する（`sem_probe` の `shift_top1_wo_near` と同じ除き方なので、0.667 になるはず）。2 回目はほかの確かめ（V-m2〜V-m4・V-m6）でも外れているので、判定は変わらない。新しい $m$ の有効性の確かめには入れない（的がラベルなので、特徴の空間の同定は使えない）
+
+### 出力
+
+- `runs/v18c-scene/`: `frames.json`、`labels.json`（キャッシュの写し）、`audit/`、`yardsticks/rows/<code>.json`、`checks/`（V-c4 と V-c5 の行）
+- 各 run の `posthoc_scene/`: `config.json`（定数、ラベルのキャッシュの名前、$K$、$L$、`key`。前と同じ照合の流儀で、違えば止まる）と `rows/<step>-<code>.json`（`step`、`code`、`dim`、`scale_by_video`、`const_folds`（定数を選んだ fold の数）、`m`、`ba`、`chance`、`m_by_video`、`ba_by_video`、`m_zurich`、`m_seen8`、`auc`、`pred`（全フレームの外側の予測、int8）、`jack_pred`（`z` の 0・6000・60000 と `init_c`、物差しの `color`・`color8`・`inc64`、`syn_q` だけ、(9, N) int8）、`sec`、`max_mem`）
+- 集計: `exp/vision/results/v18c/judge_scene.py` が、README の規則（V-c0〜V-c6、`e1f` の確かめ、L1〜L3 と 12 本の比べ、C1′・C4′）をそのまま書いた表と `judge_scene.json` を出す。予測を行に持つので、ブートストラップと jackknife はここで計算する。数値を読む前に書く
+
+### CLI
+
+```bash
+# 格子と高解像度のフレーム（std-00 の CPU、1 回だけ）
+python -m exp.vision.scene_eval frames --out runs/v18c-scene/frames.json
+python -m exp.lib.tours.hires prepare <video> --src /datasets/walking_tours \
+    --data $MUJOU_EXP_DATA/ad6e56b5995e --frames runs/v18c-scene/frames.json --out <dir>
+python -m exp.lib.tours.hires finalize <dir>
+# Places365 の確かめ（V-c0）とラベル（1 回だけ）
+python -m exp.lib.places365 check --weights $MUJOU_EXP_DATA/places365/resnet50_places365.pth.tar \
+    --reference runs/v18c-scene/places_demo_reference.json
+python -m exp.vision.scene_eval labels --hires <dir>
+# 監査の一覧（判定はサブエージェント）
+python -m exp.vision.scene_eval audit-sheets --out runs/v18c-scene/audit
+# 物差し・帰無・回収試験
+python -m exp.vision.scene_eval yardsticks --out runs/v18c-scene/yardsticks \
+    --v16 <ckpt> --v17 <ckpt> --init-runs <長い run の s0>,<長い run の s1>
+python -m exp.vision.scene_eval checks --out runs/v18c-scene/checks   # V-c4・V-c5
+# 長い run
+python -m exp.vision.scene_eval run <run_dir> --steps 0,2000,6000,10000,20000,30000,40000,50000,60000
+python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1f --target scene
+python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 --parts e1 --split sem --sem <cache>
+# 集計
+uv run python -m exp.vision.results.v18c.judge_scene --json exp/vision/results/v18c/judge_scene.json
+```
+
+`places_demo_reference.json` は、公式のデモのスクリプトを `arch = 'resnet50'` にして、同じ重みで公式のデモ画像（`12.jpg`）に走らせた上位 5 クラスと確率である（std-00 で 1 回、スクリプトの commit とともに書く）。
+
+### ファイルの置き場所
+
+| ファイル | 中身 |
+| -- | -- |
+| `exp/lib/places365.py`・`places365_categories.txt`・`places365_hierarchy.csv` | 重みの読み込みと sha256、前処理、群の確率、`check` の CLI |
+| `exp/lib/readout.py` | `fit_weighted_ridge`、`nested_cv`、`nested_cv_jackknife`、`balanced_accuracy`、`video_chance`、`scene_m`、`SCENE_SCALES`・`CONST` |
+| `exp/lib/metrics.py` | `scene_bootstrap`、`video_jackknife` |
+| `exp/vision/scene_eval.py` | 格子、ラベルのキャッシュ、残す群と $L$、監査の一覧、符号と物差し、V-c4・V-c5、job の流れ、出力、CLI |
+| `exp/vision/sem_eval.py` | `_shift_top1` の直し |
+| `exp/vision/fill_eval.py` | `e1f` の `--target scene`（重みつきの ridge と入れ子の交差検証） |
+| `exp/vision/results/v18c/judge_scene.py` | README の規則の集計 |
+| `tests/lib/test_places365.py`・`test_readout.py`・`test_metrics.py`、`tests/vision/test_scene_eval.py`・`test_sem_eval.py`・`test_fill_eval.py` | 下のテスト |
+
+`exp/lib` の部品は mujou・torch・torchvision・標準ライブラリだけに依存し、`exp/vision` を import しない。新しい依存は足さない。
+
+### 実装のテスト（理論のオラクル）
+
+- **`group_probs`**: どの行も和が 1（$10^{-6}$ の中）。2 つの群に入るクラスに確率 1 を置くと、その 2 群が 0.5 ずつ。`membership()` が 365 行で、どの行にも 1 つ以上の群がある。`class_names()` の 365 個が階層の CSV のクラスの名前と順序まで一致する
+- **重みつきの ridge**: 重みが整数 $m_i$ のとき、各行を $m_i$ 回複製した重みなしの ridge と係数が一致する（$\alpha$ の尺度も複製した $\mathrm{tr}$ で同じになる）。重みが一様なら既存の `fit_ridge` と一致する。固有値分解から出した全尺度の係数が、尺度ごとに `solve` した係数と $10^{-9}$ の中で一致する
+- **`balanced_accuracy`**: 手で数えた混同行列の値と一致する。`label` で 1。クラスの番号を置換しても変わらない
+- **`video_chance` と `scene_m`**: 動画ごとに一定の予測（任意の値）で $m$ がちょうど 0。`mean` の行で BA がちょうど $1/K$、$m$ がちょうど 0。`label` で $m = 1 - B(\texttt{label})$ がちょうど。動画の中で予測をラベルと独立に引いた（動画ごとの予測の割合は固定）$10^4$ 回の平均が 0 にモンテカルロの誤差の中で一致する。合成の $S_q$ の $m$ の平均が $q(1 - B(\texttt{label}))$ に一致する
+- **`nested_cv` の漏れ**: 採点の動画 $v$ のラベルを $v$ の中で並べ替えても、$v$ の外側の予測が変わらない（ちょうど）。`video` の符号で $m$ がちょうど 0。定数の候補が選ばれたとき予測がすべて群 0
+- **同点の決め方**: 内側の $m$ が同じ 2 つの候補で、大きい $\alpha$ が選ばれる
+- **`scene_bootstrap`**: 同じ符号どうしの差の標準誤差が 0。独立な項目（ブロックの長さ 1、クラスが均等）で、BA の標準誤差が二項の式 $\sqrt{\sum_k p_k(1 - p_k)/n_k}/K$ にモンテカルロの誤差の中で一致する。ブロックが動画をまたがない
+- **`video_jackknife`**: 値が動画ごとの平均の平均のとき、$\mathrm{SE}_{\mathrm{jack}}$ が標準誤差の式（$s/\sqrt{9}$）とちょうど一致する
+- **残す群と $L$**: 合成のラベルで、規則の境目（5% ちょうど、5 本ちょうど）を手で数えた結果と一致する。確率 $\phi$ で前のラベルを保ち、それ以外は一様に引き直すマルコフ連鎖では、中心化した one-hot の自己相関がちょうど $\phi^\ell$ なので、長い系列で $\tau$ が $(1 + \phi)/(1 - \phi)$ に誤差の中で一致する
+- **`shift_top1`**: 上の 3 つ
+- **`e1f`**: 前の節のテスト（12 個のマスク、`pred_k3` と `pool` の予測の一致、合成の K3 の予測器で `pred` と `pool` の $m$ の一致、位置ごとに違う成分を持つ予測器で `pred` が上回る）を、重みつきの ridge・入れ子の交差検証・`scene_m` で書き直す
+- **既存の値が変わらない**: `fit_ridge`・`select_ridge`・`identification`、`sem_eval` の既存の行（`shift_top1` を除く）、`fill_eval run`（`--target` なし）の行が変更前と一致する
+
+### 計算量（推測、4090）
+
+| 部品 | 量 | 目安 |
+| -- | -- | -- |
+| 高解像度のフレーム | 9 本を頭から読み、約 24100 枚を残す | std-00 の CPU で、9 本を並べて 15〜30 分 |
+| ラベル | 約 22 万枚の ResNet-50 | 10 分 |
+| 符号 1 つの $m$ | 約 24100 stack の符号、入れ子の交差検証（外側 9 × 内側 8 + 当てはめ直し 9 = 81 回の固有値分解、最大 2048 次元） | 1〜3 分 |
+| jackknife | 符号 1 つにつき 72 回の当てはめ（$\alpha$ は固定） | 1〜2 分 |
+| 物差し・帰無・回収 | 約 15 + 40 + 4 符号 | 2〜3 時間 |
+| 長い run | 12 本 × 9 checkpoint の `z`、3 checkpoint の `z_k3`・`h_mean`（約 180 符号）と jackknife（36 符号） | 5〜8 時間 |
+| `e1f` | 36 checkpoint × 12 マスクの予測器の前向き（約 29 万 stack ずつ）と、小さい次元の当てはめ | 1 checkpoint 5〜10 分、合わせて 3〜6 時間 |
+
+GPU の時間は合わせて 10〜17 時間で、空いた GPU に 1 本ずつ分ける。
+
+### 実行の順
+
+1. 実装とテスト（`just run`）
+2. 格子と高解像度のフレーム（std-00 の CPU）。並べて、Places365 の重みと階層を取得し、`places365 check`（V-c0）
+3. ラベル → 残す群・支持・$L$（V-c1）。外れたら止める
+4. 監査の一覧 → サブエージェントの判定（V-c2）と目視（群ごとに 16 枚、記録）。外れたら止める
+5. 物差し・帰無・回収試験 → V-c3〜V-c6。外れたら止める
+6. 長い run 12 本の $m$（全 checkpoint）、`e1f` と凍結した E1（0・6000・60000）
+7. 集計（`judge_scene.py`）と README の結果
+
+**環境**: これまでと同じ（`OMP_NUM_THREADS=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 MUJOU_EXP_DATA=/data/geson/mujou-exp/.fleet/data`）。`just fleet push` の後、snapshot を明示して `code/<snap>` の中で走らせる。std-00〜03 のうち、長い run が使っていない GPU だけを使う（置く前に `nvidia-smi` で空きを確かめ、1 GPU に 1 本、無ければ空くまで待つ）。mini-00 は使わない。4060 では `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を付ける。出力は NAS の `runs/v18c-scene/` と各 run の `posthoc_scene/`・`posthoc_scene_fill/` で、ckpt を除いて `./runs/` に pull する
+
 ## V19: ストリームで標準の SIGReg
 
 - V18 で選んだ設定のまま、データだけを単一ストリームにする
