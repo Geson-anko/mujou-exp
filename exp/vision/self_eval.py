@@ -6,8 +6,11 @@ other frames' at the same place, in the space the predictor is trained in.
 
 The sets (``self_sets``): the reference ``ref`` (``fill_eval.fill_sets``'s
 fit stacks: training videos, not Zurich) fixes every centre, the bands'
-basis and the transplants' contexts $j$ (the first stack of each of the first
-``SelfConf.contexts`` videos in the order of the fit set); the grid of
+basis and the transplants' means. The transplants' contexts $j$ are the
+first stacks of the first ``SelfConf.contexts`` videos of the training
+stream, one each, on the fit set's grid carried past its span (README, the
+user's decision before any number: the fit set holds 2 videos; a video of
+it keeps its first fit stack, the reference is unchanged). The grid of
 Zurich (``gen_eval.Zurich``, 1 s apart) holds the candidates: ``easy``
 (``FillConf.n_cand`` evenly spread, chance $1/n$, each other's candidates)
 and ``hard`` (each query's own and its neighbours $\pm 2 \dots \pm 32$ s,
@@ -102,9 +105,9 @@ from exp.lib.regions import (
     transplant,
 )
 from exp.lib.rundir import atomic_open
-from exp.lib.tours.stacks import tours_root
+from exp.lib.tours.stacks import StackedTourFrames, tours_root
 from exp.vision.compose import from_dict
-from exp.vision.eval import BATCH
+from exp.vision.eval import BATCH, stacks_at
 from exp.vision.fill_eval import QUARTER_NAMES, FillConf, e1f_masks, fill_sets
 from exp.vision.gen_eval import Zurich
 from exp.vision.jepa import JEPAModules, expand_masks, mask_index
@@ -112,6 +115,7 @@ from exp.vision.jepa_diag import run_ckpts
 from exp.vision.jepa_eval import SPAN, ColorCode, build_run_jepa, participation
 from exp.vision.models import early_fusion
 from exp.vision.schema import RunConf
+from exp.vision.stream_eval import BLOCK, PROBE_EVERY
 
 __all__ = [
     "MASKS",
@@ -188,20 +192,66 @@ class SelfConf:
 
 @dataclass(frozen=True)
 class SelfSets:
-    """The stacks u8 ``(·, n, 3, S, S)`` of the reference ``ref`` and of the
-    grid ``grid``; the candidates ``cand`` (grid indices), ``hard_q``
-    (positions in ``cand``) and ``hard_among`` (grid indices, its own
-    first); the contexts' indices in ``ref``; ``ident`` and the contexts'
-    ``places`` (video, frame) for the record."""
+    """The stacks u8 ``(·, n, 3, S, S)`` of the reference ``ref``, of the
+    grid ``grid`` and of the contexts ``ctx``; the candidates ``cand`` (grid
+    indices), ``hard_q`` (positions in ``cand``) and ``hard_among`` (grid
+    indices, its own first); ``ident``, the contexts' units ``ctx_ks`` of
+    stream 0 and their ``places`` (video, frame) for the record."""
 
     ref: Tensor
     grid: Tensor
     cand: Tensor
     hard_q: Tensor
     hard_among: Tensor
-    contexts: Tensor
+    ctx: Tensor
     ident: Mapping[str, Any]
+    ctx_ks: Sequence[int] = ()
     places: Sequence[tuple[str, int]] = ()
+
+
+def _context_ks(
+    conf: RunConf, root: Path, contexts: int, *, probe_every: float, block: float
+) -> tuple[list[int], list[tuple[str, int]]]:
+    r"""The units $k$ of stream 0 of the contexts and their places (video,
+    frame): the first $k$ of each of the first ``contexts`` videos of the
+    loop on the grid of ``StreamEvaluator``'s fit pairs (every
+    ``probe_every`` seconds, in the odd blocks of ``block`` seconds, the
+    stacks $k$ and $k + 1$ both kept by ``stacks_at``), carried past the
+    span. The fit set is this grid before the span, so a video of the fit
+    set gets its first fit stack.
+
+    Raises:
+        ValueError: The loop has fewer than ``contexts`` videos with a stack
+            on the grid.
+    """
+    t = conf.data.tours
+    stream = StackedTourFrames(
+        root,
+        n=1,
+        held_out=t.held_out,
+        frames=t.frames,
+        stride=t.stride,
+        advance=t.advance,
+    )
+    # whole numbers of frames: StreamEvaluator (in fill_sets) checks them
+    p, b = round(probe_every / conf.time.frame), round(block / conf.time.frame)
+    ks: list[int] = []
+    places: list[tuple[str, int]] = []
+    seen: list[str] = []  # the videos in the loop's order
+    k = 0
+    while len(ks) < contexts:
+        video, frame = stream.locate(k)
+        if not seen or video != seen[-1]:
+            if video in seen:  # round the loop
+                raise ValueError(f"{contexts} contexts of {len(seen)} videos")
+            seen.append(video)
+        has = bool(places) and places[-1][0] == video
+        if not has and (k // b) % 2 == 1:
+            if len(stacks_at(conf, root, [k, k + 1])[0]) == 2:
+                ks.append(k)
+                places.append((video, frame))
+        k += p
+    return ks, places
 
 
 def self_sets(
@@ -214,32 +264,35 @@ def self_sets(
     spacing: Mapping[str, Any] | None = None,
 ) -> SelfSets:
     """The sets of ``conf``'s data at ``root`` (module docstring): those of
-    ``fill_sets`` and the whole grid of Zurich.
+    ``fill_sets``, the whole grid of Zurich and the contexts
+    (``_context_ks``, of ``spacing``'s ``probe_every`` and ``block``).
 
     Raises:
-        ValueError: The fit set has fewer videos than ``contexts``.
+        ValueError: The training videos are fewer than ``contexts``.
     """
     sets = fill_sets(conf, root, fconf, span=span, spacing=spacing)
     zurich = Zurich(conf, root, fconf.grid_step)
     grid = zurich.stacks(torch.arange(len(zurich)))
     assert torch.equal(grid[sets.cand], sets.cand_stacks)
-    assert sets.places is not None
-    fit = sets.places["fit"]
-    first: dict[str, int] = {}
-    for i, (video, _) in enumerate(fit):
-        first.setdefault(video, i)
-    idx = list(first.values())[:contexts]
-    if len(idx) < contexts:
-        raise ValueError(f"{contexts} contexts of a fit set of {len(first)} videos")
+    every = dict(spacing or {})
+    ks, places = _context_ks(
+        conf,
+        root,
+        contexts,
+        probe_every=every.get("probe_every", PROBE_EVERY),
+        block=every.get("block", BLOCK),
+    )
+    _, ctx = stacks_at(conf, root, ks)
     return SelfSets(
         ref=sets.fit,
         grid=grid,
         cand=sets.cand,
         hard_q=sets.hard_q,
         hard_among=sets.hard_among,
-        contexts=torch.tensor(idx),
+        ctx=ctx,
         ident=sets.ident,
-        places=[fit[i] for i in idx],
+        ctx_ks=ks,
+        places=places,
     )
 
 
@@ -835,6 +888,7 @@ def step_rows(
     s, size = expand, sets.grid.shape[-1]
     t_grid = _tokens(mods.tokens, sets.grid, dev)  # (G, T, d)
     t_ref = _tokens(mods.tokens, sets.ref, dev)
+    t_ctx = _tokens(mods.tokens, sets.ctx, dev)
     u_grid, u_ref = _pmean(t_grid.double(), 1), _pmean(t_ref.double(), 1)
     x_cand = sets.grid[sets.cand]
     u_cand = u_grid[sets.cand]
@@ -916,8 +970,8 @@ def step_rows(
         }
         if transplant:
             pixels = pixel_mask(EVAL_MASKS[f"Q_{q}"], size)
-            for j_i, j in enumerate(sets.contexts.tolist()):
-                x_j, t_j = sets.ref[j : j + 1], t_ref[j]
+            for j_i in range(len(sets.ctx)):
+                x_j, t_j = sets.ctx[j_i : j_i + 1], t_ctx[j_i]
                 for direction in DIRECTIONS:
                     local = (t_j, t_grid) if direction == "fwd" else None
                     vec_g, sums, sums3 = _transplanted(
@@ -1017,9 +1071,7 @@ def step_rows(
                 continue
             mean_q = {}
             for q in by_q:
-                per_j = [
-                    store[(k, kind, jj, stage)][q] for jj in range(len(sets.contexts))
-                ]
+                per_j = [store[(k, kind, jj, stage)][q] for jj in range(len(sets.ctx))]
                 mean_q[q] = {sm: _average([p[sm] for p in per_j]) for sm in per_j[0]}
             store[(k, kind, "mean", stage)] = mean_q
 
@@ -1060,7 +1112,7 @@ def step_rows(
 
     rows += _id_rows(comp, comp_labels)
     if transplant:
-        rows += _local_rows(groups, len(sets.contexts))
+        rows += _local_rows(groups, len(sets.ctx))
         k3_groups = [g3 for _, g3 in groups.values()]
         worst = max(abs(_terms(g)["L"] or 0.0) for g in [*k3_groups, _pool(k3_groups)])
         rows.append(
@@ -1151,6 +1203,7 @@ def check_rows(
     ):
         t_grid = _tokens(code.tokens, sets.grid, dev)
         t_ref = _tokens(code.tokens, sets.ref, dev)
+        t_ctx = _tokens(code.tokens, sets.ctx, dev)
         ok = verdict[code_name]
         swaps = []
         for qa, qb in SWAP_PAIRS.values():
@@ -1186,8 +1239,8 @@ def check_rows(
                     nat[(st, "cos")]["top1"] == 1.0 for st in ("easy", "hard")
                 )
             pixels = pixel_mask(EVAL_MASKS[f"Q_{q}"], size)
-            for j_i, j in enumerate(sets.contexts.tolist()):
-                x_j, t_j = sets.ref[j : j + 1], t_ref[j]
+            for j_i in range(len(sets.ctx)):
+                x_j, t_j = sets.ctx[j_i : j_i + 1], t_ctx[j_i]
                 for direction in DIRECTIONS:
                     local = (t_j, t_grid) if direction == "fwd" else None
                     vec_g, sums, sums3 = _transplanted(
@@ -1242,7 +1295,7 @@ def check_rows(
             }
 
         rows += _id_rows(store, labels)
-        rows += _local_rows(groups, len(sets.contexts), {"code": code_name})
+        rows += _local_rows(groups, len(sets.ctx), {"code": code_name})
     for name, code_name in (("V-s4", "local"), ("V-s5", "mirror")):
         each = verdict[code_name]
         rows.append(
@@ -1277,7 +1330,7 @@ def _depends(
                 "fill": asdict(fconf),
                 "self": asdict(sconf),
                 "ident": dict(sets.ident),
-                "contexts": sets.contexts.tolist(),
+                "context_ks": list(sets.ctx_ks),
                 "context_places": [list(p) for p in sets.places],
                 "seeds": {"noise": NOISE_SEED, "perturb": PERTURB_SEED},
                 "cand": sets.cand.tolist(),

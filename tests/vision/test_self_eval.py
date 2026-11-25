@@ -17,11 +17,20 @@ V-s3 (with $L$) and V-s6, ``const`` ties all (V-s2), ``oracle`` is found at
 1; the local colour code and its mirror pass V-s4 and V-s5, and the
 mirror's ``swap`` is the local code's per query; and the run's job end to
 end.
+
+The contexts $j$ (``self_sets``): on four training videos of lengths 20, 17,
+13 and 20 (the loop's frames 0, 20, 37 and 50 their first) and a span of 3 s
+whose fit set holds the first two only, the probes' grid (0.1 s, the odd
+blocks of 0.5 s, a stack and the next kept) gives by hand the units 5, 25,
+38 (frame 0 of the third is not ready: frame 1) and 55, the videos' frames
+5, 5, 1 and 5; the first two are the fit set's first stacks of their
+videos, and the reference is the fit set to the bit.
 """
 
 import json
 import math
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,6 +39,7 @@ from torch import Tensor
 
 from exp.lib.metrics import pair_wins
 from exp.lib.regions import EVAL_MASKS
+from exp.vision.fill_eval import fill_sets
 from exp.vision.gen_eval import hard_sets
 from exp.vision.jepa import build_jepa, expand_masks, predict
 from exp.vision.jepa_eval import ColorCode
@@ -48,10 +58,11 @@ from exp.vision.self_eval import (
     local_sums,
     local_terms,
     quarter_cells,
+    self_sets,
     stage_scores,
     step_rows,
 )
-from tests.vision.test_eval import SIZE, N
+from tests.vision.test_eval import SIZE, N, write_tours
 from tests.vision.test_fill_eval import TINY, by
 from tests.vision.test_jepa_eval import SPAN, conf_of, tiny_run
 from tests.vision.test_stream_eval import EVERY
@@ -253,13 +264,14 @@ def synthetic_sets(grid: int = 20, n_cand: int = 8, refs: int = 16) -> SelfSets:
         return torch.randint(256, (b, N, 3, SIZE, SIZE), generator=g, dtype=torch.uint8)
 
     p = picks(grid, n_cand)
+    ref = stacks(refs)
     return SelfSets(
-        ref=stacks(refs),
+        ref=ref,
         grid=stacks(grid),
         cand=p["cand"],
         hard_q=p["hard_q"],
         hard_among=p["hard_among"],
-        contexts=torch.tensor([0, 5]),
+        ctx=ref[[0, 5]],
         ident={},
     )
 
@@ -368,6 +380,44 @@ class TestChecks:
         assert "swap" not in by(rows, part="check", name="V-s5")[0]["each"]
 
 
+# -- the sets ----------------------------------------------------------------------------
+
+LENGTHS = {"A": 20, "B": 17, "C": 13, "D": 20, "H": 40}  # H held out
+
+
+@pytest.fixture
+def four(tmp_path) -> tuple[Path, dict[str, Tensor]]:
+    g = torch.Generator().manual_seed(3)
+    frames = {
+        v: torch.randint(256, (n, 3, SIZE, SIZE), generator=g, dtype=torch.uint8)
+        for v, n in LENGTHS.items()
+    }
+    return write_tours(tmp_path / "d", frames), frames
+
+
+class TestSelfSets:
+    def test_the_contexts_are_the_first_stacks_of_the_streams_first_videos(self, four):
+        root, frames = four
+        sets = self_sets(conf_of(), root, TINY, contexts=4, span=SPAN, spacing=EVERY)
+        fit = fill_sets(conf_of(), root, TINY, span=SPAN, spacing=EVERY)
+        assert fit.places is not None
+        fit_videos = [v for v, _ in fit.places["fit"]]
+        assert set(fit_videos) == {"A", "B"}  # the premise: 2 videos
+        assert list(sets.places) == [("A", 5), ("B", 5), ("C", 1), ("D", 5)]
+        assert list(sets.ctx_ks) == [5, 25, 38, 55]
+        for (v, f), x in zip(sets.places, sets.ctx, strict=True):
+            assert torch.equal(x, frames[v][f - N + 1 : f + 1])
+        # the reference unchanged; the fit set's videos keep their first stack
+        assert torch.equal(sets.ref, fit.fit)
+        for i, v in enumerate("AB"):
+            assert torch.equal(sets.ctx[i], fit.fit[fit_videos.index(v)])
+
+    def test_more_contexts_than_videos(self, four):
+        root, _ = four
+        with pytest.raises(ValueError, match="5 contexts of 4 videos"):
+            self_sets(conf_of(), root, TINY, contexts=5, span=SPAN, spacing=EVERY)
+
+
 # -- the jobs ----------------------------------------------------------------------------
 
 
@@ -389,7 +439,7 @@ class TestEvaluate:
         names = sorted(p.name for p in (out / "rows").iterdir())
         assert names == ["000000.json", "000004-tr.json", "000004.json"]
         config = json.loads((out / "config.json").read_text())
-        assert config["self"]["contexts"] == 2 and len(config["contexts"]) == 2
+        assert config["self"]["contexts"] == 2 and len(config["context_ks"]) == 2
         rows = json.loads((out / "rows" / "000004.json").read_text())
         assert all(r["run"] == run.name and r["step"] == 4 for r in rows)
         with pytest.raises(ValueError, match="other settings"):
