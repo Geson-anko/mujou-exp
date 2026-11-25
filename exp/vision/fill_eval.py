@@ -99,6 +99,8 @@ checked against the settings the rows depend on (``_Context.depends``)::
     python -m exp.vision.fill_eval diag <run_dir> --steps 0,6000,60000
     python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 \
         --parts e1,e1f --split sem --sem <sem_eval's targets>
+    python -m exp.vision.fill_eval run <run_dir> --steps 0,6000,60000 \
+        --parts e1f --target scene    # scene_eval.evaluate_fill
 """
 
 import argparse
@@ -2259,6 +2261,9 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     run.add_argument("--parts", type=_names, default=None)
     run.add_argument("--split", choices=("sem",), help="sem_eval's split (E1, E1f)")
     run.add_argument("--sem", type=Path, help="sem_eval's targets (--split sem)")
+    run.add_argument(
+        "--target", choices=("scene",), help="E1f of scene_eval's labels (e1f only)"
+    )
     diag = sub.add_parser("diag", help="E1's diagnosis of shuf (old checkpoints)")
     diag.add_argument("run_dir", type=Path)
     diag.add_argument("--steps", type=_ints, required=True)
@@ -2279,6 +2284,19 @@ def main(argv: Sequence[str] | None = None) -> Path | list[str]:
     for p in (tg, gen):
         p.add_argument("--inception", type=Path, help="FID's weights")
     args = ap.parse_args(argv)
+    if args.cmd == "run" and args.target == "scene":
+        if args.parts not in (None, ("e1f",)) or args.split is not None:
+            ap.error("--target scene is E1f alone, without --split")
+        # scene_eval imports this module: imported here, not at the top
+        from exp.vision import scene_eval
+
+        return scene_eval.evaluate_fill(
+            args.run_dir,
+            steps=args.steps,
+            root=args.root,
+            cache=args.cache,
+            device=args.device,
+        )
     if args.cmd == "run":
         default = PARTS if args.split is None else SEM_PARTS
         return evaluate_run(
