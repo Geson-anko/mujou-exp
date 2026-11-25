@@ -54,6 +54,7 @@ class TestRidge:
         scores = [r2(predict(fit_ridge(x, y, s), xc), yc) for s in scales]
         want = fit_ridge(x, y, scales[max(range(3), key=lambda i: scores[i])])
         assert best.alpha == want.alpha
+        assert best.scale == want.scale
 
     def test_a_constant_input_identifies_at_exactly_chance(self):
         x, b, c = data(16)

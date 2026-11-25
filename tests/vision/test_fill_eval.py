@@ -28,6 +28,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from exp.lib import ckpt
+from exp.lib.linear_dyn import ALPHA_SCALES
 from exp.lib.png import read_png
 from exp.lib.readout import centered_r2, fit_ridge, predict
 from exp.lib.regions import EVAL_MASKS
@@ -45,6 +46,7 @@ from exp.vision.fill_eval import (
     build_targets,
     e1_rows,
     e1diag_rows,
+    e1f_fits,
     e1f_inputs,
     e1f_masks,
     evaluate_gen,
@@ -554,6 +556,41 @@ class TestE1f:
         m_pred, m_pool = self.fit_set_m(x["pred"], y), self.fit_set_m(x["pool"], y)
         assert m_pred == pytest.approx(m_pool, abs=1e-8)
         assert self.fit_set_m(x["pred_k3"], y) == pytest.approx(m_pool, abs=1e-8)
+
+    def test_pred_k3_is_the_pools_fit_through_the_choice_of_scales(self):
+        # pred_k3 = pool J: at P times pool's scale the two fits are one
+        # (push-through), on noisy targets whose best scale is inside the grid
+        p, d = 16, 8
+        g = torch.Generator().manual_seed(4)
+        a = torch.randn(p, d, d, generator=g, dtype=torch.float64) + 2 * torch.eye(d)
+
+        def inputs(m: int) -> tuple[dict[str, Tensor], Tensor]:
+            u = torch.randn(m, d, generator=g, dtype=torch.float64)
+            y = u @ torch.ones(d, 3, dtype=torch.float64)
+            y = y + 1.5 * torch.randn(m, 3, generator=g, dtype=torch.float64)
+            return e1f_inputs(torch.einsum("pij,nj->npi", a, u)), y
+
+        (x_fit, y_fit), (x_cal, y_cal), (x_test, y_test) = (
+            inputs(m) for m in (20, 200, 200)
+        )
+        stages = ("pred", "pool", "pred_k3")
+        fits = e1f_fits(
+            {s: {"fit": x_fit[s], "calib": x_cal[s]} for s in stages}, y_fit, y_cal
+        )
+        pool, k3 = fits["pool"], fits["pred_k3"]
+        assert min(ALPHA_SCALES) < pool.scale < max(ALPHA_SCALES)
+        assert k3.scale == p * pool.scale
+        torch.testing.assert_close(
+            predict(k3, x_test["pred_k3"]), predict(pool, x_test["pool"]),
+            rtol=0, atol=1e-9,
+        )  # fmt: skip
+        m_k3 = centered_r2(predict(k3, x_test["pred_k3"]), y_test)
+        m_pool = centered_r2(predict(pool, x_test["pool"]), y_test)
+        assert abs(m_k3 - m_pool) <= 1e-9
+        # at pool's own scale, pred_k3 is penalised 1/P as much: another fit
+        same_c = fit_ridge(x_fit["pred_k3"], y_fit, pool.scale)
+        gap = predict(same_c, x_test["pred_k3"]) - predict(pool, x_test["pool"])
+        assert float(gap.abs().max()) > 1e-6
 
     def test_position_wise_contents_read_more_than_the_pool(self):
         n, p, d = 200, 16, 4

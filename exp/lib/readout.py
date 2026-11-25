@@ -49,12 +49,14 @@ __all__ = [
 @dataclass(frozen=True)
 class Ridge:
     """A fit readout: the means ``x_mean`` ``(D,)``, ``y_mean`` ``(K,)``,
-    the matrix ``b`` ``(D, K)`` (float64) and its ``alpha``."""
+    the matrix ``b`` ``(D, K)`` (float64), its ``alpha`` and the ``scale``
+    it was fit at (``fit_ridge``)."""
 
     x_mean: Tensor
     y_mean: Tensor
     b: Tensor
     alpha: float
+    scale: float
 
 
 def fit_ridge(x: Tensor, y: Tensor, scale: float) -> Ridge:
@@ -66,7 +68,8 @@ def fit_ridge(x: Tensor, y: Tensor, scale: float) -> Ridge:
     gram = xc.T @ xc
     alpha = scale * float(gram.trace()) / x.shape[1]
     eye = torch.eye(x.shape[1], dtype=torch.float64, device=x.device)
-    return Ridge(mx, my, torch.linalg.solve(gram + alpha * eye, xc.T @ yc), alpha)
+    b = torch.linalg.solve(gram + alpha * eye, xc.T @ yc)
+    return Ridge(mx, my, b, alpha, scale)
 
 
 def predict(fit: Ridge, x: Tensor) -> Tensor:

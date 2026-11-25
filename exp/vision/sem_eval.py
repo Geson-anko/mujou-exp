@@ -79,15 +79,14 @@ from exp.lib.linear_dyn import ALPHA_SCALES
 from exp.lib.metrics import contiguous_blocks, identification, integrated_time
 from exp.lib.provenance import configure_determinism, of_diagnosis
 from exp.lib.readout import (
-    Ridge,
     centered_r2,
     centered_terms,
-    fit_ridge,
     predict,
     rank_bound,
+    select_ridge,
 )
 from exp.lib.rundir import write_json
-from exp.lib.tours.hires import HiresFrames
+from exp.lib.tours.hires import MAX_DIFF, HiresFrames
 from exp.lib.tours.stacks import DATA_ENV, StackedTourFrames, tours_root
 from exp.vision.compose import from_dict
 from exp.vision.eval import PCA_SEED
@@ -181,7 +180,9 @@ class SemConf:
     scene_dim: int = 32
     sens_gap: int = 300  # grid stacks between a pair of the content swap (5 min)
     l_min: int = 16
-    l_max: int = 155
+    # the most that leaves each set 8 blocks: a set is 2 segments of 619 (and
+    # 624) and contiguous_blocks cuts each alone, so 619 // 4 = 154
+    l_max: int = 154
     k3_rank: int = 16  # d of V18c's tokens: the rank of z_k3
     pca_max: int = 1024  # the pixels' PCA of pca<k>
     batch: int = 64  # hires frames through Inception at once
@@ -458,6 +459,12 @@ def sensitivity(
     }
 
 
+def _settings(sem: Mapping[str, Any]) -> dict[str, Any]:
+    """The settings of ``SemConf`` (as a dict) that the values depend on:
+    all but ``batch``, as JSON has them."""
+    return json.loads(json.dumps({k: v for k, v in sem.items() if k != "batch"}))
+
+
 def targets_key(sets: SemSets, sconf: SemConf, hires_name: str) -> str:
     """The first 12 hex digits of the sha256 of the sets' ``ident``, the
     settings the targets depend on and the hires data's name: the cache's
@@ -485,14 +492,30 @@ def build_targets(
 ) -> Targets:
     """The targets (module docstring) of ``sets`` from ``hires`` by
     ``features`` (FID's Inception in use, ``record`` its weights' path and
-    sha256)."""
+    sha256).
+
+    Raises:
+        ValueError: A hires frame's means of ``factor`` x ``factor``
+            (unrounded) are not the last frame of its stack (``SemSets.last``)
+            to ``MAX_DIFF`` levels on average: a place is not of its stack.
+    """
     raw: dict[str, dict[str, Tensor]] = {}
+    factor = hires.size // sets.fit.shape[-1]
+    worst = 0.0
     for name in ("fit", "grid"):
-        places = sets.places[name]
-        parts = [
-            _pool3(features, hires.frames(places[i : i + sconf.batch]).to(dev))
-            for i in range(0, len(places), sconf.batch)
-        ]
+        places, last = sets.places[name], sets.last(name)
+        parts = []
+        for i in range(0, len(places), sconf.batch):
+            x = hires.frames(places[i : i + sconf.batch]).to(dev)
+            small = F.avg_pool2d(x.double(), factor).cpu()
+            diff = (small - last[i : i + sconf.batch].double()).abs().mean((1, 2, 3))
+            worst = max(worst, float(diff.max()))
+            if worst > MAX_DIFF:
+                raise ValueError(
+                    f"the hires frames of {name}'s places {i}.. are not its "
+                    f"stacks' last frames: a mean difference of {worst:.3f}"
+                )
+            parts.append(_pool3(features, x))
         raw[name] = {k: torch.cat([p[k] for p in parts]) for k in (*QUARTERS, "whole")}
     spaces: dict[str, Space] = {}
     values: dict[str, dict[str, Tensor]] = {}
@@ -536,6 +559,8 @@ def build_targets(
         "sem": asdict(sconf),
         "inception": dict(record or {}),
         "hires": {"name": hires.root.name, "index": hires.index},
+        "places_max_diff": worst,
+        "provenance": {k: v for k, v in of_diagnosis({}).items() if k != "settings"},
         "seeds": {"pca": SEM_PCA_SEED, "sens": SENS_SEED},
         "explained": explained,
         "segment": split["segment"].tolist(),
@@ -581,7 +606,7 @@ def find_cache(base: Path, sets: SemSets, sconf: SemConf) -> Path:
             continue
         meta = json.loads(meta_path.read_text())
         same = meta["sets"] == json.loads(json.dumps(dict(sets.ident)))
-        if same and meta["sem"] == json.loads(json.dumps(asdict(sconf))):
+        if same and _settings(meta["sem"]) == _settings(asdict(sconf)):
             found.append(d)
     if not found:
         raise FileNotFoundError(
@@ -618,20 +643,6 @@ class K3Code:
         return self._mix(t.mean(1, keepdim=True).expand_as(t).flatten(1))
 
 
-def _choose(x: Tensor, y: Tensor, x_cal: Tensor, y_cal: Tensor) -> tuple[Ridge, float]:
-    """The ridge of the scale of ``ALPHA_SCALES`` whose ``centered_r2`` on
-    the calib set is the best (the first on a tie), and that scale."""
-    best: tuple[Ridge, float] | None = None
-    top = -math.inf
-    for c in ALPHA_SCALES:
-        fit = fit_ridge(x, y, c)
-        s = centered_r2(predict(fit, x_cal), y_cal)
-        if s > top:
-            best, top = (fit, c), s
-    assert best is not None
-    return best
-
-
 def score(
     x_fit: Tensor | None,
     x_grid: Tensor | None,
@@ -658,6 +669,7 @@ def score(
         return row | {
             "dim": 0,
             "alpha_scale": None,
+            "alpha_edge": None,
             "alpha": None,
             "m_sel_half": [0.0, 0.0],
             "m_scene_sel": 0.0,
@@ -669,9 +681,14 @@ def score(
     dev = x_fit.device
     yf, yg = y_fit.to(dev), y_grid.to(dev)
     cal = idx["calib"].to(dev)
-    g, c = _choose(x_fit, yf, x_grid[cal], yg[cal])
+    g = select_ridge(x_fit, yf, x_grid[cal], yg[cal], score=centered_r2)
     p = predict(g, x_grid).cpu()
-    row |= {"dim": x_fit.shape[1], "alpha_scale": c, "alpha": g.alpha}
+    row |= {
+        "dim": x_fit.shape[1],
+        "alpha_scale": g.scale,
+        "alpha_edge": g.scale in (min(ALPHA_SCALES), max(ALPHA_SCALES)),
+        "alpha": g.alpha,
+    }
     for s in SPLITS:
         e, v = centered_terms(p[idx[s]], y_grid[idx[s]])
         row[f"m_{s}"] = float(1 - e.sum() / v.sum())
@@ -682,12 +699,12 @@ def score(
     row["m_sel_half"] = []
     for h in (0, 1):
         on = halves == h
-        gh, _ = _choose(x_fit[on], yf[on], x_grid[cal], yg[cal])
+        gh = select_ridge(x_fit[on], yf[on], x_grid[cal], yg[cal], score=centered_r2)
         row["m_sel_half"].append(
             centered_r2(predict(gh, x_grid[sel.to(dev)]).cpu(), y_grid[sel])
         )
     sf, sg = targets.y("scene", "fit").to(dev), targets.y("scene", "grid")
-    gs, _ = _choose(x_fit, sf, x_grid[cal], sg.to(dev)[cal])
+    gs = select_ridge(x_fit, sf, x_grid[cal], sg.to(dev)[cal], score=centered_r2)
     ps = predict(gs, x_grid).cpu()
     for s in ("sel", "final"):
         row[f"m_scene_{s}"] = centered_r2(ps[idx[s]], sg[idx[s]])
@@ -754,13 +771,13 @@ class _Context:
         self.targets = Targets.load(sem)
         if self.targets.meta["sets"] != json.loads(json.dumps(dict(self.sets.ident))):
             raise ValueError(f"the targets {sem} are not of these sets")
-        if self.targets.meta["sem"] != json.loads(json.dumps(asdict(sconf))):
+        if _settings(self.targets.meta["sem"]) != _settings(asdict(sconf)):
             raise ValueError(f"the targets {sem} are of other settings")
 
     def depends(self) -> dict[str, Any]:
         """What the rows depend on beside the checkpoint."""
         d = {
-            "sem": asdict(self.sconf),
+            "sem": _settings(asdict(self.sconf)),
             "targets": self.path.name,
             "seeds": {"pca": SEM_PCA_SEED, "pixels_pca": PCA_SEED},
             "alpha_scales": list(ALPHA_SCALES),
@@ -862,6 +879,9 @@ def evaluate_targets(
     base = _default_base() if cache is None else cache
     path = base / f"{CACHE_PREFIX}{targets_key(sets, sconf, hires.name)}"
     if (path / "targets.pt").is_file():
+        have = json.loads((path / "targets.json").read_text())["inception"]
+        if record and have.get("sha256") != record["sha256"]:
+            raise ValueError(f"the targets at {path} are of another Inception")
         return path
     data = HiresFrames(hires)
     got = build_targets(
@@ -1017,7 +1037,13 @@ def evaluate_yardsticks(
             continue
         ctx.start({"yardsticks": list(codes)})
         t0 = time.time()
-        stamp = {"step": None, "t": None, "code": name}
+        source = given.get(name)
+        stamp = {
+            "step": None,
+            "t": None,
+            "code": name,
+            "source": None if source is None else str(source.resolve()),
+        }
         ctx.write(
             f"{YARD_PREFIX}-{name}", _yard_inputs(name, ctx, given, pca), stamp, t0
         )

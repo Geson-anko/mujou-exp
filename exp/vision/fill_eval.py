@@ -79,7 +79,8 @@ E1's repair (``plans/jepa.md``, 「E1 の修理」):
   stages ``oracle_k3`` and ``pred_k3`` (the position means copied: ``swap``
   exactly 1/2, ``n_tie`` every candidate), and E1f (``e1f_rows``): the
   readouts fit on the predictor's outputs themselves, scored by
-  ``centered_r2``.
+  ``centered_r2``, into ``<run_dir>/posthoc_fill_sem/`` (``OUT_SEM``: its
+  own ``config.json``, never mixed with the plain E1's).
 
 Into ``<run_dir>/posthoc_fill/`` (``config.json``, ``rows/<step>-<part>.json``
 a list of rows, the pictures ``g-<step>-<mask>.png``) and
@@ -125,6 +126,7 @@ from exp.lib.readout import (
     Ridge,
     centered_r2,
     centered_terms,
+    fit_ridge,
     predict,
     r2,
     select_ridge,
@@ -185,6 +187,7 @@ __all__ = [
     "E1_MASKS",
     "KINDS",
     "OUT",
+    "OUT_SEM",
     "OUT_SIDE",
     "PARTS",
     "QUARTER_NAMES",
@@ -201,6 +204,7 @@ __all__ = [
     "e1_rows",
     "e1diag_rows",
     "e1e_rows",
+    "e1f_fits",
     "e1f_inputs",
     "e1f_masks",
     "e1f_rows",
@@ -223,6 +227,7 @@ __all__ = [
 ]
 
 OUT, OUT_SIDE = "posthoc_fill", "posthoc_side"
+OUT_SEM = "posthoc_fill_sem"  # E1 and E1f on sem_eval's split: its own config
 TARGET_PCA_SEED = 79  # the PCA of incep's targets
 READOUT_PCA_SEED = 83  # the PCA of a readout's inputs wider than readout_dim
 E1_MASKS = ("Q_tl", "Q_tr", "Q_bl", "Q_br", "H_l", "H_r", "H_t", "H_b", "R")
@@ -1193,15 +1198,52 @@ def e1f_inputs(z_hat: Tensor) -> dict[str, Tensor]:
     positions ``(n, d)``, and them all replaced by that mean ``(n, P d)``.
 
     For a K3 family $\hat t_p = A_p u$, ``pred`` is $A u$ ($A$ the $A_p$
-    stacked) and ``pool`` $\bar A u$: with $\bar A$ invertible both are
-    one-to-one linear functions of $u$, of the same column space, so a
-    readout fit on either predicts the same."""
+    stacked) and ``pool`` $\bar A u$: with $\bar A$ invertible (and well
+    conditioned) both are one-to-one linear functions of $u$, of the same
+    column space, so a readout fit on either predicts the same. A singular
+    $\bar A$ breaks this (``pool`` loses what ``pred`` keeps; e1f's rows
+    give ``pool``'s condition number)."""
     pool = z_hat.mean(1)
     return {
         "pred": z_hat.flatten(1),
         "pool": pool,
         "pred_k3": pool[:, None].expand_as(z_hat).flatten(1),
     }
+
+
+def e1f_fits(
+    x: Mapping[str, Mapping[str, Tensor]], y_fit: Tensor, y_cal: Tensor
+) -> dict[str, Ridge]:
+    r"""The readouts of E1f's stages ``x`` (stage, then ``"fit"`` and
+    ``"calib"``: the inputs) to ``y``: each stage's scale of
+    ``ALPHA_SCALES`` chosen by ``centered_r2`` on calib, but ``pred_k3``'s,
+    $P c$ for ``pool``'s $c$ ($P$ the positions, ``pred_k3``'s width over
+    ``pool``'s), at which the two are the same fit.
+
+    With ``pool`` $X$ ``(n, d)`` and ``pred_k3`` $X' = X J$, $J = (I_d,
+    \dots, I_d)$ ``(d, P d)`` ($J J^	op = P I_d$): $\mathrm{tr}(X'^	op X')
+    = P\,\mathrm{tr}(X^	op X)$, so a scale $c'$ is $lpha' = c'
+    \mathrm{tr}(X^	op X) / d$; and by the push-through identity $X'
+    (X'^	op X' + lpha' I)^{-1} X'^	op = X (X^	op X + rac{lpha'}{P}
+    I)^{-1} X^	op$. At $c' = P c$, $lpha' / P$ is ``pool``'s $lpha$:
+    the predictions are the same up to rounding. (At the same $c$, the
+    penalty on $u$ would be $1/P$ of ``pool``'s, a scale off the grid.)"""
+    fits: dict[str, Ridge] = {}
+    for stage, xs in x.items():
+        if stage != "pred_k3":
+            fits[stage] = select_ridge(
+                xs["fit"], y_fit, xs["calib"], y_cal, score=centered_r2
+            )
+    if "pred_k3" in x:
+        xk, xp = x["pred_k3"]["fit"], x["pool"]["fit"]
+        positions = xk.shape[1] // xp.shape[1]
+        fits["pred_k3"] = fit_ridge(xk, y_fit, positions * fits["pool"].scale)
+    return fits
+
+
+def _cond(x: Tensor) -> float:
+    """The condition number of the covariance of ``x`` ``(n, D)``."""
+    return float(torch.linalg.cond(torch.atleast_2d(torch.cov(x.double().T))))
 
 
 @torch.no_grad()
@@ -1221,10 +1263,14 @@ def e1f_rows(
     $k$ of ``E1F_K`` and stage of ``E1F_STAGES``: of each quarter $q$ under
     ``e1f_masks()[(q, k)]``, a ridge from the stage's inputs (``vis_color``
     the visible coarse cells' mean colors, ``oracle`` the target side's
-    tokens at $Q_q$) to ``quad/<q>``, its scale chosen by ``centered_r2``
-    on calib; the items' $e_i$ and $v_i$ of sel and final summed over the
-    quarters into one $m$. ``mean`` is the constant ($m$ exactly 0).
-    ``id_easy_sel``: the quarters' predictions side by side among sel's."""
+    tokens at $Q_q$) to ``quad/<q>`` (``e1f_fits``: its scale chosen by
+    ``centered_r2`` on calib, ``pred_k3``'s tied to ``pool``'s); the items'
+    $e_i$ and $v_i$ of sel and final summed over the quarters into one $m$.
+    ``mean`` is the constant ($m$ exactly 0). ``scale`` and ``alpha`` by
+    quarter; ``pool``'s ``cond`` by quarter, its inputs' covariance's
+    condition number on fit (a near-singular $\bar A$ makes ``pred`` beat
+    ``pool`` even of a K3 family). ``id_easy_sel``: the quarters'
+    predictions side by side among sel's."""
     split = targets.meta["sets_split"]
     idx = {s: torch.tensor(split[s]["idx"]) for s in ("calib", "sel", "final")}
     sets = ("fit", "calib", "sel", "final")
@@ -1254,20 +1300,18 @@ def e1f_rows(
             got["oracle"] = tok[s][:, quarter].flatten(1)
             for stage, x in got.items():
                 inputs.setdefault(stage, {})[s] = x
+        fits = e1f_fits(inputs, y["fit"].to(dev), y["calib"].to(dev))
         for stage in E1F_STAGES:
-            acc = sums.setdefault((k, stage), {"alpha": {}})
+            acc = sums.setdefault((k, stage), {"alpha": {}, "scale": {}})
             if stage == "mean":
                 p = {s: torch.zeros(len(y[s]), 1, dtype=torch.float64) for s in sets}
-                alpha = None
+                acc["alpha"][q] = acc["scale"][q] = None
             else:
-                x = inputs[stage]
-                g = select_ridge(
-                    x["fit"], y["fit"].to(dev), x["calib"], y["calib"].to(dev),
-                    score=centered_r2,
-                )  # fmt: skip
-                p = {s: predict(g, x[s]).cpu() for s in sets}
-                alpha = g.alpha
-            acc["alpha"][q] = alpha
+                g = fits[stage]
+                p = {s: predict(g, inputs[stage][s]).cpu() for s in sets}
+                acc["alpha"][q], acc["scale"][q] = g.alpha, g.scale
+            if stage == "pool":
+                acc.setdefault("cond", {})[q] = _cond(inputs[stage]["fit"])
             for s in ("calib", "sel", "final"):
                 e, v = centered_terms(p[s], y[s])
                 acc[f"e_{s}"] = acc.get(f"e_{s}", 0) + e
@@ -1278,7 +1322,9 @@ def e1f_rows(
     rows = []
     for (k, stage), acc in sums.items():
         row: dict[str, Any] = {"k": k, "stage": stage, "in_dist": k == k_run}
-        row["alpha"] = acc["alpha"]
+        row["alpha"], row["scale"] = acc["alpha"], acc["scale"]
+        if "cond" in acc:
+            row["cond"] = acc["cond"]
         for s in ("calib", "sel", "final"):
             row[f"m_{s}"] = float(1 - acc[f"e_{s}"].sum() / acc[f"v_{s}"].sum())
         for s in ("sel", "final"):
@@ -1710,7 +1756,8 @@ def evaluate_run(
     """E1, E1e and E2 (``parts``) of the checkpoints of ``steps`` of the
     JEPA run in ``run_dir`` (module docstring); with ``split`` ``"sem"``,
     E1 and E1f of ``SEM_PARTS`` on the split of the targets ``sem``
-    (``evaluate_sem_split``). Returns ``run_dir / OUT``.
+    (``evaluate_sem_split``, into ``run_dir / OUT_SEM``). Returns the
+    directory of the rows.
 
     Raises:
         ValueError: A part is not of ``PARTS``, or a step has no
@@ -1879,7 +1926,8 @@ def evaluate_sem_split(
     """E1 (its targets ``color`` and ``quad``, with the K3 stages and
     ``n_cand``) and E1f (``e1f_rows``) of ``parts`` of the checkpoints of
     ``steps`` of the JEPA run in ``run_dir``, on the split of ``sem_eval``'s
-    targets at ``sem``. Returns ``run_dir / OUT``.
+    targets at ``sem``, into ``run_dir / OUT_SEM`` (its ``config.json`` of
+    the split's candidates). Returns ``run_dir / OUT_SEM``.
 
     Raises:
         ValueError: ``split`` is not ``"sem"``, a part is not of
@@ -1905,36 +1953,36 @@ def evaluate_sem_split(
     ctx.extra = {"split": "sem", "sem": sem.name}
     zurich = Zurich(conf, ctx.root, fconf.grid_step)
     sets, idx = sem_split_sets(ctx.sets, zurich, sem_t.meta, fconf)
+    ctx.sets = sets  # depends: the split's candidates
+    out = run_dir / OUT_SEM
     targets, kinds = sem_split_targets(ctx.targets, sem_t, idx["calib"])
     stacks = {"fit": sets.fit, "calib": sets.calib}
     stacks |= {s: zurich.stacks(idx[s]) for s in ("sel", "final")}
     settings, _, expand, k_run = _run_settings(run_dir)
     mods = build_run_jepa(conf, settings)
-    ctx.check(ctx.fill)
+    ctx.check(out)
     extra = {"run": run_dir.name, "k": k_run, "expand": expand}
     for step in steps:
         prefix = f"{step:06d}"
-        todo = [
-            p for p in parts if not (ctx.fill / "rows" / f"{prefix}-{p}.json").exists()
-        ]
+        todo = [p for p in parts if not (out / "rows" / f"{prefix}-{p}.json").exists()]
         if not todo:
             continue
         stamp = {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)}
         ckpt.load_eval(ckpts[step], mods.modules())
-        ctx.start(ctx.fill, extra)
+        ctx.start(out, extra)
         if "e1" in todo:
             rows = e1_rows(
                 mods, sets, targets, fconf, expand=expand, k_run=k_run,
                 dev=ctx.dev, kinds=kinds, k3=True,
             )  # fmt: skip
             rows = [r | {"n_cand": len(sets.cand)} for r in rows]
-            _write_rows(ctx.fill / "rows" / f"{prefix}-e1.json", rows, stamp)
+            _write_rows(out / "rows" / f"{prefix}-e1.json", rows, stamp)
         if "e1f" in todo:
             rows = e1f_rows(
                 mods, stacks, sem_t, expand=expand, k_run=k_run, dev=ctx.dev
             )
-            _write_rows(ctx.fill / "rows" / f"{prefix}-e1f.json", rows, stamp)
-    return ctx.fill
+            _write_rows(out / "rows" / f"{prefix}-e1f.json", rows, stamp)
+    return out
 
 
 def evaluate_diag(

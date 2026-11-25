@@ -20,18 +20,23 @@ from pathlib import Path
 import pytest
 import torch
 
+from exp.lib.metrics import contiguous_blocks
 from exp.lib.readout import centered_r2, fit_ridge, predict
 from exp.lib.tours.hires import FRAME_LIST, finalize as hires_finalize
 from exp.lib.video_io import U8Reader, U8Writer
 from exp.vision import fill_eval
 from exp.vision.jepa import build_jepa
 from exp.vision.jepa_eval import ColorCode, PCACode, pixels
+from exp.vision.results.v18c.judge_m import K3_TOL
 from exp.vision.sem_eval import (
     OUT,
     SPLITS,
     K3Code,
     SemConf,
+    SemSets,
+    _nuisance,
     blur,
+    build_targets,
     evaluate_frames,
     evaluate_run,
     evaluate_targets,
@@ -80,6 +85,15 @@ class TestSplit:
         again = zurich_split(g, segments, gap)
         assert all(torch.equal(got[k], again[k]) for k in got)
 
+    def test_the_longest_blocks_leave_each_set_8(self):
+        # each set is 2 segments, cut into blocks one at a time
+        split = zurich_split(3899)
+        for s in SPLITS:
+            blocks = contiguous_blocks(split["segment"][split[s]], SemConf().l_max)
+            assert len(set(blocks.tolist())) == 8
+        one_more = contiguous_blocks(split["segment"][split["sel"]], 155)
+        assert len(set(one_more.tolist())) < 8
+
     def test_segments_no_longer_than_the_gap_are_refused(self):
         with pytest.raises(ValueError, match="gap"):
             zurich_split(60, 6, 10)
@@ -102,6 +116,10 @@ class TestNuisances:
         got = white_balance(x)
         want = [[[[0, 110]], [[200, 255]], [[9, 230]]]]  # 255 x 1.1 cut at 255
         assert got.tolist() == want
+        # x 0.8 rounded: 100 -> 80, 255 -> 204, 10 -> 8
+        bright = _nuisance("bright", x, 1.0)
+        assert bright.dtype == torch.uint8
+        assert bright.tolist() == [[[[0, 80]], [[160, 204]], [[8, 204]]]]
 
     def test_a_blur_keeps_a_constant_frame(self):
         # the taps sum to 1 and the edges are reflected: a constant stays
@@ -167,6 +185,47 @@ class TestK3Code:
             K3Code(mods)
 
 
+class _Hires:
+    """Hires frames of the stacks' last frames enlarged, at the places of a
+    mapping ``at`` (place -> stack)."""
+
+    def __init__(self, last: torch.Tensor, at: dict[tuple[str, int], int]) -> None:
+        self.size, self._last, self._at = SIZE * FACTOR, last, at
+
+    def frames(self, places: list[tuple[str, int]]) -> torch.Tensor:
+        x = self._last[[self._at[p] for p in places]]
+        return x.repeat_interleave(FACTOR, 2).repeat_interleave(FACTOR, 3)
+
+
+class TestPlaces:
+    def test_a_place_not_of_its_stack_is_refused_before_any_target(self):
+        g = torch.Generator().manual_seed(0)
+        fit = torch.randint(256, (6, 2, 3, SIZE, SIZE), generator=g, dtype=torch.uint8)
+        grid = fit[:4].clone()
+        places = {
+            "fit": [("A", i) for i in range(6)],
+            "grid": [("H", i) for i in range(4)],
+        }
+        sets = SemSets(fit, grid, torch.zeros(6), places, {})
+        last = torch.cat([fit[:, -1], grid[:, -1]])
+        right = {p: i for i, p in enumerate(places["fit"] + places["grid"])}
+        wrong = right | {("A", 2): 3, ("A", 3): 2}  # two places swapped
+
+        def no_features(x: torch.Tensor) -> torch.Tensor:
+            raise AssertionError("no target before the places are checked")
+
+        with pytest.raises(ValueError, match="not its stacks' last frames"):
+            build_targets(
+                sets, _Hires(last, wrong), no_features, TINY_SEM,  # type: ignore[arg-type]
+                dev=torch.device("cpu"),
+            )  # fmt: skip
+        with pytest.raises(AssertionError, match="no target"):  # the check passed
+            build_targets(
+                sets, _Hires(last, right), no_features, TINY_SEM,  # type: ignore[arg-type]
+                dev=torch.device("cpu"),
+            )  # fmt: skip
+
+
 # -- end to end ---------------------------------------------------------------------------
 
 
@@ -223,6 +282,8 @@ class TestEvaluate:
         )
         assert path.name.startswith("v18c-sem-")
         meta = json.loads((path / "targets.json").read_text())
+        assert meta["places_max_diff"] == 0.0  # the frames enlarged: exactly
+        assert "code" in meta["provenance"]
         values = torch.load(path / "targets.pt", weights_only=True)["values"]
         fit = values["sem"]["fit"]
         torch.testing.assert_close(fit.mean(0), torch.zeros(8, dtype=fit.dtype))
@@ -250,6 +311,12 @@ class TestEvaluate:
             k3["m_sel"] <= k3["k3_bound_sel"] and k3["m_final"] <= k3["k3_bound_final"]
         )
         assert rows["yardstick-init_c.json"]["dim"] == 1024
+        assert rows["yardstick-init_c.json"]["source"] == str(run.resolve())
+        assert all(
+            isinstance(r["alpha_edge"], bool)
+            for n, r in rows.items()
+            if "mean" not in n
+        )
         assert len(rows["yardstick-color.json"]["e_sel"]) == len(
             meta["sets_split"]["sel"]["idx"]
         )
@@ -289,12 +356,22 @@ class TestEvaluate:
             if r["stage"] in ("mean", "oracle_k3", "pred_k3"):
                 assert r["swap"] == 0.5 and r["n_tie"] == n_cand
         assert {r["target"] for r in e1 if r["mask"] == "H_l"} == {"color"}
+        assert fill == run / fill_eval.OUT_SEM
+        config = json.loads((fill / "config.json").read_text())
+        assert config["split"] == "sem" and len(config["cand"]) == n_cand
         e1f = json.loads((fill / "rows" / "000004-e1f.json").read_text())
         assert len(e1f) == 3 * 6
         assert all(
             r["m_sel"] == r["m_final"] == 0.0 for r in e1f if r["stage"] == "mean"
         )
+        by = {(r["k"], r["stage"]): r for r in e1f}
+        for k in fill_eval.E1F_K:
+            k3, pool = by[(k, "pred_k3")], by[(k, "pool")]
+            assert abs(k3["m_final"] - pool["m_final"]) <= K3_TOL
+            assert set(pool["cond"]) == set(fill_eval.QUARTER_NAMES)
+        # the plain diagnosis has its own directory and config
         diag = fill_eval.evaluate_diag(run, steps=(4,), root=root, cache=cache, **fkw)
+        assert diag == run / fill_eval.OUT
         d = json.loads((diag / "rows" / "000004-e1diag.json").read_text())
         assert all(r["resid"] <= 1e-9 for r in d)
         assert (diag / "e1diag-000004.png").is_file()
