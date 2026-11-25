@@ -44,6 +44,8 @@ from exp.vision.sem_eval import (
     evaluate_yardsticks,
     far_pairs,
     match_stats,
+    shift_sets,
+    shift_top1,
     white_balance,
     zurich_split,
 )
@@ -98,6 +100,45 @@ class TestSplit:
     def test_segments_no_longer_than_the_gap_are_refused(self):
         with pytest.raises(ValueError, match="gap"):
             zurich_split(60, 6, 10)
+
+
+class TestShiftTop1:
+    """V-m0's shift identification, repaired: the query (1 s on) and the
+    stack 1 s past it are no candidates."""
+
+    @staticmethod
+    def sel() -> torch.Tensor:
+        return torch.cat([torch.arange(0, 40), torch.arange(50, 90)])
+
+    def test_the_candidates_hold_the_own_and_not_the_near_ones(self):
+        sel = self.sel()
+        truth, among = shift_sets(sel)
+        assert among.shape == (len(truth), len(sel) - 2)
+        for i, t in enumerate(truth.tolist()):
+            g = int(sel[t])
+            names = set(sel[among[i]].tolist())
+            assert g in names and g + 1 not in names and g + 2 not in names
+            assert int(sel[among[i]][(among[i] == t).nonzero()[0]]) == g
+
+    def test_independent_targets_find_their_own_at_chance(self):
+        sel = self.sel()
+        g = torch.Generator().manual_seed(0)
+        hits, draws = [], 300
+        for _ in range(draws):
+            y = torch.randn(90, 8, generator=g, dtype=torch.float64)
+            hits.append(shift_top1(y, sel))
+        mean = sum(hits) / draws
+        chance = 1 / (len(sel) - 2)
+        sd = torch.tensor(hits).std().item()
+        assert abs(mean - chance) < 4 * sd / draws**0.5
+        assert mean > 0  # the old one gave exactly 0
+
+    def test_a_target_near_its_neighbour_is_always_found(self):
+        # y_t = e_t + e_{t - 1}: y_{g + 1} shares e_g with y_g alone among
+        # the candidates (y_{g + 2} shares e_{g + 1}, but is none)
+        e = torch.eye(91, dtype=torch.float64)
+        y = e[1:] + e[:-1]
+        assert shift_top1(y, self.sel()) == 1.0
 
 
 class TestFarPairs:

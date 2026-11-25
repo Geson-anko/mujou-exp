@@ -136,6 +136,8 @@ __all__ = [
     "score",
     "sem_sets",
     "sensitivity",
+    "shift_sets",
+    "shift_top1",
     "white_balance",
     "zurich_split",
 ]
@@ -631,22 +633,36 @@ def build_targets(
         "tau": tau,
         "L": length,
         "L_at_max": length == sconf.l_max,
-        "shift_top1": _shift_top1(y, split["sel"]),
+        "shift_top1": shift_top1(y, split["sel"]),
         "sens": sens,
     }
     return Targets(spaces, values, meta)
 
 
-def _shift_top1(y: Tensor, sel: Tensor) -> float:
-    """V-m0's: the share of the sel stacks found from the next grid stack's
-    target (1 s on, in sel too) among sel's by the nearest cosine, centred on
-    the grid's mean."""
-    members = set(sel.tolist())
-    pos = [i for i, g in enumerate(sel.tolist()) if g + 1 in members]
-    query = y[sel[pos] + 1]
-    out = identification(
-        query, y[sel], center=y.mean(0), truth=torch.tensor(pos, dtype=torch.long)
-    )
+def shift_sets(sel: Tensor) -> tuple[Tensor, Tensor]:
+    r"""V-m0's shift identification's sets of the sel grid indices ``sel``
+    ``(n,)``: the positions in ``sel`` of the stacks $g$ whose $g + 1$ and
+    $g + 2$ are in sel too (``(q,)``, the truths) and each one's candidates
+    ``(q, n - 2)``, sel's positions but those of $g + 1$ (the query) and $g
+    + 2$ (as near to the query as $g$ is)."""
+    pos = {g: i for i, g in enumerate(sel.tolist())}
+    truth, among = [], []
+    for g, i in pos.items():
+        if g + 1 in pos and g + 2 in pos:
+            near = {pos[g + 1], pos[g + 2]}
+            truth.append(i)
+            among.append([j for j in range(len(sel)) if j not in near])
+    return torch.tensor(truth, dtype=torch.long), torch.tensor(among, dtype=torch.long)
+
+
+def shift_top1(y: Tensor, sel: Tensor) -> float:
+    r"""V-m0's: the share of the sel stacks $g$ found from the target of
+    $g + 1$ (1 s on) by the nearest cosine, centred on the grid's mean,
+    among sel's but the query and $g + 2$ (``shift_sets``); chance $1 / (n -
+    2)$. (It was among all of sel's, the query itself too: exactly 0.)"""
+    truth, among = shift_sets(sel)
+    query = y[sel[truth] + 1]
+    out = identification(query, y[sel], center=y.mean(0), truth=truth, among=among)
     return out["top1"]
 
 
