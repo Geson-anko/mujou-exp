@@ -282,15 +282,26 @@ class TestSlots:
     def test_the_slots_pack_and_draw(self):
         ok = torch.ones(20, dtype=torch.bool)
         ok[5:8] = False
-        # the admissible starts 0..4 and 8..19: the greedy packing of runs
-        # of 4 is 0, 4, 8, 12, 16
-        got = slot_starts(ok, 4, 5, 1)
-        assert got == [0, 4, 8, 12, 16]
+        # the admissible starts 0..4 and 8..19: runs of 4 pack 2 into 0..4
+        # (no slack: 0, 4) and 3 into 8..19 (slack 3: 8 + u, 12 + u, 16 + u,
+        # u uniform in 0..3), the most that fit, 5
+        shifts = set()
+        for seed in range(40):
+            got = slot_starts(ok, 4, 5, seed)
+            u = got[2] - 8
+            assert got == [0, 4, 8 + u, 12 + u, 16 + u] and 0 <= u <= 3
+            shifts.add(u)
+        assert shifts == {0, 1, 2, 3}  # P(a shift unseen in 40) < 4 (3/4)^40
         some = slot_starts(ok, 4, 3, 2)
-        assert len(some) == 3 and set(some) <= set(got) and some == sorted(some)
+        full = slot_starts(ok, 4, 5, 2)
+        assert len(some) == 3 and set(some) <= set(full) and some == sorted(some)
         assert slot_starts(ok, 4, 3, 2) == some
         with pytest.raises(ValueError, match="slots"):
             slot_starts(ok, 4, 6, 1)
+        # a stretch (2..4) closer than length - 1 to the last slot starts past its run (4)
+        near = torch.zeros(12, dtype=torch.bool)
+        near[[0, 2, 3, 4]] = True
+        assert slot_starts(near, 4, 2, 0) == [0, 4]
 
     def test_the_slot_draws_keep_the_gap_and_the_cuts(self, tmp_path):
         root = tours_with_zurich(tmp_path / "d")

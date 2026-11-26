@@ -276,6 +276,11 @@ class ContentSums:
         c = counts.to(_F64)
         return 1 - (c @ num.mean(0)) / (c @ den)
 
+    def take(self, blocks: Sequence[int]) -> ContentSums:
+        """The sums of ``blocks`` alone, in that order."""
+        i = torch.tensor(list(blocks), dtype=torch.long)
+        return ContentSums(self.err[:, i], self.tot[i], self.derr[:, i], self.dtot[i])
+
     def to_row(self) -> dict[str, list[float] | list[list[float]]]:
         return {"err_b": self.err.tolist(), "tot_b": self.tot.tolist(),
                 "derr_b": self.derr.tolist(), "dtot_b": self.dtot.tolist()}  # fmt: skip

@@ -86,12 +86,14 @@ from exp.vision.content_eval import (
     draw_starts,
     evaluate_content,
     evaluate_content3,
+    far_runs,
     front3,
     front_of,
     merge_checks,
     merge_checks3,
     negative,
     negative_cheats,
+    obs_acf3,
     orthogonal,
     pair3,
     pair_ed3,
@@ -99,6 +101,7 @@ from exp.vision.content_eval import (
     positive,
     process3,
     select_rows,
+    series_acf,
     starts3,
     sums3,
 )
@@ -444,6 +447,37 @@ class TestParts3:
         assert (sc.kept - f * s2 / (1 + s2)) / sc.kept == pytest.approx(2**-0.1)
 
 
+class TestAcf:
+    def test_the_pooled_autocorrelation_by_hand(self):
+        # two series of 2 columns; pairs only within a series; the mean of all
+        g = _gen(3)
+        ys = [torch.randn(7, 2, generator=g, dtype=F64),
+              torch.randn(4, 2, generator=g, dtype=F64)]  # fmt: skip
+        got = series_acf(ys, [0, 2, 5])
+        m = torch.cat(ys).mean(0)
+        var = (torch.cat(ys) - m).square().sum(1).mean()
+        for i, lag in enumerate((0, 2, 5)):
+            pr = [((y[: len(y) - lag] - m) * (y[lag:] - m)).sum(1)
+                  for y in ys if lag < len(y)]  # fmt: skip
+            want = torch.cat(pr).mean() / var
+            assert got["rho"][i] == pytest.approx(float(want), rel=1e-12)
+        assert got["rho"][0] == pytest.approx(1.0) and got["pairs"] == [11, 7, 2]
+
+    @pytest.mark.slow
+    def test_the_synthetic_observation_against_its_closed_form(self):
+        # a long series (ell 2 s, so the scene averages out) of each sign
+        lags = [1, 10, 40]
+        for pos in (False, True):
+            y, _ = process3(300000, LONG, pos, _gen(4))
+            got = series_acf([y], lags)["rho"]
+            want = obs_acf3(LONG, pos, lags)
+            assert got == pytest.approx(want, abs=0.03)
+        assert obs_acf3(LONG, False, [0]) == pytest.approx([1.0])
+        # a step's change is 2 (1 - rho(1)) of the level's: r
+        for pos in (False, True):
+            assert obs_acf3(LONG, pos, [1])[0] == pytest.approx(1 - LONG.r / 2)
+
+
 def _lstsq3(x: torch.Tensor, y: torch.Tensor) -> tuple[float, float, float]:
     """$E$, the level's difference's $E^d$ and the pair's $E^d$ of the least
     squares in sample."""
@@ -540,6 +574,18 @@ class TestDraws3:
         assert all(abs(a - b) >= sc.run for a in st["val"] for b in st["val"] if a != b)
         assert all(abs(a - j) >= sc.run for a in st["record"] for j in st["train"])
 
+    def test_the_far_runs_and_their_sums_by_hand(self):
+        # of the starts 0, 10, 25, 41 those at least 8 from 15 and 48
+        assert far_runs([0, 10, 25, 41], [15, 48], 8) == [0, 2]
+        s = ContentSums(torch.tensor([[1.0, 2, 3], [4, 5, 6]], dtype=F64),
+                        torch.tensor([7.0, 8, 9], dtype=F64),
+                        torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=F64),
+                        torch.tensor([1.0, 2, 3], dtype=F64))  # fmt: skip
+        t = s.take([2, 0])
+        assert t.err.tolist() == [[3, 1], [6, 4]] and t.tot.tolist() == [9, 7]
+        assert t.value() == pytest.approx(1 - (4.5 + 2.5) / 16)
+        assert t.value(True) == pytest.approx(1 - (0.45 + 0.25) / 4)
+
 
 def _memorize_sets(seed: int, n_runs: int, length: int = 32
                    ) -> tuple[RunSet, torch.Tensor, torch.Tensor]:  # fmt: skip
@@ -575,11 +621,12 @@ class TestSelect:
             sums3(rows, "lin", "val").value(),
         )
         assert v2_val < lin_val
-        assert (
-            sums3(rows, "v2", "train", "n").value()
-            > 0
-            > sums3(rows, "v2", "val", "n").value()
-        )
+        # V-h5a0 (ii): on n's columns (best 0) v2's MLP fits the training
+        # runs better than the least squares and errs more off them
+        n_e = {(ro, st): sums3(rows, ro, st, "n").value()
+               for ro in ("v2", "lin") for st in ("train", "val")}  # fmt: skip
+        assert n_e["v2", "train"] > n_e["lin", "train"]
+        assert n_e["v2", "val"] < n_e["lin", "val"]
         chosen = chosen3(rows)
         assert kind_of(chosen["level"]) == "lin"
         sel_rec = sums3(rows, "sel", "record").value()
@@ -631,7 +678,7 @@ class TestChecks3Apart:
                  + check_parts3(SC3, CG, CW, ["V-h5a3"], (2302, 2303)))  # fmt: skip
         assert json.dumps(merge_checks3(list(reversed(split)), SC3, CG)) == merged
         names = {r["name"] for r in json.loads(merged)}
-        assert names == {"V-h5a-sigma", "V-h5a0", "V-h5a0-d", "V-h5a4", "V-h5a1",
+        assert names == {"V-h5a-sigma", "V-h5a0", "V-h5a0-d", "V-h5a4", "V-h5a4-far", "V-h5a1",
                          "V-h5a1-share", "V-h5a2", "V-h5a2-count", "V-h5a3", "V-h5a3-d",
                          "V-h5a3-power", "V-h5a3-chosen", "V-h5a-long-chosen"}  # fmt: skip
         with pytest.raises(ValueError, match="missing"):
@@ -720,6 +767,9 @@ class TestReal3:
         assert set(res["b3"]["pairs"]) == {"rot-base", "base-rot"}
         assert res["b3"]["comparable"]["init"] is None and not res["b3"]["pass"]
         assert set(res["b4"]["codes"]) == set(codes) and len(res["b4"]["margins"]) == 2
+        far = far_runs(starts["record"], starts["train"], length + C3.val_gap)
+        assert res["b4_far"]["runs"] == len(far)
+        assert set(res["b4_far"]) == ({"runs"} | set(codes) if far else {"runs"})
         assert len(res["sigma_rot"]) == 2
         assert set(res["codes"]["base"]["chosen"]) == {"level", "change"}
 

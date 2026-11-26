@@ -50,7 +50,9 @@ cheats' widths ``<width>/guard/cheat/<name>/width.json`` and the yard's
 - V-h5b4: of every code, the chosen readout against the least squares on
   the record's runs (``fidelity.noninferior``, the runs drawn 2000 times of
   seed 102), margin $(1 - 2^{-\psi_*}) \hat E_{\mathrm{lin}}(\text{base})$
-  there ($E$ and $E^d$)
+  there ($E$ and $E^d$); recorded beside, the same on the record's runs at
+  least ``run + gap`` from every training run (``content_eval.far_runs``:
+  the record's runs are drawn with no gap, so their scenes leak as much)
 - V-h5b5 (records): each code's choices, the candidates' validation
   scores, the gap to the runner-up of another kind and its SE, $E$ and
   $E^d$ of each readout on each set, the extrapolation in the observation
@@ -85,8 +87,10 @@ from exp.vision.content_eval import (
     NI_SEED,
     YARD,
     chosen3,
+    far_runs,
     front3,
     front_of,
+    noninferior_far,
     pair3,
     sums3,
 )
@@ -377,6 +381,15 @@ def real3_stage(width: Path, wconf: WidthConf, g: GeomConf) -> dict[str, Any]:
               for m, ch in zip(margins, (False, True), strict=True)] for n in content}  # fmt: skip
     out["b4"] = {"margins": margins, "codes": ni,
                  "pass": all(bool(x["ok"]) for v in ni.values() for x in v)}  # fmt: skip
+    man_rows = _load(width / "content3" / "intervals.json")
+    if (
+        man_rows
+    ):  # a record: the record's runs as far from the training runs as the val's
+        man = {r["set"]: r["starts"] for r in man_rows}
+        conf = json.loads((width / "content3" / "config.json").read_text())
+        least = man_rows[0]["length"] + conf["content3"]["val_gap"]
+        far = far_runs(man["record"], man["train"], least)
+        out["b4_far"] = noninferior_far(content, BASE, far, PSI_STAR)
     out["val_distance"] = _val_distance(width / "content3", content)
     out["yard_width"] = _yard_points(width, wconf, g)
     _print3(out)
@@ -443,6 +456,11 @@ def _print3(out: Mapping[str, Any]) -> None:
     worst = [n for n, v in b4["codes"].items() if not all(x["ok"] for x in v)]
     print(f"V-h5b4: {'通った' if b4['pass'] else '外れた'}（余裕 "
           f"{', '.join(_fmt(m) for m in b4['margins'])}、外れた符号 {worst}）")  # fmt: skip
+    if "b4_far" in out:
+        far = out["b4_far"]
+        bad = [n for n, v in far.items() if n != "runs" and not all(x["ok"] for x in v)]
+        print(f"V-h5b4 の記録（訓練の区間から run + gap 以上離れた記録用の {far['runs']} 区間だけ）: "
+              f"非劣でない符号 {bad}")  # fmt: skip
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:

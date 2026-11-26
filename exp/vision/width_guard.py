@@ -388,25 +388,37 @@ def run_starts_ok(lengths: Sequence[int], back: int, length: int) -> Tensor:
 
 def slot_starts(ok: Tensor, length: int, count: int, seed: int) -> list[int]:
     """``count`` starts (sorted) of runs of ``length`` overlapping no other,
-    of the admissible starts ``ok`` ``(L,)`` bool: the slots of the greedy
-    packing (the first admissible start, then the first at least ``length``
-    past the last slot: the most runs that fit) and of them ``count`` drawn
-    uniformly without replacement by a generator of ``seed``. Drawing one
-    at a time jams before the packing is full (random sequential adsorption
-    covers about 3/4 of a line), so v3's validation runs are slots.
+    of the admissible starts ``ok`` ``(L,)`` bool, by a generator of
+    ``seed``: the slots of each maximal stretch ``[a, b]`` of admissible
+    starts (beyond the last slot's run) packed ``length`` apart, the most
+    that fit, ``(b - a) // length + 1``, shifted together by a uniform draw
+    of the slack ``0 .. (b - a) % length`` (packed from the left alone, the
+    slots sit at the least distance from what bounds each stretch, the most
+    correlated place), then ``count`` of them uniformly without
+    replacement. Drawing one at a time jams before the packing is full
+    (random sequential adsorption covers about 3/4 of a line), so v3's
+    validation runs are slots. Stretches apart by at least ``length - 1``
+    (a cut's, an avoided run's) lose no slot to the shift.
 
     Raises:
         ValueError: Fewer than ``count`` slots.
     """
+    gen = torch.Generator().manual_seed(seed)
+    idx = ok.nonzero().flatten().tolist()
+    cuts = [i for i in range(1, len(idx)) if idx[i] > idx[i - 1] + 1]
+    stretches = [(idx[i], idx[j - 1]) for i, j in zip([0, *cuts], [*cuts, len(idx)],
+                                                      strict=True) if idx]  # fmt: skip
     slots: list[int] = []
-    nxt = -1
-    for k in ok.nonzero().flatten().tolist():
-        if k >= nxt:
-            slots.append(k)
-            nxt = k + length
+    for a, b in stretches:
+        if slots:
+            a = max(a, slots[-1] + length)
+        if a > b:
+            continue
+        shift = int(torch.randint((b - a) % length + 1, (1,), generator=gen))
+        slots += range(a + shift, b + 1, length)
     if len(slots) < count:
         raise ValueError(f"{len(slots)} slots for {count} runs")
-    perm = torch.randperm(len(slots), generator=torch.Generator().manual_seed(seed))
+    perm = torch.randperm(len(slots), generator=gen)
     return sorted(slots[i] for i in perm[:count].tolist())
 
 

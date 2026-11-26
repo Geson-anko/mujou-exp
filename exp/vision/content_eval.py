@@ -97,7 +97,7 @@ writes ``<out>/<code>/content3.json`` and the manifest
 import argparse
 import json
 import math
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from functools import cache, partial
 from pathlib import Path
@@ -141,6 +141,9 @@ from exp.lib.metrics import block_counts
 from exp.lib.midpoint import Whitener
 from exp.lib.provenance import configure_determinism
 from exp.lib.synth_series import gauss_kernel, kernel_acf, ou, smooth, white
+from exp.lib.tours.stacks import tours_root
+from exp.lib.tours.walking_tours import videos
+from exp.lib.video_io import U8Reader
 from exp.vision.fill_eval import FillConf
 from exp.vision.geom_eval import (  # the geom job's own helpers, reused as they are
     GeomConf,
@@ -218,6 +221,7 @@ __all__ = [
     "evaluate_checks3",
     "evaluate_content",
     "evaluate_content3",
+    "far_runs",
     "front3",
     "front_of",
     "interval_codes",
@@ -227,6 +231,9 @@ __all__ = [
     "merge_checks3_into",
     "merge_checks_into",
     "negative",
+    "noninferior_far",
+    "obs_acf",
+    "obs_acf3",
     "orthogonal",
     "pair3",
     "pair_ed3",
@@ -234,6 +241,7 @@ __all__ = [
     "positive",
     "process3",
     "select_rows",
+    "series_acf",
     "starts3",
     "sums3",
 ]
@@ -1665,6 +1673,78 @@ def calib3_d(sc: Synth3Conf) -> float:
     return (1 - phi) / q - (1 - phi)
 
 
+def obs_acf3(sc: Synth3Conf, positive: bool, lags: Sequence[int]) -> list[float]:
+    r"""The observation's autocorrelation $\rho(L) = \sum_i p_i \rho_i(L)$
+    (``series_acf``'s population; the shares $p_i$ of ``parts3`` sum to 1):
+    a circle of order $k$ $\cos(2\pi k L / T)$, an OU of $\tau$ $e^{-L /
+    \tau}$, $s$ and $n$ the kernel's ``kernel_acf``, the white 0 (a record
+    beside the real data's: $\ell$ was not set from the data)."""
+    p = parts3(sc, positive)
+    sm = kernel_acf(gauss_kernel(sc.ell), torch.tensor(list(lags))).tolist()
+    out = []
+    for i, lag in enumerate(lags):
+        acf = {"s": sm[i], "n": sm[i], "g": math.exp(-lag / sc.g_tau), "eps": float(lag == 0),
+               "f": math.exp(-lag / sc.f_tau),
+               "circle": math.cos(2 * math.pi * lag / sc.period)}  # fmt: skip
+        for k in (1, *sc.fast_ks):
+            acf[f"k{k}"] = math.cos(2 * math.pi * k * lag / sc.period)
+        out.append(sum(share * acf[name] for name, (share, _) in p.items()))
+    return out
+
+
+def series_acf(series: Iterable[Tensor], lags: Sequence[int]) -> dict[str, Any]:
+    r"""The pooled autocorrelation of several series ``(n_v, D)`` (each
+    pair within one series): $\rho(L) = \frac{1}{n_L} \sum_{v, t} \langle
+    y_t - \bar y, y_{t+L} - \bar y \rangle \big/ \frac{1}{N} \sum_{v, t}
+    \lVert y_t - \bar y \rVert^2$, $\bar y$ the mean of all $N$ times,
+    $n_L$ the pairs at the lag $L$; in one pass, by expanding the centred
+    products (float64)."""
+    tot: Tensor | None = None
+    sq, n = 0.0, 0
+    prod = [0.0] * len(lags)
+    ends: list[Tensor | None] = [None] * len(
+        lags
+    )  # sums of y_t and y_{t+L} over the pairs
+    pairs = [0] * len(lags)
+    for y in series:
+        y = y.to(_F64)
+        tot = y.sum(0) if tot is None else tot + y.sum(0)
+        sq += float(y.square().sum())
+        n += len(y)
+        for i, lag in enumerate(lags):
+            if lag >= len(y):
+                continue
+            a, b = y[: len(y) - lag], y[lag:]
+            prod[i] += float((a * b).sum())
+            e = a.sum(0) + b.sum(0)
+            prev = ends[i]
+            ends[i] = e if prev is None else prev + e
+            pairs[i] += len(a)
+    if tot is None:
+        raise ValueError("no series")
+    mean = tot / n
+    m2 = float(mean @ mean)
+    var = sq / n - m2
+    rho = [math.nan if e is None else (p - float(mean @ e) + k * m2) / k / var
+           for p, e, k in zip(prod, ends, pairs, strict=True)]  # fmt: skip
+    return {"lags": list(lags), "rho": rho, "pairs": pairs, "times": n}
+
+
+def obs_acf(conf: Any, root: Path, obs: int, lags: Sequence[int]) -> dict[str, Any]:
+    r"""``series_acf`` of the observation (each frame pooled to ``obs`` x
+    ``obs``, ``fidelity.pool_obs``; a stack's last frame is its video's
+    frame, so the stacks' observations are the frames) of each training
+    video (Zurich left out), beside the synthetic's ``obs_acf3`` (a record
+    of $\ell$, ``plans/jepa.md``)."""
+    held = conf.data.tours.held_out
+    ys = (pool_obs(U8Reader(root / v)[:], obs) for v in videos(root) if v != held)
+    sc = Synth3Conf()
+    return series_acf(ys, lags) | {"seconds": [lag / 10 for lag in lags],
+                                   "synth_negative": obs_acf3(sc, False, lags),
+                                   "synth_positive": obs_acf3(sc, True, lags)}  # fmt: skip
+
+
+OBS_ACF_LAGS = (1, 256, 512)  # 0.1 s, the gap 25.6 s, the middle halves' least 51.2 s
 LONG3 = ("V-h5a1-long", "V-h5a2-long")
 SEEDED3 = ("V-h5a1", "V-h5a2", "V-h5a3")
 
@@ -1784,6 +1864,35 @@ def front3(
                 "verdict": contrast_verdict(width, p["D"], p["Dd"], p["ok"], delta_star)}  # fmt: skip
 
 
+def far_runs(starts: Sequence[int], train: Sequence[int], least: int) -> list[int]:
+    """The indices of ``starts`` at least ``least`` from every start of
+    ``train`` (the record's runs as far from the training runs as the
+    validation's, ``run + gap``: a record of the scenes' correlation)."""
+    return [i for i, k in enumerate(starts) if all(abs(k - j) >= least for j in train)]
+
+
+def noninferior_far(
+    rows: Mapping[str, Sequence[Row]],
+    base: str,
+    far: Sequence[int],
+    psi_star: float,
+) -> dict[str, Any]:
+    """V-h5a4's and V-h5b4's non-inferiority of each code of ``rows`` on the
+    record's runs ``far`` alone (a record; the margin of ``base``'s least
+    squares there, the runs drawn ``NI_DRAWS`` times of ``NI_SEED``)."""
+    if not far:
+        return {"runs": 0}
+    rec = block_counts(len(far), NI_DRAWS, _gen(NI_SEED))
+    lin_b = sums3(rows[base], "lin", "record").take(far)
+    out: dict[str, Any] = {"runs": len(far)}
+    for name, rws in rows.items():
+        sel = sums3(rws, "sel", "record").take(far)
+        lin = sums3(rws, "lin", "record").take(far)
+        out[name] = [noninferior(sel, lin, (1 - 2**-psi_star) * lin_b.value(ch), rec,
+                                 change=ch) for ch in (False, True)]  # fmt: skip
+    return out
+
+
 def _se_change(s: ContentSums, counts: Tensor, counts2: Tensor) -> float:
     return max(
         float(s.draws(counts, True).std()), float(s.paired().draws(counts2, True).std())
@@ -1841,16 +1950,24 @@ def merge_checks3(
     rows: list[Row] = [_record("V-h5a-sigma", positive=list(sig_pos), negative=list(sig_neg),
                                calib_sigma2=s2, calib_sigma2_d=s2d,
                                diff_ed=diff_ed3(sc, s2), pair_ed=pair_ed3(sc, s2))]  # fmt: skip
-    # V-h5a0: v2's rule fails on the synthetic by memorizing the runs
+    # V-h5a0: v2's rule fails on the synthetic by memorizing the runs: on
+    # n's columns (best 0) v2's MLP fits the training runs better than the
+    # least squares and errs more off them (the smooth n regressed on the
+    # smooth s fits the training runs spuriously even linearly, so the sign
+    # of v2's alone does not single out the memory)
     mx = l2["content"]["mixed"]
     e_v2, e_lin = sums3(mx, "v2", "val").value(), sums3(mx, "lin", "val").value()
-    n_tr = sums3(mx, "v2", "train", "n").value()
-    n_val = sums3(mx, "v2", "val", "n").value()
+    n_e = {ro: {st: sums3(mx, ro, st, "n").value() for st in ("train", "val")}
+           for ro in ("v2", "lin")}  # fmt: skip
+    memo = (
+        n_e["v2"]["train"] > n_e["lin"]["train"]
+        and n_e["v2"]["val"] < n_e["lin"]["val"]
+    )
     comps = {f"{ro}/{st}/{k}": [sums3(mx, ro, st, k).value(), sums3(mx, ro, st, k).value(True)]
              for ro in ("sel", "lin", "v2") for st in ("train", "val", "record", "eval")
              for k in columns3(sc, False)}  # fmt: skip
-    rows.append(_check("V-h5a0", e_v2 < e_lin and n_tr > 0 > n_val, E_val_v2=e_v2,
-                       E_val_lin=e_lin, E_n_train=n_tr, E_n_val=n_val, components=comps))  # fmt: skip
+    rows.append(_check("V-h5a0", e_v2 < e_lin and memo, E_val_v2=e_v2, E_val_lin=e_lin,
+                       E_n=n_e, components=comps))  # fmt: skip
     # V-h5a0-d: the mechanism of the difference's error, by closed forms
     nz = l2["content"]["noisy"]
     got_d = {}
@@ -1874,6 +1991,11 @@ def merge_checks3(
     ok4 = all(bool(x["ok"]) for v in ni.values() for x in v) and \
         all(bool(x["ok"]) for v in comp4.values() for x in v)  # fmt: skip
     rows.append(_check("V-h5a4", ok4, noninferior=ni, comparable=comp4))
+    st = starts3(sc)
+    far = far_runs(st["record"], st["train"], sc.run + sc.gap)
+    rows.append(_record("V-h5a4-far", **{
+        u: noninferior_far(v["content"], b, far, psi)
+        for u, v, b in (("V-h5a1-long", l1, "fast"), ("V-h5a2-long", l2, "mixed"))}))  # fmt: skip
     # V-h5a1: the positive control
     f1 = front3(tuple(l1["width"]["mean1"]), s_(l1, "slow"), s_(l1, "fast"), *c_long, sig_pos,
                 delta, psi)  # fmt: skip
@@ -2153,7 +2275,17 @@ def main(argv: Sequence[str] | None = None) -> Path:
     real3.add_argument("--root", type=Path, default=None)
     for name in (*YARD_INITS, "init_v16"):
         real3.add_argument(f"--{name.replace('_', '-')}", type=Path, default=None)
+    acf = sub.add_parser("obs-acf")
+    acf.add_argument("--config", type=Path, required=True)
+    acf.add_argument("--out", type=Path, required=True)
+    acf.add_argument("--root", type=Path, default=None)
     a = p.parse_args(argv)
+    if a.job == "obs-acf":
+        conf = _conf_of(a.config, "cpu")
+        root = tours_root(conf.data.tours.data_version) if a.root is None else a.root
+        got = obs_acf(conf, root, ContentConf3().obs, OBS_ACF_LAGS)
+        _write(a.out / "obs_acf.json", [got], {"config": str(a.config)})
+        return a.out
     if a.job == "checks":
         return evaluate_checks(a.out, units=a.only, seeds=a.seeds, device=a.device)
     if a.job == "merge-checks":
