@@ -31,6 +31,7 @@
 
 ## feedback
 
+- [CPU の試しは fleet で](feedback_cpu_trials_on_fleet.md) — 2026-11-26、数分を超える CPU の計算・並列は Mac でなく std-00〜03・mini-00 のコンテナで回す
 - [ルーティンは sonnet に](feedback_routine_to_sonnet.md) — 2026-11-18、run の投入・監視・posthoc・集計は sonnet のサブエージェントか Workflow に任せる。std-00〜03 に並列、mini-00 は試し
 - [質問は最後にまとめる](feedback_questions_at_end.md) — 推奨案で進み、質問は区切りにまとめて出す
 - [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
