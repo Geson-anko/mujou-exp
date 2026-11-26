@@ -1992,11 +1992,16 @@ $G_{\mathrm{mid}}$ の $\Delta_*$ = 0.03、$\hat d$ の $\Delta_*$ = 4。$\delta
 - **`vae` の job の直し**: `evaluate_vae` は組と参照の組を VAE の run の設定から直接作っていたので、V17（`data.layout` が `chunk`）で `stacks_at` が ValueError を出して止まった。`eval.stream_view(conf)` の設定から作るように直した（`chunk` の run は同じ `data.tours`・`time.frame` の 1 本の `spread` の run になり、`fill_sets` が使うのはこの 2 つと span だけなので、他の符号と同じデータになる。`spread` の run では設定がそのまま返るので `v16` は変わらない）。テストは `tests/vision/test_geom_eval.py` の `test_the_yard_end_to_end`（同じ checkpoint を `spread` と `chunk` の設定で読み、行が `code`・`source` を除いて一致する）。`v17` だけを直した snapshot `9ca6b7541804` で回し直した
 - **`judge_geom` の `apply` の段**（`--stage apply --geom runs/v18c-tlin --runs runs`）。計画に書いていなかったので、私たち（Claude）が決めたこと（ユーザーが覆せる）:
   - 刻みごとの分類は区間 $\pm 2\,\mathrm{SE}^*$ で行い、曲線全体について言うときは 6 つの刻みの同時区間 $\pm c\,\mathrm{SE}^*$（`metrics.max_t_critical`、128 秒の引き直し、各刻みの $t$ はその引き直しの標準偏差で割る）の分類を使う。差が全ての引き直しで同じ刻み（標準偏差 0）は $t$ に入れない
-  - 判定する刻みは、V-d2 の行から「$\Delta_*$ 以上で最小の登録した $\delta$ が作れて、区間が 0 を含まない」刻みとして求める（`judged_lags`。結果は 0.8・1.6・3.2 秒で、ユーザーの決定と同じ）。V-d2 の注の「2 倍の $\delta$ で見る」は、README の規則とユーザーの決定に無いので使わない
+  - 判定する刻みは、V-d2 の行から「$\Delta_*$ 以上で最小の登録した $\delta$ が作れて、区間が 0 を含まない」刻みとして求める（`judged_lags`。結果は 0.8・1.6・3.2 秒で、ユーザーの決定と同じ）。V-d2 の注の「2 倍の $\delta$ で見る」は、README の規則とユーザーの決定に無いので使わない。この条件を外してよいかは、ユーザーに確かめる事項である（README の結論にも書いた）
   - $\hat d$ の対の差の区間は、半分の部分標本の差の標準偏差の 2 倍。両方が 20 を超える対だけを「順位に頼らない」とし、片方だけが超える対は通常どおり分類する
   - 対にしたのは、各モデル × 同じ読む場所の全ての物差し、step 60000（VAE を含む）の全ての対、V18c の 6000 と 60000、V18c の step 6000 の seed の対
   - 学習前との差は、その run の step 0 を yard で回した物差しだけで出す（V18 `r0.25`・`s0`、V18b F・M の `s0`、V18c、`v16`）。ほかの run の step 0 が yard のものと同じかは確かめていない
   - `judge_geom.json` は、浮動小数を 6 桁に丸め、対の差の区間の端（`diff`・`se`・`c` から作れる）を省いた
+- **レビューを受けた直し（2026-11-26）**:
+  - `apply` は、組の `key` に加えて、V-d0h（`k3_hmean` が `h_mean` とビットまで同じ）と、V18c の学習前の前提（`yard/vd.json` の `step0_same`）が外れたら止める。前は V-d0h を記録するだけで、V18c の学習前の割り当てを決め打ちしていた。今回のデータでは止まらず、それまでの数字は変わらない
+  - 登録した副の $k$（16・256）で、step 60000 のモデルと `pca`・学習前との対の差を出す（`side_k`。$\hat d$ は主の $k$ だけ）。画素との比べの向きが $k$ で変わることが分かったので、結論を「PCA64 の白色化で」と条件づけた
+  - copy の誤差を $\bar D$ で割った値の範囲（`copy_over_dbar`）を出す。等速の外挿が copy に負けることは、$G_{\mathrm{mid}} \ge 1/2$ からの厳密な形（外挿 / copy $\ge 2G_{\mathrm{mid}}$）で書いた
+  - テストに、止める条件・学習前の割り当て・step と seed の対のラベル・`_lean`・副の $k$ の対の差を足した
 
 ## V19: ストリームで標準の SIGReg
 
