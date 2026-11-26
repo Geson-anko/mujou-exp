@@ -61,6 +61,7 @@ __all__ = [
     "MLPConf",
     "comparable",
     "content_sums",
+    "error_lag1",
     "fit_linear",
     "fit_mlp",
     "front_verdict",
@@ -268,6 +269,24 @@ def content_sums(
         bsum(torch.cat(acc["derr"], -1)),
         bsum(torch.cat(acc["dtot"])),
     )
+
+
+def error_lag1(y: Tensor, preds: Sequence[Tensor], t: Tensor) -> list[float]:
+    r"""Each seed's lag-1 autocorrelation of the level's error $e_t = y_t -
+    g(c_t)$ at the anchors ``t`` (each with $t - 1 \ge 0$ of its video):
+    $\sum_t \langle e_t, e_{t-1} \rangle / \sqrt{\sum_t \lVert e_t
+    \rVert^2 \sum_t \lVert e_{t-1} \rVert^2}$ (uncentred). $E^d$'s error is
+    $\sum_t \lVert e_t - e_{t-1} \rVert^2$, so a readout whose error is
+    white in time ($\approx 0$) has $E^d \le 0$ where the level's error
+    exceeds half the change's power, a kept content notwithstanding; the
+    error of a slow drift ($\approx 1$) cancels in the change."""
+    e1, e0 = y[t].to(_F64), y[t - 1].to(_F64)
+    out = []
+    for p in preds:
+        a, b = e1 - p[t].to(_F64), e0 - p[t - 1].to(_F64)
+        den = math.sqrt(float(a.square().sum()) * float(b.square().sum()))
+        out.append(float((a * b).sum()) / den if den > 0 else math.nan)
+    return out
 
 
 def stack_seeds(parts: Sequence[ContentSums]) -> ContentSums:

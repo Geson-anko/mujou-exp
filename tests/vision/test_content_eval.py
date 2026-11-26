@@ -9,13 +9,16 @@ triple's win is the closed one of the planes' angles ($\rho = \sum_k (1 -
 between $T/30$ and $T/24$); the negative process's cheats (the drop a
 projection, the past mean by hand); the calibration's noise in closed form
 and against the least squares of a long realization (the conditional mean is
-linear there: $\psi = -\psi_*$); a random orthogonal matrix is orthogonal;
+linear there: $\psi = -\psi_*$; of ``calib_noise_d`` $\psi^d = -\psi_*$,
+and of ``calib_noise`` the closed $\psi^d$ of ``change_explained``); a random orthogonal matrix is orthogonal;
 the rows of a code by hand on the least squares: the observation itself
 explains all ($E = E^d = 1$, the ceiling 0, the copy and the extrapolation
 their errors by hand), a constant code nothing ($E = E^d = 0$); the checks
 apart merge to the rows of one run, byte for byte; and the real data's job
 end to end on a tiny run (one code alone the same file to the byte), read
-by the judge.
+by the judge; and its alignment: a code that is the stack's last frame
+itself (pooled as the observation) is read back by the least squares with
+$E = E^d = 1$ on the training set, the held-out runs and Zurich.
 """
 
 import json
@@ -26,12 +29,22 @@ from typing import Any
 import pytest
 import torch
 
-from exp.lib.fidelity import MLPConf, content_sums, fit_linear, predict_linear
+from exp.lib.fidelity import (
+    ContentSums,
+    MLPConf,
+    content_sums,
+    fit_linear,
+    pool_obs,
+    predict_linear,
+)
 from exp.lib.linwidth import windows
+from exp.vision import content_eval
 from exp.vision.content_eval import (
     ContentConf,
     SynthConf,
     calib_noise,
+    calib_noise_d,
+    change_explained,
     check_parts,
     check_units,
     content_rows,
@@ -62,6 +75,7 @@ from tests.vision.test_width_eval import WTINY, tiny_sets
 from tests.vision.test_width_guard import GTINY
 
 CPU = torch.device("cpu")
+HOLD = 1  # the held-out runs of the tiny data
 F64 = torch.float64
 CG = replace(GeomConf(), block=160, boot=40)
 CW = WidthConf(max_lag=24, main_lo=4, strat_lags=(), dir_lag=4, lin_ts=(4, 8, 16, 24),
@@ -146,6 +160,31 @@ class TestProcesses:
             )
         assert math.log2(es[1] / es[0]) == pytest.approx(-SC.psi_star, abs=0.01)
 
+    def test_the_change_calibrations_noise(self):
+        s2, s2d = calib_noise(SC), calib_noise_d(SC)
+        e0 = change_explained(SC, 0.0)
+        assert math.log2(change_explained(SC, s2d) / e0) == pytest.approx(-SC.psi_star)
+        assert 0 < s2d < s2
+        # the least squares of a long realization: E^d of the level readout
+        g = _gen(7)
+        n = 400000
+        y, m = negative(n, SC, g)
+        t = torch.arange(1, n)
+        blocks = torch.zeros(len(t), dtype=torch.long)
+        eds = []
+        for v in (0.0, s2d, s2):
+            c = m.clone()
+            c[:, 2:] += math.sqrt(v) * torch.randn(n, 2, generator=g, dtype=F64)
+            b = fit_linear(c, y)
+            eds.append(
+                content_sums(y, [predict_linear(b, c).double()], y.mean(0), t, blocks, 1)
+                .value(True)
+            )  # fmt: skip
+        assert eds[0] == pytest.approx(e0, abs=0.01)
+        assert math.log2(eds[1] / eds[0]) == pytest.approx(-SC.psi_star, abs=0.02)
+        want = math.log2(change_explained(SC, s2) / e0)
+        assert math.log2(eds[2] / eds[0]) == pytest.approx(want, abs=0.03)
+
     def test_orthogonal(self):
         q = orthogonal(5, 3)
         assert torch.allclose(q.T @ q, torch.eye(5, dtype=F64), atol=1e-12)
@@ -219,7 +258,7 @@ class TestChecksApart:
         assert json.dumps(merge_checks(list(reversed(split)), SC, CG)) == merged
         names = {r["name"] for r in json.loads(merged)}
         assert names == {"V-h4a-sigma", "V-h4a1", "V-h4a1-share", "V-h4a2", "V-h4a2-count",
-                         "V-h4a3", "V-h4a3-power"}  # fmt: skip
+                         "V-h4a3", "V-h4a3-power", "V-h4a3-d"}  # fmt: skip
         with pytest.raises(ValueError, match="missing"):
             merge_checks(split[1:], SC, CG)
         with pytest.raises(ValueError, match="twice"):
@@ -238,7 +277,7 @@ class TestReal:
         sets_dir = tmp_path / "tlin"
         _sets_at(sets_dir, conf, root, TINY)
         cconf = ContentConf(obs=2, seeds=(1, 2, 3), mlp=MLPConf(hidden=8, steps=20, batch=8),
-                            ext_lags=(1, 2))  # fmt: skip
+                            ext_lags=(1, 2), holdout_count=HOLD)  # fmt: skip
         kw: dict[str, Any] = dict(root=root, guard=GTINY, cconf=cconf, gconf=TINY, wconf=WTINY,
                                   fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
         width = tmp_path / "width"
@@ -247,10 +286,12 @@ class TestReal:
                                local_features=features, **kw)  # fmt: skip
         assert sorted(p.name for p in out.iterdir() if p.is_dir()) == sorted(codes)
         rows = json.loads((out / "base" / "content.json").read_text())
-        got = {(r["part"], r["obs"], r["readout"]) for r in rows}
-        assert got == {("content", "pix", "mlp"), ("content", "pix", "lin"),
-                       ("obs_ext", "pix", "mlp"), ("obs_ext", "pix", "lin"),
-                       ("content", "local", "mlp"), ("content", "local", "lin")}  # fmt: skip
+        got = {(r["part"], r["obs"], r["readout"], r.get("set")) for r in rows}
+        assert got == {("content", "pix", "mlp", None), ("content", "pix", "lin", None),
+                       ("obs_ext", "pix", "mlp", None), ("obs_ext", "pix", "lin", None),
+                       ("content", "local", "mlp", None), ("content", "local", "lin", None),
+                       ("fit", "pix", "mlp", "train"), ("fit", "pix", "lin", "train"),
+                       ("fit", "pix", "mlp", "holdout"), ("fit", "pix", "lin", "holdout")}  # fmt: skip
         alone = evaluate_content(conf, sets_dir, tmp_path / "alone", codes=("mean-2",),
                                  local=True, local_features=features, **kw)  # fmt: skip
         for name in ("mean-2/content.json",):
@@ -274,3 +315,43 @@ class TestReal:
         assert set(res["b3"]["comparable"]) >= {"base", "color", "mean8"}
         assert res["b3"]["comparable"]["init"] is None and not res["b3"]["pass"]
         assert len(res["sigma_seed"]) == 2
+        assert set(res["pair_sigma"]) == set(codes) - {"base"}
+        assert len(res["codes"]["base"]["rho1"]["pix"]) == 3
+
+    @pytest.mark.slow
+    def test_the_frame_itself_is_read_back_aligned(self, tmp_path, monkeypatch):
+        # the code: the stack's last frame pooled as the observation, so the
+        # least squares reads it back exactly where the code and the
+        # observation are of the same stack (else E, E^d < 1)
+        root = tours_with_zurich(tmp_path / "d")
+        conf = replace(conf_of(), device="cpu")
+        sets_dir = tmp_path / "tlin"
+        _sets_at(sets_dir, conf, root, TINY)
+        obs = 2
+
+        class Frame:
+            def raw(self, x: torch.Tensor) -> torch.Tensor:
+                return pool_obs(x[:, -1].cpu(), obs).double()
+
+            def white(self, raw: torch.Tensor) -> torch.Tensor:
+                return raw.double()
+
+            def mu(self, x: torch.Tensor) -> torch.Tensor:
+                return self.raw(x).float()
+
+        monkeypatch.setattr(content_eval, "_yard_white", lambda *a, **k: Frame())
+        # enough training stacks that the least squares of 12 pixels is determined
+        guard = replace(GTINY, cheat_count=4, cheat_length=16)
+        cconf = ContentConf(obs=obs, seeds=(1,), mlp=MLPConf(hidden=4, steps=2, batch=4),
+                            ext_lags=(1,), holdout_count=HOLD)  # fmt: skip
+        out = evaluate_content(conf, sets_dir, tmp_path / "w", codes=("color",), root=root,
+                               guard=guard, cconf=cconf, gconf=TINY, wconf=WTINY,
+                               fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
+        rows = json.loads((out / "color" / "content.json").read_text())
+        lin = {r.get("set", "zurich"): ContentSums.of_row(r)
+               for r in rows if r["readout"] == "lin" and r["part"] in ("content", "fit")}  # fmt: skip
+
+        assert set(lin) == {"zurich", "train", "holdout"}
+        for s in lin.values():
+            assert s.value() == pytest.approx(1, abs=1e-6)
+            assert s.value(True) == pytest.approx(1, abs=1e-6)

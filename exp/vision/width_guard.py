@@ -130,6 +130,7 @@ __all__ = [
     "evaluate_yard",
     "fit_decoder",
     "guard_anchors",
+    "interval_draws",
     "interval_runs",
     "load_decoder",
     "main",
@@ -323,19 +324,40 @@ def lag_speeds(w: Tensor, lag: int) -> Tensor:
     return d / (2 * var)
 
 
-def interval_runs(conf: Any, root: Path, conf_g: GuardConf) -> Iterator[Tensor]:
-    """The runs of the cheats' training set (module docstring) in order,
-    each its stacks u8 ``(L, n, 3, S, S)``: drawn uniformly among those of
-    consecutive stacks (one frame apart) of one video."""
+def interval_draws(
+    conf: Any,
+    root: Path,
+    length: int,
+    count: int,
+    seed: int,
+    avoid: Collection[int] | None = None,
+    tries: int | None = None,
+) -> Iterator[tuple[int, Tensor]]:
+    """``count`` runs of ``length`` consecutive stacks (one frame apart) of
+    one training video, each ``(start, stacks u8 (L, n, 3, S, S))``: their
+    starts drawn uniformly by a generator of ``seed`` (on the loop of the
+    training videos), a start rejected where a run would cross a cut and,
+    with ``avoid`` (starts of runs of the same ``length``; None: runs may
+    overlap), where it would overlap one of them or one drawn before.
+
+    Raises:
+        ValueError: ``count`` runs are not found within ``tries`` draws
+            (None: unbounded).
+    """
     t = conf.data.tours
     stream = StackedTourFrames(root, n=1, held_out=t.held_out, frames=t.frames,
                                stride=t.stride, advance=1)  # fmt: skip
     total = sum(len(U8Reader(root / v)) for v in videos(root) if v != t.held_out)
-    gen = torch.Generator().manual_seed(conf_g.cheat_seed)
-    length = conf_g.cheat_length
-    got = 0
-    while got < conf_g.cheat_count:
+    gen = torch.Generator().manual_seed(seed)
+    taken = None if avoid is None else list(avoid)
+    got, drawn = 0, 0
+    while got < count:
+        if tries is not None and drawn >= tries:
+            raise ValueError(f"{got} of {count} runs in {tries} draws")
+        drawn += 1
         k = int(torch.randint(total, (1,), generator=gen))
+        if taken is not None and any(abs(k - j) < length for j in taken):
+            continue
         stream.load_state_dict({"k": k})
         stacks, ok = [], True
         for i in range(length):
@@ -347,7 +369,18 @@ def interval_runs(conf: Any, root: Path, conf_g: GuardConf) -> Iterator[Tensor]:
         if not ok:
             continue
         got += 1
-        yield torch.stack(stacks)
+        if taken is not None:
+            taken.append(k)
+        yield k, torch.stack(stacks)
+
+
+def interval_runs(conf: Any, root: Path, conf_g: GuardConf) -> Iterator[Tensor]:
+    """The runs of the cheats' training set (module docstring) in order,
+    each its stacks u8 ``(L, n, 3, S, S)`` (``interval_draws`` of
+    ``cheat_seed``; runs may overlap)."""
+    for _, run in interval_draws(conf, root, conf_g.cheat_length, conf_g.cheat_count,
+                                 conf_g.cheat_seed):  # fmt: skip
+        yield run
 
 
 def train_intervals(

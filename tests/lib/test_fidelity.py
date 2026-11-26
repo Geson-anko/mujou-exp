@@ -11,7 +11,11 @@ n] = f / (1 + \sigma^2)$ in the large-sample limit of the least squares
 no spread, and its interval $\pm 2\sigma_{\mathrm{seed}}$; a readout
 explaining nothing is $-\infty$ and dropped; the seeds' deviation by hand;
 the front's verdicts by hand; an MLP of one seed the same twice and fitting
-a linear map.
+a linear map; the level error's lag-1 autocorrelation by hand, with $E^d$'s
+error $\sum \lVert e_t \rVert^2 + \sum \lVert e_{t-1} \rVert^2 - 2\sum
+\langle e_t, e_{t-1} \rangle$, and a readout of white error that keeps a
+slow level ($E \approx 1$) at $E^d = 1 - 2 n \sigma^2 / \sum_t \lVert
+d_t \rVert^2 < 0$ (outside propositions 1 and 2).
 """
 
 import math
@@ -24,6 +28,7 @@ from exp.lib.fidelity import (
     MLPConf,
     comparable,
     content_sums,
+    error_lag1,
     fit_linear,
     fit_mlp,
     front_verdict,
@@ -90,6 +95,30 @@ class TestQuantities:
         assert cs.derr.tolist() == [[1.0 + 4.0 + 1.0]] and cs.dtot.tolist() == [14.0]
         assert cs.value() == pytest.approx(1 - 2 / 18)
         assert cs.value(True) == pytest.approx(1 - 6 / 14)
+
+    def test_the_errors_lag1_by_hand(self):
+        y = torch.tensor([[0.0], [1.0], [3.0], [6.0]], dtype=F64)
+        p = torch.tensor([[0.0], [2.0], [2.0], [6.0]], dtype=F64)
+        t = torch.tensor([1, 2, 3])
+        # e = y - p = 0, -1, 1, 0: cross -1, now 2, before 2
+        assert error_lag1(y, [p, y], t)[0] == pytest.approx(-0.5)
+        assert math.isnan(error_lag1(y, [p, y], t)[1])
+        cs = content_sums(y, [p], y.mean(0), t, torch.zeros(3, dtype=torch.long), 1)
+        assert cs.derr.sum().item() == pytest.approx(2 + 2 - 2 * -1)
+
+    def test_a_white_error_on_a_kept_level(self):
+        # a slow ramp read with white error s: E ~ 1, E^d = 1 - 2 n s2 / sum |d|^2
+        g = torch.Generator().manual_seed(3)
+        n, s2 = 100000, 0.1
+        y = (torch.arange(n, dtype=F64) * 0.05).sin()[:, None] * 10
+        p = y + math.sqrt(s2) * torch.randn(n, 1, generator=g, dtype=F64)
+        t = torch.arange(1, n)
+        cs = content_sums(y, [p], y.mean(0), t, torch.zeros(n - 1, dtype=torch.long), 1)
+        d = float((y[1:] - y[:-1]).square().sum())
+        assert cs.value() > 0.99
+        assert cs.value(True) == pytest.approx(1 - 2 * (n - 1) * s2 / d, abs=0.02)
+        assert cs.value(True) < 0
+        assert error_lag1(y, [p], t)[0] == pytest.approx(0, abs=0.02)
 
     def test_proposition_1_closed_form(self):
         # an orthogonal design of variances v: y = x, the code x P (some

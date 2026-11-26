@@ -24,7 +24,12 @@ of ``obs`` ``pix`` and, with ``local``, ``local`` (Inception's 2 x 2 local
 features of the last frame; a record), and ``obs_ext`` (a record: at the
 lags ``ext_lags`` the errors of $g(c_t)$ (copy), $g(2c_t - c_{t-\Delta})$
 (the extrapolation) and $g(c_{t+\Delta})$ (the ceiling) on $y_{t+\Delta}$
-and their denominator) into ``<out>/<code>/content.json``.
+and their denominator) into ``<out>/<code>/content.json``. Records beside
+(the review's, ``plans/jepa.md``'s proposition 1 and $E^d$): ``err_rho1``,
+the level error's lag-1 autocorrelation on Zurich, and rows ``fit`` of the
+same readouts' sums on the training set (``train``) and on
+``ContentConf.holdout_count`` runs of the training videos overlapping none
+of its runs (``holdout``; ``pix`` only).
 
 **The synthetic checks** (``check_rows``, V-h4a): the realizations of the
 plan's processes (``positive``, ``negative``; ``SynthConf``) on V-h0's sets
@@ -47,7 +52,10 @@ window), and the front's verdict (``front_of``) of the plan's pairs:
   $\psi$ alone: $\psi^d$ of this noise lies far lower, so the both's count
   would test nothing; recorded beside); the power (recorded): ``mixed`` of
   each realization against ``mixed`` of the V-h4a2 realization of the same
-  index (independent, $\psi = 0$)
+  index (independent, $\psi = 0$); ``V-h4a3-d`` (recorded): ``noisy-d``
+  (the noise of ``calib_noise_d``, $\psi^d = -\psi_*$ exactly) against
+  ``mixed``, the realizations where it is comparable and $\psi^d$'s lower
+  end clears $-\psi_*$
 
 $\sigma_{\mathrm{seed}}$ of each process: of the long realization, the
 per-seed $\psi_s$ of the code rotated (``slow-rot``, ``mixed-rot``) against
@@ -78,6 +86,7 @@ from exp.lib.fidelity import (
     MLPConf,
     comparable,
     content_sums,
+    error_lag1,
     fit_linear,
     fit_mlp,
     front_verdict,
@@ -86,6 +95,7 @@ from exp.lib.fidelity import (
     predict_linear,
     ratio_interval,
     seed_sigma,
+    stack_seeds,
 )
 from exp.lib.midpoint import Whitener
 from exp.lib.provenance import configure_determinism
@@ -128,7 +138,7 @@ from exp.vision.width_guard import (
     _yard_code,
     _zpca_map,
     cheat_codes,
-    interval_runs,
+    interval_draws,
     lag_speeds,
     same_k,
 )
@@ -140,6 +150,8 @@ __all__ = [
     "ContentConf",
     "SynthConf",
     "calib_noise",
+    "calib_noise_d",
+    "change_explained",
     "check_parts",
     "check_rows",
     "content_rows",
@@ -172,6 +184,8 @@ class ContentConf:
     rot_seed: int = 3101
     ext_lags: tuple[int, ...] = (8, 16, 32, 64)
     cells: int = 2  # the local features' cells a side
+    holdout_seed: int = 3201  # the held-out runs of the training videos (a record)
+    holdout_count: int = 64
 
 
 def orthogonal(d: int, seed: int) -> Tensor:
@@ -250,27 +264,39 @@ def content_rows(
     *,
     lin: bool = True,
     ext: bool = True,
+    fits: Mapping[str, tuple[Tensor, Tensor, int]] | None = None,
 ) -> list[Row]:
     r"""The rows of a code (module docstring) of its training codes and
     observations ``x_train`` ``(N, D)``, ``y_train`` ``(N, K)`` and Zurich's
     ``x_eval`` ``(n, D)``, ``y_eval`` ``(n, K)`` (every stack): ``content``
     of the readouts ``mlp`` of ``conf.seeds`` (each seed's training losses
-    at its end) and, with ``lin``, ``lin``; with ``ext`` the ``obs_ext``
-    record of each seed (and of ``lin``)."""
+    at its end and its level error's lag-1 autocorrelation, ``err_rho1``)
+    and, with ``lin``, ``lin``; with ``ext`` the ``obs_ext`` record of each
+    seed (and of ``lin``); of each of ``fits`` (a name to the codes, the
+    observations and the length $l$ of the runs laid end to end; a record)
+    the ``fit`` rows of the readouts' sums there (``set`` the name; the
+    anchors every time but each run's first, a block each run)."""
     t, blocks = _anchors(ws)
     nb = ws.n_blocks
     mean = y_train.to(_F64).mean(0)
     preds, last, exts = [], [], []
+    fit_sums: dict[str, list[ContentSums]] = {k: [] for k in fits or {}}
     for seed in conf.seeds:
         net, losses = fit_mlp(x_train, y_train, conf.mlp, seed, dev)
         preds.append(predict(net, x_eval, dev))
         last.append(losses[-1] if losses else None)
         if ext:
             exts.append(_obs_ext(net, x_eval, y_eval, t, mean, conf.ext_lags, dev))
+        for k, (xs, ys, run) in (fits or {}).items():
+            fit_sums[k].append(_run_sums(ys, predict(net, xs, dev), mean, run))
     cs = content_sums(y_eval, preds, mean, t, blocks, nb)
     lab = dict(labels)
     rows: list[Row] = [lab | {"part": "content", "readout": "mlp", "seeds": list(conf.seeds),
-                              "loss_last": last, "n_anchors": len(t)} | cs.to_row()]  # fmt: skip
+                              "loss_last": last, "n_anchors": len(t),
+                              "err_rho1": error_lag1(y_eval, preds, t)} | cs.to_row()]  # fmt: skip
+    for k, parts in fit_sums.items():
+        rows.append(lab | {"part": "fit", "set": k, "readout": "mlp",
+                           "seeds": list(conf.seeds)} | stack_seeds(parts).to_row())  # fmt: skip
     if ext:
         rows.append(lab | {"part": "obs_ext", "readout": "mlp", "seeds": list(conf.seeds),
                            "lags": exts})  # fmt: skip
@@ -280,11 +306,22 @@ def content_rows(
         cl = content_sums(y_eval, [p], mean, t, blocks, nb)
         rows.append(lab | {"part": "content", "readout": "lin", "seeds": [None],
                            "n_anchors": len(t)} | cl.to_row())  # fmt: skip
+        for k, (xs, ys, run) in (fits or {}).items():
+            rows.append(lab | {"part": "fit", "set": k, "readout": "lin", "seeds": [None]}
+                        | _run_sums(ys, predict_linear(b, xs), mean, run).to_row())  # fmt: skip
         if ext:
             rows.append(lab | {"part": "obs_ext", "readout": "lin", "seeds": [None],
                                "lags": [_obs_ext(None, x_eval, y_eval, t, mean,
                                                  conf.ext_lags, dev, b)]})  # fmt: skip
     return rows
+
+
+def _run_sums(y: Tensor, pred: Tensor, mean: Tensor, run: int) -> ContentSums:
+    """The sums of one readout on runs of length ``run`` laid end to end:
+    the anchors every time but each run's first, a block each run."""
+    idx = torch.arange(len(y))
+    t = idx[idx % run != 0]
+    return content_sums(y, [pred], mean, t, t // run, len(y) // run)
 
 
 # -- the real data (V-h4b) ---------------------------------------------------------------
@@ -296,21 +333,34 @@ def interval_codes(
     guard: GuardConf,
     codes: Mapping[str, Callable[[Tensor], Tensor]],
     dev: torch.device,
-) -> tuple[dict[str, Tensor], Tensor]:
+    *,
+    holdout: tuple[int, int, Collection[int]] | None = None,
+) -> tuple[dict[str, Tensor], Tensor, list[int]]:
     """The cheats' training set of several codes in one pass
     (``width_guard.train_intervals``' of each): each code's ``(R, L, D)``
-    float64 and the last frames u8 of the runs' middle halves."""
+    float64, the last frames u8 of the runs' middle halves and the runs'
+    starts. With ``holdout`` (seed, count, the training runs' starts) the
+    same of ``count`` runs of the training videos overlapping none of the
+    training runs nor each other (``width_guard.interval_draws``)."""
     length, a = guard.cheat_length, guard.cheat_length // 4
     got: dict[str, list[Tensor]] = {name: [] for name in codes}
-    last = []
-    for run in interval_runs(conf, root, guard):
+    last, starts = [], []
+    if holdout is None:
+        draws = interval_draws(conf, root, length, guard.cheat_count, guard.cheat_seed)
+    else:
+        seed, count, avoid = holdout
+        draws = interval_draws(
+            conf, root, length, count, seed, avoid, tries=1000 * count
+        )
+    for k, run in draws:
         with torch.no_grad():
             for name, code in codes.items():
                 got[name].append(
                     torch.cat([code(c.to(dev)).double().cpu() for c in run.split(64)])
                 )
         last.append(run[a : length - a, -1])
-    return {k: torch.stack(v) for k, v in got.items()}, torch.cat(last)
+        starts.append(k)
+    return {k: torch.stack(v) for k, v in got.items()}, torch.cat(last), starts
 
 
 def _yard_white(
@@ -413,12 +463,15 @@ def evaluate_content(
     pca = _yard_code("pca", conf, ref, None, guard, gconf, dev)
     yard = {n: _yard_white(n, conf, ref, inits, init_v16, guard, gconf, dev)
             for n in todo if n in YARD}  # fmt: skip
-    train, frames = interval_codes(conf, root, guard,
-                                   {"pca": pca.mu} | {n: c.mu for n, c in yard.items()},
-                                   dev)  # fmt: skip
+    mus = {"pca": pca.mu} | {n: c.mu for n, c in yard.items()}
+    train, frames, starts = interval_codes(conf, root, guard, mus, dev)
+    hold, h_frames, _ = interval_codes(conf, root, guard, mus, dev,
+                                       holdout=(cconf.holdout_seed, cconf.holdout_count,
+                                                starts))  # fmt: skip
     a, length = guard.cheat_length // 4, guard.cheat_length
     last = zurich.frames[ws.span : ws.span + ws.n]
     obs = {"pix": (pool_obs(frames, cconf.obs), pool_obs(last, cconf.obs))}
+    y_hold = pool_obs(h_frames, cconf.obs)
     if local:
         assert local_features is not None
         obs["local"] = (
@@ -426,21 +479,33 @@ def evaluate_content(
             _feats(local_features, last, dev),
         )
     w_eval = _encode(pca, zurich, ws.n, dev)
-    w_train = train["pca"]
+    w_train, w_hold = train["pca"], hold["pca"]
     s = lag_speeds(w_train, guard.cheat_lag)
     fns = dict(cheat_codes(w_eval, s, guard))
     q = orthogonal(guard.k, cconf.rot_seed)
     fns["rot"] = lambda x: x @ q
     for name in todo:
         if name in fns:
-            x_eval, x_run = fns[name](w_eval), fns[name](w_train)
+            x_eval, x_run, x_h = (
+                fns[name](w_eval),
+                fns[name](w_train),
+                fns[name](w_hold),
+            )
         else:
-            x_eval, x_run = _encode(yard[name], zurich, ws.n, dev), train[name]
+            x_eval, x_run, x_h = (
+                _encode(yard[name], zurich, ws.n, dev),
+                train[name],
+                hold[name],
+            )
         x_train = x_run[:, a : length - a].reshape(-1, x_run.shape[-1])
+        x_h = x_h[:, a : length - a].reshape(-1, x_h.shape[-1])
         rows: list[Row] = []
         for kind, (y_train, y_eval) in obs.items():
+            fits = None if kind != "pix" else {"train": (x_train, y_train, length - 2 * a),
+                                               "holdout": (x_h, y_hold, length - 2 * a)}  # fmt: skip
             rows += content_rows({"code": name, "obs": kind}, x_train, y_train, x_eval,
-                                 y_eval, ws, cconf, dev, lin=True, ext=kind == "pix")  # fmt: skip
+                                 y_eval, ws, cconf, dev, lin=True, ext=kind == "pix",
+                                 fits=fits)  # fmt: skip
         _write(out / name / "content.json", rows, {"key": ws.key})
     return out
 
@@ -550,6 +615,46 @@ def calib_noise(sc: SynthConf) -> float:
     return f / (rho * (r + f) - r) - 1
 
 
+def change_explained(sc: SynthConf, sigma2: float) -> float:
+    r"""The population's $E^d$ of the best readout of ``mixed`` with
+    Gaussian noise of variance $\sigma^2$ on its OU coordinates (``_a3``):
+    with $a = 1 / (1 + \sigma^2)$ and $\phi = e^{-1/\tau}$ the OU's lag-1
+    correlation, each OU coordinate's change error $(1 - a)(f_t - f_{t-1})
+    - a(n_t - n_{t-1}) + (\varepsilon_t - \varepsilon_{t-1})$ has the
+    variance $2(1 - a)(1 - \phi + a\phi) + 2\nu$ ($\nu$ ``noise``; $2a^2
+    \sigma^2 = 2a(1 - a)$), the rotation's only its noise's $2\nu / 2$ a
+    coordinate; the change's power is $2 - 2\cos(2\pi / T)$ of the
+    rotation, $2(1 - \phi)$ an OU coordinate, and the noise's
+    $2\nu(1 + F)$ ($F$ ``f_dims``)."""
+    nu, f = sc.noise, float(sc.f_dims)
+    phi = math.exp(-1 / sc.ou_tau)
+    a = 1 / (1 + sigma2)
+    den = (
+        2 - 2 * math.cos(2 * math.pi / sc.period) + 2 * f * (1 - phi) + 2 * nu * (1 + f)
+    )
+    num = 2 * nu * (1 + f) + 2 * f * (1 - a) * (1 - phi + a * phi)
+    return 1 - num / den
+
+
+def calib_noise_d(sc: SynthConf) -> float:
+    r"""The variance $\sigma^2$ of the Gaussian noise on ``mixed``'s OU
+    coordinates whose best readout's $E^d$ (``change_explained``) is
+    $2^{-\psi_*}$ of ``mixed``'s: with $u = 1 - a$ the error's excess $2F
+    u(1 - u\phi) = (1 - 2^{-\psi_*})(D - N_0)$ ($D$ the change's power,
+    $N_0$ the noise's error), the smaller root $u = (1 - \sqrt{1 - 4\phi
+    H}) / (2\phi)$ of $\phi u^2 - u + H = 0$, $H = (1 - 2^{-\psi_*})(D -
+    N_0) / (2F)$ (the excess rises with $\sigma^2$ up to $u = 1/(2\phi)$),
+    and $\sigma^2 = u / (1 - u)$."""
+    nu, f = sc.noise, float(sc.f_dims)
+    phi = math.exp(-1 / sc.ou_tau)
+    den = (
+        2 - 2 * math.cos(2 * math.pi / sc.period) + 2 * f * (1 - phi) + 2 * nu * (1 + f)
+    )
+    h = (1 - 2**-sc.psi_star) * (den - 2 * nu * (1 + f)) / (2 * f)
+    u = (1 - math.sqrt(1 - 4 * phi * h)) / (2 * phi)
+    return u / (1 - u)
+
+
 def _noisy(mixed: Tensor, sigma2: float, gen: torch.Generator) -> Tensor:
     x = mixed.clone()
     x[:, 2:] += math.sqrt(sigma2) * torch.randn(
@@ -652,15 +757,19 @@ def _a2(sc: SynthConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf, seed: i
 
 
 def _a3(sc: SynthConf, ws: WidthSets, seed: int, dev: torch.device) -> dict[str, Any]:
-    """A realization of the calibration: ``mixed`` and ``noisy``'s sums."""
+    r"""A realization of the calibration: ``mixed``, ``noisy`` ($\psi =
+    -\psi_*$) and ``noisy-d``'s ($\psi^d = -\psi_*$; its noise drawn after
+    ``noisy``'s, so ``noisy`` is as without it) sums."""
     gen = _gen(seed)
     y, mixed = negative(sc.n, sc, gen)
     y_tr, m_tr = negative(sc.train_n, sc, gen)
-    s2 = calib_noise(sc)
+    s2, s2d = calib_noise(sc), calib_noise_d(sc)
     noisy, n_tr = _noisy(mixed, s2, gen), _noisy(m_tr, s2, gen)
+    noisy_d, nd_tr = _noisy(mixed, s2d, gen), _noisy(m_tr, s2d, gen)
     content = {"mixed": _fit_sums(m_tr, y_tr, [(mixed, y)], ws, sc, dev).to_row(),
-               "noisy": _fit_sums(n_tr, y_tr, [(noisy, y)], ws, sc, dev).to_row()}  # fmt: skip
-    return {"seed": seed, "sigma2": s2, "content": content}
+               "noisy": _fit_sums(n_tr, y_tr, [(noisy, y)], ws, sc, dev).to_row(),
+               "noisy-d": _fit_sums(nd_tr, y_tr, [(noisy_d, y)], ws, sc, dev).to_row()}  # fmt: skip
+    return {"seed": seed, "sigma2": s2, "sigma2_d": s2d, "content": content}
 
 
 LONG_UNITS = ("V-h4a1-long", "V-h4a2-long")
@@ -775,8 +884,11 @@ def merge_checks(
     c_long = (counts_of(nb_long, gconf), counts_of(nb_long // 2, gconf))
     c_one = (counts_of(nb, gconf), counts_of(nb // 2, gconf))
     star = (sc.delta_star, sc.psi_star)
+    s2, s2d = calib_noise(sc), calib_noise_d(sc)
     rows: list[Row] = [_record("V-h4a-sigma", positive=list(sig_pos), negative=list(sig_neg),
-                               calib_sigma2=calib_noise(sc))]  # fmt: skip
+                               calib_sigma2=s2, calib_sigma2_d=s2d,
+                               calib_psi_d=math.log2(change_explained(sc, s2)
+                                                     / change_explained(sc, 0.0)))]  # fmt: skip
     # V-h4a1: the positive control
     f1 = front_of(tuple(l1["width"]["mean1"]), _sums(l1, "slow"), _sums(l1, "fast"),
                   *c_long, sig_pos, *star)  # fmt: skip
@@ -801,7 +913,7 @@ def merge_checks(
                        n=len(got["V-h4a2"]), which=false2))  # fmt: skip
     # V-h4a3: the margin's calibration, and the power of the same code
     shift = sc.cal_seeds[0] - sc.seeds[0]
-    passed, both, power, power_both = 0, 0, 0, 0
+    passed, both, power, power_both, passed_d = 0, 0, 0, 0, 0
     for s, v in sorted(got["V-h4a3"].items()):
         a, b = _sums(v, "noisy"), _sums(v, "mixed")
         psi = ratio_interval(a, b, *c_one, sig_neg[0])
@@ -810,6 +922,8 @@ def merge_checks(
         lo_ok = comp and _lo(psi) > -sc.psi_star
         passed += lo_ok
         both += lo_ok and _lo(psi_d) > -sc.psi_star
+        dd = ratio_interval(_sums(v, "noisy-d"), b, *c_one, sig_neg[1], change=True)
+        passed_d += comp and _lo(dd) > -sc.psi_star
         other = _sums(got["V-h4a2"][s - shift], "mixed")
         p = ratio_interval(b, other, *c_one, sig_neg[0])
         p_d = ratio_interval(b, other, *c_one, sig_neg[1], change=True)
@@ -820,6 +934,7 @@ def merge_checks(
     rows.append(_check("V-h4a3", passed <= sc.max_false, kept=passed, n=n3,
                        kept_both=both))  # fmt: skip
     rows.append(_record("V-h4a3-power", kept=power, kept_both=power_both, n=n3))
+    rows.append(_record("V-h4a3-d", kept=passed_d, n=n3, max_false=sc.max_false))
     return rows
 
 

@@ -21,7 +21,14 @@ cheats' widths ``<width>/guard/cheat/<name>/width.json`` and the yard's
   $[-\psi_*, +\psi_*]$; every yardstick (``base`` as ``pca``) comparable
   ($E$ and $E^d$; a yardstick missing fails)
 - V-h4b4 (records): each code's $E$, $E^d$ of ``mlp`` and ``lin``, of the
-  local features where given, and the extrapolation in the observation
+  local features where given, and the extrapolation in the observation;
+  of ``mlp`` the level error's lag-1 autocorrelation (``rho1``: $E^d$ lies
+  outside propositions 1 and 2) and $E$, $E^d$ on the training set and on
+  the held-out runs of the training videos (``fit``: the training
+  distribution's in-sample and held-out values beside Zurich's); of each
+  code against ``base`` the pair's own per-seed spread (``pair_sigma``) and
+  those above $\sigma_{\mathrm{seed}}$ (the verdicts keep
+  $\sigma_{\mathrm{seed}}$ as registered)
 
 Prints markdown; ``--json`` also writes the numbers::
 
@@ -92,14 +99,18 @@ def checks_stage(rows: Sequence[Row]) -> dict[str, Any]:
 
 def load_content(root: Path) -> dict[str, dict[str, Any]]:
     """Of each code's ``content.json`` under ``root``: ``sums`` by
-    (``obs``, ``readout``) and the ``obs_ext`` rows."""
+    (``obs``, ``readout``), the ``obs_ext`` rows, ``rho1`` (the ``mlp``
+    readouts' ``err_rho1`` by ``obs``) and ``fit`` (the sums by ``set``)."""
     out: dict[str, dict[str, Any]] = {}
     for path in sorted(root.glob("*/content.json")):
         rows = _load(path)
-        sums = {(r["obs"], r["readout"]): ContentSums.of_row(r)
-                for r in rows if r["part"] == "content"}  # fmt: skip
+        content = [r for r in rows if r["part"] == "content"]
+        sums = {(r["obs"], r["readout"]): ContentSums.of_row(r) for r in content}
+        rho1 = {r["obs"]: r["err_rho1"] for r in content if "err_rho1" in r}
+        fit = {r["set"]: ContentSums.of_row(r)
+               for r in rows if r["part"] == "fit" and r["readout"] == "mlp"}  # fmt: skip
         ext = [r for r in rows if r["part"] == "obs_ext"]
-        out[path.parent.name] = {"sums": sums, "ext": ext}
+        out[path.parent.name] = {"sums": sums, "ext": ext, "rho1": rho1, "fit": fit}
     return out
 
 
@@ -138,7 +149,17 @@ def real_stage(width: Path, wconf: WidthConf, g: GeomConf) -> dict[str, Any]:
             f"{obs}/{ro}": {"E": s.value(), "Ed": s.value(True),
                             "E_seeds": s.per_seed().tolist()}
             for (obs, ro), s in c["sums"].items()
-        } | {"ext": _ext_shares(c["ext"])}  # fmt: skip
+        } | {"ext": _ext_shares(c["ext"]), "rho1": c["rho1"],
+             "fit": {k: {"E": s.value(), "Ed": s.value(True)} for k, s in c["fit"].items()}}  # fmt: skip
+    # the pairs' own per-seed spread against base (a record)
+    pair_sigma = {}
+    for name, c in content.items():
+        if name != BASE and ("pix", "mlp") in c["sums"]:
+            a = c["sums"][("pix", "mlp")]
+            pair_sigma[name] = [seed_sigma(a, base), seed_sigma(a, base, change=True)]
+    out["pair_sigma"] = pair_sigma
+    out["pair_sigma_above"] = [n for n, v in pair_sigma.items()
+                               if any(x > s for x, s in zip(v, sig, strict=True))]  # fmt: skip
     # V-h4b1: the past means
     cheat = width / "guard" / "cheat"
     ls_base = lin_sums(_load(cheat / BASE / "width.json"))
@@ -200,15 +221,25 @@ def _yard_points(width: Path, wconf: WidthConf, g: GeomConf) -> dict[str, float 
 def _print(out: Mapping[str, Any]) -> None:
     s, sd = out["sigma_seed"]
     print(f"σ_seed(ψ) = {_fmt(s)}, σ_seed(ψ^d) = {_fmt(sd)}\n")
-    print("| 符号 | E | E^d | E_lin | E^d_lin | E（局所） | E^d（局所） |\n"
-          "| -- | -- | -- | -- | -- | -- | -- |")  # fmt: skip
+    print("| 符号 | E | E^d | E_lin | E^d_lin | E（局所） | E^d（局所） | E（訓練） | "
+          "E（訓練の外の区間） | 誤差の lag 1 の自己相関 | 対の σ（ψ, ψ^d） |\n"
+          "| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |")  # fmt: skip
     for name, c in out["codes"].items():
 
         def v(key: str, q: str) -> str:
             return _fmt(c[key][q]) if key in c else "—"
 
+        fit = c["fit"]
+        rho = ", ".join(_fmt(x) for x in c["rho1"].get("pix", []))
+        ps = out["pair_sigma"].get(name)
         print(f"| {name} | {v('pix/mlp', 'E')} | {v('pix/mlp', 'Ed')} | {v('pix/lin', 'E')} | "
-              f"{v('pix/lin', 'Ed')} | {v('local/mlp', 'E')} | {v('local/mlp', 'Ed')} |")  # fmt: skip
+              f"{v('pix/lin', 'Ed')} | {v('local/mlp', 'E')} | {v('local/mlp', 'Ed')} | "
+              f"{_fmt(fit['train']['E']) if 'train' in fit else '—'} | "
+              f"{_fmt(fit['holdout']['E']) if 'holdout' in fit else '—'} | {rho or '—'} | "
+              f"{', '.join(_fmt(x) for x in ps) if ps else '—'} |")  # fmt: skip
+    print(
+        f"\nσ_seed を超える対（記録。判定の σ_seed は登録のまま）: {out['pair_sigma_above']}"
+    )
     print("\n### V-h4b1（時間の平均）\n\n| ずる | 幅の比の区間 | ψ | ψ^d | 判定 |\n"
           "| -- | -- | -- | -- | -- |")  # fmt: skip
     for name, f in out["b1"]["fronts"].items():
