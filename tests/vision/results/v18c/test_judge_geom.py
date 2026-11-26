@@ -21,12 +21,19 @@ from exp.lib.metrics import block_counts, ratio_resamples
 from exp.vision.geom_eval import GeomConf, ratio_se
 from exp.vision.results.v18c.judge_geom import (
     _flips,
+    _init_of,
+    _lean,
+    check_keys,
     checks_stage,
     classify,
     diag_flags,
     judged_lags,
+    k3_hmean_same,
     paired_d,
     paired_g,
+    seed_pairs,
+    step0_inits,
+    step_pairs,
     theory,
 )
 
@@ -200,6 +207,19 @@ class TestPairedG:
         e = three["lags"][8]
         assert e["lo_sim"] == pytest.approx(e["diff"] - three["c"] * e["se"], rel=1e-12)
 
+    def test_the_side_k_reads_its_own_rows(self):
+        # The k = 16 rows differ from the main ones by a shift of 0.05; the
+        # main ones are equal: the variant picks the k = 16 rows only.
+        den, num = [4.0, 5.0, 6.0, 3.0], [1.0, 3.0, 2.0, 2.5]
+        shifted = [n + 0.05 * d for n, d in zip(num, den, strict=True)]
+        a = [_mid_row(8, num, den), _mid_row(8, shifted, den) | {"k": 16}]
+        b = [_mid_row(8, num, den), _mid_row(8, num, den) | {"k": 16}]
+        g1 = GeomConf(lags=(8,))
+        assert paired_g(a, b, "own", g1, (8,))["lags"][8]["diff"] == 0.0
+        side = paired_g(a, b, "own", g1, (8,), k=16)["lags"][8]
+        assert side["diff"] == pytest.approx(0.05, abs=1e-12)
+        assert side["cls"] == "distinct"
+
 
 def _pd(a: list[dict], b: list[dict]) -> dict:
     got = paired_d(a, b, "own", G)
@@ -242,3 +262,61 @@ class TestDiagFlags:
     )  # fmt: skip
     def test_the_provisional_bounds(self, diag, want):
         assert diag_flags(diag) == want
+
+
+class TestApplyGuards:
+    """The apply stage's stops and its labels, by hand."""
+
+    def test_the_key_stops(self):
+        check_keys("k1", {"a": [{"key": "k1"}, {"key": "k1"}]})
+        with pytest.raises(SystemExit, match="b: key"):
+            check_keys(
+                "k1", {"a": [{"key": "k1"}], "b": [{"key": "k1"}, {"key": "k2"}]}
+            )
+        with pytest.raises(SystemExit, match="c: key"):
+            check_keys("k1", {"c": []})
+
+    def test_v_d0h_is_bit_for_bit_but_the_labels(self):
+        h = [{"part": "mid", "place": "h_mean", "code": "z", "run": "r", "G": 0.5,
+              "num_b": [1.0, 2.0]}]  # fmt: skip
+        k3 = [h[0] | {"code": "k3_hmean", "place": "own", "run": "other"}]
+        assert k3_hmean_same(k3, h)
+        off = [k3[0] | {"num_b": [1.0, 2.0 + 2**-40]}]
+        assert not k3_hmean_same(off, h)
+        assert not k3_hmean_same([], [])
+
+    def test_the_step_0_of_v18c_is_read_from_the_yard(self):
+        vd = [
+            {"part": "record", "name": "step0_same", "init": "init_c", "same": True,
+             "runs": ["/x/v18c-lr1e-4-lam0.5-r0.5-s0"]},
+            {"part": "record", "name": "step0_same", "init": "init_c1", "same": False,
+             "runs": ["/x/v18c-lr1e-4-lam0.5-r0.5-s1"]},
+        ]  # fmt: skip
+        step0 = step0_inits(vd)
+        assert step0 == {"v18c-lr1e-4-lam0.5-r0.5-s0": "init_c"}
+        c0 = {"run": "v18c-lr1e-4-lam0.5-r0.5-s0", "family": "v18c"}
+        assert _init_of(c0, step0) == "init_c"
+        with pytest.raises(SystemExit, match="step 0"):
+            _init_of({"run": "v18c-lr1e-4-lam0.5-r0.5-s1", "family": "v18c"}, step0)
+        assert _init_of({"run": "v16", "family": "vae"}, step0) == "init_v16"
+        assert _init_of({"run": "v17", "family": "vae"}, step0) is None
+        v18 = {"run": "v18-long-lr1e-4-lam0.5-r0.5-s0", "family": "v18"}
+        assert _init_of(v18, step0) is None
+
+    def test_the_pairs_of_steps_and_seeds(self):
+        finals = ["v18c-a-s0@60000", "v18c-a-s1@60000"]
+        assert step_pairs(finals) == [
+            ("v18c-a-s0@60000", "v18c-a-s0@6000"),
+            ("v18c-a-s1@60000", "v18c-a-s1@6000"),
+        ]
+        assert seed_pairs(finals) == [("v18c-a-s0@6000", "v18c-a-s1@6000")]
+
+    def test_lean_drops_only_the_bounds_of_a_paired_g(self):
+        e = {"diff": 0.1234567, "se": 0.01, "lo": 0.1, "hi": 0.2, "lo_sim": 0.0,
+             "hi_sim": 0.3, "cls": "small", "cls_sim": "small"}  # fmt: skip
+        d = {"diff": 1.0, "lo": 0.5, "hi": 1.5, "cls": "small"}
+        assert _lean({"lags": {8: e}, "d": d}) == {
+            "lags": {8: {"diff": 0.123457, "se": 0.01, "cls": "small",
+                         "cls_sim": "small"}},
+            "d": d,
+        }  # fmt: skip

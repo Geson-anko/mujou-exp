@@ -573,9 +573,11 @@ def paired_g(
     judged: Sequence[int],
     delta: float = DELTA_G,
     stratum: str = "in",
+    **variant: Any,
 ) -> dict[str, Any]:
     r"""The paired differences $G_a - G_b$ of each lag of ``g.lags`` (the
-    main whitening, ``stratum``): $\mathrm{SE}^*$ (``ratio_se``), the
+    main whitening, or the one of ``variant`` such as ``k=16``; ``stratum``):
+    $\mathrm{SE}^*$ (``ratio_se``), the
     interval $\pm 2\,\mathrm{SE}^*$ and the simultaneous one $\pm
     c\,\mathrm{SE}^*$ over all the lags ($c$ of ``metrics.max_t_critical``
     of the 128 s resamples, each lag's $t$ by its own resamples' standard
@@ -585,8 +587,8 @@ def paired_g(
     lags, est, res, out = [], [], [], {}
     coef = torch.tensor([1.0, -1.0], dtype=torch.float64)
     for lag in g.lags:
-        ma = _mid(rows_a, g, place, lag, stratum)
-        mb = _mid(rows_b, g, place, lag, stratum)
+        ma = _mid(rows_a, g, place, lag, stratum, **variant)
+        mb = _mid(rows_b, g, place, lag, stratum, **variant)
         if ma is None or mb is None:
             continue
         num = torch.tensor([ma["num_b"], mb["num_b"]], dtype=torch.float64)
@@ -690,18 +692,63 @@ def load_models(
     return rows, k3, meta
 
 
-def _init_of(meta: Mapping[str, Any]) -> str | None:
+def step0_inits(vd_rows: Sequence[Row]) -> dict[str, str]:
+    """Each V18c run's yardstick of its step 0 (its name, not its path) where
+    the yard's ``step0_same`` record holds that the seed's runs share it."""
+    return {
+        run.rsplit("/", 1)[-1]: r["init"]
+        for r in _of(vd_rows, part="record", name="step0_same")
+        if r["same"]
+        for run in r["runs"]
+    }
+
+
+def _init_of(meta: Mapping[str, Any], step0: Mapping[str, str]) -> str | None:
     """The yardstick of a model's own step 0: the yard's checkpoint of its
-    run, or for V18c its seed's (``step0_same`` holds); None where the yard
-    has none (V17, V18 other than ``r0.25-s0``, V18b ``s1``: whether their
-    step 0 equal the yard's is not checked)."""
+    run, or for V18c its seed's (``step0``, of ``step0_inits``; a V18c run
+    without one stops the reading); None where the yard has none (V17, V18
+    other than ``r0.25-s0``, V18b ``s1``: whether their step 0 equal the
+    yard's is not checked)."""
     run, fam = meta["run"], meta["family"]
     if fam == "v18c":
-        return "init_c" if run.endswith("-s0") else "init_c1"
+        if run not in step0:
+            raise SystemExit(f"{run}: its step 0 is not its seed's yardstick")
+        return step0[run]
     own = {"v16": "init_v16", "v18-long-lr1e-4-lam0.5-r0.25-s0": "init",
            "v18b-long-f-lr1e-4-lam0.5-r0.25-s0": "init_f",
            "v18b-long-m-lr3e-5-lam0.8-r0.25-s0": "init_m"}  # fmt: skip
     return own.get(run)
+
+
+def check_keys(key: str, by_label: Mapping[str, Sequence[Row]]) -> None:
+    """Stops where a label has no rows or a row's ``key`` is not the sets'."""
+    for label, rs in by_label.items():
+        keys = {r["key"] for r in rs}
+        if not rs or keys != {key}:
+            raise SystemExit(f"{label}: key {sorted(keys)} is not the sets' {key}")
+
+
+def k3_hmean_same(k3_rows: Sequence[Row], rows: Sequence[Row]) -> bool:
+    """V-d0h: the ``k3_hmean`` rows equal the ``h_mean`` rows of the same
+    checkpoint, every value bit for bit, but for the labels."""
+    a, b = _of(k3_rows, code="k3_hmean"), _of(rows, place="h_mean")
+    return len(a) == len(b) > 0 and all(
+        {k: v for k, v in x.items() if k not in _LABELS}
+        == {k: v for k, v in y.items() if k not in _LABELS}
+        for x, y in zip(a, b, strict=True)
+    )
+
+
+def step_pairs(finals: Sequence[str]) -> list[tuple[str, str]]:
+    """V18c's ``<run>@60000`` against its ``<run>@6000``."""
+    return [(m, m.replace(f"@{FINAL}", "@6000")) for m in finals]
+
+
+def seed_pairs(finals: Sequence[str]) -> list[tuple[str, str]]:
+    """V18c's seed 0 against seed 1 at step 6000."""
+    early = [m.replace(f"@{FINAL}", "@6000") for m in finals
+             if m.split("@")[0].endswith("-s0")]  # fmt: skip
+    return [(m, m.replace("-s0@", "-s1@")) for m in early]
 
 
 def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
@@ -710,17 +757,20 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
     models' pairs at step 60000, of V18c's 6000 and 60000 and of its seeds
     at 6000 (their wording at the judged lags), the TwoNN and its paired
     differences, the spread's diagnosis with the provisional bounds, and
-    the K3's rows. Stops where a row's ``key`` is not the sets'."""
+    the K3's rows, and the paired differences of $G$ at the side $k$. Stops
+    where a row's ``key`` is not the sets', where V-d0h fails (``k3_hmean``
+    not ``h_mean`` bit for bit) or where a V18c run's step 0 is not its
+    seed's yardstick (``step0_same``)."""
     sets = json.loads((geom / "sets.json").read_text())
     vd = _load(geom / "yard" / "vd.json")
     yard = {p.stem: _load(p) for p in sorted((geom / "yard" / "rows").glob("*.json"))}
     rows, k3, meta = load_models(geom, runs)
-    for label, rs in [*rows.items(), *k3.items()]:
-        keys = {r["key"] for r in rs}
-        if not rs or keys != {sets["key"]}:
-            raise SystemExit(
-                f"{label}: key {sorted(keys)} is not the sets' {sets['key']}"
-            )
+    check_keys(sets["key"], {**rows, **{f"{m} k3": rs for m, rs in k3.items()}})
+    for m, rs in k3.items():
+        if not k3_hmean_same(rs, rows[m]):
+            raise SystemExit(f"{m}: V-d0h, k3_hmean is not h_mean bit for bit")
+    step0 = step0_inits(vd)
+    init_of = {m: _init_of(meta[m], step0) for m in rows}
     judged = judged_lags(vd, DELTA_G, g)
     labels = tuple(rows)
     final = tuple(x for x in labels if meta[x]["step"] in (None, FINAL))
@@ -730,19 +780,15 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
         "curves": curves(every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}),
     }  # fmt: skip
 
-    def pairs(specs: Sequence[tuple[str, str]], place: str) -> list[dict[str, Any]]:
+    def pairs(
+        specs: Sequence[tuple[str, str]], place: str, **variant: Any
+    ) -> list[dict[str, Any]]:
         got = []
         for a, b in specs:
-            pg = paired_g(every[a], every[b], place, g, judged)
+            pg = paired_g(every[a], every[b], place, g, judged, **variant)
             if pg["lags"]:
-                got.append(
-                    {
-                        "a": a,
-                        "b": b,
-                        "G": pg,
-                        "d": paired_d(every[a], every[b], place, g),
-                    }
-                )
+                d = None if variant else paired_d(every[a], every[b], place, g)
+                got.append({"a": a, "b": b, "G": pg, "d": d})
         return got
 
     out["vs_yard"] = {
@@ -752,16 +798,33 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
     c_runs = [
         m for m in labels if meta[m]["family"] == "v18c" and meta[m]["step"] == FINAL
     ]
-    out["steps"] = {p: pairs([(m, m.replace(f"@{FINAL}", "@6000")) for m in c_runs], p)
-                    for p in YARDSTICKS}  # fmt: skip
-    early = [
-        m.replace(f"@{FINAL}", "@6000")
-        for m in c_runs
-        if m.split("@")[0].endswith("-s0")
-    ]
-    out["seeds_6000"] = {p: pairs([(m, m.replace("-s0@", "-s1@")) for m in early], p)
-                         for p in YARDSTICKS}  # fmt: skip
-    out["init_of"] = {m: _init_of(meta[m]) for m in labels}
+    out["steps"] = {p: pairs(step_pairs(c_runs), p) for p in YARDSTICKS}
+    out["seeds_6000"] = {p: pairs(seed_pairs(c_runs), p) for p in YARDSTICKS}
+    out["init_of"] = init_of
+    # The registered side k (GeomConf.k_side): the models at 60000 against
+    # the pixels' PCA and their own step 0, and the G of each.
+    side = {
+        "own": [(m, y) for m in final for y in ("pca", init_of[m]) if y],
+        "h_mean": [(m, y) for m in final if (y := init_of[m])],
+    }
+    out["side_k"] = {
+        k: {
+            "pairs": {p: pairs(specs, p, k=k) for p, specs in side.items()},
+            "G": {p: {c: {lag: m["G"] for lag in g.lags
+                          if (m := _mid(every[c], g, p, lag, k=k))}
+                      for c in {x for pr in specs for x in pr}}
+                  for p, specs in side.items()},
+        }
+        for k in g.k_side
+    }  # fmt: skip
+    # copy's error over the symmetric denominator, b2 / D-bar, of the main
+    # whitening's rows (README, 「V19 への含意」): extrapolation / copy is
+    # 4 G D-bar / b2.
+    out["copy_over_dbar"] = {}
+    for p, cs in {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}.items():
+        q = [m["b2"] / m["D"] for c in cs for lag in g.lags
+             if (m := _mid(every.get(c, []), g, p, lag))]  # fmt: skip
+        out["copy_over_dbar"][p] = {"min": min(q), "max": max(q)} if q else None
     out["twonn"] = twonn_table(
         every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}
     )
@@ -778,12 +841,7 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
             e["own_k16"][lag] = {"G": oz["G"], "s": oz["s"]} if oz else None
         spec = _of(rs, part="spec", code="k3_z", place="own", k=g.k)
         e["k3_z_k64_scoreable"] = spec[0]["scoreable"] if spec else None
-        same = all(
-            {k: v for k, v in a.items() if k not in _LABELS}
-            == {k: v for k, v in b.items() if k not in _LABELS}
-            for a, b in zip(_of(rs, code="k3_hmean"), _of(rows[m], place="h_mean"), strict=True)
-        )  # fmt: skip
-        e["k3_hmean_same"] = same
+        e["k3_hmean_same"] = True  # checked above (V-d0h)
         out["k3"][m] = e
     _print_apply(out, g)
     return _lean(out)
