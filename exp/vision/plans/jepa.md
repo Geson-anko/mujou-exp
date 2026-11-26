@@ -1975,6 +1975,12 @@ uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard --json e
 - 保存した組の照合に `data_version`・`held_out`・フレーム数・`stack`・`stride` を足した。TwoNN の距離 0 の重複を `n_exact` として別に数える。分母 0 の引き直しを除いて $\mathrm{SE}^*$ を取る（`in` は変わらない）
 - V-d0b の `two_bands` の 2 本目の帯は、32 本の周波数を 5 倍したもの（中心 $5\omega_0$、幅も 5 倍）と読んだ。上の表は幅を書いていない。閉じた式は同じ周波数から計算する
 
+### 実行の記録（有効性の確かめ、2026-11-25）
+
+実行の順の 2・3（`checks`・`yard`）を回し、V-d0a〜V-d0f・V-d0h・V-d1・V-d2 はすべて通った。実行の順の 4 で止めている（モデルの値は計算していない）。値と $\Delta_*$ の材料は README の「V18c: 時間の線形性と情報の幅の有効性（2026-11-25）」。出力は、この workflow の指示で NAS の `runs/v18c-tlin/`（上の CLI の `runs/v18c-geom` と名前だけが違う。適用の段の `--sets` もこちらを指す）。集計の JSON は `exp/vision/results/v18c/judge_geom_yard.json`。
+
+$\Delta_*$ と一緒に決めること（登録に書いていなかった）: 解像度の規則で、$\Delta_*$ 以上の登録した $\delta$ が $\tfrac34 - G$ を超えて作れない刻みの扱い（案: 「区間が 0 を含む」と同じに扱い、「解像度が足りない」とする）。
+
 ## V19: ストリームで標準の SIGReg
 
 - V18 で選んだ設定のまま、データだけを単一ストリームにする
