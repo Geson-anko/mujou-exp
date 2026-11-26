@@ -22,10 +22,13 @@ moves $p$ by its population alone); the pairs $(u, u + n)$, $n = 1 ..$
 **The rows of a whitened code** (``white_rows``): ``lin`` of each lag and
 stratum (``common`` at every whitening; ``in`` and the strata at the main
 one): the count, the blocks' count, $G$, $p_{1/4}$, $p_{1/2}$ and the
-blocks' sums of ``exp.lib.midpoint.win_sums``; of ``common`` from
-``main_lo`` on also the survivors' sums ``surv25_b``, ``surv50_b`` (the
-centres that won at every lag from ``main_lo`` up to it) and the quantiles
-of the margin $(\delta_t/4 - \nu_t)/\delta_t$ (``margin``); ``dpair`` of
+blocks' sums of ``exp.lib.midpoint.win_sums``; of ``common`` also the
+sums of the blocks shifted by half a block (``*_b_s``; C5's sensitivity,
+each centre in its own stack's shifted block), from ``main_lo`` on the
+survivors' sums ``surv25_b``, ``surv50_b`` (the centres whose first run of
+wins from ``main_lo`` on reaches the lag; ``linwidth.survival``) and the
+quantiles of the margin $(\delta_t/4 - \nu_t)/\delta_t$ (``margin``);
+``dpair`` of
 each pair lag (``all``, ``in``): the blocks' sums of $\lVert w_{u+n} - w_u
 \rVert^2$ and counts; ``dir`` (``direction_row``): the generalized
 eigenproblem of the ``in`` triples of ``dir_lag`` on the even blocks
@@ -41,7 +44,8 @@ $\Delta_{\mathrm{typ}}$, $\bar\Delta$, the survival's crossing, and below
 the main range the windows of the whole grid (a description beside
 ``mean8``). The bootstrap (``resampled``, ``draws``) is ``geom_eval``'s: the
 blocks drawn by ``metrics.block_counts`` (``boot``, ``boot_seed``) and their
-adjacent pairs, the union of the two intervals.
+adjacent pairs, the union of the two intervals; the shifted blocks' interval
+beside them (a description).
 
 **The checks** (``check_rows``, V-h0a .. V-h0m, synthetic, on the CPU), the
 **yard** (``evaluate_yard``: the yardsticks of ``geom_eval``'s yard and
@@ -74,6 +78,7 @@ from exp.lib.linwidth import (
     mean_width,
     n_lin,
     paired_ratio,
+    survival,
     union,
     windows,
 )
@@ -127,15 +132,18 @@ from exp.vision.geom_eval import (  # the geom job's own helpers, reused as they
 from exp.vision.jepa_diag import run_ckpts
 from exp.vision.jepa_eval import PCA_SEED, ColorCode, PCACode, pixels, vae_at
 from exp.vision.models import VAEModules, build_vae
+from exp.vision.results.v18c.judge_geom import classify
 
 __all__ = [
     "OUT",
+    "TARGETS",
     "CheckConf",
     "LinSums",
     "WidthConf",
     "WidthSets",
     "check_rows",
     "code_rows",
+    "conditions",
     "direction_row",
     "draws",
     "evaluate_checks",
@@ -153,6 +161,7 @@ __all__ = [
 ]
 
 OUT = "posthoc_width"
+TARGETS = {"ext": "future", "mid": "now"}  # each guard read's true candidate
 YARD_INITS = ("init", "init_f", "init_m", "init_c", "init_c1")
 QS = (0.25, 0.5)
 
@@ -189,9 +198,11 @@ def _qname(q: float) -> str:
 class WidthSets:
     """The sets (module docstring): ``n`` stacks of ``span`` frames past
     the first, ``frame_block`` ``(n + span,)`` each frame's block,
-    ``before`` ``(n + span + 1,)`` the cuts before each frame (between $i$,
-    $i + 1$ for $i < f$), ``blocks`` ``(n,)`` each stack's, ``strata`` the
-    ``slow``, ``mid``, ``fast`` centres by lag, and the sets' ``key``."""
+    ``before`` ``(n + span,)`` the count of cuts before each frame,
+    ``blocks`` ``(n,)`` each stack's, ``strata`` the ``slow``,
+    ``mid``, ``fast`` centres by lag, the sets' ``key``, and
+    ``blocks_shift`` ``(n,)`` each stack's block of the blocks shifted by
+    half a block (``shifted_blocks``; C5's sensitivity)."""
 
     n: int
     span: int
@@ -201,10 +212,15 @@ class WidthSets:
     strata: Mapping[int, Mapping[str, Tensor]]
     key: str
     max_lag: int
+    blocks_shift: Tensor
 
     @property
     def n_blocks(self) -> int:
         return int(self.frame_block.max()) + 1
+
+    @property
+    def n_blocks_shift(self) -> int:
+        return int(self.blocks_shift.max()) + 1
 
     def centres(self, lag: int) -> tuple[Tensor, Tensor]:
         """The centres ``all`` and ``in`` of ``lag`` (module docstring)."""
@@ -233,13 +249,23 @@ def _before(cuts: Tensor, frames: int) -> Tensor:
     return torch.cat([torch.zeros(1, dtype=torch.long), cut.cumsum(0)])
 
 
+def shifted_blocks(frames: int, block: int) -> Tensor:
+    """Each frame's block ``(frames,)`` of ``block``-frame blocks from the
+    frame ``block // 2`` on (``metrics.contiguous_blocks``; the frames
+    before it joined to the first block)."""
+    half = block // 2
+    rest = contiguous_blocks(torch.zeros(frames - half, dtype=torch.long), block)
+    return torch.cat([torch.zeros(half, dtype=torch.long), rest])
+
+
 def synthetic_sets(n: int, span: int, block: int, max_lag: int) -> WidthSets:
     """The sets of a synthetic series of ``n`` stacks: ``block``-frame
     blocks (``metrics.contiguous_blocks``), no cut, no strata."""
     f = n + span
     fb = contiguous_blocks(torch.zeros(f, dtype=torch.long), block)
     return WidthSets(n, span, fb, _before(torch.zeros(0, dtype=torch.long), f),
-                     fb[:n].clone(), {}, "synthetic", max_lag)  # fmt: skip
+                     fb[:n].clone(), {}, "synthetic", max_lag,
+                     shifted_blocks(f, block)[:n].clone())  # fmt: skip
 
 
 def width_sets(
@@ -258,7 +284,8 @@ def width_sets(
     f = sets.n + sets.span
     fb = contiguous_blocks(torch.zeros(f, dtype=torch.long), gconf.block)
     ws = WidthSets(sets.n, sets.span, fb, _before(sets.cuts, f), sets.blocks, {},
-                   sets.key, wconf.max_lag)  # fmt: skip
+                   sets.key, wconf.max_lag,
+                   shifted_blocks(f, gconf.block)[: sets.n].clone())  # fmt: skip
     strata: dict[int, dict[str, Tensor]] = {}
     for lag in wconf.strat_lags:
         if lag in sets.triples:
@@ -293,6 +320,18 @@ def slots(t: Tensor, lag: int, reach: int = 4) -> dict[str, Tensor]:
             "ext": (t + lag)[:, None] + j, "mid": t[:, None] + j}  # fmt: skip
 
 
+def conditions(c: Tensor, sl: Mapping[str, Tensor]) -> dict[str, Tensor]:
+    r"""The guard's conditions ``(A, D)`` of the codes ``c`` ``(n, D)`` at
+    the places ``sl`` (``slots``): ``past``, ``now``, ``future``, ``ext``
+    $2c_t - c_{t-\Delta}$ and ``mid`` $\tfrac12(c_{t-\Delta} +
+    c_{t+\Delta})$; ``ext``'s candidates are read against ``TARGETS["ext"]``
+    and ``mid``'s against ``TARGETS["mid"]`` (the middle columns of
+    ``sl["ext"]``, ``sl["mid"]``)."""
+    past, now, fut = c[sl["past"]], c[sl["now"]], c[sl["future"]]
+    return {"past": past, "now": now, "future": fut, "ext": 2 * now - past,
+            "mid": (past + fut) / 2}  # fmt: skip
+
+
 # -- the rows of a whitened code -----------------------------------------------------
 
 
@@ -312,6 +351,9 @@ def _lin_row(
     return row | {k: v.tolist() for k, v in sums.items()}
 
 
+SHIFT_KEYS = ("num_b", "den_b", "n_b", "win25_b", "win50_b")
+
+
 def _subset(t: TripleTerms, pick: Tensor) -> TripleTerms:
     return TripleTerms(t.num[pick], t.den[pick], t.a2[pick], t.b2[pick])
 
@@ -320,7 +362,7 @@ def white_rows(w: Tensor, ws: WidthSets, wconf: WidthConf, *, full: bool) -> lis
     """The rows (module docstring) of the whitened codes ``w`` ``(n, k)`` of
     the sets' stacks; with ``full`` (the main whitening) also ``in``, the
     strata, ``dpair`` and ``dir``."""
-    nb = ws.n_blocks
+    nb, nbs = ws.n_blocks, ws.n_blocks_shift
     common = ws.common
     rows: list[Row] = []
     won: dict[float, list[Tensor]] = {q: [] for q in QS}
@@ -336,6 +378,8 @@ def white_rows(w: Tensor, ws: WidthSets, wconf: WidthConf, *, full: bool) -> lis
             t = _subset(t_all, torch.searchsorted(u_all, centres))
             row = _lin_row(t, ws.blocks[centres - lag], nb, lag, stratum)
             if stratum == "common":
+                shift = win_sums(t, ws.blocks_shift[centres], nbs, QS)
+                row |= {f"{k}_s": shift[k].tolist() for k in SHIFT_KEYS}
                 if lag >= wconf.main_lo:
                     for q in QS:
                         won[q].append(wins(t, q))
@@ -348,7 +392,7 @@ def white_rows(w: Tensor, ws: WidthSets, wconf: WidthConf, *, full: bool) -> lis
             rows.append(row)
     blocks = ws.blocks[common - wconf.max_lag]
     for q in QS:
-        alive = torch.stack(won[q], 1).int().cummin(1).values.double()  # (Nc, L)
+        alive = survival(torch.stack(won[q], 1)).double()  # (Nc, L)
         sums = block_sums(alive, blocks, nb)  # (B, L)
         for i, row in enumerate(r for r in common_rows if r["lag"] >= wconf.main_lo):
             row[f"surv{_qname(q)}_b"] = sums[:, i].tolist()
@@ -485,12 +529,18 @@ def _f64(values: Any) -> Tensor:
     return torch.tensor(values, dtype=torch.float64)
 
 
-def lin_sums(rows: Sequence[Row], stratum: str = "common", **labels: Any) -> LinSums:
+def lin_sums(
+    rows: Sequence[Row], stratum: str = "common", *, shift: bool = False,
+    **labels: Any,
+) -> LinSums:  # fmt: skip
     """The ``LinSums`` of the ``lin`` rows of ``stratum`` and ``labels``
-    (such as ``place``, ``k``, ``ref``) in order of lag.
+    (such as ``place``, ``k``, ``eps``, ``ref``) in order of lag; with
+    ``shift`` of the shifted blocks' sums (``common``; no ``asym``, no
+    survivors).
 
     Raises:
-        ValueError: No row matches.
+        ValueError: No row matches, or two rows match at a lag (``labels``
+            do not name one whitening).
     """
     got = sorted(
         (r for r in rows if r.get("part") == "lin" and r["stratum"] == stratum
@@ -499,6 +549,13 @@ def lin_sums(rows: Sequence[Row], stratum: str = "common", **labels: Any) -> Lin
     )  # fmt: skip
     if not got:
         raise ValueError(f"no lin rows of {stratum} and {labels}")
+    lags = [r["lag"] for r in got]
+    if len(set(lags)) != len(lags):
+        raise ValueError(f"two lin rows at a lag of {stratum} and {labels}")
+    if shift:
+        sh = {k: _f64([r[f"{k}_s"] for r in got]) for k in SHIFT_KEYS}
+        return LinSums(torch.tensor(lags), sh["num_b"], sh["den_b"], sh["n_b"],
+                       {"25": sh["win25_b"], "50": sh["win50_b"]})  # fmt: skip
     win = {q: _f64([r[f"win{q}_b"] for r in got]) for q in ("25", "50", "asym")}
     surv = {}
     if "surv25_b" in got[-1]:
@@ -575,10 +632,14 @@ def counts_of(n_blocks: int, gconf: GeomConf) -> Tensor:
     )
 
 
-def draws(ls: LinSums, wconf: WidthConf, gconf: GeomConf) -> dict[str, Any]:
+def draws(
+    ls: LinSums, wconf: WidthConf, gconf: GeomConf, shifted: LinSums | None = None
+) -> dict[str, Any]:
     r"""The intervals of the main range's widths (``point``'s) of 128 s and
     256 s blocks and their union: of each bound, $p$'s window and $\bar\Delta$
-    (``linwidth.draws_summary``) and the pooled $G$'s window."""
+    (``linwidth.draws_summary``) and the pooled $G$'s window; with
+    ``shifted`` (the blocks shifted by half a block) its 128 s interval of
+    $p$ beside them (``shift``, a description)."""
     main = ls.restrict(wconf.main_lo)
     x = wconf.seconds(main.lags)
     out: dict[str, Any] = {}
@@ -601,6 +662,11 @@ def draws(ls: LinSums, wconf: WidthConf, gconf: GeomConf) -> dict[str, Any]:
             "none": max(per[b][q]["p"]["none"] for b in per),
             "G_none": max(per[b][q]["G"]["none"] for b in per),
         }
+    if shifted is not None:
+        sm = shifted.restrict(wconf.main_lo)
+        ps, _ = resampled(sm, counts_of(sm.n.shape[1], gconf))
+        out["shift"] = {q: asdict(draws_summary(x, ps[q], 0.5, below=False))
+                        for q in ("25", "50")}  # fmt: skip
     return out
 
 
@@ -611,14 +677,18 @@ def draws(ls: LinSums, wconf: WidthConf, gconf: GeomConf) -> dict[str, Any]:
 class CheckConf:
     r"""The settings of V-h0 (``check_rows``; ``plans/jepa.md``): series of
     ``n`` stacks of ``span`` frames past the first and ``d`` columns,
-    periods in steps, the seeds of each check."""
+    periods in steps, the seeds of each check. The rotations' periods are
+    $N/5$ steps of an $N$ prime to 30, so off the grid (registered): no lag
+    $\le 256$ is a whole number of turns (no triple still) nor 1/6 or 1/4 of
+    a turn from one ($\Delta = N(6j \pm 1)/30$ and $N(4j \pm 1)/20$ are not
+    whole), and every triple's win is the closed one."""
 
     n: int = 38989
     span: int = 7
     d: int = 64
     seed: int = 1001
-    rotation_period: float = 123.0  # 12.3 s
-    chain_periods: tuple[float, ...] = (63.0, 93.0, 123.0, 183.0, 243.0)
+    rotation_period: float = 123.4  # 12.34 s
+    chain_periods: tuple[float, ...] = (63.4, 93.4, 123.4, 183.4, 243.4)
     band_period: float = 200.0  # 20 s
     band_nu: float = 1 / 32
     band_sigma: float = 400.0  # V-h0e's band: the envelopes' Gaussian kernel
@@ -626,7 +696,7 @@ class CheckConf:
     white_dirs_half: tuple[int, ...] = (21, 22)
     ou_tau: float = 32.0
     integral_tau: float = 32.0
-    thin_period: float = 250.0
+    thin_period: float = 246.8
     thin_n: int = 38393  # n + span a whole number of blocks (reversible)
     leak_dims: int = 8
     cover_seeds: tuple[int, int] = (1101, 1301)
@@ -635,6 +705,8 @@ class CheckConf:
     cover_min: float = 0.90
     known_rs: tuple[float, ...] = (1.0, math.sqrt(2), 2.0)
     known_seeds: tuple[int, int] = (1301, 1501)
+    known_truth_seed: int = 1600
+    leak_taus: tuple[float, float] = (2.0, 64.0)
     known_max: int = 13
     delta_star: float = 0.5
     ou8_taus: tuple[float, ...] = (8.0, 80.0)
@@ -651,14 +723,16 @@ def _record(name: str, **values: Any) -> Row:
 
 
 def _band_noise(
-    n: int, d: int, period: float, nu: float, gen: torch.Generator, t0: int = 0
+    n: int, d: int, period: float, nu: float, gen: torch.Generator
 ) -> Tensor:
-    r"""One frequency in every column ($\sqrt2 \cos$ of its own phase, by
-    ``gen``) plus white noise of variance ``nu``, from the time ``t0``."""
-    phi = 2 * math.pi * torch.rand(d, generator=gen, dtype=torch.float64)
-    t = torch.arange(t0, t0 + n, dtype=torch.float64)[:, None]
-    band = math.sqrt(2) * torch.cos(t * (2 * math.pi / period) + phi)
-    return band + math.sqrt(nu) * white(n, d, gen)
+    r"""One frequency in every plane of the columns $2j$, $2j + 1$
+    (``rotation``, its own phase by ``gen``) plus white noise of variance
+    ``nu``. In a plane the band's $\langle a, b \rangle$, $\lVert a
+    \rVert^2$, $\lVert b \rVert^2$ are of no time: a column of its own phase
+    alone adds $\cos(2\omega t + 2\phi)$ terms, so a triple's $\rho_t$ (and
+    $p$, $\bar\Delta$) would follow the realization's phases, a quantity no
+    block bootstrap of one realization sees."""
+    return rotation(n, d, period, gen) + math.sqrt(nu) * white(n, d, gen)
 
 
 def _band_noise_window(period: float, nu: float, q: float) -> tuple[float, float]:
@@ -796,29 +870,26 @@ def _vh0a(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     return identity_rows(x, ws, cc, "ou")
 
 
-def _rotation_truth(
-    periods: Tensor, lag: int, half: float = 1 / 6
-) -> tuple[Tensor, Tensor]:
+def _rotation_truth(periods: Tensor, lag: int, half: float = 1 / 6) -> Tensor:
     r"""Of rotations of ``periods`` ``(P,)`` (steps) at ``lag``: whether
-    every triple wins (1 where $\Delta / T$ is less than ``half`` from an
-    integer: 1/6 at the bound 1/4, 1/4 at 1/2) and where it is not
-    determined: $\Delta / T$ an integer, the triple still ($\delta_t = 0$, a
-    loss by C3, but computed of cosines that differ by rounding alone, so
-    its win is rounding's). The plan's period of 12.3 s is off the grid, but
-    its double 24.6 s is on it."""
+    every triple wins, 1 where $\Delta / T$ is less than ``half`` from an
+    integer (1/6 at the bound 1/4, 1/4 at 1/2).
+
+    Raises:
+        ValueError: $\Delta / T$ is (within $10^{-6}$) an integer, the triple
+            still and its win rounding's, or ``half`` from one, a tie
+            (``CheckConf``'s periods are of neither).
+    """
     f = lag / periods
     near = (f - f.round()).abs()
-    return (near < half).double(), near < 1e-9
-
-
-def _with_measured(want: Tensor, unknown: Tensor, got: Tensor) -> Tensor:
-    return torch.where(unknown, got, want)
+    if bool(((near < 1e-6) | ((near - half).abs() < 1e-6)).any()):
+        raise ValueError(f"a period of {periods.tolist()} is on the grid at {lag}")
+    return (near < half).double()
 
 
 def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
-    """The rotation: $p$ exact at the determined lags and the survival
-    exact; the windows and $\\bar\\Delta$ of the true $p$ (the measured values
-    put in at the undetermined lags) to $10^{-10}$; the first window's upper
+    r"""The rotation: $p$ and the survival exact; the windows and
+    $\bar\Delta$ of the true $p$ to $10^{-10}$; the first window's upper
     ends between 2.0 and 2.1 s and 3.0 and 3.1 s (q = 1/4, 1/2)."""
     x = rotation(cc.n, cc.d, cc.rotation_period, _gen(cc.seed + 1))
     ls = lin_sums(white_rows(x, ws, wconf, full=False))
@@ -828,14 +899,11 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     x_s = wconf.seconds(main.lags)
     ok, out = True, {}
     for q, half in (("25", 1 / 6), ("50", 1 / 4)):
-        pairs = [_rotation_truth(period, lag, half) for lag in main.lags.tolist()]
-        want = torch.cat([w for w, _ in pairs])
-        unknown = torch.cat([u for _, u in pairs])
-        got = main.p(q)
-        exact = torch.equal(got[~unknown], want[~unknown])
-        full = _with_measured(want, unknown, got)
-        w = windows(x_s, full, 0.5, below=False)
-        m_want = mean_width(x_s, full)
+        want = torch.cat([_rotation_truth(period, lag, half)
+                          for lag in main.lags.tolist()])  # fmt: skip
+        exact = torch.equal(main.p(q), want)
+        w = windows(x_s, want, 0.5, below=False)
+        m_want = mean_width(x_s, want)
         typ = pt[q]["typ"]
         same = (
             typ is not None and w.typical is not None
@@ -846,9 +914,8 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
         )  # fmt: skip
         ok = ok and exact and same
         out[q] = {"p_exact": exact, "typ": typ, "typ_want": w.typical,
-                  "again": pt[q]["p"]["again"], "mean": pt[q]["mean"], "mean_want": m_want,
-                  "undetermined": wconf.seconds(main.lags[unknown]).tolist(),
-                  "p_undetermined": got[unknown].tolist()}  # fmt: skip
+                  "again": pt[q]["p"]["again"], "mean": pt[q]["mean"],
+                  "mean_want": m_want}  # fmt: skip
     surv = ls.surv["25"].sum(1) / main.n.sum(1)
     surv_ok = torch.equal(surv, (main.lags.double() < cc.rotation_period / 6).double())
     ok = (ok and surv_ok and _between(out["25"]["typ"], 2.0, 2.1)
@@ -857,11 +924,10 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
 
 
 def _vh0c(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
-    """The chained rotations: $p$ the common centres' share of the blocks
-    that win (exact where no block's period divides the lag; the measured
-    value put in elsewhere, as V-h0b), the survival exact, the first
-    window's upper end and the survival's crossing between 2.0 and 2.1 s,
-    $\\bar\\Delta$ of the true $p$ to $10^{-10}$."""
+    r"""The chained rotations: $p$ the common centres' share of the blocks
+    that win and the survival exact, the first window's upper end and the
+    survival's crossing between 2.0 and 2.1 s, $\bar\Delta$ of the true $p$
+    and $0.8 + \int S$ of the true $S$ to $10^{-10}$."""
     x = chained_rotation(ws.blocks, cc.d, cc.chain_periods, _gen(cc.seed + 2))
     ls = lin_sums(white_rows(x, ws, wconf, full=False))
     pt = point(ls, wconf)
@@ -871,28 +937,24 @@ def _vh0c(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     periods = torch.tensor([cc.chain_periods[b % len(cc.chain_periods)]
                             for b in range(ws.n_blocks)], dtype=torch.float64)  # fmt: skip
     weight = per_block / per_block.sum()
-    want, unknown = [], []
-    for lag in main.lags.tolist():
-        w, u = _rotation_truth(periods, lag)
-        want.append((weight * w).sum())
-        unknown.append(bool((u & (weight > 0)).any()))
-    p_want, unk = torch.stack(want), torch.tensor(unknown)
+    p_want = torch.stack([(weight * _rotation_truth(periods, lag)).sum()
+                          for lag in main.lags.tolist()])  # fmt: skip
     s_want = torch.stack([(weight * (lag < periods / 6).double()).sum()
                           for lag in main.lags.tolist()])  # fmt: skip
     p = main.p("25")
     s = ls.surv["25"].sum(1) / main.n.sum(1)
     x_s = wconf.seconds(main.lags)
-    exact = bool((p - p_want)[~unk].abs().max() <= 1e-12)
+    exact = bool((p - p_want).abs().max() <= 1e-12)
     exact = exact and bool((s - s_want).abs().max() <= 1e-12)
-    m_want = mean_width(x_s, _with_measured(p_want, unk, p))
+    m_want, s_mean_want = mean_width(x_s, p_want), mean_width(x_s, s_want)
     typ, surv_w = pt["25"]["typ"], pt["25"]["surv"]["first"]
     ok = (exact and _between(typ, 2.0, 2.1) and surv_w is not None
           and 2.0 < surv_w["hi"] < 2.1
-          and abs(pt["25"]["mean"] - m_want) <= 1e-10 * m_want)  # fmt: skip
+          and abs(pt["25"]["mean"] - m_want) <= 1e-10 * m_want
+          and abs(pt["25"]["surv_mean"] - s_mean_want) <= 1e-10 * s_mean_want)  # fmt: skip
     return [_check("V-h0c", ok, p_exact=exact, typ=typ, surv_hi=surv_w and surv_w["hi"],
                    mean=pt["25"]["mean"], mean_want=m_want,
-                   surv_mean=pt["25"]["surv_mean"],
-                   undetermined=wconf.seconds(main.lags[unk]).tolist())]  # fmt: skip
+                   surv_mean=pt["25"]["surv_mean"], surv_mean_want=s_mean_want)]  # fmt: skip
 
 
 def _vh0d(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
@@ -986,9 +1048,19 @@ def _vh0h(cc: CheckConf, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
     b = lin_sums(white_rows(x.flip(0), ws, wconf, full=False))
     same_n = torch.equal(f.n.sum(1), b.n.sum(1))
     same_w = all(torch.equal(f.win[q].sum(1), b.win[q].sum(1)) for q in ("25", "50"))
+    same_s = all(torch.equal(f.surv[q].sum(1), b.surv[q].sum(1)) for q in ("25", "50"))
     rel = float(((f.g() - b.g()).abs() / f.g().abs()).max())
-    rows = [_check("V-h0h-reverse", same_n and same_w and rel <= cc.rel, rel_G=rel,
-                   wins_equal=same_w)]  # fmt: skip
+    pf, pb = point(f, wconf), point(b, wconf)
+    # p and S are equal sums, so their windows and widths are equal to the
+    # bit; G is equal to rounding: the same runs, the ends to 1e-9
+    same_widths = all(
+        pf[q][k] == pb[q][k]
+        for q in ("25", "50") for k in ("p", "typ", "mean", "surv", "surv_mean")
+    )  # fmt: skip
+    same_g = all(_same_spans(pf[q]["G"], pb[q]["G"], 1e-9) for q in ("25", "50"))
+    ok = same_n and same_w and same_s and rel <= cc.rel and same_widths and same_g
+    rows = [_check("V-h0h-reverse", ok, rel_G=rel, wins_equal=same_w,
+                   surv_equal=same_s, widths_equal=same_widths, G_windows=same_g)]  # fmt: skip
     rot = rotation(cc.thin_n, cc.d, cc.thin_period, _gen(cc.seed + 8))
     thin = rot[::2]
     lags = torch.arange(wconf.main_lo // 2, wconf.max_lag // 2 + 1)
@@ -999,16 +1071,24 @@ def _vh0h(cc: CheckConf, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
 
     p_full = torch.stack([p_of(rot, 2 * n) for n in lags.tolist()])
     p_thin = torch.stack([p_of(thin, n) for n in lags.tolist()])
-    # a lag of a whole number of turns is still: its win is rounding's (V-h0b)
-    period = torch.tensor([cc.thin_period], dtype=torch.float64)
-    unknown = torch.cat([_rotation_truth(period, 2 * n)[1] for n in lags.tolist()])
-    p_thin = _with_measured(p_thin, unknown, p_full)
     w_full = windows(2 * lags.double(), p_full, 0.5, below=False).typical
     w_thin = windows(lags.double(), p_thin, 0.5, below=False).typical
     ok = (torch.equal(p_full, p_thin) and w_full is not None and w_thin is not None
           and abs(w_full - 2 * w_thin) <= cc.rel * w_full)  # fmt: skip
     rows.append(_check("V-h0h-thin", ok, steps_full=w_full, steps_thin=w_thin))
     return rows
+
+
+def _same_spans(a: Mapping[str, Any], b: Mapping[str, Any], rel: float) -> bool:
+    """Two ``_span``s of the same runs, the ends equal to ``rel``."""
+    sa = ([a["first"]] if a["first"] else []) + list(a["again"])
+    sb = ([b["first"]] if b["first"] else []) + list(b["again"])
+    return len(sa) == len(sb) and all(
+        x["lo_cut"] == y["lo_cut"] and x["hi_cut"] == y["hi_cut"]
+        and abs(x["lo"] - y["lo"]) <= rel * x["lo"]
+        and abs(x["hi"] - y["hi"]) <= rel * x["hi"]
+        for x, y in zip(sa, sb, strict=True)
+    )  # fmt: skip
 
 
 def _vh0j(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
@@ -1023,7 +1103,12 @@ def _vh0j(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
 
 
 def _vh0l(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
-    """The places by the frame's number: $w_u = (u, (u/100)^2)$."""
+    r"""The places by the frame's number, through the guard's own code
+    (``slots``, ``conditions``, ``TARGETS``): $w_u = (u, (u/100)^2)$, the
+    first coordinate the time. The conditions' times by hand (``ext`` at $t
+    + \Delta$, ``mid`` at $t$), each read's true candidate (the middle
+    column) the place of its target and the extrapolation's miss of the
+    second coordinate $2\Delta^2/10^4$, four times the triple's $\nu_t$."""
     u = torch.arange(ws.n, dtype=torch.float64)
     w = torch.stack([u, (u / 100) ** 2], 1)
     rows = []
@@ -1031,37 +1116,68 @@ def _vh0l(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
         c = ws.centres(lag)[1]
         c = c[(c >= 4 * lag) & (c + 5 * lag < ws.n)][:50]
         sl = slots(c, lag)
-        ok = (torch.equal(w[sl["past"], 0], c.double() - lag)
-              and torch.equal(w[sl["future"], 0], c.double() + lag)
-              and torch.equal(w[sl["ext"][:, 4], 0], c.double() + lag)
-              and torch.equal(w[sl["mid"][:, 4], 0], c.double())
-              and torch.equal(w[sl["ext"][:, 0], 0], c.double() - 3 * lag)
-              and torch.equal(w[sl["mid"][:, 8], 0], c.double() + 4 * lag))  # fmt: skip
-        ext = (
-            2 * w[sl["now"]] - w[sl["past"]]
-        )  # linear in the 1st, 2 n^2 short in the 2nd
+        cond = conditions(w, sl)
+        cd = c.double()
+        times = {"past": cd - lag, "now": cd, "future": cd + lag, "ext": cd + lag,
+                 "mid": cd}  # fmt: skip
+        ok = all(torch.equal(cond[k][:, 0], v) for k, v in times.items())
+        for read in ("ext", "mid"):
+            middle = sl[read][:, sl[read].shape[1] // 2]
+            ok = ok and torch.equal(middle, sl[TARGETS[read]])
+            ok = ok and torch.equal(w[middle, 0], cond[read][:, 0])
+        ok = (ok and torch.equal(w[sl["ext"][:, 0], 0], cd - 3 * lag)
+              and torch.equal(w[sl["mid"][:, 8], 0], cd + 4 * lag))  # fmt: skip
         t = triple_terms(w, c, lag)
-        hand = ((c.double() + lag - ext[:, 0]).square()
-                + (((c.double() + lag) / 100) ** 2 - ext[:, 1]).square())  # fmt: skip
-        ok = ok and torch.equal(ext[:, 0], c.double() + lag)
+        hand = (w[sl["future"]] - cond["ext"]).square().sum(1)
         ok = ok and bool(((4 * t.num - hand).abs() <= 1e-9 * hand.clamp(min=1)).all())
         ok = ok and bool(((hand - (2 * lag**2 / 1e4) ** 2).abs() <= 1e-9).all())
         rows.append(_check("V-h0l", ok, lag=lag))
     return rows
 
 
+def _ou_columns(n: int, taus: Tensor, gen: torch.Generator) -> Tensor:
+    """``(n, len(taus))`` independent unit OUs of the time constants
+    ``taus`` (steps), as ``synth_series.ou`` column by column."""
+    r = torch.exp(-1 / taus.double())
+    e = white(n, len(taus), gen)
+    x = torch.empty_like(e)
+    x[0] = e[0]
+    c = (1 - r * r).sqrt()
+    for t in range(1, n):
+        x[t] = r * x[t - 1] + c * e[t]
+    return x
+
+
+def _pooled_ou_g(taus: Tensor, weights: Tensor, lag: int) -> float:
+    r"""The pooled $G$ of independent OUs of ``taus`` and variances
+    ``weights``: $1 - \sum_i w_i (1 - r_i^{2n}) / (4 \sum_i w_i (1 - r_i^n))$
+    (``midpoint``'s $G = 1 - D(2n) / 4D(n)$)."""
+    r = torch.exp(-1 / taus.double())
+    w = weights.double()
+    return float(1 - (w * (1 - r ** (2 * lag))).sum() / (4 * (w * (1 - r**lag)).sum()))
+
+
 def _vh0m(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
-    """The whitening of the reference alone: reference and evaluation of
-    other known covariances."""
+    r"""The whitening of the reference alone: an evaluation of OUs of
+    time constants ``leak_taus`` (log-spaced over its ``leak_dims``
+    columns) and scales 4 .. 1, a white reference of scales 1 .. 4. The
+    reference's whitening weighs column $i$ by $(s^{\mathrm{ev}}_i /
+    s^{\mathrm{ref}}_i)^2$ (16 .. 1/16, the fast columns most), the
+    evaluation's by 1: the pooled $G$ moves by the closed difference of
+    ``_pooled_ou_g``. The rows' $G$ is the reference whitening's to
+    ``rel``; whitened anew on the evaluation it moves the closed way (the
+    lag of the largest closed move: the same sign and over half of it)."""
     g = _gen(cc.seed + 10)
     k = cc.leak_dims
     scale_ref = torch.linspace(1, 4, k, dtype=torch.float64)
     scale_ev = torch.linspace(4, 1, k, dtype=torch.float64)
+    lo, hi = cc.leak_taus
+    taus = torch.logspace(math.log10(lo), math.log10(hi), k, dtype=torch.float64)
     ref = white(cc.n, k, g) * scale_ref
-    ev = ou(cc.n, k, math.exp(-1 / cc.ou_tau), g) * scale_ev
+    ev = _ou_columns(cc.n, taus, g) * scale_ev
     gc = replace(gconf, k=k, k_side=())
     rows = code_rows(ev, ref, ws, gc, wconf, sens=False, labels={})
-    got = lin_sums(rows, k=k, ref="all").g()
+    got = lin_sums(rows, k=k, eps=gc.c_eps, ref="all").g()
     want = lin_sums(
         white_rows(
             Whitener.fit(ref, k, c_eps=gc.c_eps).white(ev), ws, wconf, full=False
@@ -1071,8 +1187,14 @@ def _vh0m(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
         white_rows(Whitener.fit(ev, k, c_eps=gc.c_eps).white(ev), ws, wconf, full=False)
     ).g()
     rel = float(((got - want).abs() / want.abs()).max())
-    moved = float(((other - want).abs() / want.abs()).max())
-    return [_check("V-h0m", rel <= cc.rel and moved > 1e-6, rel=rel, refit_moved=moved)]
+    w_ref = (scale_ev / scale_ref) ** 2
+    closed = torch.tensor([_pooled_ou_g(taus, torch.ones(k), lag) - _pooled_ou_g(taus, w_ref, lag)
+                           for lag in range(1, wconf.max_lag + 1)])  # fmt: skip
+    i = int(closed.abs().argmax())
+    moved = float(other[i] - want[i])
+    ok_moved = moved * float(closed[i]) > 0 and abs(moved) > abs(float(closed[i])) / 2
+    return [_check("V-h0m", rel <= cc.rel and ok_moved, rel=rel, lag=i + 1,
+                   refit_moved=moved, closed_move=float(closed[i]))]  # fmt: skip
 
 
 def _long_sums(make: Callable[[int], Tensor], parts: int, ws: WidthSets,
@@ -1082,18 +1204,22 @@ def _long_sums(make: Callable[[int], Tensor], parts: int, ws: WidthSets,
     return _cat([_common_sums(make(i), ws, wconf) for i in range(parts)])
 
 
+def _band_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf, period: float,
+                gen: torch.Generator) -> dict[str, Any]:  # fmt: skip
+    """``point`` of the band and noise of ``period`` on ``cover_long``
+    independent segments (``_band_noise``: of no phase, so the segments are
+    of one process)."""
+    return point(
+        _long_sums(
+            lambda _: _band_noise(cc.n, cc.d, period, cc.band_nu, gen),
+            cc.cover_long, ws, wconf,
+        ),
+        wconf,
+    )  # fmt: skip
+
+
 def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
-    g_long = _gen(cc.cover_truth_seed)
-    phi_seed = int(torch.randint(2**31, (1,), generator=g_long))
-
-    def segment(i: int) -> Tensor:
-        gi = _gen(phi_seed)  # the same phases every segment, the noise apart
-        phi = 2 * math.pi * torch.rand(cc.d, generator=gi, dtype=torch.float64)
-        t = torch.arange(i * cc.n, (i + 1) * cc.n, dtype=torch.float64)[:, None]
-        band = math.sqrt(2) * torch.cos(t * (2 * math.pi / cc.band_period) + phi)
-        return band + math.sqrt(cc.band_nu) * white(cc.n, cc.d, g_long)
-
-    truth = point(_long_sums(segment, cc.cover_long, ws, wconf), wconf)
+    truth = _band_truth(cc, ws, wconf, cc.band_period, _gen(cc.cover_truth_seed))
     hi_true = _band_noise_window(cc.band_period, cc.band_nu, 0.25)[1] * wconf.step
     t_mean, t_typ = truth["25"]["mean"], truth["25"]["typ"]
     hits = {"G_hi": 0, "mean": 0, "typ": 0}
@@ -1114,9 +1240,15 @@ def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
 
 
 def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
+    """The known differences: of each ``known_rs`` the pairs' wording by
+    ``judge_geom.classify`` (the rule of the comparisons) and the true
+    $\\log_2$ ratio of $\\bar\\Delta$ (``_band_truth`` of each period)."""
     rows = []
     main = torch.arange(wconf.main_lo, wconf.max_lag + 1)
     x_s = wconf.seconds(main)
+    g_t = _gen(cc.known_truth_seed)
+    true_mean = {r: _band_truth(cc, ws, wconf, cc.band_period * r, g_t)["25"]["mean"]
+                 for r in cc.known_rs}  # fmt: skip
     for r in cc.known_rs:
         distinct = 0
         for seed in range(*cc.known_seeds):
@@ -1131,16 +1263,17 @@ def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
                 rb = ratio_resamples(pb.win["25"], pb.n, counts)
                 ivs.append(paired_ratio(x_s, ra, rb, 0.5).mean)
             lo, hi = union(ivs)
-            distinct += (lo is not None and lo > cc.delta_star) or (
-                hi is not None and hi < -cc.delta_star
-            )
+            distinct += classify(-math.inf if lo is None else lo,
+                                 math.inf if hi is None else hi,
+                                 cc.delta_star) == "distinct"  # fmt: skip
         n = cc.known_seeds[1] - cc.known_seeds[0]
+        true = math.log2(true_mean[1.0] / true_mean[r]) if 1.0 in true_mean else None
         if r == 1.0:
-            rows.append(
-                _check("V-h0k", distinct <= cc.known_max, r=r, distinct=distinct, n=n)
-            )
+            rows.append(_check("V-h0k", distinct <= cc.known_max, r=r, distinct=distinct,
+                               n=n, true_ratio=true))  # fmt: skip
         else:
-            rows.append(_record("V-h0k-power", r=r, distinct=distinct, n=n))
+            rows.append(_record("V-h0k-power", r=r, distinct=distinct, n=n,
+                                true_ratio=true, true_means=[true_mean[1.0], true_mean[r]]))  # fmt: skip
     return rows
 
 

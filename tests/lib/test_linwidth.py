@@ -9,7 +9,8 @@ intervals, an odd number, the median alone in its interval (the crossing
 linear in $\log\Delta$ falls on it) and $\bar\Delta$
 their mean clipped to the grid exactly where they lie at the arithmetic
 midpoints (the trapezoid of a step at the middle is exact); the survival
-curve is the running ``and``; the vectorized first upper end is the loop's;
+curve is the first run of wins, $P(W_t \ge \Delta)$ of moments winning on
+one run whatever its start; the vectorized first upper end is the loop's;
 an order point of no window counts below all; and a ratio of
 $\Delta_{\mathrm{typ}}$ is given only where both codes have a window in
 97.5% of the draws.
@@ -105,10 +106,22 @@ class TestMonotoneWidths:
         want = float(w.clamp(0.8, 12.8).mean())
         assert mean_width(X, p_of(w.double(), X)) == pytest.approx(want, rel=1e-12)
 
-    def test_survival_is_the_running_and(self):
-        won = torch.tensor([[1, 1, 0, 1], [1, 1, 1, 1], [0, 1, 1, 1]]).bool()
-        want = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0]]).bool()
+    def test_survival_is_the_first_run_of_wins(self):
+        won = torch.tensor([[1, 1, 0, 1], [1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 0, 0],
+                            [0, 1, 0, 1]]).bool()  # fmt: skip
+        want = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1], [1, 1, 1, 1], [0, 0, 0, 0],
+                             [1, 1, 0, 0]]).bool()  # fmt: skip
         assert torch.equal(survival(won), want)
+
+    def test_survival_of_runs_is_p_of_their_upper_ends(self):
+        # moments winning on [l_t, W_t]: the share alive is P(W_t >= lag),
+        # whatever the l_t (a floor of losses below the window included)
+        lo = torch.tensor([0, 1, 2, 1, 3])
+        hi = torch.tensor([2, 4, 2, 3, 4])
+        idx = torch.arange(5)
+        won = (idx[None] >= lo[:, None]) & (idx[None] <= hi[:, None])
+        want = (hi[:, None] >= idx[None]).double().mean(0)
+        assert torch.equal(survival(won).double().mean(0), want)
 
 
 class TestDraws:
@@ -130,6 +143,11 @@ class TestDraws:
         assert quantile(v, 0.975) == 1.0
         v = torch.tensor([math.nan] * 2 + [1.0] * 98, dtype=F64)
         assert quantile(v, 0.025) == 1.0
+        # exactly 2.5% of no window is not more than 2.5%: the next order point
+        v = torch.tensor([math.nan] * 5 + [2.0] * 195, dtype=F64)
+        assert quantile(v, 0.025) == 2.0
+        v = torch.tensor([math.nan] * 6 + [2.0] * 194, dtype=F64)
+        assert quantile(v, 0.025) is None
 
     def test_the_union_of_intervals(self):
         assert union([(1.0, 2.0), (0.5, 1.5)]) == (0.5, 2.0)
@@ -161,7 +179,15 @@ class TestDraws:
         none = b.clone()
         none[:3] = 0.0  # 3% of the draws of b have no window
         assert paired_ratio(X, a, none, 0.5).typ is None
-        assert not got.cut
+        assert not got.cut and got.tail == (0.0, 0.0)
+        # a p > 0 at the last point is a tail, not a cut; a window there is a cut
+        c = torch.stack([curve(0.9, 0.7, 0.3, 0.1, 0.2)] * 100)
+        got = paired_ratio(X, c, a, 0.5)
+        assert not got.cut and got.tail[0] == pytest.approx(0.2)
+        d = torch.stack([curve(0.9, 0.7, 0.3, 0.1, 0.6)] * 100)
+        assert not paired_ratio(X, d, a, 0.5).cut
+        e = torch.stack([curve(0.9, 0.9, 0.9, 0.9, 0.9)] * 100)
+        assert paired_ratio(X, e, a, 0.5).cut
 
     def test_n_lin(self):
         assert n_lin(torch.tensor([0.0, 1.0, 3.3, 3.3, 30.0]), (0.8, 3.2, 25.6)) == [

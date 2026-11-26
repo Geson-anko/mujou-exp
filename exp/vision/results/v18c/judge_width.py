@@ -21,19 +21,24 @@ $\Delta_{\mathrm{typ}}$, their widths), $\bar\Delta$ at $k$ = 48, 96 against
 ceiling, floor, extrapolation and midpoint (``guard_values``), their paired
 differences' $\mathrm{SE}^*$ (``width_guard.diff_se``), the controls and
 ``uncond``; $\sigma_{\mathrm{dec}}$ of ``pca``'s three decoders
-(``sigma_dec``); the lags where the ceiling clears the floor (``resolves``);
-the stop where ``pca``'s first decoder clears it at none.
+(``sigma_dec``) of $c - f$ (the guard's 1) and of $e - f$ (its 2); the lags
+where the ceiling clears the floor (``resolves``); the stop where ``pca``'s
+first decoder clears it at none.
 
 ``--stage cheat`` (V-h2) reads ``<width>/guard/cheat``: of each cheat its
 $\bar\Delta$ against strength 0 (``pair_ratio``) and its guard's verdict
-(``guard_verdict``, $\sigma_{\mathrm{dec}}$ of the guard stage), and the
-families' pass (``cheat_pass``, C21).
+(``guard_verdict``, the $\sigma_{\mathrm{dec}}$ of the guard stage), and the
+families' pass (``cheat_pass``, C21; a claimable strength of no guard lag
+stops as out of the guard's range).
 
 ``--stage apply`` (the exploration, a description: 「探索の記述」) reads the
 models' ``posthoc_width/rows/<step>.json`` (``judge_geom.MODELS``) and the
 VAEs' ``<width>/vae/rows``, their widths, their paired ratios against
 ``pca``, ``mean8`` and their own step 0, and their guard where there is
-one. Prints markdown; ``--json`` also writes the numbers::
+one: a wording of a width carries the guard's (``guard_note``: none where
+it passed, else 「ガードで確かめられない」 and the like, and 「ガードの範囲
+外」 of a win beyond 6.4 s). Prints markdown; ``--json`` also writes the
+numbers::
 
     uv run python -m exp.vision.results.v18c.judge_width --stage checks|yard|guard|cheat|apply \
         [--width runs/v18c-width] [--geom runs/v18c-tlin] [--runs runs] [--json out.json]
@@ -132,14 +137,33 @@ def checks_stage(rows: Sequence[Row]) -> dict[str, Any]:
 
 def summary(ls: LinSums, rows: Sequence[Row], wconf: WidthConf, gconf: GeomConf,
             **labels: Any) -> dict[str, Any]:  # fmt: skip
-    """The point widths (``width_eval.point``), their intervals
-    (``width_eval.draws``) and the directions' ``n_lin`` (of the main
-    whitening's ``dir`` row of ``labels``, if any)."""
-    out = {"point": point(ls, wconf), "draws": draws(ls, wconf, gconf)}
+    r"""The point widths (``width_eval.point``), their intervals
+    (``width_eval.draws``, with the shifted blocks' beside), and of the
+    whitening of ``labels`` (one: ``place``, ``k``, ``eps``, ``ref``) the
+    directions' ``n_lin``, the sensitivity of each lag's ``in`` centres
+    (``in``: its point $\Delta_{\mathrm{typ}}$, $\bar\Delta$) and the
+    common centres' share of the ``in`` centres at ``main_lo``
+    (``common_share``)."""
+    try:
+        shifted = lin_sums(rows, shift=True, **labels)
+    except ValueError, KeyError:
+        shifted = None
+    out: dict[str, Any] = {"point": point(ls, wconf),
+                           "draws": draws(ls, wconf, gconf, shifted)}  # fmt: skip
     d = [r for r in rows if r.get("part") == "dir"
          and all(r.get(k) == v for k, v in labels.items())]  # fmt: skip
     if d:
         out["n_lin"] = d[0]["n_lin"]
+    try:
+        ins = lin_sums(rows, "in", **labels)
+    except ValueError:
+        return out
+    pt = point(ins, wconf)
+    out["in"] = {q: {"typ": pt[q]["typ"], "mean": pt[q]["mean"]} for q in ("25", "50")}
+    at = (ins.lags == wconf.main_lo).nonzero()
+    here = (ls.lags == wconf.main_lo).nonzero()
+    if len(at) and len(here):
+        out["common_share"] = float(ls.n[int(here[0])].sum() / ins.n[int(at[0])].sum())
     return out
 
 
@@ -151,7 +175,8 @@ def pair_ratio(
     interval and wording (``classify`` with ``DELTA``), of
     $\Delta_{\mathrm{typ}}$ the same where both have a window in 97.5% of
     the draws of both lengths (else the shares of draws with a window), and
-    whether a draw is cut at 25.6 s."""
+    whether a draw's first window is cut at 25.6 s (and the mean $p$
+    there, ``tail``)."""
     ma, mb = a.restrict(wconf.main_lo), b.restrict(wconf.main_lo)
     x = wconf.seconds(ma.lags)
     got = []
@@ -175,6 +200,7 @@ def pair_ratio(
         "typ_cls": None if typ is None else _classify(typ),
         "windowed": [g.windowed for g in got],
         "cut": any(g.cut for g in got),
+        "tail": [g.tail for g in got],
     }
 
 
@@ -190,10 +216,18 @@ def _classify(iv: Interval) -> str:
     )
 
 
+def _main(place: str, g: GeomConf) -> dict[str, Any]:
+    r"""The labels of the main whitening (README: the reference, PCA64,
+    $c_\epsilon = 10^{-6}$) of ``place``: they name one whitening of the
+    yard's rows, whose sensitivity has a whitening of the same ``k`` and
+    ``ref`` but ``c_eps_sens``."""
+    return {"place": place, "k": g.k, "eps": g.c_eps, "ref": "all"}
+
+
 def _sums(
     rows: Sequence[Row], place: str, g: GeomConf, **variant: Any
 ) -> LinSums | None:
-    lab = {"place": place, "k": g.k, "ref": "all"} | variant
+    lab = _main(place, g) | variant
     try:
         return lin_sums(rows, **lab)
     except ValueError:
@@ -211,8 +245,8 @@ def yard_stage(width: Path, wconf: WidthConf, g: GeomConf) -> dict[str, Any]:
         ls = {n: _sums(by_code.get(n, []), place, g) for n in names}
         ls = {n: v for n, v in ls.items() if v is not None}
         for n, v in ls.items():
-            out["codes"][f"{n}/{place}"] = summary(v, by_code[n], wconf, g, place=place,
-                                                   k=g.k, ref="all")  # fmt: skip
+            out["codes"][f"{n}/{place}"] = summary(v, by_code[n], wconf, g,
+                                                   **_main(place, g))  # fmt: skip
             moves = {}
             for k in g.k_sens:
                 alt = _sums(by_code[n], place, g, k=k)
@@ -280,14 +314,19 @@ def guard_values(row: Row, gconf: GeomConf) -> dict[str, Any]:
     return out
 
 
-def sigma_dec(by_seed: Mapping[int, Mapping[int, Mapping[str, Any]]]) -> float:
-    r"""$\sigma_{\mathrm{dec}}$ (C12): of each lag the sample variance (over
-    the decoder seeds, $n - 1$) of $c - f$, pooled as their mean over the
-    lags (the degrees of freedom add up), its square root. ``by_seed`` maps
-    a seed to each lag's ``guard_values``."""
+def sigma_dec(
+    by_seed: Mapping[int, Mapping[int, Mapping[str, Any]]], top: str = "c"
+) -> float:
+    r"""$\sigma_{\mathrm{dec}}$ (C12) of the difference ``top`` $- f$ (``c``:
+    the ceiling's, the guard's 1; ``e``: the extrapolation's, its 2): of
+    each lag the sample variance (over the decoder seeds, $n - 1$) of the
+    difference, pooled as their mean over the lags (the degrees of freedom
+    add up), its square root. ``by_seed`` maps a seed to each lag's
+    ``guard_values``. Each difference has its own: the extrapolation lies
+    off the codes the decoder learned on, where its seeds may differ more."""
     seeds = sorted(by_seed)
     lags = sorted(set.intersection(*(set(by_seed[s]) for s in seeds)))
-    var = [statistics.variance([by_seed[s][lag]["c"] - by_seed[s][lag]["f"] for s in seeds])
+    var = [statistics.variance([by_seed[s][lag][top] - by_seed[s][lag]["f"] for s in seeds])
            for lag in lags]  # fmt: skip
     return math.sqrt(sum(var) / len(var))
 
@@ -304,22 +343,34 @@ def resolves(v: Mapping[str, Any], sigma: float) -> bool:
 
 
 def guard_verdict(
-    values: Mapping[int, Mapping[str, Any]], won: Sequence[int], sigma: float
+    values: Mapping[int, Mapping[str, Any]],
+    won: Sequence[int],
+    sigma: float,
+    sigma_ef: float,
 ) -> dict[str, Any]:
     r"""The guard's verdict (C13) of the lags ``won`` (the guard's lags where
     the point $p_{1/4} \ge 1/2$, $L$) and each lag's ``guard_values``:
     ``no_lag`` ($L$ empty: no width is called wide), ``unverifiable`` (the
-    ceiling does not clear the floor at a lag of $L$), ``broken`` (it does,
-    and $e - f + 2\,\mathrm{SE}_{\mathrm{tot}} < 0$ at a lag), ``passed``
-    ($e - f - 2\,\mathrm{SE}_{\mathrm{tot}} > 0$ at every lag of $L$),
-    ``pending`` otherwise (an interval holding 0)."""
-    lags = [lag for lag in won if lag in values]
+    ceiling does not clear the floor at a lag of $L$, of $\sigma_{\mathrm{
+    dec}}$ ``sigma``), ``broken`` (it does, and $e - f + 2\,\mathrm{SE}_{
+    \mathrm{tot}} < 0$ at a lag, of ``sigma_ef``), ``passed`` ($e - f -
+    2\,\mathrm{SE}_{\mathrm{tot}} > 0$ at every lag of $L$), ``pending``
+    otherwise (an interval holding 0).
+
+    Raises:
+        ValueError: A lag of ``won`` has no guard row (a missing row is not
+            an empty $L$).
+    """
+    missing = [lag for lag in won if lag not in values]
+    if missing:
+        raise ValueError(f"no guard row of the lags {missing} of L")
+    lags = list(won)
     if not lags:
         return {"verdict": "no_lag", "L": []}
     each = {}
     for lag in lags:
         v = values[lag]
-        se = _tot(v["se_ef"], sigma)
+        se = _tot(v["se_ef"], sigma_ef)
         each[lag] = {"resolves": resolves(v, sigma), "beats": v["e"] - v["f"] - 2 * se > 0,
                      "loses": v["e"] - v["f"] + 2 * se < 0}  # fmt: skip
     if not all(e["resolves"] for e in each.values()):
@@ -353,6 +404,7 @@ def guard_stage(width: Path, g: GeomConf) -> dict[str, Any]:
         out["codes"].setdefault(path.parent.name, {})[seed] = _guard_rows(path, g)
     pca = out["codes"].get("pca", {})
     out["sigma_dec"] = sigma_dec(pca) if len(pca) >= 2 else None
+    out["sigma_dec_ef"] = sigma_dec(pca, "e") if len(pca) >= 2 else None
     sig = out["sigma_dec"] or 0.0
     out["resolves"] = {
         f"{code}/d{seed}": [lag for lag, v in lags.items() if resolves(v, sig)]
@@ -360,7 +412,8 @@ def guard_stage(width: Path, g: GeomConf) -> dict[str, Any]:
         for seed, lags in seeds.items()
     }
     out["stop"] = not out["resolves"].get("pca/d0")
-    print(f"σ_dec = {_fmt(out['sigma_dec'])}")
+    print(f"σ_dec(c−f) = {_fmt(out['sigma_dec'])}, "
+          f"σ_dec(e−f) = {_fmt(out['sigma_dec_ef'])}")  # fmt: skip
     print(
         "\n| 符号 | 刻み | 天井 c | 床 f | 外挿 e | 中点 m | SE*(c−f) | SE*(e−f) | 天井が床から離れる |"
     )
@@ -396,9 +449,12 @@ def cheat_pass(cheats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     strengths whose $\bar\Delta$ against strength 0 clears $+\Delta_*$
     wholly; the family passes where it has one and every one's guard is
     ``broken``; it fails where one's is ``passed`` (the guard is not
-    enough), ``unverifiable`` or ``pending`` (no catch shown); with none,
-    ``none_claimable`` (「この族では確かめられない」). Records where
-    $\bar\Delta$ does not rise with the strength."""
+    enough); else it is ``out_of_range`` where one's is ``no_lag`` (its
+    width grew, but its latent wins at no guard lag: 「ガードの範囲外で確か
+    められない」, a stop); else it fails where one's is ``unverifiable`` or
+    ``pending`` (no catch shown); with none, ``none_claimable`` (「この族で
+    は確かめられない」). Records where $\bar\Delta$ does not rise with the
+    strength."""
     out = {}
     for family in ("mean", "drop"):
         names = sorted((n for n in cheats if n.startswith(f"{family}-")),
@@ -407,6 +463,10 @@ def cheat_pass(cheats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
         verdicts = {n: cheats[n]["guard"]["verdict"] for n in claim}
         if not claim:
             result = "none_claimable"
+        elif "passed" in verdicts.values():
+            result = "fail"
+        elif "no_lag" in verdicts.values():
+            result = "out_of_range"
         elif all(v == "broken" for v in verdicts.values()):
             result = "pass"
         else:
@@ -418,9 +478,10 @@ def cheat_pass(cheats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def cheat_stage(
-    width: Path, wconf: WidthConf, g: GeomConf, sigma: float
+    width: Path, wconf: WidthConf, g: GeomConf, sigma: float, sigma_ef: float
 ) -> dict[str, Any]:
-    """V-h2 (module docstring) with $\\sigma_{\\mathrm{dec}}$ ``sigma``."""
+    r"""V-h2 (module docstring) with the $\sigma_{\mathrm{dec}}$ of $c - f$
+    ``sigma`` and of $e - f$ ``sigma_ef``."""
     root = width / "guard" / "cheat"
     guard = GuardConf()
     ls = {p.parent.name: lin_sums(_load(p)) for p in sorted(root.glob("*/width.json"))}
@@ -431,10 +492,11 @@ def cheat_stage(
         cheats[name] = {
             "mean": point(v, wconf)["25"]["mean"],
             "ratio": pair_ratio(v, base, wconf, g),
-            "guard": guard_verdict(values, won_lags(v, guard.lags), sigma),
+            "guard": guard_verdict(values, won_lags(v, guard.lags), sigma, sigma_ef),
             "beyond": bool(won_lags(v, range(guard.lags[-1] + 1, wconf.max_lag + 1))),
         }  # fmt: skip
-    out = {"cheats": cheats, "families": cheat_pass(cheats), "sigma_dec": sigma}
+    out = {"cheats": cheats, "families": cheat_pass(cheats), "sigma_dec": sigma,
+           "sigma_dec_ef": sigma_ef}  # fmt: skip
     print("| ずる | Δ̄ | 強さ 0 との比の区間 | ガード |\n| -- | -- | -- | -- |")
     for name, c in cheats.items():
         print(f"| {name} | {_fmt(c['mean'])} | {_iv(c['ratio']['mean'])} | "
@@ -447,12 +509,34 @@ def cheat_stage(
 # -- the exploration ----------------------------------------------------------------------
 
 
+GUARD_NOTES = {
+    "passed": "",
+    "broken": "潜在では外挿が copy に勝つが、絵では勝たない",
+    "no_lag": "ガードの刻みで潜在が勝たないので、幅を「広い」とは言わない",
+    "unverifiable": "ガードで確かめられない",
+    "pending": "ガードで確かめられない（保留）",
+    None: "ガードで確かめられない（ガードの行が無い）",
+}  # README, 「言葉づかいの規則」
+BEYOND = "6.4 秒より長い刻みはガードの範囲外"
+
+
+def guard_note(verdict: str | None, beyond: bool) -> str:
+    """The note a wording of a width carries (README, 「言葉づかいの規則」;
+    C13): none where the guard ``verdict`` passed, else what it could not
+    vouch for; and where the latent wins beyond the guard's lags
+    (``beyond``) that those lags are out of its range."""
+    notes = [GUARD_NOTES[verdict]] + ([BEYOND] if beyond else [])
+    return "。".join(n for n in notes if n)
+
+
 def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomConf,
-                sigma: float | None) -> dict[str, Any]:  # fmt: skip
-    """The exploration (「探索の記述」; module docstring): each model's
+                sigmas: tuple[float, float] | None) -> dict[str, Any]:  # fmt: skip
+    r"""The exploration (「探索の記述」; module docstring): each model's
     widths of each place, its paired ratios against ``pca``, ``mean8`` and
-    its own step 0 (of the same place), and its guard's verdict where its
-    guard rows are (``sigma`` the guard stage's; None: not read)."""
+    its own step 0 (of the same place) with ``guard_note``, and its guard's
+    verdict where its guard rows are (``sigmas`` the guard stage's
+    $\sigma_{\mathrm{dec}}$ of $c - f$ and $e - f$; None: not read). The
+    guard is of the own place: the ``h_mean`` widths have none."""
     yard = {p.stem: _load(p) for p in sorted((width / "yard" / "rows").glob("*.json"))}
     step0 = step0_inits(_load(geom / "yard" / "vd.json"))
     rows: dict[str, list[Row]] = {name: _load(width / "vae" / "rows" / f"{name}.json")
@@ -480,8 +564,8 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
             ls = _sums(rs, place, g)
             if ls is None:
                 continue
-            e: dict[str, Any] = {"summary": summary(ls, rs, wconf, g, place=place, k=g.k,
-                                                    ref="all"), "ratios": {}}  # fmt: skip
+            e: dict[str, Any] = {"summary": summary(ls, rs, wconf, g, **_main(place, g)),
+                                 "ratios": {}}  # fmt: skip
             for other in ("pca", "mean8", init):
                 if other is None or other not in yard:
                     continue
@@ -489,10 +573,13 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
                 if lo is not None:
                     e["ratios"][other] = pair_ratio(ls, lo, wconf, g)
             m[place] = e
+        own = _sums(rs, "own", g)
+        verdict = None
         if (
             "path" in meta[label]
-            and sigma is not None
+            and sigmas is not None
             and meta[label]["step"] is not None
+            and own is not None
         ):
             gpath = (
                 Path(meta[label]["path"])
@@ -503,9 +590,20 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
             grows = [r for r in _load(gpath) if r.get("cond") == "pca64"]
             if grows:
                 values = {r["lag"]: guard_values(r, g) for r in grows}
-                own = _sums(rs, "own", g)
-                assert own is not None
-                m["guard"] = guard_verdict(values, won_lags(own, guard.lags), sigma)
+                m["guard"] = guard_verdict(values, won_lags(own, guard.lags), *sigmas)
+                verdict = m["guard"]["verdict"]
+            elif any(r.get("part") == "no_lag" for r in _load(gpath)):
+                verdict = "no_lag"
+        beyond = own is not None and bool(
+            won_lags(own, range(guard.lags[-1] + 1, wconf.max_lag + 1))
+        )
+        for place, e in m.items():
+            if place in ("own", "h_mean"):
+                note = guard_note(
+                    verdict if place == "own" else None, beyond and place == "own"
+                )
+                for r in e["ratios"].values():
+                    r["guard_note"] = note
         out["models"][label] = m
     print("（探索の記述。V19 の確証ではない）\n")
     for label, m in out["models"].items():
@@ -513,9 +611,9 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
             if place not in m:
                 continue
             for other, r in m[place]["ratios"].items():
-                print(
-                    f"- {label}/{place} 対 {other}: Δ̄ の比 {_iv(r['mean'])} → {r['mean_cls']}"
-                )
+                note = f"（{r['guard_note']}）" if r["guard_note"] else ""
+                print(f"- {label}/{place} 対 {other}: Δ̄ の比 {_iv(r['mean'])} → "
+                      f"{r['mean_cls']}{note}")  # fmt: skip
     return out
 
 
@@ -545,13 +643,15 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     elif a.stage == "guard":
         out = guard_stage(a.width, g)
     else:
-        sig = guard_stage(a.width, g)["sigma_dec"]
+        gs = guard_stage(a.width, g)
+        sig, sig_ef = gs["sigma_dec"], gs["sigma_dec_ef"]
+        sigmas = None if sig is None or sig_ef is None else (sig, sig_ef)
         if a.stage == "cheat":
-            if sig is None:
+            if sigmas is None:
                 raise SystemExit("no sigma_dec: run the guard's yard first")
-            out = cheat_stage(a.width, w, g, sig)
+            out = cheat_stage(a.width, w, g, *sigmas)
         else:
-            out = apply_stage(a.width, a.geom, a.runs, w, g, sig)
+            out = apply_stage(a.width, a.geom, a.runs, w, g, sigmas)
     if a.json is not None:
         a.json.write_text(json.dumps(_lean(out), indent=1, default=str) + "\n")
     return out

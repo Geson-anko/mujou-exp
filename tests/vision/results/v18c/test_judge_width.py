@@ -9,25 +9,31 @@ windows in every draw; the first window and its reappearance of a
 hand-made periodic $p$; the survival of moments of monotone widths is $p$
 itself; the guard's verdicts of hand-placed $c$, $f$, $e$, $\mathrm{SE}^*$,
 $\sigma_{\mathrm{dec}}$ and $L$ (passed, unverifiable, broken, pending, no
-lag); $\sigma_{\mathrm{dec}}$ of hand-made seeds; V-h2's families; the
-checks counted by hand.
+lag) and a missing row an error; $\sigma_{\mathrm{dec}}$ of hand-made
+seeds, of $c - f$ and of $e - f$; V-h2's families (a claimable strength of
+no guard lag out of range); the notes of the guard on a wording; the main
+whitening's rows alone among the yard's (whose sensitivity has a whitening
+of the same $k$ and reference); the checks counted by hand.
 """
 
 import math
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 import torch
 
 from exp.vision.geom_eval import GeomConf
 from exp.vision.results.v18c.judge_width import (
+    _sums,
     cheat_pass,
     checks_stage,
+    guard_note,
     guard_verdict,
     pair_ratio,
     sigma_dec,
 )
-from exp.vision.width_eval import LinSums, WidthConf, point
+from exp.vision.width_eval import LinSums, WidthConf, code_rows, lin_sums, point
 
 W = WidthConf(max_lag=8, main_lo=2, step=1.0)
 G = GeomConf(boot=50)
@@ -67,9 +73,12 @@ class TestPairRatio:
         assert same["mean"] == (0.0, 0.0) and same["mean_cls"] == "small"
         assert same["typ_cls"] == "small"
 
-    def test_a_p_at_the_last_lag_is_a_cut(self):
+    def test_a_window_to_the_last_lag_is_a_cut_a_p_there_a_tail(self):
         a = [1, 1, 1, 1, 1, 1, 1, 0.2]
-        assert pair_ratio(sums_of(a), sums_of(a), W, G)["cut"]
+        got = pair_ratio(sums_of(a), sums_of(a), W, G)
+        assert not got["cut"] and got["tail"][0][0] == pytest.approx(0.2)
+        b = [1, 1, 1, 1, 1, 1, 1, 0.6]
+        assert pair_ratio(sums_of(b), sums_of(a), W, G)["cut"]
 
     def test_no_window_gives_no_typ_ratio(self):
         a = [1, 1, 1, 1, 0, 0, 0, 0]
@@ -117,13 +126,22 @@ class TestGuardVerdict:
         ],
     )
     def test_by_hand(self, vals, won, want):
-        assert guard_verdict(vals, won, sigma=0.02)["verdict"] == want
+        assert guard_verdict(vals, won, 0.02, 0.02)["verdict"] == want
 
     def test_sigma_dec_widens_the_interval(self):
         # c - f = 0.06: clears 2 SE_tot of SE 0.01 alone (0.02), not with sigma 0.03
         v = {8: values(0.26, 0.2, 0.5)}
-        assert guard_verdict(v, [8], 0.0)["verdict"] == "passed"
-        assert guard_verdict(v, [8], 0.03)["verdict"] == "unverifiable"
+        assert guard_verdict(v, [8], 0.0, 0.0)["verdict"] == "passed"
+        assert guard_verdict(v, [8], 0.03, 0.0)["verdict"] == "unverifiable"
+        # e - f = 0.03: clears 2 SE_tot of SE 0.01 alone (0.02), not with
+        # sigma_ef 0.02 (2 sqrt(0.0005) = 0.045), nor does it lose
+        w = {8: values(0.6, 0.2, 0.23)}
+        assert guard_verdict(w, [8], 0.0, 0.0)["verdict"] == "passed"
+        assert guard_verdict(w, [8], 0.0, 0.02)["verdict"] == "pending"
+
+    def test_a_missing_row_is_an_error_not_an_empty_l(self):
+        with pytest.raises(ValueError, match="no guard row"):
+            guard_verdict({8: values(0.6, 0.2, 0.5)}, [8, 16], 0.02, 0.02)
 
 
 class TestSigmaDec:
@@ -135,6 +153,13 @@ class TestSigmaDec:
         }
         # lag 8: c - f = 0.4, 0.5, 0.6 (variance 0.01); lag 16: 0.3 x 3 (0)
         assert sigma_dec(by_seed) == pytest.approx(math.sqrt(0.005))
+        by_seed = {
+            0: {8: values(0, 0.1, 0.1), 16: values(0, 0.2, 0.2)},
+            1: {8: values(0, 0.1, 0.3), 16: values(0, 0.2, 0.2)},
+            2: {8: values(0, 0.1, 0.5), 16: values(0, 0.2, 0.2)},
+        }
+        # lag 8: e - f = 0, 0.2, 0.4 (variance 0.04); lag 16: 0 x 3
+        assert sigma_dec(by_seed, "e") == pytest.approx(math.sqrt(0.02))
 
 
 def cheat(lo: float, verdict: str, mean: float) -> dict:
@@ -161,6 +186,42 @@ class TestCheats:
         assert got["drop"]["result"] == "fail" and not got["drop"]["monotone"]
         none = cheat_pass({"mean-8": cheat(0.1, "passed", 1.0)})
         assert none["mean"]["result"] == "none_claimable"
+        # a claimable strength whose latent wins at no guard lag: out of range
+        out = cheat_pass({"mean-8": cheat(0.6, "broken", 1.5),
+                          "mean-32": cheat(0.8, "no_lag", 2.0)})  # fmt: skip
+        assert out["mean"]["result"] == "out_of_range"
+        # a guard that passed a cheat fails, whatever the others
+        out = cheat_pass({"mean-8": cheat(0.6, "passed", 1.5),
+                          "mean-32": cheat(0.8, "no_lag", 2.0)})  # fmt: skip
+        assert out["mean"]["result"] == "fail"
+
+
+class TestGuardNote:
+    def test_by_hand(self):
+        assert guard_note("passed", False) == ""
+        assert guard_note("unverifiable", False) == "ガードで確かめられない"
+        both = guard_note("passed", True)
+        assert both == "6.4 秒より長い刻みはガードの範囲外"
+        assert "ガードの行が無い" in guard_note(None, False)
+        assert guard_note("broken", True).count("。") == 1
+
+
+class TestMainWhitening:
+    def test_the_yards_rows_are_of_the_main_whitening_alone(self):
+        from tests.vision.test_width_eval import WTINY, codes, tiny_sets
+
+        sets, ws = tiny_sets()
+        ev, ref = codes(sets.n)
+        g = replace(G, k=2, k_side=(), k_sens=(3,), block=40)
+        rows = code_rows(ev, ref, ws, g, WTINY, sens=True, labels={"place": "own"})
+        # k = 2 and the reference: of c_eps and of c_eps_sens, two whitenings
+        with pytest.raises(ValueError, match="two lin rows"):
+            lin_sums(rows, place="own", k=2, ref="all")
+        got = _sums(rows, "own", g)
+        assert got is not None
+        assert got.lags.tolist() == list(range(1, WTINY.max_lag + 1))
+        want = lin_sums(rows, place="own", k=2, eps=g.c_eps, ref="all")
+        assert torch.equal(got.num, want.num) and torch.equal(got.n, want.n)
 
 
 class TestChecks:

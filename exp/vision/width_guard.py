@@ -30,7 +30,12 @@ $z_{t+\Delta}$, ``ext``, ``mid``, ``shuffle`` (the future of another anchor of
 the same block: what a decoder hits by the scene alone; C9) and ``pos``
 ($z_{t+\Delta}$ moved by ``ext``'s distance to its nearest training code in a
 random direction of ``pos_seed``: a positive control of the drift off the
-codes; C10). Each drawing's features less the mean of $R$ (G's reference
+codes; C10. The distance is to the decoder's training conditions, the codes
+it learned on, not the reference's. In $k = 64$ dimensions a random
+direction is nearly orthogonal to the way to the nearest code, so ``pos``
+lies about $\sqrt{d_{\mathrm{fut}}^2 + d_{\mathrm{ext}}^2}$ from it,
+farther out than ``ext``: its own distance is recorded beside). Each
+drawing's features less the mean of $R$ (G's reference
 frames) pick one candidate by the nearest cosine; a row holds each
 condition's hits on its target (``future``, ``now``, ``ext``, ``shuffle``,
 ``pos`` on the extrapolation's; ``past``, ``now``, ``future``, ``mid`` on
@@ -105,6 +110,7 @@ from exp.vision.width_eval import (
     OUT as WIDTH_OUT,
     WidthConf,
     WidthSets,
+    conditions,
     counts_of,
     lin_sums,
     sets_and_ref,
@@ -126,6 +132,7 @@ __all__ = [
     "guard_anchors",
     "load_decoder",
     "main",
+    "same_k",
     "save_decoder",
     "train_intervals",
     "winning_lags",
@@ -162,6 +169,16 @@ class GuardConf:
     cheat_count: int = 512
     cheat_length: int = 512
     cheat_seed: int = 1401
+
+
+def same_k(guard: GuardConf, gconf: GeomConf) -> None:
+    """The guard's whitening is the width's (C8).
+
+    Raises:
+        ValueError: ``guard.k`` is not ``gconf.k``.
+    """
+    if guard.k != gconf.k:
+        raise ValueError(f"the guard's k {guard.k} is not the width's {gconf.k}")
 
 
 def guard_gen() -> GenConf:
@@ -482,6 +499,9 @@ class Guard:
         return torch.cat(out).reshape(a, k, *noise.shape[2:])
 
     def _read(self, lg: _Lag, drawn: Tensor, target: str) -> dict[str, Any]:
+        """The hits of ``drawn`` among the candidates of ``target`` (``ext``
+        of ``slots(..)["ext"]``, ``mid`` of ``["mid"]``; the true one the
+        middle, the place ``width_eval.TARGETS[target]``)."""
         cand = lg.ext if target == "ext" else lg.mid
         hits, picks = _identify(self._feats(drawn), cand, self.center)
         out: dict[str, Any] = {"hits": hits.tolist(), "share": float(hits.mean()),
@@ -510,10 +530,9 @@ class Guard:
         rows = []
         gen_pos = torch.Generator().manual_seed(self.conf.pos_seed)
         for lg in self.lags:
-            c = cond.double()
-            past, now, fut = c[lg.sl["past"]], c[lg.sl["now"]], c[lg.sl["future"]]
-            conds = {"past": past, "now": now, "future": fut, "ext": 2 * now - past,
-                     "mid": (past + fut) / 2, "shuffle": fut[lg.other]}  # fmt: skip
+            conds = conditions(cond.double(), lg.sl)
+            fut = conds["future"]
+            conds["shuffle"] = fut[lg.other]
             nn_dist: dict[str, float] = {}
             if train is not None:
                 d_ext = _nearest(conds["ext"], train.double(), self._dev)
@@ -521,7 +540,9 @@ class Guard:
                 u = torch.randn(fut.shape, generator=gen_pos, dtype=torch.float64)
                 u = u / torch.linalg.vector_norm(u, dim=1, keepdim=True)
                 conds["pos"] = fut + d_ext[:, None] * u
-                nn_dist = {"ext": float(d_ext.mean()), "future": float(d_fut.mean())}
+                d_pos = _nearest(conds["pos"], train.double(), self._dev)
+                nn_dist = {"ext": float(d_ext.mean()), "future": float(d_fut.mean()),
+                           "pos": float(d_pos.mean())}  # fmt: skip
             drawn = {name: self._draw(net, v, lg.noise) for name, v in conds.items()}
             read: dict[str, Any] = {"ext": {}, "mid": {}}
             for name in EXT_CONDS:
@@ -595,8 +616,9 @@ def _nearest(x: Tensor, ref: Tensor, dev: torch.device) -> Tensor:
 
 
 def winning_lags(rows: Sequence[Row], lags: Sequence[int], **labels: Any) -> list[int]:
-    r"""The guard's lags where the point $p_{1/4} \ge 1/2$ (the main
-    whitening's ``common`` rows of ``labels``): the set $L$."""
+    r"""The guard's lags where the point $p_{1/4} \ge 1/2$ (the ``common``
+    rows of ``labels``, which name one whitening: ``place``, ``k``, ``eps``,
+    ``ref``): the set $L$."""
     ls = lin_sums(rows, **labels)
     got = []
     for lag in lags:
@@ -684,12 +706,14 @@ def evaluate_yard(
     Returns ``out``.
 
     Raises:
-        ValueError: A code of ``fit`` is not ``pca`` or ``v17``, or ``v17``
-            is fitted without its checkpoint.
+        ValueError: A code of ``fit`` is not ``pca`` or ``v17``, ``v17``
+            is fitted without its checkpoint, or the guard's ``k`` is not
+            the width's (``same_k``).
     """
     unknown = [c for c in fit if c not in ("pca", "v17")]
     if unknown or ("v17" in fit and v17 is None):
         raise ValueError(f"fit pca or v17 (with its checkpoint), not {list(fit)}")
+    same_k(guard, gconf)
     gen = guard_gen() if gen is None else gen
     determinism = configure_determinism(conf.device)
     dev = torch.device(conf.device)
@@ -776,6 +800,7 @@ def evaluate_cheat(
     as they are: no whitening anew) and its decoder's guard rows
     ``<name>/rows-d0.json``, the decoders learned on the training intervals;
     the speeds $s_i$ ``speeds.json``. Returns ``out``."""
+    same_k(guard, gconf)
     gen = guard_gen() if gen is None else gen
     determinism = configure_determinism(conf.device)
     dev = torch.device(conf.device)
@@ -844,6 +869,7 @@ def evaluate_run(
     missing = [s for s in steps if s not in ckpts]
     if missing:
         raise ValueError(f"no checkpoint of steps {missing} (of {list(ckpts)})")
+    same_k(guard, gconf)
     gen = guard_gen() if gen is None else gen
     determinism = configure_determinism(conf.device)
     dev = torch.device(conf.device)
@@ -864,7 +890,7 @@ def evaluate_run(
         if not width.exists():
             raise ValueError(f"no width rows of step {step}: {width}")
         lags = winning_lags(json.loads(width.read_text()), guard.lags, place="own",
-                            k=gconf.k, ref="all")  # fmt: skip
+                            k=gconf.k, eps=gconf.c_eps, ref="all")  # fmt: skip
         stamp = {"run": run_dir.name, "step": step, "t": float(ckpts[step].stem)}
         if not lags:
             _write(

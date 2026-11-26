@@ -7,7 +7,11 @@ at every lag, the pairs by brute force; the rows' pooled $G$ and blocks'
 sums of ``in`` at the geom lags are ``geom_eval``'s to the bit (the same
 code, the same sets); the rows of a series reversed in time (sets of whole
 blocks) have the same wins and $G$; the survivors' sums are the running
-``and`` of the wins; the anchors' places by hand; the checks V-h0 on their
+first runs of the wins; the shifted blocks' sums hold the same triples
+(their totals) in each centre's own shifted block; the guard's conditions
+and targets by hand; a band of no noise has the same triple terms at every
+time (of no phase) and its pooled $G = s/2$; a rotation's period on the
+grid is refused; the anchors' places by hand; the checks V-h0 on their
 full series (but V-h0e's $N_{\mathrm{lin}}$ at the edge of the band's window,
 README; and the long V-h0i, V-h0k run on few draws only); and the yard's,
 the run's and the VAE's jobs end to end on tiny runs.
@@ -22,15 +26,19 @@ import torch
 import yaml
 
 from exp.lib import ckpt
-from exp.lib.midpoint import Whitener, triple_terms, wins
+from exp.lib.linwidth import survival
+from exp.lib.midpoint import Whitener, block_sums, triple_terms, wins
 from exp.lib.synth_series import ou
 from exp.vision.compose import to_dict
 from exp.vision.geom_eval import _sets_at, code_rows as geom_code_rows
 from exp.vision.models import build_vae
 from exp.vision.results.v18c.judge_width import yard_stage
 from exp.vision.width_eval import (
+    TARGETS,
     CheckConf,
     WidthConf,
+    _band_noise,
+    _rotation_truth,
     _vh0a,
     _vh0b,
     _vh0c,
@@ -44,6 +52,7 @@ from exp.vision.width_eval import (
     _vh0l,
     _vh0m,
     code_rows,
+    conditions,
     evaluate_run,
     evaluate_vae,
     evaluate_yard,
@@ -144,15 +153,40 @@ class TestRows:
             assert torch.equal(f.win[q].sum(1), b.win[q].sum(1))
         torch.testing.assert_close(f.g(), b.g(), rtol=1e-12, atol=0)
 
-    def test_the_survivors_are_the_running_and_of_the_wins(self):
+    def test_the_survivors_are_the_first_runs_of_the_wins(self):
         ws = synthetic_sets(4 * 40 - 3, 3, 40, 6)
         x = ou(ws.n, 3, 0.95, torch.Generator().manual_seed(2))
         ls = lin_sums(white_rows(x, ws, WTINY, full=False))
         common = ws.common
-        alive = torch.ones(len(common), dtype=torch.bool)
-        for i, lag in enumerate(range(WTINY.main_lo, WTINY.max_lag + 1)):
-            alive &= wins(triple_terms(x, common, lag), 0.25)
-            assert float(ls.surv["25"][i].sum()) == float(alive.sum())
+        lags = range(WTINY.main_lo, WTINY.max_lag + 1)
+        won = torch.stack([wins(triple_terms(x, common, lag), 0.25) for lag in lags], 1)
+        ends = []  # by hand: the end of each moment's first run of wins
+        for row in won.tolist():
+            if True not in row:
+                continue
+            e = row.index(True)
+            while e + 1 < len(row) and row[e + 1]:
+                e += 1
+            ends.append(e)
+        for i in range(len(lags)):
+            assert float(ls.surv["25"][i].sum()) == sum(e >= i for e in ends)
+        assert torch.equal(survival(won).sum(0).double(), ls.surv["25"].sum(1))
+
+    def test_the_shifted_blocks_hold_the_same_triples(self):
+        ws = synthetic_sets(4 * 40 - 3, 3, 40, 6)
+        # blocks of 40 from the frame 20, the first 20 frames joined to the first
+        assert ws.blocks_shift[:60].tolist() == [0] * 60
+        assert ws.blocks_shift[60:100].tolist() == [1] * 40
+        x = ou(ws.n, 3, 0.9, torch.Generator().manual_seed(3))
+        rows = white_rows(x, ws, WTINY, full=False)
+        ls, sh = lin_sums(rows), lin_sums(rows, shift=True)
+        torch.testing.assert_close(ls.num.sum(1), sh.num.sum(1), rtol=1e-12, atol=0)
+        assert torch.equal(ls.n.sum(1), sh.n.sum(1))
+        assert torch.equal(ls.win["25"].sum(1), sh.win["25"].sum(1))
+        c = ws.common
+        t = triple_terms(x, c, 3)
+        want = block_sums(t.num, ws.blocks_shift[c], ws.n_blocks_shift)
+        torch.testing.assert_close(sh.num[2], want, rtol=1e-12, atol=0)
 
     def test_the_full_rows_have_pairs_and_directions(self):
         sets, ws = tiny_sets()
@@ -174,6 +208,45 @@ class TestSlots:
         assert (s["past"].item(), s["now"].item(), s["future"].item()) == (32, 40, 48)
         assert s["ext"].tolist() == [[16, 24, 32, 40, 48, 56, 64, 72, 80]]
         assert s["mid"].tolist() == [[8, 16, 24, 32, 40, 48, 56, 64, 72]]
+
+    def test_the_conditions_and_their_targets_by_hand(self):
+        # a code of the time and its square: ext at t + n, mid at t
+        u = torch.arange(100, dtype=torch.float64)
+        c = torch.stack([u, u * u], 1)
+        s = slots(torch.tensor([40]), 8)
+        got = conditions(c, s)
+        assert got["ext"].tolist() == [[48.0, 2 * 1600.0 - 1024.0]]
+        assert got["mid"].tolist() == [[40.0, (1024.0 + 2304.0) / 2]]
+        assert (got["past"][0, 0], got["now"][0, 0], got["future"][0, 0]) == (
+            32,
+            40,
+            48,
+        )
+        for read in ("ext", "mid"):
+            assert s[read][0, 4] == s[TARGETS[read]][0]
+
+
+class TestSynthetic:
+    def test_a_band_of_no_noise_is_of_no_phase(self):
+        ws = synthetic_sets(4 * 40 - 3, 3, 40, 6)
+        x = _band_noise(ws.n, 8, 37.3, 0.0, torch.Generator().manual_seed(4))
+        for lag in (1, 3, 6):
+            t = triple_terms(x, ws.common, lag)
+            rho = 1 - 2 * t.num / t.den
+            torch.testing.assert_close(rho, rho[:1].expand_as(rho), rtol=0, atol=1e-10)
+            s = 1 - math.cos(2 * math.pi * lag / 37.3)
+            g = float(t.num.sum() / t.den.sum())
+            assert g == pytest.approx(s / 2, rel=1e-10)
+
+    def test_a_period_on_the_grid_is_refused(self):
+        with pytest.raises(ValueError, match="on the grid"):
+            _rotation_truth(torch.tensor([123.0], dtype=torch.float64), 246)
+        cc = CheckConf()
+        for period in (cc.rotation_period, *cc.chain_periods, cc.thin_period):
+            for lag in range(1, 257):
+                for half in (1 / 6, 1 / 4):
+                    _rotation_truth(torch.tensor([period], dtype=torch.float64), lag,
+                                    half)  # fmt: skip
 
 
 @pytest.mark.slow
@@ -208,6 +281,8 @@ class TestChecks:
         assert i["n"] == 2 and set(i["share"]) == {"G_hi", "mean", "typ"}
         k = _vh0k(cc, ws, g, w)
         assert [r["name"] for r in k] == ["V-h0k", "V-h0k-power", "V-h0k-power"]
+        assert k[0]["true_ratio"] == 0.0
+        assert all(math.isfinite(r["true_ratio"]) for r in k)
         assert math.isclose(i["truth"]["G_hi"], 3.0569, rel_tol=1e-4)
 
 

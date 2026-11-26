@@ -8,7 +8,11 @@ and the samples', nothing else); the identification by hand on features
 placed by hand (its own, a neighbour, the pick's hub); the midpoint and the
 extrapolation commute with the standardization (an affine map); the
 cheats: strength 0 the identity, a drop idempotent, the past mean by hand;
-the anchors' paired differences of 0 have no spread; and the yard's,
+the anchors' paired differences of 0 have no spread; a decoder drawing the
+real frame of the time its condition names hits the targets the guard's own
+code says (the extrapolation's and the future's on the extrapolation's, the
+midpoint's and the present's on the midpoint's; the copy and the ends miss);
+the guard's whitening must be the width's; and the yard's,
 the cheats' and a run's jobs end to end on tiny runs (a cheap feature in
 place of Inception's).
 """
@@ -37,6 +41,7 @@ from exp.vision.width_guard import (
     evaluate_yard,
     guard_anchors,
     load_decoder,
+    same_k,
     save_decoder,
 )
 from tests.lib.test_flow_decoder import SMALL
@@ -95,6 +100,38 @@ class TestDrawings:
         for r in rows:
             shares = {v["share"] for v in r["read"]["ext"].values()}
             assert len(shares) == 1  # every condition the same drawings
+
+
+class Drawn(Guard):
+    """A decoder that draws the real last frame of the stack its condition's
+    first coordinate names (the time), whatever the noise."""
+
+    @override
+    def _draw(self, net: nn.Module, cond: Tensor, noise: Tensor) -> Tensor:
+        idx = cond[:, 0].round().long().clamp(0, self._ws.n - 1)
+        return self._last(idx)[:, None].expand(-1, noise.shape[1], -1, -1, -1)
+
+
+class TestTargets:
+    def test_the_conditions_hit_the_targets_by_hand(self):
+        _, ws = tiny_sets()
+        g = Drawn(SPLICED, ws, features=features, local=None, conf=GTINY, gen=GEN_TINY,
+                  dev=torch.device("cpu"))  # fmt: skip
+        time = torch.arange(ws.n, dtype=torch.float64)[:, None]
+        rows = g.code_rows(Still(), time, None, {"code": "time"})
+        for r in rows:
+            ext = {k: v["share"] for k, v in r["read"]["ext"].items()}
+            mid = {k: v["share"] for k, v in r["read"]["mid"].items()}
+            assert ext["future"] == 1.0 and ext["ext"] == 1.0 and ext["now"] == 0.0
+            assert mid["mid"] == 1.0 and mid["now"] == 1.0
+            assert mid["past"] == 0.0 and mid["future"] == 0.0
+
+    def test_the_guards_k_is_the_widths(self):
+        from exp.vision.geom_eval import GeomConf
+
+        same_k(GuardConf(), GeomConf())
+        with pytest.raises(ValueError, match="k"):
+            same_k(replace(GuardConf(), k=16), GeomConf())
 
 
 class TestIdentification:
@@ -204,7 +241,9 @@ class TestJobs:
             "pca",
             "uncond",
         }
-        got_c = cheat_stage(tmp_path, WTINY, TINY, got_g["sigma_dec"])
+        assert got_g["sigma_dec_ef"] is not None
+        got_c = cheat_stage(tmp_path, WTINY, TINY, got_g["sigma_dec"],
+                            got_g["sigma_dec_ef"])  # fmt: skip
         assert set(got_c["families"]) == {"mean", "drop"}
         # a run: its width first, then its guard (a row of no lag where none wins)
         run = tiny_run(root, tmp_path, name="run")

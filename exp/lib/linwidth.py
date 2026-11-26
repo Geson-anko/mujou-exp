@@ -28,15 +28,18 @@ number of them, the median alone in its interval; the mean exactly where
 they lie at the arithmetic midpoints). Where the wins are not monotone in
 $\Delta$, $\int p\,d\Delta$ is the mean length of the lags each moment
 wins and the crossing need not be a median: ``survival``, the share of the
-moments that win at every grid lag from the first up to $\Delta$, is
-monotone by construction, its crossing of 1/2 the median of the width won
-without a break.
+moments whose first run of wins (from the first lag each wins at) reaches
+$\Delta$, is monotone by construction; where each moment wins on one run
+$[l_t, W_t]$ it is $P(W_t \ge \Delta)$ whatever the $l_t$, its crossing of
+1/2 the median of $W_t$ (a run counted from the grid's first lag instead is
+0 wherever the moments lose there: a floor of noise below the window).
 
 **The bootstrap** (``draws_summary``, ``paired_ratio``): each resample's
 curve ``(n, L)``; its first window's upper end (``first_upper``: NaN of no
 window) and $\bar\Delta$. An interval is of the 2.5% and 97.5% order points
 (``quantile``), a draw of no window counted as below every width: where more
-than 2.5% of the draws have none, the lower end is None (「無い」). The
+than 2.5% of the draws have none, the lower end is None (「無い」; at
+exactly 2.5% the next order point). The
 paired ratio of two codes is $\log_2(W_a / W_b)$ of the same draws; of
 $\Delta_{\mathrm{typ}}$ only where both have a window in at least 97.5% of
 the draws (``WINDOWED``), else it is not given.
@@ -104,13 +107,16 @@ class DrawSummary:
 class PairedRatio:
     r"""``paired_ratio``'s: the intervals of $\log_2$ of the ratios of
     $\bar\Delta$ and of $\Delta_{\mathrm{typ}}$ (None: not given), the
-    two codes' shares of draws with a window and whether a draw is cut at
-    the grid's end."""
+    two codes' shares of draws with a window, whether a draw's first window
+    is cut at the grid's end (「打ち切りを含む」) and the two codes' mean
+    over the draws of $p$ at the grid's last lag (``tail``: the share of
+    the moments $\bar\Delta$ clips there)."""
 
     mean: Interval
     typ: Interval | None
     windowed: tuple[float, float]
     cut: bool
+    tail: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -178,9 +184,19 @@ def mean_widths(x: Tensor, p: Tensor) -> Tensor:
 
 
 def survival(won: Tensor) -> Tensor:
-    """Whether each moment ``(N, L)`` won at every lag up to each: the
-    running ``and`` of ``won`` ``(N, L)`` bool along the lags."""
-    return won.int().cummin(1).values.bool()
+    """Whether each moment's first run of wins reaches each lag ``(N, L)``
+    bool (module docstring): of ``won`` ``(N, L)`` bool along the lags,
+    the lags up to the end of the run that starts at the first win (none of
+    a moment that never wins)."""
+    n, length = won.shape
+    idx = torch.arange(length)
+    has = won.any(1)
+    start = won.int().argmax(1)
+    out_after = ~won & (idx[None] > start[:, None])
+    end = torch.where(
+        out_after.any(1), out_after.int().argmax(1) - 1, torch.full((n,), length - 1)
+    )
+    return has[:, None] & (idx[None] <= end[:, None])
 
 
 def first_upper(
@@ -210,14 +226,18 @@ def first_upper(
 
 def quantile(values: Tensor, q: float) -> float | None:
     """The ``q`` quantile of ``values`` ``(n,)`` (linear between order
-    points), NaN counted below every value: None where the lower of the two
-    order points is NaN."""
-    v = values.double().nan_to_num(nan=-math.inf).sort().values
+    points), NaN counted below every value: None where more than ``q`` of
+    them are NaN; at most ``q`` and the lower order point NaN, the upper
+    one."""
+    v = values.double()
+    if int(v.isnan().sum()) > q * len(v) + 1e-9:
+        return None
+    v = v.nan_to_num(nan=-math.inf).sort().values
     pos = q * (len(v) - 1)
     i, j = math.floor(pos), math.ceil(pos)
     a, b = float(v[i]), float(v[j])
     if a == -math.inf:
-        return None
+        return b
     return a + (pos - i) * (b - a)
 
 
@@ -266,9 +286,8 @@ def paired_ratio(
     interval of $\log_2(ar\Delta_a / ar\Delta_b)$, and of $\log_2$ of the
     ratio of the first windows' upper ends (None unless both have a window
     in at least ``WINDOWED`` of the draws; then of the draws where both have
-    one), the shares of draws with a window and whether a draw is cut at the
-    grid's end: a first window to the last point, or a $p > 0$ there (some
-    $W_t$ beyond the grid; 「打ち切りを含む」)."""
+    one), the shares of draws with a window, whether a draw's first window
+    runs to the last point (「打ち切りを含む」) and the mean $p$ there."""
     a = (1 - level) / 2
     r = torch.log2(mean_widths(x, draws_a) / mean_widths(x, draws_b))
     ha, ca = first_upper(x, draws_a, threshold, below=False)
@@ -280,12 +299,12 @@ def paired_ratio(
         both = ~ha.isnan() & ~hb.isnan()
         t = torch.log2(ha[both] / hb[both])
         typ = (quantile(t, a), quantile(t, 1 - a))
-    beyond = (draws_a[:, -1] > 0) | (draws_b[:, -1] > 0)
     return PairedRatio(
         mean=(quantile(r, a), quantile(r, 1 - a)),
         typ=typ,
         windowed=(wa, wb),
-        cut=bool((ca | cb | beyond).any()),
+        cut=bool((ca | cb).any()),
+        tail=(float(draws_a[:, -1].mean()), float(draws_b[:, -1].mean())),
     )
 
 
