@@ -90,7 +90,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Protocol, Self
 
 import torch
 import yaml
@@ -151,6 +151,7 @@ __all__ = [
     "W_SEED",
     "ZPCA_DIM",
     "CodeStats",
+    "EvalStacks",
     "ColorCode",
     "PCACode",
     "RandProjCode",
@@ -444,6 +445,20 @@ def arm_codes(
     return codes
 
 
+class EvalStacks(Protocol):
+    """The stacks ``CodeStats`` reads: ``StreamEvaluator``'s, or V18d's
+    validation video's (``time_val.ValStacks``)."""
+
+    @property
+    def fit_stacks(self) -> Tensor: ...
+
+    @property
+    def zurich_stacks(self) -> Tensor: ...
+
+    @property
+    def zurich_calib_stacks(self) -> Tensor: ...
+
+
 class CodeStats:
     """The statistics of codes (module docstring) for the run ``conf`` on the
     stacks of the evaluator ``ev`` and of the training units at ``root``.
@@ -451,7 +466,8 @@ class CodeStats:
     Args:
         conf: The run's config (its seed and device).
         root: The prepared Walking Tours.
-        ev: The probes' evaluator, whose fit and zurich stacks are used.
+        ev: The probes' evaluator (or other stacks), whose fit and zurich
+            stacks are used.
         heldin_batches, heldin_batch: The held-in batches and their stacks.
     """
 
@@ -459,7 +475,7 @@ class CodeStats:
         self,
         conf: RunConf,
         root: Path,
-        ev: StreamEvaluator,
+        ev: EvalStacks,
         *,
         heldin_batches: int = HELDIN_BATCHES,
         heldin_batch: int = HELDIN_BATCH,

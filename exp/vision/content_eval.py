@@ -2205,6 +2205,7 @@ def evaluate_content3(
     fconf: FillConf = FillConf(),
     spacing: Mapping[str, Any] | None = None,
     span: float | None = None,
+    with_eval: bool = True,
 ) -> Path:
     """V-h5b's rows (``select_rows``; the codes of ``content_names``, None
     all) into ``out / <code> / content3.json`` and the runs' starts into
@@ -2212,7 +2213,9 @@ def evaluate_content3(
     whichever codes run beside. ``models`` adds learned codes by name
     (``_model_white``; a record of v3 on the width's codes), run beside
     ``codes`` (with ``models``, ``codes`` None is none of ``content_names``).
-    Returns ``out``.
+    Without ``with_eval`` no code is read on Zurich: the rows are of the
+    training videos' runs alone (V18d's choice, which reads no Zurich), and
+    only ``models`` run. Returns ``out``.
 
     Raises:
         ValueError: A code is unknown or a model's name is one of
@@ -2271,9 +2274,17 @@ def evaluate_content3(
         "record": obs_runs(r_frames),
         "val": obs_runs(v_frames),
     }
+    xs = {"train": train, "record": rec, "val": val}
+    if not with_eval:
+        for name in models:
+            rs = {k: RunSet(v[name][:, a : length - a], ys[k]) for k, v in xs.items()}
+            rows = select_rows({"code": name, "obs": "pix"}, rs["train"], rs["val"],
+                               rs["record"], [], ws, cconf.select, dev,
+                               sets=("train", "val", "record"))  # fmt: skip
+            _write(out / name / "content3.json", rows, {"key": ws.key})
+        return out
     y_eval = pool_obs(zurich.frames[ws.span : ws.span + ws.n], cconf.obs)
     w_eval = _encode(pca, zurich, ws.n, dev)
-    xs = {"train": train, "record": rec, "val": val}
     s = lag_speeds(train["pca"], guard.cheat_lag)
     fns = dict(cheat_codes(w_eval, s, guard))
     q = orthogonal(guard.k, cconf.rot_seed)
@@ -2351,6 +2362,8 @@ def main(argv: Sequence[str] | None = None) -> Path:
         real3.add_argument(f"--{name.replace('_', '-')}", type=Path, default=None)
     real3.add_argument("--model", action="append", default=[], type=model_source,
                        help="NAME=RUN@STEP or NAME=VAE_CKPT, repeated")  # fmt: skip
+    real3.add_argument("--no-eval", action="store_true",
+                       help="the models on the training videos' runs alone (no Zurich)")  # fmt: skip
     acf = sub.add_parser("obs-acf")
     acf.add_argument("--config", type=Path, required=True)
     acf.add_argument("--out", type=Path, required=True)
@@ -2375,7 +2388,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
     if a.job == "real3":
         return evaluate_content3(conf, a.sets, a.out, codes=a.codes, inits=inits,
                                  init_v16=a.init_v16, models=dict(a.model),
-                                 root=a.root)  # fmt: skip
+                                 root=a.root, with_eval=not a.no_eval)  # fmt: skip
     return evaluate_content(conf, a.sets, a.out, codes=a.codes, inits=inits,
                             init_v16=a.init_v16, root=a.root, local=a.local,
                             inception=a.inception)  # fmt: skip

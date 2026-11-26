@@ -849,6 +849,34 @@ class TestReal3:
             evaluate_content3(conf, sets_dir, tmp_path / "x", models={"m3": (mean, 3)},
                               **kw)  # fmt: skip
 
+    @pytest.mark.slow
+    def test_without_zurich_the_runs_rows_are_the_same(self, tmp_path):
+        # V18d's choice reads no Zurich: the rows of the training videos'
+        # runs are those of the whole job, without the eval rows
+        root = tours_with_zurich(tmp_path / "d")
+        mean = tiny_run(root, tmp_path, "--sigreg-on", "mean", name="mean")
+        conf = replace(conf_of(), device="cpu")
+        sets_dir = tmp_path / "tlin"
+        _sets_at(sets_dir, conf, root, TINY)
+        kw: dict[str, Any] = dict(root=root, guard=GTINY, cconf=C3, gconf=TINY, wconf=WTINY,
+                                  fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
+        models = {"m4": (mean, 4)}
+        whole = evaluate_content3(conf, sets_dir, tmp_path / "w", models=models, **kw)
+        alone = evaluate_content3(conf, sets_dir, tmp_path / "a", models=models,
+                                  with_eval=False, **kw)  # fmt: skip
+        rows = json.loads((alone / "m4" / "content3.json").read_text())
+        want = [r for r in json.loads((whole / "m4" / "content3.json").read_text())
+                if r.get("set") != "eval" and r["part"] != "obs_ext"]  # fmt: skip
+        assert rows == want
+        assert {r.get("set") for r in rows if r["part"] == "sums"} == {
+            "train",
+            "val",
+            "record",
+        }
+        assert (alone / "intervals.json").read_bytes() == (
+            whole / "intervals.json"
+        ).read_bytes()
+
     def test_the_model_source(self):
         assert model_source("a=/r/x@60000") == ("a", (Path("/r/x"), 60000))
         assert model_source("v16=/r/ckpt/1.0.pt") == (
