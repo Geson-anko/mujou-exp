@@ -5,7 +5,9 @@ with BP and i.i.d. minibatches), from the runs and the page template
 The judged numbers come from the two ``judge.json`` of ``results/v18`` and
 ``results/v18b`` (the rules applied by their ``judge.py``). V18c's numbers come
 from the JSON of ``results/v18c`` (``judge_screen``, ``judge_long``,
-``judge_self``, ``judge``, ``judge_m_checks`` and ``judge_scene``), and G's
+``judge_self``, ``judge``, ``judge_m_checks``, ``judge_scene`` and
+``judge_geom``; the last is not in git and is rebuilt by its command in the
+README), and G's
 ``top1`` from the rows its ``judge.py`` reads. The rest is read
 from ``runs/``: the yardsticks (``v18-baselines``, ``v18b-baselines``), V18's
 diagnosis (``v18-diag``: ``h_flat``/``h_mean`` and the Imagenette probe) and,
@@ -24,6 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from exp.vision.report.build_eval_guide import geom_name
 from exp.vision.report.build_optim import PLACEHOLDER, _jsonl, _r
 from exp.vision.results.v18c.judge import ARMS as G_ARMS, G
 
@@ -310,6 +313,67 @@ def v18c_metric() -> dict[str, Any]:
     }
 
 
+GEOM_LAGS = ["8", "16", "32", "64", "128", "256"]
+GEOM_JUDGED = ["8", "16", "32"]
+
+
+def v18c_geom() -> dict[str, Any]:
+    """Time linearity and the width of information (``judge_geom.json``):
+    the ``in`` curves of every code, the paired differences of each model
+    with ``pca`` and with its own step 0, and TwoNN (``pre``, k = 64)."""
+    j = _load("judge_geom.json")
+    init_of = j["init_of"]
+    curves = {
+        place: {
+            code: [[_r8(c[lag][k]) for k in ("G", "s", "se_G")] for lag in GEOM_LAGS]
+            for code, c in j["curves"][place].items()
+        }
+        for place in ("own", "h_mean")
+    }
+    pairs: dict[str, list[dict[str, Any]]] = {}
+    for place in ("own", "h_mean"):
+        rows = []
+        for x in j["vs_yard"][place]:
+            a, b = x["a"], x["b"]
+            if a not in init_of or (b != "pca" and b != init_of[a]):
+                continue
+            lags = x["G"]["lags"]
+            d = x.get("d")
+            rows.append(
+                {
+                    "a": a,
+                    "b": "pca" if b == "pca" else "init",
+                    "init": b,
+                    "c": _r8(x["G"]["c"]),
+                    "G": [
+                        [_r8(lags[g]["diff"]), _r8(lags[g]["se"])]
+                        + [lags[g]["cls"], lags[g]["cls_sim"]]
+                        for g in GEOM_JUDGED
+                    ],
+                    "d": None
+                    if d is None
+                    else [_r8(d["diff"]), _r8(d["sd"]), d["cls"]],
+                }
+            )
+        pairs[place] = rows
+    twonn = {
+        place: {
+            code: [_r8(v["pre-k64"]["8"][k]) for k in ("mean", "min", "max")]
+            for code, v in j["twonn"]["codes"][place].items()
+        }
+        for place in ("own", "h_mean")
+    }
+    codes = set(curves["own"]) | set(curves["h_mean"])
+    return {
+        "curves": curves,
+        "pairs": pairs,
+        "twonn": twonn,
+        "init_of": init_of,
+        "names": {c: geom_name(c) for c in codes},
+        "delta": [j["delta_g"], j["delta_d"]],
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--runs", type=Path, default=ROOT / "runs")
@@ -345,6 +409,7 @@ def main() -> None:
         "v18c_self": v18c_self(),
         "v18c_gen": v18c_gen(args.runs),
         "v18c_metric": v18c_metric(),
+        "v18c_geom": v18c_geom(),
     }
     data["img"]["e1g"] = image(V18C / "e1g.jpg", "720")
     page = (HERE / "jepa.html.in").read_text()
