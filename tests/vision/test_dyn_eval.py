@@ -25,6 +25,7 @@ from exp.vision.dyn_eval import (
     CheckConf,
     DynConf,
     _realization,
+    _same_num,
     check_parts,
     check_units,
     clock_code,
@@ -68,21 +69,27 @@ class TestSets:
         assert a.key != b.key
 
 
-class TestEncoding:
-    def test_each_stack_is_its_own_frames(self, tmp_path):
-        frames, stride, block = 3, 2, 40
-        for name, length in (("a", 90), ("b", 45)):
-            with U8Writer(tmp_path / name, (3, 2, 2)) as w:
-                for f in range(length):
-                    w.append(
-                        torch.full(
-                            (3, 2, 2),
-                            f + (100 if name == "b" else 0),
-                            dtype=torch.uint8,
-                        )
+def _videos(root):
+    for name, length in (("a", 90), ("b", 45)):
+        with U8Writer(root / name, (3, 2, 2)) as w:
+            for f in range(length):
+                w.append(
+                    torch.full(
+                        (3, 2, 2), f + (100 if name == "b" else 0), dtype=torch.uint8
                     )
-        span = (frames - 1) * stride
-        lay = layout_of([90, 45], span, block, max_lag=5)
+                )
+
+
+class TestEncoding:
+    frames, stride, block = 3, 2, 40
+
+    def _layout(self):
+        return layout_of([90, 45], (self.frames - 1) * self.stride, self.block, 5)
+
+    def test_each_stack_is_its_own_frames(self, tmp_path):
+        _videos(tmp_path)
+        frames, stride, block = self.frames, self.stride, self.block
+        lay = self._layout()
         fn = lambda x: {"own": x[:, :, 0, 0, 0].double()}  # noqa: E731
         got = encode_layout(
             fn, tmp_path, ["a", "b"], lay, block, frames, stride, torch.device("cpu")
@@ -95,6 +102,27 @@ class TestEncoding:
         now, past, fut = s.at(3)
         assert torch.equal(now - past, torch.full_like(now, 3.0))
         assert torch.equal(fut - now, torch.full_like(now, 3.0))
+
+    def test_a_row_wise_map_by_block_is_the_map_of_the_set(self, tmp_path):
+        # (z - mu) W^T acts on each row alone, so mapping each block as it is
+        # encoded gives the map of the whole set (only the place mapped)
+        _videos(tmp_path)
+        lay = self._layout()
+        gen = torch.Generator().manual_seed(0)
+        mix = torch.randn(3, 8, generator=gen, dtype=F64)
+        fn = lambda x: {  # noqa: E731
+            "own": x[:, :, 0, 0, 0].double() @ mix,
+            "h_mean": x[:, :, 0, 0, 0].double(),
+        }
+        mean, comps = torch.randn(8, dtype=F64), torch.randn(2, 8, dtype=F64)
+        m = lambda z: (z - mean) @ comps.T  # noqa: E731
+        args = (fn, tmp_path, ["a", "b"], lay, self.block, self.frames, self.stride,
+                torch.device("cpu"))  # fmt: skip
+        whole = encode_layout(*args)
+        got = encode_layout(*args, {"own": m})
+        torch.testing.assert_close(got["own"], m(whole["own"]), rtol=1e-14, atol=1e-12)
+        assert got["own"].shape == (len(lay.video), 2)
+        assert torch.equal(got["h_mean"], whole["h_mean"])
 
 
 class TestClock:
@@ -206,6 +234,35 @@ class TestChecks:
         rows = check_parts(cc, ["long-S4"], None, mc)
         with pytest.raises(ValueError, match="missing"):
             merge_checks(rows, cc)
+
+
+class TestSameNum:
+    """V-p1b's invariance of a near deterministic code: rounding of the
+    residuals is of the scale of the targets, not of the residuals."""
+
+    @staticmethod
+    def _nums(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator().manual_seed(0)
+        y = torch.randn(4000, 64, generator=gen, dtype=F64)
+        pred = y + 3e-3 * torch.randn(4000, 64, generator=gen, dtype=F64)  # R ~ 1e-5
+        num = (pred - y).square().sum().reshape(1)
+        yq, pq = y @ q.T, pred @ q.T
+        return num, (pq - yq).square().sum().reshape(1)
+
+    def test_rounding_of_a_rotation_passes(self):
+        q, _ = torch.linalg.qr(
+            torch.randn(64, 64, generator=torch.Generator().manual_seed(1), dtype=F64)
+        )
+        num, num_q = self._nums(q)
+        clim = torch.tensor([4000.0 * 64])
+        assert _same_num(num_q, num, clim, 1e-10)
+
+    def test_a_real_difference_fails(self):
+        num, _ = self._nums(torch.eye(64, dtype=F64))
+        clim = torch.tensor([4000.0 * 64])
+        # sqrt(num * clim) / num = 1 / sqrt(R_clim) ~ 330: a relative 1e-6 is
+        # 3e-9 of the scale, above 1e-10
+        assert not _same_num(num * (1 + 1e-6), num, clim, 1e-10)
 
 
 def test_every_family_code_is_a_unit():

@@ -269,14 +269,20 @@ def zurich_triples(w: Tensor, ws: WidthSets) -> Triples:
 
 @torch.no_grad()
 def encode_layout(fn: Places, root: Path, names: Sequence[str], layout: SetLayout,
-                  block: int, frames: int, stride: int,
-                  dev: torch.device) -> dict[str, Tensor]:  # fmt: skip
+                  block: int, frames: int, stride: int, dev: torch.device,
+                  maps: Mapping[str, Callable[[Tensor], Tensor]] | None = None,
+                  ) -> dict[str, Tensor]:  # fmt: skip
     """The places of ``fn`` of the layout's stacks (``names`` its videos, in
     the layout's order; each video's whole blocks), a block's frames read at
-    a time."""
+    a time, each block's codes copied into a tensor of the layout's length
+    (no list and ``torch.cat``: a wide place such as flat tokens of 16384
+    dims would take twice its size at the end). ``maps`` (by place) are
+    row-wise maps applied to each block's codes before they are kept."""
     offsets = torch.arange(frames) * stride
     per = block - (frames - 1) * stride
-    got: dict[str, list[Tensor]] = {}
+    total = len(layout.video)
+    got: dict[str, Tensor] = {}
+    at = 0
     for v, name in enumerate(names):
         reader = U8Reader(root / name)
         for b in range(int((layout.video == v).sum()) // per):
@@ -284,8 +290,15 @@ def encode_layout(fn: Places, root: Path, names: Sequence[str], layout: SetLayou
             places = encode_places(fn, lambda idx, clip=clip: clip[idx[:, None] + offsets],
                                    per, dev)  # fmt: skip
             for k, x in places.items():
-                got.setdefault(k, []).append(x)
-    return {k: torch.cat(v) for k, v in got.items()}
+                if maps is not None and k in maps:
+                    x = maps[k](x)
+                if k not in got:
+                    got[k] = torch.empty((total, *x.shape[1:]), dtype=x.dtype)
+                got[k][at : at + len(x)] = x
+            at += per
+    if at != total:
+        raise ValueError(f"the layout has {total} stacks, the blocks {at}")
+    return got
 
 
 # -- the rows of a code -------------------------------------------------------------
@@ -439,13 +452,23 @@ def _video_sets_of(conf: Any, root: Path, dconf: DynConf) -> VideoSets:
 
 
 def _raw_sets(fn: Places, conf: Any, root: Path, vs: VideoSets, zurich: Any, ref: Tensor,
-              n: int, block: int, dev: torch.device) -> dict[str, dict[str, Tensor]]:  # fmt: skip
-    """The raw places of ``fn`` by place, then by set (``ROLES``, ``zurich``,
-    ``ref``)."""
+              n: int, block: int, dev: torch.device, zpca_seed: int | None = None,
+              pca_dim: int = 0) -> dict[str, dict[str, Tensor]]:  # fmt: skip
+    r"""The raw places of ``fn`` by place, then by set (``ROLES``, ``zurich``,
+    ``ref``). With ``zpca_seed``, ``own`` is mapped by ``_zpca_map`` (fit on
+    its reference) in every set; the training videos' sets are mapped block
+    by block as they are encoded, so a wide ``own`` (flat tokens of 16384
+    dims) is never held whole. The map is row-wise ($(z - \mu) W^\top$),
+    so this is the map of the whole set."""
     t = conf.data.tours
-    by_set = {r: encode_layout(fn, root, vs.roles[r], vs.layouts[r], block, t.frames,
-                               t.stride, dev) for r in ROLES}  # fmt: skip
     zr = places_of(fn, zurich, ref, n, dev)
+    maps: dict[str, Callable[[Tensor], Tensor]] = {}
+    if zpca_seed is not None:
+        m = _zpca_map(zr["own"][1], zpca_seed, pca_dim)
+        maps["own"] = m
+        zr["own"] = (m(zr["own"][0]), m(zr["own"][1]))
+    by_set = {r: encode_layout(fn, root, vs.roles[r], vs.layouts[r], block, t.frames,
+                               t.stride, dev, maps) for r in ROLES}  # fmt: skip
     out: dict[str, dict[str, Tensor]] = {}
     for place, (ev, rf) in zr.items():
         out[place] = {r: by_set[r][place] for r in ROLES} | {"zurich": ev, "ref": rf}
@@ -457,11 +480,9 @@ def _labels_rows(rows: Sequence[Row], labels: Mapping[str, Any]) -> list[Row]:
 
 
 def _place_rows(raw: Mapping[str, Tensor], ws: WidthSets, vs: VideoSets, gconf: GeomConf,
-                conf: DynConf, dev: torch.device, labels: Mapping[str, Any],
-                pre: Callable[[Tensor], Tensor] | None = None) -> list[Row]:  # fmt: skip
-    """The rows of one place's raw codes (``pre`` a map fit on the reference
-    applied to every set first)."""
-    raw = dict(raw) if pre is None else {k: pre(v) for k, v in raw.items()}
+                conf: DynConf, dev: torch.device,
+                labels: Mapping[str, Any]) -> list[Row]:  # fmt: skip
+    """The rows of one place's raw codes (``_raw_sets``)."""
     wh, sets = white_sets(raw, raw["ref"], ws, vs, gconf)
     lab = dict(labels) | {
         "k": gconf.k,
@@ -520,8 +541,11 @@ def evaluate_yard(
     def emit(code: str, rows: list[Row]) -> None:
         _write(yard / "rows" / f"{code}.json", rows, {})
 
-    def raw_of(fn: Places) -> dict[str, dict[str, Tensor]]:
-        return _raw_sets(fn, conf, root, vs, zurich, ref, ws.n, dconf.block, dev)
+    def raw_of(
+        fn: Places, zpca_seed: int | None = None
+    ) -> dict[str, dict[str, Tensor]]:
+        return _raw_sets(fn, conf, root, vs, zurich, ref, ws.n, dconf.block, dev,
+                         zpca_seed, gconf.pca_dim)  # fmt: skip
 
     if {"pca", "rot", "clock"} & set(todo):
         gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
@@ -559,17 +583,13 @@ def evaluate_yard(
         if name not in todo:
             continue
         mods, own, path = _init_of(inits[name], conf.device)
-        raws = raw_of(JepaPlaces(mods).places)
+        seed = _conf_of(inits[name], None).seed if own == "zpca" else None
+        raws = raw_of(JepaPlaces(mods).places, seed)
         rows: list[Row] = []
         for place, raw in raws.items():
-            pre = None
-            if place == "own" and own == "zpca":
-                pre = _zpca_map(
-                    raw["ref"], _conf_of(inits[name], None).seed, gconf.pca_dim
-                )
             rows += _place_rows(raw, ws, vs, gconf, dconf, dev,
                                 {"code": name, "place": place, "source": str(path),
-                                 "t": float(path.stem)}, pre)  # fmt: skip
+                                 "t": float(path.stem)})  # fmt: skip
         emit(name, rows)
     if "init_v16" in todo:
         first = _first_vae(init_v16)
@@ -593,13 +613,20 @@ def _apply(fn: Places, conf: Any, root: Path, vs: VideoSets, zurich: Any, ref: T
            labels: Mapping[str, Any], zpca_seed: int | None = None) -> list[Row]:  # fmt: skip
     rows: list[Row] = []
     for place, raw in _raw_sets(
-        fn, conf, root, vs, zurich, ref, ws.n, dconf.block, dev
+        fn,
+        conf,
+        root,
+        vs,
+        zurich,
+        ref,
+        ws.n,
+        dconf.block,
+        dev,
+        zpca_seed,
+        gconf.pca_dim,
     ).items():
-        pre = None
-        if place == "own" and zpca_seed is not None:
-            pre = _zpca_map(raw["ref"], zpca_seed, gconf.pca_dim)
         rows += _place_rows(
-            raw, ws, vs, gconf, dconf, dev, dict(labels) | {"place": place}, pre
+            raw, ws, vs, gconf, dconf, dev, dict(labels) | {"place": place}
         )
     return rows
 
@@ -1130,6 +1157,19 @@ def _close(a: Tensor, b: Tensor, rel: float) -> bool:
     return bool(((a - b).abs() <= rel * b.abs().clamp(min=1e-300)).all())
 
 
+def _same_num(a: Tensor, b: Tensor, clim: Tensor, rel: float) -> bool:
+    r"""Two numerators equal up to rounding: $|a - b| \le
+    \mathrm{rel}\sqrt{b \cdot \mathrm{clim}}$. The residuals $y - \hat y$
+    are differences of terms of the scale of $y$, so their rounding is
+    $O(\epsilon \lVert y \rVert)$ and that of $\sum \lVert y - \hat y
+    \rVert^2$ is $O(\epsilon \lVert y - \hat y \rVert \lVert y \rVert)$,
+    i.e. of $\sqrt{\mathrm{num} \cdot \mathrm{clim}}$ (``clim`` the sum of
+    $\lVert \bar w - y \rVert^2$), not of ``num``: relative to ``num`` it
+    grows as $1/\sqrt{R_{\mathrm{clim}}}$ where the code is near
+    deterministic (S8: $R \sim 10^{-5}$)."""
+    return bool(((a - b).abs() <= rel * (b * clim).clamp(min=0).sqrt()).all())
+
+
 def _vp1b(units: Mapping[str, Any], cc: CheckConf) -> list[Row]:
     rows = []
     for code in LONG_CODES:
@@ -1153,8 +1193,9 @@ def _vp1b(units: Mapping[str, Any], cc: CheckConf) -> list[Row]:
             ok &= row["vel_closed"]
         if code.startswith("S9-"):
             o = units[f"long-{code.removeprefix('S9-')}"]
-            same = _close(
-                num / copy, _t(o["num_b"]).sum(1) / _t(o["copy_b"]).sum(1), cc.rel
+            o_num, o_copy = _t(o["num_b"]).sum(1), _t(o["copy_b"]).sum(1)
+            same = _close(copy, o_copy, cc.rel) and _same_num(
+                num, o_num, _t(o["clim_b"]).sum(1), cc.rel
             )
             row["invariant"] = same and v["scale"] == o["scale"]
             ok &= row["invariant"]
