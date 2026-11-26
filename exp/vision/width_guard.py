@@ -71,7 +71,7 @@ the targets (the earlier stacks feed the past window).
 import argparse
 import json
 import math
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -130,6 +130,7 @@ __all__ = [
     "evaluate_yard",
     "fit_decoder",
     "guard_anchors",
+    "interval_runs",
     "load_decoder",
     "main",
     "same_k",
@@ -322,25 +323,18 @@ def lag_speeds(w: Tensor, lag: int) -> Tensor:
     return d / (2 * var)
 
 
-def train_intervals(
-    conf: Any,
-    root: Path,
-    conf_g: GuardConf,
-    code: Callable[[Tensor], Tensor],
-    dev: torch.device,
-) -> tuple[Tensor, Tensor]:
-    """The cheats' training set (module docstring): the codes ``code`` of
-    every stack of the runs ``(R, L, k)`` float64 and the last frames u8 of
-    the runs' middle halves ``(R L / 2, 3, S, S)``, the runs drawn uniformly
-    among those of consecutive stacks (one frame apart) of one video."""
+def interval_runs(conf: Any, root: Path, conf_g: GuardConf) -> Iterator[Tensor]:
+    """The runs of the cheats' training set (module docstring) in order,
+    each its stacks u8 ``(L, n, 3, S, S)``: drawn uniformly among those of
+    consecutive stacks (one frame apart) of one video."""
     t = conf.data.tours
     stream = StackedTourFrames(root, n=1, held_out=t.held_out, frames=t.frames,
                                stride=t.stride, advance=1)  # fmt: skip
     total = sum(len(U8Reader(root / v)) for v in videos(root) if v != t.held_out)
     gen = torch.Generator().manual_seed(conf_g.cheat_seed)
-    length, a = conf_g.cheat_length, conf_g.cheat_length // 4
-    codes, last = [], []
-    while len(codes) < conf_g.cheat_count:
+    length = conf_g.cheat_length
+    got = 0
+    while got < conf_g.cheat_count:
         k = int(torch.randint(total, (1,), generator=gen))
         stream.load_state_dict({"k": k})
         stacks, ok = [], True
@@ -352,7 +346,23 @@ def train_intervals(
             stacks.append(x[0])
         if not ok:
             continue
-        run = torch.stack(stacks)  # (L, n, 3, S, S)
+        got += 1
+        yield torch.stack(stacks)
+
+
+def train_intervals(
+    conf: Any,
+    root: Path,
+    conf_g: GuardConf,
+    code: Callable[[Tensor], Tensor],
+    dev: torch.device,
+) -> tuple[Tensor, Tensor]:
+    """The cheats' training set (module docstring): the codes ``code`` of
+    every stack of the runs ``(R, L, k)`` float64 and the last frames u8 of
+    the runs' middle halves ``(R L / 2, 3, S, S)`` (``interval_runs``)."""
+    length, a = conf_g.cheat_length, conf_g.cheat_length // 4
+    codes, last = [], []
+    for run in interval_runs(conf, root, conf_g):
         with torch.no_grad():
             z = torch.cat([code(c.to(dev)).double().cpu() for c in run.split(64)])
         codes.append(z)
