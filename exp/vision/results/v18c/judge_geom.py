@@ -1,7 +1,8 @@
 r"""The description of V18c's time linearity and information width
 (exp/vision/README.md, 「V18c: 時間の線形性と情報の幅（回す前に決めたこと）」;
 ``exp.vision.geom_eval``). Written before any number. No verdict on a code:
-the stages lay out the checks and the material for $\Delta_*$.
+the stages lay out the checks, the material for $\Delta_*$ and the
+models' values with the registered wording.
 
 ``--stage checks`` reads ``<geom>/checks/rows.json`` (V-d0a to V-d0f): each
 check's passes and failures, and the records (the TwoNN's recovery beyond
@@ -37,13 +38,23 @@ Before them, whether the step 0 of a seed's runs are the same
 (``step0_same``; where not, each run's step 0 is a yardstick
 ``<init>@<run>``).
 
-$\mathrm{SE}^*$ is ``geom_eval.ratio_se`` and ``geom_eval.s_se``: the larger
-of the block bootstraps of 128 s and 256 s, 2000 resamples, seed 101. The
-``apply`` stage (the models' values) is written after $\Delta_*$ is
-decided. Prints markdown; ``--json`` also writes the numbers::
+``--stage apply`` (written after the user decided $\Delta_*$, before any
+model's value) reads the models' rows (``MODELS``: each run's
+``posthoc_geom/rows/<step>.json`` and V18c's ``k3/<step>.json`` under
+``--runs``; the VAEs' ``<geom>/vae/rows/<name>.json``) with the yard's, and
+lays out their curves, their paired differences (against the yardsticks,
+of the models at 60000, of V18c's 6000 and 60000 and of its seeds at 6000)
+with the wording of README's 「言葉づかいの規則」 ($\Delta_*$ 0.03 of $G$ at
+the lags V-d2 resolves, ``judged_lags``; 4 of $\hat d$, no order of two
+codes over 20), the TwoNN, the spread's diagnosis against the provisional
+bounds and the K3's rows.
 
-    uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard \
-        [--geom runs/v18c-geom] [--json out.json]
+$\mathrm{SE}^*$ is ``geom_eval.ratio_se`` and ``geom_eval.s_se``: the larger
+of the block bootstraps of 128 s and 256 s, 2000 resamples, seed 101.
+Prints markdown; ``--json`` also writes the numbers::
+
+    uv run python -m exp.vision.results.v18c.judge_geom --stage checks|yard|apply \
+        [--geom runs/v18c-geom] [--runs runs] [--json out.json]
 """
 
 import argparse
@@ -57,9 +68,10 @@ from typing import Any
 
 import torch
 
+from exp.lib.metrics import block_counts, max_t_critical, ratio_resamples
 from exp.lib.midpoint import permutation_terms, stationary_terms
 from exp.lib.synth_series import gauss_kernel, kernel_acf
-from exp.vision.geom_eval import GeomConf, cheb_js, ratio_se, s_se
+from exp.vision.geom_eval import OUT, GeomConf, cheb_js, ratio_se, s_se
 
 Row = dict[str, Any]
 
@@ -501,17 +513,337 @@ def yard_stage(geom: Path, g: GeomConf) -> dict[str, Any]:
     return out
 
 
+# -- the apply stage -----------------------------------------------------------------
+
+DELTA_G = 0.03  # Delta* of G_mid, every lag (README, the user's decision 2026-11-26)
+DELTA_D = 4.0  # Delta* of d-hat (pre, k = 64, 8 s)
+D_TRUST = 20.0  # no order of two codes whose d-hat both exceed it
+DIAG_V = (0.5, 2.0)  # the provisional bounds of the spread's diagnosis
+DIAG_MAX = 10.0
+DIAG_TOP_SHARE = 0.4
+
+V18 = "v18-long/v18-long-lr1e-4-lam0.5-"
+V18B = "v18b-long/v18b-long-"
+MODELS: tuple[tuple[str, str, tuple[int, ...]], ...] = (
+    *((f"{V18}{r}", "v18", (60000,)) for r in ("r0.25-s0", "r0.5-s0", "r0.75-s0", "r0.25-s1")),
+    *((f"{V18B}{r}", "v18b_f", (60000,)) for r in ("f-lr1e-4-lam0.5-r0.25-s0", "f-lr1e-4-lam0.5-r0.25-s1")),
+    *((f"{V18B}{r}", "v18b_m", (60000,)) for r in ("m-lr3e-5-lam0.8-r0.25-s0", "m-lr3e-5-lam0.8-r0.25-s1")),
+    *((f"v18c-long/v18c-lr{lr}-lam{lam}-r0.5-s{seed}", "v18c", (6000, 60000))
+      for lr in ("1e-4", "1e-5") for lam in ("0.5", "0.8", "0.95") for seed in (0, 1)),
+)  # fmt: skip
+VAES = ("v16", "v17")
+FINAL = 60000
+
+
+def classify(lo: float, hi: float, delta: float) -> str:
+    r"""The wording of an interval $[\mathrm{lo}, \mathrm{hi}]$ of a paired
+    difference (README, 「言葉づかいの規則」): ``distinct`` (「実用上の差を区別
+    できた」) where it clears $\Delta_*$ wholly on one side, ``small``
+    (「実用上の差は小さい」) where it lies in $[-\Delta_*, \Delta_*]$,
+    ``unresolved`` (「解像度が足りない」) otherwise."""
+    if lo > delta or hi < -delta:
+        return "distinct"
+    if -delta <= lo and hi <= delta:
+        return "small"
+    return "unresolved"
+
+
+def judged_lags(vd_rows: Sequence[Row], delta: float, g: GeomConf) -> tuple[int, ...]:
+    r"""The lags whose $G$ is judged (README, 「ユーザーの決定（2026-11-26）」):
+    where V-d2's smallest registered $\delta \ge \Delta_*$ was made and its
+    interval $\hat\delta \pm 2\,\mathrm{SE}^*$ holds no 0. A lag that cannot
+    make it (no row; $\delta \ge \tfrac34 - G$) is not judged, as one whose
+    interval holds 0."""
+    d0 = min(d for d in g.deltas if d >= delta - 1e-12)
+    return tuple(
+        lag
+        for lag in g.lags
+        if any(
+            r["lag"] == lag and math.isclose(r["delta"], d0) and r["apart_from_0"]
+            for r in _of(vd_rows, part="check", name="V-d2")
+        )
+    )
+
+
+def paired_g(
+    rows_a: Sequence[Row],
+    rows_b: Sequence[Row],
+    place: str,
+    g: GeomConf,
+    judged: Sequence[int],
+    delta: float = DELTA_G,
+    stratum: str = "in",
+) -> dict[str, Any]:
+    r"""The paired differences $G_a - G_b$ of each lag of ``g.lags`` (the
+    main whitening, ``stratum``): $\mathrm{SE}^*$ (``ratio_se``), the
+    interval $\pm 2\,\mathrm{SE}^*$ and the simultaneous one $\pm
+    c\,\mathrm{SE}^*$ over all the lags ($c$ of ``metrics.max_t_critical``
+    of the 128 s resamples, each lag's $t$ by its own resamples' standard
+    deviation), and of a ``judged`` lag the wording of each (``classify``;
+    None of another lag: described only). A lag of zero spread (a
+    difference the same in every resample) adds no $t$."""
+    lags, est, res, out = [], [], [], {}
+    coef = torch.tensor([1.0, -1.0], dtype=torch.float64)
+    for lag in g.lags:
+        ma = _mid(rows_a, g, place, lag, stratum)
+        mb = _mid(rows_b, g, place, lag, stratum)
+        if ma is None or mb is None:
+            continue
+        num = torch.tensor([ma["num_b"], mb["num_b"]], dtype=torch.float64)
+        den = torch.tensor([ma["den_b"], mb["den_b"]], dtype=torch.float64)
+        gen = torch.Generator().manual_seed(g.boot_seed)
+        res.append(
+            ratio_resamples(num, den, block_counts(num.shape[1], g.boot, gen)) @ coef
+        )
+        lags.append(lag)
+        est.append(ma["G"] - mb["G"])
+        out[lag] = {"diff": est[-1], "se": ratio_se(num, den, coef, g)}
+    c = 0.0
+    if lags:
+        r = torch.stack(res, 1)
+        r = r[torch.isfinite(r).all(1)]
+        sd = r.std(0)
+        keep = sd > 0
+        if bool(keep.any()):
+            c = max_t_critical(r[:, keep], torch.tensor(est, dtype=torch.float64)[keep],
+                               sd[keep])  # fmt: skip
+    for lag, e in out.items():
+        e["lo"], e["hi"] = e["diff"] - 2 * e["se"], e["diff"] + 2 * e["se"]
+        e["lo_sim"], e["hi_sim"] = e["diff"] - c * e["se"], e["diff"] + c * e["se"]
+        on = lag in judged
+        e["cls"] = classify(e["lo"], e["hi"], delta) if on else None
+        e["cls_sim"] = classify(e["lo_sim"], e["hi_sim"], delta) if on else None
+    return {"c": c, "lags": out}
+
+
+def _d_mean(rows: Sequence[Row], place: str, g: GeomConf) -> float | None:
+    tw = _of(rows, part="twonn", place=place, k=g.k, metric="pre",
+             spacing=g.spacings[0])  # fmt: skip
+    ds = [r["d"] for r in tw]
+    return sum(ds) / len(ds) if ds and None not in ds else None
+
+
+def paired_d(
+    rows_a: Sequence[Row], rows_b: Sequence[Row], place: str, g: GeomConf
+) -> dict[str, Any] | None:
+    r"""The paired difference of $\hat d$ (``pre``, $k$ = 64, 8 s, the
+    offsets' mean) $a - b$, the standard deviation of the paired
+    half-samples' differences ``sd`` (a guide to its SE, likely on the large
+    side), the interval $\pm 2\,\mathrm{sd}$ and its wording with
+    $\Delta_* = 4$; ``above_20`` where both exceed 20 (no order of such
+    codes; README, 「ユーザーの決定（2026-11-26）」)."""
+    da, db = _d_mean(rows_a, place, g), _d_mean(rows_b, place, g)
+    sa = _of(rows_a, part="twonn_sub", place=place, k=g.k, metric="pre")
+    sb = _of(rows_b, part="twonn_sub", place=place, k=g.k, metric="pre")
+    if da is None or db is None or len(sa) != 1 or len(sb) != 1:
+        return None
+    diffs = [x - y for x, y in zip(sa[0]["d"], sb[0]["d"], strict=True)
+             if x is not None and y is not None]  # fmt: skip
+    sd = statistics.stdev(diffs)
+    diff = da - db
+    lo, hi = diff - 2 * sd, diff + 2 * sd
+    cls = "above_20" if da > D_TRUST and db > D_TRUST else classify(lo, hi, DELTA_D)
+    return {"a": da, "b": db, "diff": diff, "sd": sd, "lo": lo, "hi": hi, "cls": cls}
+
+
+def diag_flags(diag: Mapping[str, float]) -> list[str]:
+    """The measures of ``spread_diagnosis`` beyond the provisional bounds
+    ($V/k \\notin [0.5, 2]$, the largest variance of a direction over 10,
+    the top 5's share over 0.4): 「計量が参照と評価のずれに依存する」."""
+    out = []
+    if not DIAG_V[0] <= diag["V_over_k"] <= DIAG_V[1]:
+        out.append("V_over_k")
+    if diag["var_max"] > DIAG_MAX:
+        out.append("var_max")
+    if diag["top_share"] > DIAG_TOP_SHARE:
+        out.append("top_share")
+    return out
+
+
+def _label(run: str, step: int | None) -> str:
+    name = run.rsplit("/", 1)[-1]
+    return name if step is None else f"{name}@{step}"
+
+
+def load_models(
+    geom: Path, runs: Path
+) -> tuple[dict[str, list[Row]], dict[str, list[Row]], dict[str, dict[str, Any]]]:
+    """The models' rows by label (``<run>@<step>``, the VAEs by name), the
+    V18c's K3 rows by the same label, and each label's family and step."""
+    rows: dict[str, list[Row]] = {}
+    k3: dict[str, list[Row]] = {}
+    meta: dict[str, dict[str, Any]] = {}
+    for name in VAES:
+        rows[name] = _load(geom / "vae" / "rows" / f"{name}.json")
+        meta[name] = {"family": "vae", "step": None, "run": name}
+    for run, family, steps in MODELS:
+        for step in steps:
+            label = _label(run, step)
+            rows[label] = _load(runs / run / OUT / "rows" / f"{step:06d}.json")
+            meta[label] = {
+                "family": family,
+                "step": step,
+                "run": run.rsplit("/", 1)[-1],
+            }
+            if family == "v18c":
+                k3[label] = _load(runs / run / OUT / "k3" / f"{step:06d}.json")
+    return rows, k3, meta
+
+
+def _init_of(meta: Mapping[str, Any]) -> str | None:
+    """The yardstick of a model's own step 0: the yard's checkpoint of its
+    run, or for V18c its seed's (``step0_same`` holds); None where the yard
+    has none (V17, V18 other than ``r0.25-s0``, V18b ``s1``: whether their
+    step 0 equal the yard's is not checked)."""
+    run, fam = meta["run"], meta["family"]
+    if fam == "v18c":
+        return "init_c" if run.endswith("-s0") else "init_c1"
+    own = {"v16": "init_v16", "v18-long-lr1e-4-lam0.5-r0.25-s0": "init",
+           "v18b-long-f-lr1e-4-lam0.5-r0.25-s0": "init_f",
+           "v18b-long-m-lr3e-5-lam0.8-r0.25-s0": "init_m"}  # fmt: skip
+    return own.get(run)
+
+
+def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
+    """The models' values (README, 「V18c: 時間の線形性と情報の幅の結果」):
+    the curves, the paired differences against the yardsticks, of the
+    models' pairs at step 60000, of V18c's 6000 and 60000 and of its seeds
+    at 6000 (their wording at the judged lags), the TwoNN and its paired
+    differences, the spread's diagnosis with the provisional bounds, and
+    the K3's rows. Stops where a row's ``key`` is not the sets'."""
+    sets = json.loads((geom / "sets.json").read_text())
+    vd = _load(geom / "yard" / "vd.json")
+    yard = {p.stem: _load(p) for p in sorted((geom / "yard" / "rows").glob("*.json"))}
+    rows, k3, meta = load_models(geom, runs)
+    for label, rs in [*rows.items(), *k3.items()]:
+        keys = {r["key"] for r in rs}
+        if not rs or keys != {sets["key"]}:
+            raise SystemExit(
+                f"{label}: key {sorted(keys)} is not the sets' {sets['key']}"
+            )
+    judged = judged_lags(vd, DELTA_G, g)
+    labels = tuple(rows)
+    final = tuple(x for x in labels if meta[x]["step"] in (None, FINAL))
+    every = {**yard, **rows}
+    out: dict[str, Any] = {
+        "delta_g": DELTA_G, "delta_d": DELTA_D, "judged": judged, "meta": meta,
+        "curves": curves(every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}),
+    }  # fmt: skip
+
+    def pairs(specs: Sequence[tuple[str, str]], place: str) -> list[dict[str, Any]]:
+        got = []
+        for a, b in specs:
+            pg = paired_g(every[a], every[b], place, g, judged)
+            if pg["lags"]:
+                got.append(
+                    {
+                        "a": a,
+                        "b": b,
+                        "G": pg,
+                        "d": paired_d(every[a], every[b], place, g),
+                    }
+                )
+        return got
+
+    out["vs_yard"] = {
+        p: pairs([(m, y) for m in labels for y in YARDSTICKS[p]], p) for p in YARDSTICKS
+    }
+    out["models"] = {p: pairs(list(combinations(final, 2)), p) for p in YARDSTICKS}
+    c_runs = [
+        m for m in labels if meta[m]["family"] == "v18c" and meta[m]["step"] == FINAL
+    ]
+    out["steps"] = {p: pairs([(m, m.replace(f"@{FINAL}", "@6000")) for m in c_runs], p)
+                    for p in YARDSTICKS}  # fmt: skip
+    early = [
+        m.replace(f"@{FINAL}", "@6000")
+        for m in c_runs
+        if m.split("@")[0].endswith("-s0")
+    ]
+    out["seeds_6000"] = {p: pairs([(m, m.replace("-s0@", "-s1@")) for m in early], p)
+                         for p in YARDSTICKS}  # fmt: skip
+    out["init_of"] = {m: _init_of(meta[m]) for m in labels}
+    out["twonn"] = twonn_table(
+        every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}
+    )
+    spread = spread_table(every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS})
+    out["spread"] = {p: {c: d | {"flags": diag_flags(d)} for c, d in codes.items()}
+                     for p, codes in spread.items()}  # fmt: skip
+    out["k3"] = {}
+    for m, rs in k3.items():
+        e: dict[str, Any] = {"k3_z": {}, "own_k16": {}}
+        for lag in g.lags:
+            kz = _mid(rs, g, "own", lag, "in", k=16)
+            oz = _mid(rows[m], g, "own", lag, "in", k=16)
+            e["k3_z"][lag] = {"G": kz["G"], "s": kz["s"]} if kz else None
+            e["own_k16"][lag] = {"G": oz["G"], "s": oz["s"]} if oz else None
+        spec = _of(rs, part="spec", code="k3_z", place="own", k=g.k)
+        e["k3_z_k64_scoreable"] = spec[0]["scoreable"] if spec else None
+        same = all(
+            {k: v for k, v in a.items() if k not in _LABELS}
+            == {k: v for k, v in b.items() if k not in _LABELS}
+            for a, b in zip(_of(rs, code="k3_hmean"), _of(rows[m], place="h_mean"), strict=True)
+        )  # fmt: skip
+        e["k3_hmean_same"] = same
+        out["k3"][m] = e
+    _print_apply(out, g)
+    return _lean(out)
+
+
+def _lean(x: Any) -> Any:
+    """``x`` for the JSON: floats to 6 significant digits, and no interval
+    bounds of a paired $G$ (``diff`` $\\pm 2\\,$``se`` and $\\pm c\\,$``se``)."""
+    if isinstance(x, float):
+        return float(f"{x:.6g}")
+    if isinstance(x, Mapping):
+        return {k: _lean(v) for k, v in x.items()
+                if not ("cls_sim" in x and k in ("lo", "hi", "lo_sim", "hi_sim"))}  # fmt: skip
+    if isinstance(x, list | tuple):
+        return [_lean(v) for v in x]
+    return x
+
+
+_LABELS = ("code", "run", "step", "t", "snap", "place", "source")
+
+
+def _print_apply(out: Mapping[str, Any], g: GeomConf) -> None:
+    print(f"## 適用（Δ* = {out['delta_g']}・{out['delta_d']}、判定する刻み "
+          + "・".join(f"{lag / 10:g} 秒" for lag in out["judged"]) + "）\n")  # fmt: skip
+    for place, codes in out["curves"].items():
+        print(f"\n### `in` の G（2 SE*）と s: {place}\n\n| 符号 | "
+              + " | ".join(f"{lag / 10:g} 秒" for lag in g.lags) + " |")  # fmt: skip
+        print("|" + " -- |" * (len(g.lags) + 1))
+        for code, by_lag in codes.items():
+            cells = [f"{_fmt(v['G'], 3)}±{_fmt(2 * v['se_G'], 2)} (s {_fmt(v['s'], 3)})"
+                     if (v := by_lag.get(lag)) else "—" for lag in g.lags]  # fmt: skip
+            print(f"| {code} | " + " | ".join(cells) + " |")
+    for key in ("vs_yard", "models", "steps", "seeds_6000"):
+        for place, got in out[key].items():
+            counts: dict[str, int] = {}
+            for p in got:
+                for lag in out["judged"]:
+                    e = p["G"]["lags"].get(lag)
+                    if e:
+                        counts[e["cls"]] = counts.get(e["cls"], 0) + 1
+            print(
+                f"- {key} {place}: "
+                + "、".join(f"{k} {v}" for k, v in sorted(counts.items()))
+            )
+
+
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    p.add_argument("--stage", choices=("checks", "yard"), required=True)
+    p.add_argument("--stage", choices=("checks", "yard", "apply"), required=True)
     p.add_argument("--geom", type=Path, default=Path("runs/v18c-geom"))
+    p.add_argument("--runs", type=Path, default=Path("runs"))
     p.add_argument("--json", type=Path, default=None)
     a = p.parse_args(argv)
     g = GeomConf()
     if a.stage == "checks":
         out = checks_stage(_load(a.geom / "checks" / "rows.json"))
-    else:
+    elif a.stage == "yard":
         out = yard_stage(a.geom, g)
+    else:
+        out = apply_stage(a.geom, a.runs, g)
     if a.json is not None:
         a.json.write_text(json.dumps(out, indent=1, default=str) + "\n")
     return out
