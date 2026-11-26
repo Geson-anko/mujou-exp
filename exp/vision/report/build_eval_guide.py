@@ -10,7 +10,10 @@ band-plus-noise curves are exact, and V-h0i's numbers come from the README
 ("線形の幅の有効性"). Sections 24-28 (the results of the checks, the guard
 rebuilt on the observation's content and its validity) draw the README's
 numbers ("線形の幅の有効性", "線形の幅の結果", "線形の幅のガードの作り直しの
-有効性") and one schematic (the front).
+有効性") and one schematic (the front). Sections 29-31 (the content guard
+v3, its checks V-h5 and the read of the learned codes) draw the README's
+numbers ("線形の幅の内容のガード v3 の有効性", "線形の幅の結果（探索、ガード v3
+つき）") and one schematic (the readout selection).
 
 Subcommands for the prose review (the yomiyasu pass):
 
@@ -1884,7 +1887,280 @@ def fig_lh_diff() -> str:
     return svg("0 0 680 240", "".join(b), "水準の読み出しの差で変化を測る難しさ")
 
 
+def fig_lh_v3_select() -> str:
+    """Schematic of the guard v3's readout selection: where the three kinds
+    of intervals sit in the training videos, and the validation error of the
+    candidates (ridge and the MLP's checkpoints) with the chosen minimum."""
+    b = []
+    # top: the intervals on the training videos
+    y = 46.0
+    b.append(
+        text(
+            20, 24, "訓練の動画（Zurich 以外）の上の区間", anchor="start", cls="strong"
+        )
+    )
+    b.append(_seg(20, y + 14, 660, y + 14, "axis"))
+    spans = [
+        (40, 70, "c1"),
+        (62, 92, "c1"),
+        (250, 280, "c1"),
+        (270, 300, "c1"),
+        (480, 510, "c1"),
+        (130, 160, "cn"),
+        (560, 590, "cn"),
+        (360, 390, "c3"),
+        (190, 220, "c3"),
+        (610, 640, "c3"),
+    ]
+    for x1, x2, cls in spans:
+        b.append(
+            f'<rect class="{cls}" x="{x1}" y="{y}" width="{x2 - x1}" height="28" fill-opacity="0.8" rx="2"/>'
+        )
+    b.append(_seg(300, y + 40, 360, y + 40, "ln"))
+    b.append(text(330, y + 56, "25.6 秒以上あける", cls="small"))
+    items = [
+        ("c1", "訓練の区間（512 個、重なってよい）：当てはめる"),
+        ("c3", "検証の区間（128 個）：候補を選ぶ"),
+        ("cn", "記録用の区間（64 個）：どちらにも使わない"),
+    ]
+    for k, (cls, lab) in enumerate(items):
+        ly = 128 + k * 20
+        b.append(
+            f'<rect class="{cls}" x="20" y="{ly - 11}" width="12" height="12" rx="2"/>'
+        )
+        b.append(text(38, ly, lab, anchor="start", cls="small"))
+    # bottom: validation error of the candidates
+    x0, y0, w, h = 90.0, 380.0, 540.0, 150.0
+    b.append(_seg(x0, y0, x0 + w, y0, "axis"))
+    b.append(_seg(x0, y0, x0, y0 - h, "axis"))
+    b.append(
+        text(
+            x0 + w,
+            y0 + 24,
+            "MLP の学習の step（1000 step ごとに候補）→",
+            anchor="end",
+            cls="small",
+        )
+    )
+    b.append(
+        text(x0 - 6, y0 - h - 26, "↑ 検証の区間の誤差", anchor="start", cls="small")
+    )
+
+    def ev(u: float) -> float:
+        return 0.3 + 0.6 * math.exp(-u / 0.15) + 0.5 * (u - 0.45) ** 2
+
+    def Yv(v: float) -> float:
+        return y0 - v / 1.0 * h
+
+    ridge_y = Yv(0.36)
+    b.append(_seg(x0, ridge_y, x0 + w, ridge_y, "refline"))
+    b.append(
+        text(
+            x0 + 8,
+            ridge_y + 18,
+            "ridge（最小二乗を含む 4 つ）",
+            anchor="start",
+            cls="small",
+        )
+    )
+    pts = [(x0 + 20 + i / 20 * (w - 40), Yv(ev(i / 20))) for i in range(21)]
+    b.append(f'<polyline class="qline" points="{_pts(pts)}"/>')
+    kx, ky = max(pts, key=lambda q: q[1])
+    b.append(_dot(kx, ky, "c3", 7))
+    b.append(text(kx, ky + 22, "検証の誤差が最小の候補を選ぶ", cls="small accent"))
+    b.append(
+        text(x0 + 40, y0 - h - 4, "学び始め：まだ粗い", anchor="start", cls="small")
+    )
+    b.append(
+        text(
+            x0 + w - 10,
+            y0 - h + 34,
+            "学びすぎ：区間を覚え始める",
+            anchor="end",
+            cls="small",
+        )
+    )
+    return svg("0 0 680 410", "".join(b), "v3 の読み出しの選び方の模式図")
+
+
+# V-h5b (README): E^d of the yardsticks read by v2 (difference of level
+# readouts) and by v3 (the chosen pair readout)
+V3_ED = [
+    ("pca", -0.0241, 0.0598),
+    ("学習前（init_c）", -0.469, 0.0222),
+    ("学習前（init_v16）", -0.565, 0.0239),
+    ("平均 0.8 秒（ずる）", -0.122, 0.0189),
+    ("平均 12.8 秒（ずる）", -0.0341, 0.00847),
+]
+
+
+def fig_lh_v3_ed() -> str:
+    """README numbers (V-h5b): v2's E^d (a difference of level readouts) is
+    negative for every code; v3's pair readout makes it positive."""
+    b = []
+    zx, sc = 480.0, 480.0
+
+    def X(v: float) -> float:
+        return zx + v * sc
+
+    for t in [-0.6, -0.4, -0.2, 0.0]:
+        b.append(_seg(X(t), 30, X(t), 30 + 50 * len(V3_ED), "gridline"))
+        b.append(text(X(t), 48 + 50 * len(V3_ED), f"{t:g}", cls="mono small"))
+    b.append(text(X(0.1), 48 + 50 * len(V3_ED), "0.1", cls="mono small"))
+    b.append(_seg(X(0.1), 30, X(0.1), 30 + 50 * len(V3_ED), "gridline"))
+    for i, (lab, v2, v3) in enumerate(V3_ED):
+        y = 34 + i * 50
+        b.append(text(10, y + 22, lab, anchor="start", cls="strong"))
+        for j, (v, cls) in enumerate([(v2, "c2"), (v3, "c3")]):
+            yy = y + j * 20
+            x1, x2 = sorted([X(0), X(v)])
+            b.append(
+                f'<rect class="{cls}" x="{x1:.1f}" y="{yy:.1f}" width="{max(x2 - x1, 1):.1f}" height="16" fill-opacity="0.85" rx="2"/>'
+            )
+            tx = X(v) + (6 if v >= 0 else -6)
+            b.append(
+                text(
+                    tx,
+                    yy + 13,
+                    f"{v:g}",
+                    anchor="start" if v >= 0 else "end",
+                    cls="mono small",
+                    size=12,
+                )
+            )
+    b.append(_seg(X(0), 28, X(0), 32 + 50 * len(V3_ED), "axis"))
+    b.append('<rect class="c2" x="200" y="8" width="12" height="12" rx="2"/>')
+    b.append(text(218, 19, "v2：水準の読み出しの差", anchor="start", cls="small"))
+    b.append('<rect class="c3" x="420" y="8" width="12" height="12" rx="2"/>')
+    b.append(text(438, 19, "v3：変化を直接に読む", anchor="start", cls="small"))
+    return svg("0 0 680 315", "".join(b), "変化の内容 Eᵈ の v2 と v3")
+
+
+# V-h5a1 (README, 外れた理由): the long realisation, E by readout and place
+VH5A1 = [
+    (
+        "遅い（並べ直した本物）",
+        [
+            ("選んだ・訓練の中", 0.829, "c1"),
+            ("選んだ・検証の区間", 0.622, "c3"),
+            ("選んだ・評価の系列", 0.597, "c4"),
+            ("最小二乗・評価の系列", 0.531, "cn"),
+        ],
+    ),
+    (
+        "速い（比べる相手）",
+        [
+            ("選んだ・訓練の中", 0.750, "c1"),
+            ("選んだ・検証の区間", 0.719, "c3"),
+            ("選んだ・評価の系列", 0.714, "c4"),
+            ("最小二乗・評価の系列", 0.631, "cn"),
+        ],
+    ),
+]
+
+
+def fig_lh_vh5a1() -> str:
+    """README numbers (V-h5a1's diagnosis): the chosen readout of the slow
+    code passes the population best in training (memory) but falls short
+    of it outside; the fast code's readout reaches it."""
+    b = []
+    x0, sc = 200.0, 520.0
+
+    def X(v: float) -> float:
+        return x0 + v * sc
+
+    for t in [0, 0.2, 0.4, 0.6, 0.8]:
+        b.append(_seg(X(t), 20, X(t), 290, "gridline"))
+        b.append(text(X(t), 308, f"{t:g}", cls="mono small"))
+    y = 26.0
+    for code, bars in VH5A1:
+        b.append(text(10, y + 10, code, anchor="start", cls="strong"))
+        y += 18
+        for lab, v, cls in bars:
+            b.append(
+                f'<rect class="{cls}" x="{X(0):.1f}" y="{y:.1f}" width="{v * sc:.1f}" height="20" fill-opacity="0.85" rx="2"/>'
+            )
+            b.append(text(24, y + 15, lab, anchor="start", cls="small"))
+            b.append(
+                text(X(v) + 6, y + 15, f"{v:.3f}", anchor="start", cls="mono small")
+            )
+            y += 26
+        y += 14
+    b.append(_seg(X(0.74), 16, X(0.74), 290, "refline bad"))
+    b.append(text(X(0.74), 12, "母集団の最良 0.74", cls="small lab-bad"))
+    b.append(_seg(X(0), 20, X(0), 290, "axis"))
+    b.append(
+        text(X(0.8), 326, "E（評価の系列は合成の別の系列）", anchor="end", cls="small")
+    )
+    return svg("0 0 680 335", "".join(b), "V-h5a1 が外れた理由")
+
+
+# 線形の幅の結果（探索、ガード v3 つき）: E and E^d ranges by group
+M3_GROUPS = [
+    ("pca（物差し）", (0.776, 0.776), (0.0598, 0.0598), "cn"),
+    ("学習前（6 個）", (0.685, 0.750), (0.0211, 0.0483), "cn"),
+    ("VAE（v16・v17）", (0.728, 0.741), (0.0416, 0.0593), "c1"),
+    ("V18c 10⁻⁵（12 個）", (0.353, 0.638), (0.0381, 0.0557), "c3"),
+    ("V18c 10⁻⁴・6000（6 個）", (0.449, 0.610), (0.0377, 0.0461), "c3"),
+    ("V18c 10⁻⁴・λ0.5・60000", (0.509, 0.517), (0.0115, 0.0169), "c2"),
+    ("V18c 10⁻⁴・λ0.8/0.95・60000", (0.148, 0.350), (0.0016, 0.0053), "c2"),
+    ("V18・V18b（8 個）", (0.349, 0.506), (-0.0005, 0.0179), "c4"),
+]
+
+
+def fig_lh_models3() -> str:
+    """README numbers (the exploration with the guard v3): the range of E
+    and E^d in each group of codes, against pca."""
+    b = []
+    lw = 230.0
+    panels = [
+        (lw, 190.0, 0.0, 0.8, "水準の内容 E", 1, 0.776),
+        (lw + 240, 190.0, -0.005, 0.065, "変化の内容 Eᵈ", 2, 0.0598),
+    ]
+    n = len(M3_GROUPS)
+    top, rh = 40.0, 30.0
+    for px, pw, lo, hi, lab, idx, ref in panels:
+
+        def X(
+            v: float, px: float = px, pw: float = pw, lo: float = lo, hi: float = hi
+        ) -> float:
+            return px + (v - lo) / (hi - lo) * pw
+
+        b.append(text(px + pw / 2, 24, lab, cls="strong"))
+        ticks = [0, 0.2, 0.4, 0.6, 0.8] if idx == 1 else [0, 0.02, 0.04, 0.06]
+        for t in ticks:
+            b.append(_seg(X(t), top - 6, X(t), top + n * rh, "gridline"))
+            b.append(text(X(t), top + n * rh + 18, f"{t:g}", cls="mono small", size=12))
+        b.append(_seg(X(ref), top - 6, X(ref), top + n * rh, "chance"))
+        for i, (_, e_rng, ed_rng, cls) in enumerate(M3_GROUPS):
+            a, c = e_rng if idx == 1 else ed_rng
+            y = top + i * rh + rh / 2
+            if c - a < 1e-9:
+                b.append(_dot(X(a), y, cls, 5))
+            else:
+                b.append(
+                    f'<rect class="{cls}" x="{X(a):.1f}" y="{y - 6:.1f}" width="{X(c) - X(a):.1f}" height="12" fill-opacity="0.85" rx="3"/>'
+                )
+    for i, g in enumerate(M3_GROUPS):
+        y = top + i * rh + rh / 2
+        b.append(text(lw - 10, y + 5, g[0], anchor="end", cls="small"))
+    b.append(
+        text(
+            660,
+            top + n * rh + 36,
+            "点線は pca。棒は群の中の最小〜最大",
+            anchor="end",
+            cls="small",
+        )
+    )
+    return svg("0 0 680 330", "".join(b), "v3 で読んだ符号の群ごとの内容")
+
+
 FIGURES: dict[str, Callable[[], str]] = {
+    "lh_v3_select": fig_lh_v3_select,
+    "lh_v3_ed": fig_lh_v3_ed,
+    "lh_vh5a1": fig_lh_vh5a1,
+    "lh_models3": fig_lh_models3,
     "lh_vh3": fig_lh_vh3,
     "lh_vh2": fig_lh_vh2,
     "lh_front": fig_lh_front,

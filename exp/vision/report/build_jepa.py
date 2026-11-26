@@ -6,7 +6,8 @@ The judged numbers come from the two ``judge.json`` of ``results/v18`` and
 ``results/v18b`` (the rules applied by their ``judge.py``). V18c's numbers come
 from the JSON of ``results/v18c`` (``judge_screen``, ``judge_long``,
 ``judge_self``, ``judge``, ``judge_m_checks``, ``judge_scene``, ``judge_geom``,
-``judge_width_yard`` and ``judge_width_apply``; ``judge_geom`` and
+``judge_width_yard``, ``judge_width_apply``, ``judge_content_real3`` and
+``judge_content_models3``; ``judge_geom`` and
 ``judge_width_apply`` are not in git and are rebuilt by their commands in the
 README), and G's
 ``top1`` from the rows its ``judge.py`` reads. The rest is read
@@ -429,7 +430,47 @@ def v18c_width() -> dict[str, Any]:
         "codes": codes,
         "names": {c: geom_name(c) for c in codes},
         "yard": WIDTH_YARD,
+        "content": v18c_content(),
     }
+
+
+def _interval(d: dict[str, Any] | None) -> list[float | None]:
+    if d is None:
+        return [None, None, None]
+    return [_r8(d["point"]), _r8(d["lo"]), _r8(d["hi"])]
+
+
+def _content_row(m: dict[str, Any]) -> list[Any]:
+    """One code's content under the guard v3 (exploration): E and E^d of the
+    chosen readouts on zurich, least squares' E, the chosen level readout's E
+    in the training pairs minus the validation intervals, and the intervals
+    of D and D^d against ``pca`` and against the code's own init (``None``
+    when absent)."""
+    v = m["values"]
+    pairs = m.get("pairs", {})
+    init = pairs.get(m.get("init")) if m.get("init") else None
+    pca = pairs.get("pca")
+    return [
+        _r8(v["sel/eval"]["E"]),
+        _r8(v["sel/eval"]["Ed"]),
+        _r8(v["lin/eval"]["E"]),
+        _r8(v["sel/train"]["E"] - v["sel/val"]["E"]),
+        *_interval(pca["D"] if pca else None),
+        *_interval(pca["Dd"] if pca else None),
+        *_interval(init["D"] if init else None),
+        *_interval(init["Dd"] if init else None),
+        m["chosen"]["level"],
+    ]
+
+
+def v18c_content() -> dict[str, list[Any]]:
+    """The content guard v3 read on the yardsticks (``judge_content_real3``,
+    ``base`` is ``pca``) and the 34 learned codes (``judge_content_models3``)."""
+    real = _load("judge_content_real3.json")["codes"]
+    out = {c: _content_row(real["base" if c == "pca" else c]) for c in WIDTH_YARD}
+    for c, m in _load("judge_content_models3.json")["models"].items():
+        out[c] = _content_row(m)
+    return out
 
 
 def main() -> None:
