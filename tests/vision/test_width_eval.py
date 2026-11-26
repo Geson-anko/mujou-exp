@@ -43,6 +43,9 @@ from exp.vision.width_eval import (
     WidthConf,
     _band_columns_g,
     _band_noise,
+    _band_noise_g,
+    _band_noise_grid_hi,
+    _band_noise_window,
     _band_truth,
     _gen,
     _rotation_truth,
@@ -299,7 +302,36 @@ class TestChecks:
         assert [r["name"] for r in k] == ["V-h0k", "V-h0k-power", "V-h0k-power"]
         assert k[0]["true_ratio"] == 0.0
         assert all(math.isfinite(r["true_ratio"]) for r in k)
-        assert math.isclose(i["truth"]["G_hi"], 3.0569, rel_tol=1e-4)
+        assert math.isclose(i["truth"]["G_hi_continuous"], 3.0569, rel_tol=1e-4)
+        assert i["truth"]["G_hi"] == _band_noise_grid_hi(cc, w)
+
+    def test_the_closed_g_crosses_at_the_window_roots(self):
+        # _band_noise_window's roots are where the closed G is q
+        cc = CheckConf()
+        for q in (0.25, 0.3):
+            lo, hi = _band_noise_window(cc.band_period, cc.band_nu, q)
+            g = _band_noise_g(torch.tensor([lo, hi]), cc.band_period, cc.band_nu)
+            assert torch.allclose(g, torch.full((2,), q, dtype=torch.float64),
+                                  atol=1e-12)  # fmt: skip
+
+    def test_the_grid_crossing_is_the_estimators_of_the_closed_g(self):
+        # the estimand is the crossing of the curve linear in log lag between
+        # the grid points: by hand of the two lags around 3.06 s, and it nears
+        # the continuous crossing as the grid is refined (the error ~ step^2)
+        cc, w = CheckConf(), WidthConf()
+        cont = _band_noise_window(cc.band_period, cc.band_nu, 0.25)[1] * w.step
+        g0, g1 = _band_noise_g(torch.tensor([30, 31]), cc.band_period, cc.band_nu)
+        f = (0.25 - float(g0)) / (float(g1) - float(g0))
+        want = math.exp(math.log(3.0) + f * (math.log(3.1) - math.log(3.0)))
+        got = _band_noise_grid_hi(cc, w)
+        assert math.isclose(got, want, rel_tol=1e-14)
+        assert 0.0005 < cont - got < 0.002
+        errs = []
+        for k in (1, 4, 16):
+            fine = replace(w, step=w.step / k, main_lo=w.main_lo * k,
+                           max_lag=w.max_lag * k)  # fmt: skip
+            errs.append(cont - _band_noise_grid_hi(replace(cc, band_period=cc.band_period * k), fine))  # fmt: skip
+        assert errs[0] > 0 and errs[1] < errs[0] / 10 and errs[2] < errs[1] / 10
 
 
 class TestJobs:
@@ -429,15 +461,15 @@ class TestChecksApart:
         ]  # fmt: skip
         for parts in splits:
             rows = json.loads(json.dumps([r for p in reversed(parts) for r in p]))
-            assert json.dumps(merge_checks(rows, CC)) == whole
+            assert json.dumps(merge_checks(rows, CC, CW)) == whole
 
     def test_a_missing_or_twice_given_part_is_refused(self):
         units = check_units(CC)
         rows = check_parts(CC, CG, CW, units, (1101, 1400))
         with pytest.raises(ValueError, match="missing"):
-            merge_checks(rows[:-1], CC)
+            merge_checks(rows[:-1], CC, CW)
         with pytest.raises(ValueError, match="twice"):
-            merge_checks(rows + rows[-1:], CC)
+            merge_checks(rows + rows[-1:], CC, CW)
         with pytest.raises(ValueError, match="no check units"):
             check_parts(CC, CG, CW, ["V-h0z"])
 

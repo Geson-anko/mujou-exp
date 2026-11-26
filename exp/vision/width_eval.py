@@ -766,6 +766,30 @@ def _band_noise_window(period: float, nu: float, q: float) -> tuple[float, float
     return lo, hi
 
 
+def _band_noise_g(lags: Tensor, period: float, nu: float) -> Tensor:
+    r"""The closed pooled $G_\nu$ of ``_band_noise`` at ``lags`` (steps):
+    $G_\nu = (s^2 + \tfrac32 \nu) / (2 (s + \nu))$, $s = 1 - \cos(2\pi n
+    / T)$, whose $G_\nu = q$ are ``_band_noise_window``'s roots."""
+    s = 1 - torch.cos(2 * math.pi * lags.double() / period)
+    return (s * s + 1.5 * nu) / (2 * (s + nu))
+
+
+def _band_noise_grid_hi(cc: CheckConf, wconf: WidthConf) -> float:
+    r"""V-h0i's estimand of the pooled window's upper end (seconds): the
+    estimator's own crossing (``windows`` of $G < 1/4$, linear in $\log
+    \Delta$ between the grid's lags of the main range) of the closed
+    $G_\nu$ (``_band_noise_g``). It is below the continuous crossing by a
+    fixed amount of the grid alone (0.0011 s of a 0.1 s grid), which a
+    realization's interval of 0.002 s does not cover (README, 「値を見た後の
+    直し（ユーザー承認）」)."""
+    lags = torch.arange(wconf.main_lo, wconf.max_lag + 1)
+    g = _band_noise_g(lags, cc.band_period, cc.band_nu)
+    hi = windows(wconf.seconds(lags), g, 0.25, below=True).typical
+    if hi is None:
+        raise ValueError("the closed G has no window on the grid")
+    return hi
+
+
 def _band_columns(
     n: int, d: int, period: float, sigma: float, gen: torch.Generator
 ) -> Tensor:
@@ -1261,7 +1285,8 @@ def _band_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf, period: float,
 
 
 def _vh0i_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> dict[str, Any]:
-    """V-h0i's truths: the pooled window's closed upper end, and of
+    """V-h0i's truths: the pooled window's closed upper end of the
+    continuum (``_vh0i_verdict`` holds the grid's), and of
     ``_band_truth`` (seed ``cover_truth_seed``) $\\bar\\Delta_1$, $\\bar\\Delta$,
     $\\Delta_{\\mathrm{typ}}$."""
     truth = _band_truth(cc, ws, wconf, cc.band_period, _gen(cc.cover_truth_seed))
@@ -1280,11 +1305,21 @@ def _vh0i_draw(
 
 
 def _vh0i_verdict(
-    cc: CheckConf, truth: Mapping[str, Any], got: Sequence[Mapping[str, Any]]
+    cc: CheckConf,
+    wconf: WidthConf,
+    truth: Mapping[str, Any],
+    got: Sequence[Mapping[str, Any]],
 ) -> list[Row]:
     """V-h0i of its truths and each realization's intervals (``got``, in
     order of seed): the share of the intervals holding the truth, each at
-    least ``cover_min`` (the main $\\bar\\Delta_1$ among them)."""
+    least ``cover_min`` (the main $\\bar\\Delta_1$ among them). The pooled
+    window's upper end is held against the grid's crossing
+    (``_band_noise_grid_hi``), the continuous one of ``truth`` kept as
+    ``G_hi_continuous``."""
+    truth = dict(truth) | {
+        "G_hi": _band_noise_grid_hi(cc, wconf),
+        "G_hi_continuous": truth["G_hi"],
+    }
     hits = {"G_hi": 0, "mean1": 0, "mean": 0, "typ": 0}
     for d in got:
         for k in ("G_hi", "mean1", "mean"):
@@ -1295,12 +1330,12 @@ def _vh0i_verdict(
     # the Monte Carlo error of a share near 0.95 of n draws
     mc = math.sqrt(0.95 * 0.05 / n)
     return [_check("V-h0i", all(v >= cc.cover_min for v in share.values()),
-                   share=share, n=n, truth=dict(truth), mc_se=mc)]  # fmt: skip
+                   share=share, n=n, truth=truth, mc_se=mc)]  # fmt: skip
 
 
 def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
     return _vh0i_verdict(
-        cc, _vh0i_truth(cc, ws, wconf),
+        cc, wconf, _vh0i_truth(cc, ws, wconf),
         [_vh0i_draw(cc, ws, gconf, wconf, s) for s in range(*cc.cover_seeds)],
     )  # fmt: skip
 
@@ -1482,7 +1517,9 @@ def check_parts(
     return rows
 
 
-def merge_checks(parts: Sequence[Row], cc: CheckConf) -> list[Row]:
+def merge_checks(
+    parts: Sequence[Row], cc: CheckConf, wconf: WidthConf = WidthConf()
+) -> list[Row]:
     """The rows of ``check_rows`` of the parts' rows (``check_parts``, any
     split, any order): the short checks' rows in their order, V-h0i and
     V-h0k of their truths and every realization's values in order of seed.
@@ -1511,7 +1548,9 @@ def merge_checks(parts: Sequence[Row], cc: CheckConf) -> list[Row]:
     if missing:
         raise ValueError(f"missing {missing}")
     rows: list[Row] = [r for u in SHORT_UNITS for r in units[u]]
-    rows += _vh0i_verdict(cc, units["V-h0i-truth"], [got["V-h0i"][s] for s in want_i])
+    rows += _vh0i_verdict(
+        cc, wconf, units["V-h0i-truth"], [got["V-h0i"][s] for s in want_i]
+    )
     truths = [units[f"V-h0k-truth-{i}"] for i in range(len(cc.known_rs))]
     rows += _vh0k_verdict(cc, truths, [got["V-h0k"][k] for k in want_k])
     return rows
@@ -1570,7 +1609,7 @@ def merge_checks_into(
             raise ValueError(f"{d} is of other settings")
         rows += json.loads((d / "rows.json").read_text())
     _start(out, _check_config(cc, gconf, wconf), configure_determinism("cpu"))
-    _write(out / "rows.json", merge_checks(rows, cc), {})
+    _write(out / "rows.json", merge_checks(rows, cc, wconf), {})
     return out
 
 
