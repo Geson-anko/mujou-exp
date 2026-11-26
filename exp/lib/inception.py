@@ -176,7 +176,8 @@ class FIDInception(nn.Module):
         self.net = net
         self.eval()
 
-    def _pool3(self, x: Tensor) -> Tensor:
+    def _maps(self, x: Tensor) -> Tensor:
+        """The last block's maps ``(B, 2048, h, w)`` of preprocessed ``x``."""
         n = self.net
         x = n.Conv2d_2b_3x3(n.Conv2d_2a_3x3(n.Conv2d_1a_3x3(x)))
         x = F.max_pool2d(x, kernel_size=3, stride=2)
@@ -186,7 +187,27 @@ class FIDInception(nn.Module):
             x = getattr(n, f"Mixed_{block}")(x)
         for block in ("7a", "7b", "7c"):
             x = getattr(n, f"Mixed_{block}")(x)
-        return F.adaptive_avg_pool2d(x, (1, 1)).flatten(1)
+        return x
+
+    def _pool3(self, x: Tensor) -> Tensor:
+        return F.adaptive_avg_pool2d(self._maps(x), (1, 1)).flatten(1)
+
+    @torch.no_grad()
+    def local(self, images: Tensor, cells: int = 2) -> Tensor:
+        """The local features ``(B, 2048 cells^2)`` of u8 images ``(B, 3, H,
+        W)``: the last block's maps averaged over each of ``cells`` x
+        ``cells`` regions (``adaptive_avg_pool2d``; of 8 x 8 maps and 2 x 2
+        cells, their mean over the cells is pool3), channel first, then the
+        cells in rows (the linear horizon's guard, ``plans/jepa.md``, C11)."""
+        dev = next(self.parameters()).device
+        return torch.cat(
+            [
+                F.adaptive_avg_pool2d(self._maps(preprocess(c.to(dev))), cells).flatten(
+                    1
+                )
+                for c in images.split(BATCH)
+            ]
+        )
 
     @override
     @torch.no_grad()

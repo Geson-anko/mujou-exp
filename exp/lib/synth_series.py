@@ -24,6 +24,19 @@ CPU ``torch.Generator``) draws everything, column by column in order:
   integers $j$ (a one-dimensional code spread over many columns: Fable's
   and Codex's counterexample); $\theta_t = \Theta + \omega t$ for a series,
   or independent uniform $\theta$ for the points of a TwoNN
+- ``rotation``: $d/2$ planes turning at one angular speed $\omega$ (per
+  step), each $\sqrt2 (\cos, \sin)(\omega t + \phi_j)$ of its own uniform
+  phase: per triple $G_{\mathrm{mid}} = \sin^2(\omega n / 2)$ exactly (the
+  chord's midpoint lies $r(1 - \cos\omega n)$ from the arc's)
+- ``chained_rotation``: ``rotation`` of the period ``periods[b % J]`` in
+  each block $b$ of rows, its phases drawn anew in each block
+- ``ou_integral``: the running sum of an ``ou`` velocity, $E \lVert
+  x_{t+n} - x_t \rVert^2 = D(n) = n \frac{1 + r}{1 - r} - \frac{2r(1 -
+  r^n)}{(1 - r)^2}$ per column (``ou_integral_d``; not stationary, its
+  increments are), whose pooled $G_{\mathrm{mid}} = 1 - D(2n) / (4 D(n))$:
+  of a time constant $\tau$ in the limit of many steps, $G < 1/4$ for $n <
+  1.1514\,\tau$ (the root of $u - 2 + 3e^{-u} - e^{-2u} = 0$) and $G < 1/2$
+  at every lag
 """
 
 import math
@@ -32,11 +45,15 @@ import torch
 from torch import Tensor
 
 __all__ = [
+    "chained_rotation",
     "chebyshev",
     "gauss_kernel",
     "kernel_acf",
     "ou",
+    "ou_integral",
+    "ou_integral_d",
     "random_walk",
+    "rotation",
     "smooth",
     "spectral",
     "white",
@@ -130,3 +147,44 @@ def chebyshev(theta: Tensor, js: Tensor) -> Tensor:
     turns = (whole.to(torch.int64)[:, None] * j) % 2**20  # exact integers
     phase = turns.to(_F64) * unit + rest[:, None] * j.to(_F64)
     return math.sqrt(2) * torch.cos(phase)
+
+
+def rotation(n: int, d: int, period: float, gen: torch.Generator) -> Tensor:
+    r"""``(n, d)`` (``d`` even): $\sqrt2 (\cos, \sin)(\omega t + \phi_j)$
+    in columns $2j$, $2j + 1$, $\omega = 2\pi$ / ``period`` (steps), the
+    phases uniform (by ``gen``)."""
+    if d % 2:
+        raise ValueError(f"a rotation needs an even d, not {d}")
+    phi = 2 * math.pi * torch.rand(d // 2, generator=gen, dtype=_F64)
+    theta = torch.arange(n, dtype=_F64)[:, None] * (2 * math.pi / period) + phi
+    out = torch.empty(n, d, dtype=_F64)
+    out[:, 0::2], out[:, 1::2] = theta.cos(), theta.sin()
+    return math.sqrt(2) * out
+
+
+def chained_rotation(
+    blocks: Tensor, d: int, periods: tuple[float, ...], gen: torch.Generator
+) -> Tensor:
+    r"""``(n, d)``: the rows of each block $b$ of ``blocks`` ``(n,)`` (each
+    block's rows consecutive, numbered from 0 in order) a ``rotation`` of
+    the period ``periods[b % len(periods)]``, its phases drawn by ``gen``
+    block by block."""
+    out = torch.empty(len(blocks), d, dtype=_F64)
+    for b in range(int(blocks.max()) + 1):
+        rows = (blocks == b).nonzero().flatten()
+        rot = rotation(int(rows[-1]) + 1, d, periods[b % len(periods)], gen)
+        out[rows] = rot[rows]
+    return out
+
+
+def ou_integral(n: int, d: int, r: float, gen: torch.Generator) -> Tensor:
+    r"""``(n, d)``: $x_t = \sum_{i \le t} v_i$ of the stationary ``ou``
+    velocity $v$ of coefficient ``r``."""
+    return ou(n, d, r, gen).cumsum(0)
+
+
+def ou_integral_d(lag: float, r: float) -> float:
+    r"""$D(n) = n \frac{1 + r}{1 - r} - \frac{2r(1 - r^n)}{(1 - r)^2}$, the
+    mean squared increment of ``ou_integral`` per column at the lag $n$
+    (module docstring; $n$ may be real: the same formula, continued)."""
+    return lag * (1 + r) / (1 - r) - 2 * r * (1 - r**lag) / (1 - r) ** 2

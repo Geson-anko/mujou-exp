@@ -12,7 +12,13 @@ lags; OU's $G = (2 + s)/4$; the permutation's expectation against the exact
 mean over all 720 permutations of 6 values; white noise, the random walk
 and OU against Monte Carlo means (within 4.5 standard errors); and the
 injection's $G_\nu$ against the noise's expected terms added to a small
-code's sums.
+code's sums. Per triple: $\nu_t / \delta_t = (1 - \rho_t)/2$ and a win at
+$q$ is $\rho_t > 1 - 2q$ (a triple of no motion loses) on hand-made
+triples; the literal extrapolation's win $4\nu_t < \lVert b \rVert^2$ by
+hand; the blocks' sums add up; the pooled $G$ made of the squared
+displacements $D$ is the triples' $G$ of the same set; and the generalized
+eigenproblem gives each direction's pooled $G$ as its eigenvalue (the
+Rayleigh quotient), the slow band's directions first.
 """
 
 import itertools
@@ -23,17 +29,24 @@ import torch
 
 from exp.lib.midpoint import (
     Whitener,
+    asym_wins,
     g_mid_of,
     injected,
     injection_for,
+    mid_covariances,
+    pair_sq,
     permutation_terms,
     random_walk_terms,
+    rho,
+    slow_directions,
     spectral_rho,
     spread,
     stationary_terms,
     triple_terms,
+    win_sums,
+    wins,
 )
-from exp.lib.synth_series import ou, random_walk, white
+from exp.lib.synth_series import ou, random_walk, spectral, white
 
 F64 = torch.float64
 
@@ -225,3 +238,88 @@ class TestInjection:
 
     def test_beyond_three_quarters_there_is_none(self):
         assert injection_for(0.7, 0.3, 0.06) is None
+
+
+def hand_triples() -> torch.Tensor:
+    """Four triples (rows 0..11) of 2-d points: straight on (rho 1), a right
+    angle (rho 0), back and forth (rho -1), and still (delta 0)."""
+    pts = [
+        [0, 0], [1, 0], [2, 0],
+        [0, 0], [1, 0], [1, 1],
+        [0, 0], [1, 0], [0, 0],
+        [3, 3], [3, 3], [3, 3],
+    ]  # fmt: skip
+    return torch.tensor(pts, dtype=F64)
+
+
+class TestPerTriple:
+    def test_rho_and_the_wins_by_hand(self):
+        w = hand_triples()
+        t = triple_terms(w, torch.tensor([1, 4, 7, 10]), 1)
+        r = rho(t)
+        assert r[:3].tolist() == [1.0, 0.0, -1.0] and math.isnan(float(r[3]))
+        torch.testing.assert_close(t.num[:3] / t.den[:3], (1 - r[:3]) / 2)
+        # at 1/4 only straight on wins (rho > 1/2); at 1/2 a right angle ties
+        # (rho = 0 is not > 0) and loses; the still triple loses at both
+        assert wins(t, 0.25).tolist() == [True, False, False, False]
+        assert wins(t, 0.5).tolist() == [True, False, False, False]
+        assert wins(t, 0.75).tolist() == [True, True, False, False]
+
+    def test_the_literal_extrapolation_by_hand(self):
+        # a = (1, 0); b = (1, 0): 4 nu = 0 < 1; b = (0, 1): |b - a|^2 = 2 > 1
+        w = hand_triples()
+        t = triple_terms(w, torch.tensor([1, 4, 7, 10]), 1)
+        assert asym_wins(t).tolist() == [True, False, False, False]
+
+    def test_the_blocks_sums_add_up(self):
+        w = ou(300, 3, 0.9, torch.Generator().manual_seed(0))
+        u = torch.arange(5, 295)
+        t = triple_terms(w, u, 5)
+        blocks = u // 100
+        got = win_sums(t, blocks, 3, (0.25, 0.5))
+        assert float(got["num_b"].sum()) == pytest.approx(float(t.num.sum()), rel=1e-12)
+        assert float(got["n_b"].sum()) == len(u)
+        assert float(got["win25_b"].sum()) == float(wins(t, 0.25).sum())
+        assert float(got["win50_b"].sum()) == float(wins(t, 0.5).sum())
+        assert float(got["still_b"].sum()) == 0.0
+
+    @pytest.mark.parametrize("lag", [1, 4, 16])
+    def test_the_pooled_g_of_d_is_the_triples(self, lag):
+        w = ou(400, 5, 0.95, torch.Generator().manual_seed(1))
+        u = torch.arange(lag, 400 - lag)
+        t = triple_terms(w, u, lag)
+        far = pair_sq(w, u - lag, 2 * lag).sum()  # |a + b|^2
+        den = (pair_sq(w, u - lag, lag).sum() + pair_sq(w, u, lag).sum()) / 2
+        assert float(den) == pytest.approx(float(t.den.sum()), rel=1e-12)
+        g_of_d = 1 - far / (4 * den)
+        assert float(g_of_d) == pytest.approx(
+            float(t.num.sum() / t.den.sum()), rel=1e-12
+        )
+
+
+class TestDirections:
+    def test_each_directions_g_is_its_eigenvalue_the_band_first(self):
+        g = torch.Generator().manual_seed(3)
+        n, slow = 4000, 3
+        band = spectral(n, torch.linspace(0.02, 0.03, slow, dtype=F64), g)
+        x = torch.cat([band, white(n, 4, g)], 1)  # slow then white columns
+        q, _ = torch.linalg.qr(torch.randn(7, 7, generator=g, dtype=F64))
+        w = x @ q.T  # mixed
+        u = torch.arange(8, n - 8)
+        c_nu, c_delta = mid_covariances(w, u, 8)
+        t = triple_terms(w, u, 8)
+        assert float(c_nu.trace()) == pytest.approx(float(t.num.sum()), rel=1e-12)
+        assert float(c_delta.trace()) == pytest.approx(float(t.den.sum()), rel=1e-12)
+        lam, v = slow_directions(c_nu, c_delta)
+        assert bool((lam[1:] >= lam[:-1]).all())
+        torch.testing.assert_close(v.T @ c_delta @ v, torch.eye(7, dtype=F64))
+        for i in range(7):
+            ti = triple_terms(w @ v[:, i : i + 1], u, 8)
+            assert float(ti.num.sum() / ti.den.sum()) == pytest.approx(
+                float(lam[i]), rel=1e-9
+            )
+        # the slow directions lie in the band's columns, not the white ones
+        back = q.T @ v[:, :slow]  # in the unmixed columns
+        back = back / torch.linalg.vector_norm(back, dim=0)
+        assert float(back[slow:].square().sum(0).max()) < 1e-3
+        assert float(lam[slow - 1]) < 0.05 < 0.6 < float(lam[slow])

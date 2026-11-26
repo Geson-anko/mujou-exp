@@ -41,6 +41,25 @@ to every code adds $\tfrac32 \nu V$ to $E\nu$ and $2\nu V$ to $E\delta$,
 so $G_\nu = (sG + \tfrac34 \nu)/(s + \nu)$, $s_\nu = (s + \nu)/(1 + \nu)$,
 and a difference $\delta$ is made by $\nu = \delta s / (\tfrac34 - G -
 \delta)$ (``injected``, ``injection_for``).
+
+**Per triple** (``plans/jepa.md``, 「線形の幅（2026-11-26）」): $\nu_t =
+\tfrac12 \delta_t - \tfrac12 \langle a, b \rangle$, so $\nu_t / \delta_t =
+(1 - \rho_t)/2$ with $\rho_t = \langle a, b \rangle / \delta_t$ (``rho``).
+A triple **wins** at the bound $q$ where $q\,\delta_t - \nu_t > 0$, i.e.
+$\rho_t > 1 - 2q$, judged without a division: a triple of $\delta_t = 0$
+(no motion) loses (``wins``). Literally, the extrapolation $2 w_u - w_{u-n}$
+beats the copy $w_u$ of the future where $\lVert b - a \rVert^2 = 4\nu_t
+< \lVert b \rVert^2$ (``asym_wins``; not symmetric in time). ``win_sums``
+holds the blocks' sums of these; ``pair_sq`` the squared displacements
+$\lVert w_{u+n} - w_u \rVert^2$ of which every pooled measure is a
+function.
+
+**Directions** (``mid_covariances``, ``slow_directions``): $C_\nu = \sum_t
+(w_t - m_t)(w_t - m_t)^\top$ and $C_\delta = \sum_t \tfrac12 (a a^\top +
+b b^\top)$ over a set of triples; the generalized eigenproblem $C_\nu v =
+\lambda C_\delta v$ (ascending $\lambda$) gives the directions whose
+pooled $G$ on that set is $\lambda$ (the Rayleigh quotient $v^\top C_\nu v
+/ v^\top C_\delta v$).
 """
 
 from dataclasses import dataclass
@@ -53,15 +72,23 @@ __all__ = [
     "DEGENERATE",
     "TripleTerms",
     "Whitener",
+    "asym_wins",
+    "block_sums",
     "g_mid_of",
     "injected",
     "injection_for",
+    "mid_covariances",
+    "pair_sq",
     "permutation_terms",
     "random_walk_terms",
+    "rho",
+    "slow_directions",
     "spectral_rho",
     "spread",
     "stationary_terms",
     "triple_terms",
+    "win_sums",
+    "wins",
 ]
 
 DEGENERATE = 1e-12  # lambda_k <= DEGENERATE * lambda_1: not scoreable
@@ -212,3 +239,88 @@ def injection_for(g: float, s: float, delta: float) -> float | None:
     reaches it)."""
     room = 0.75 - g - delta
     return None if room <= 0 else delta * s / room
+
+
+def rho(t: TripleTerms) -> Tensor:
+    r"""$\rho_t = \langle a, b \rangle / \delta_t = 1 - 2 \nu_t / \delta_t$
+    ``(T,)`` float64 (NaN where $\delta_t = 0$)."""
+    return 1 - 2 * t.num / t.den
+
+
+def wins(t: TripleTerms, q: float) -> Tensor:
+    r"""Whether each triple wins at the bound ``q``: $q\,\delta_t - \nu_t >
+    0$ ``(T,)`` bool (module docstring; $\delta_t = 0$ loses, a tie
+    loses)."""
+    return q * t.den - t.num > 0
+
+
+def asym_wins(t: TripleTerms) -> Tensor:
+    r"""Whether the extrapolation beats the copy of the future literally:
+    $4 \nu_t < \lVert b \rVert^2$ ``(T,)`` bool."""
+    return 4 * t.num < t.b2
+
+
+def block_sums(values: Tensor, blocks: Tensor, n_blocks: int) -> Tensor:
+    """The sums ``(n_blocks, ...)`` float64 of ``values`` ``(N, ...)`` by
+    their ``blocks`` ``(N,)``."""
+    v = values.double()
+    out = torch.zeros(n_blocks, *v.shape[1:], dtype=torch.float64)
+    return out.index_add_(0, blocks, v)
+
+
+def win_sums(
+    t: TripleTerms, blocks: Tensor, n_blocks: int, qs: tuple[float, ...]
+) -> dict[str, Tensor]:
+    r"""The blocks' sums ``(n_blocks,)`` of the triples ``t`` of the
+    ``blocks`` ``(T,)``: ``num_b`` $\sum \nu$, ``den_b`` $\sum \delta$,
+    ``n_b`` the count, ``still_b`` the triples of $\delta = 0$,
+    ``win<100q>_b`` the winners at each bound of ``qs`` (``wins``) and
+    ``winasym_b`` (``asym_wins``)."""
+    out = {
+        "num_b": block_sums(t.num, blocks, n_blocks),
+        "den_b": block_sums(t.den, blocks, n_blocks),
+        "n_b": block_sums(torch.ones(len(t.num)), blocks, n_blocks),
+        "still_b": block_sums((t.den == 0).double(), blocks, n_blocks),
+    }
+    for q in qs:
+        out[f"win{round(100 * q)}_b"] = block_sums(
+            wins(t, q).double(), blocks, n_blocks
+        )
+    out["winasym_b"] = block_sums(asym_wins(t).double(), blocks, n_blocks)
+    return out
+
+
+def pair_sq(w: Tensor, starts: Tensor, lag: int) -> Tensor:
+    r"""$\lVert w_{u+n} - w_u \rVert^2$ ``(P,)`` float64 of the ``starts``
+    $u$ ``(P,)`` of ``w`` ``(N, k)``."""
+    x = w.to(_F64)
+    return (x[starts + lag] - x[starts]).square().sum(1)
+
+
+def mid_covariances(w: Tensor, centers: Tensor, lag: int) -> tuple[Tensor, Tensor]:
+    r"""$C_\nu$ and $C_\delta$ ``(k, k)`` float64 of the triples of the
+    ``centers`` (module docstring): their traces are $\sum \nu$ and $\sum
+    \delta$."""
+    x = w.to(_F64)
+    w0, w1, w2 = x[centers - lag], x[centers], x[centers + lag]
+    e = w1 - (w0 + w2) / 2
+    a, b = w1 - w0, w2 - w1
+    return e.T @ e, (a.T @ a + b.T @ b) / 2
+
+
+def slow_directions(c_nu: Tensor, c_delta: Tensor) -> tuple[Tensor, Tensor]:
+    r"""The generalized eigenvalues $\lambda$ ``(k,)`` (ascending) and
+    vectors $V$ ``(k, k)`` (columns, $V^\top C_\delta V = I$) of $C_\nu v =
+    \lambda C_\delta v$, by the Cholesky factor $C_\delta = L L^\top$:
+    the eigenpairs of $L^{-1} C_\nu L^{-\top}$, $v = L^{-\top} y$.
+
+    Raises:
+        torch.linalg.LinAlgError: $C_\delta$ is not positive definite (a
+            direction that never moves).
+    """
+    low = torch.linalg.cholesky(c_delta.to(_F64))
+    m = torch.linalg.solve_triangular(low, c_nu.to(_F64), upper=False)
+    m = torch.linalg.solve_triangular(low, m.T, upper=False)  # L^-1 C L^-T
+    lam, y = torch.linalg.eigh((m + m.T) / 2)
+    v = torch.linalg.solve_triangular(low.T, y, upper=True)
+    return lam, v

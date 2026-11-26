@@ -1,5 +1,6 @@
 r"""``exp.lib.inception``: the preprocessing by hand, the net's features
 (random weights; FID's weights only where the file is, never downloaded),
+the local features (2 x 2 cells of the last maps, whose mean is pool3),
 and the Fréchet distance against its closed forms (1-d, diagonal, rotated,
 swapped, equal, of low rank)."""
 
@@ -44,6 +45,14 @@ class TestFIDInception:
         torch.manual_seed(0)
         f = FIDInception()(images(2, side=32))
         assert f.shape == (2, 2048) and float(f.min()) >= 0
+
+    def test_the_local_features_average_to_pool3(self):
+        torch.manual_seed(0)
+        net = FIDInception()
+        x = images(2, side=32)
+        local = net.local(x).reshape(2, 2048, 4)
+        assert local.shape == (2, 2048, 4)
+        torch.testing.assert_close(local.mean(2), net(x), rtol=1e-5, atol=1e-6)
 
     def test_fids_weights_where_the_file_is(self):
         path = weights_path()
