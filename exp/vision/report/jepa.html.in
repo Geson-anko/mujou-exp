@@ -1048,16 +1048,16 @@ table { border-top: 1px solid var(--rule); }
     <dt>d̂（TwoNN）</dt>
     <dd>Zurich の 8 秒おきの約 487 点で推定した内在次元です。主は白色化の前（<code>pre</code>・<i>k</i> = 64）の値で、「観測の尺度での局所の次元」と読みます。20 を超える符号どうしの順位には頼りません。</dd>
     <dt>言葉づかい</dt>
-    <dd>対の差（同じ三つ組の差）の区間 ±2SE* が、Δ* を同じ向きに丸ごと超えたら「区別できた」、区間全体が ±Δ* の中なら「小さい」、それ以外は「解像度が足りない」と書きます。</dd>
+    <dd>対の差（同じ三つ組の差）の区間 ±2SE* が、Δ* を同じ向きに丸ごと超えたら「区別できた」、区間全体が ±Δ* の中なら「小さい」、それ以外は「解像度が足りない」と書きます。3.2 秒の「区別できた」は、「区別†」（解像度が足りず、確かめられていない）と書きます（下の Δ* の決め方）。</dd>
   </dl>
   <div class="prose">
     <p><b>有効性の確かめ</b>　モデルの値を見る前に、物差しだけで確かめました。確かめた項目は、合成の系列で閉じた式と一致すること（V-d0a〜V-d0f）、実データの恒等式（V-d0h）、0.8 秒の <i>s</i> が 1/2 未満で読める刻みがあること（V-d1、<code>pca</code> 0.347・<code>init_c</code> 0.443）、雑音を足して作った差を回収できること（V-d2、19 個すべて）です。どれも通りました。モデルを測った段でも、止める条件（組の key の照合と、V18c の 24 の checkpoint の V-d0h のビット一致）は通りました。</p>
-    <p><b>Δ* の決め方</b>　Δ* は実用上区別したい最小の差で、研究の依頼者がモデルの値を見る前に決めました。<i>G</i><sub>mid</sub> は 0.03 です。白色化の <i>k</i> を 48・96 に変えたときの動き（0.8 秒で最大 0.030）を超え、学習前の seed だけの差（0.017）を「小さい」に入れる大きさです。<i>d̂</i> は 4 です。6.4 秒より長い刻みは、どの物差しも <i>G</i><sub>mid</sub> が 0.71〜0.75 に集まり、Δ* 以上の差を作れないので、判定せず記述だけにしました。判定するのは 0.8・1.6・3.2 秒です。白色化した評価の分散の診断の境は、仮の値です（eval-guide.html の 15 節）。</p>
+    <p><b>Δ* の決め方</b>　Δ* は実用上区別したい最小の差で、研究の依頼者がモデルの値を見る前に決めました。<i>G</i><sub>mid</sub> は 0.03 です。白色化の <i>k</i> を 48・96 に変えたときの動き（0.8 秒で最大 0.030）を超え、学習前の seed だけの差（0.017）を「小さい」に入れる大きさです。<i>d̂</i> は 4 です。6.4 秒より長い刻みは、どの物差しも <i>G</i><sub>mid</sub> が 0.71〜0.75 に集まり、Δ* 以上の差を作れないので、判定せず記述だけにしました。判定するのは 0.8・1.6・3.2 秒です。ただし、計画の V-d2 の注「区間全体が Δ* を超えるかは、その 2 倍の δ で見る」を、研究の依頼者の決定（2026-11-26）で当てました。2Δ* 以上の δ（0.08）を作れて 0 から分けられたのは 0.8・1.6 秒だけです。そのため、3.2 秒の「区別できた」は「区別†」（解像度が足りず、確かめられていない）としました。白色化した評価の分散の診断の境は、仮の値です（eval-guide.html の 15 節）。</p>
   </div>
   <div class="tiles">
-    <div class="tile"><div class="sub">自分の潜在で、画素の PCA より実用上小さいと区別できた符号</div><div class="big">0</div><div class="sub">step 60000 の 22 符号 × 3 刻み = 66 対。区別できた 20 対は、すべて大きい側（PCA64 の白色化）</div></div>
+    <div class="tile"><div class="sub">自分の潜在で、画素の PCA より実用上小さいと区別できた符号</div><div class="big">0</div><div class="sub">step 60000 の 22 符号 × 3 刻み = 66 対。区別できた 19 対は、すべて大きい側。ほかに 3.2 秒の区別† が 1 対（大きい側。PCA64 の白色化）</div></div>
     <div class="tile"><div class="sub">最も小さい V18c（10<sup>−4</sup>・λ = 0.5）の 0.8 秒の <i>G</i><sub>mid</sub></div><div class="big">0.572・0.578</div><div class="sub">画素の PCA は 0.589。差は「小さい」</div></div>
-    <div class="tile"><div class="sub">同じ 2 本の、学習前との差（0.8 秒）</div><div class="big">−0.077・−0.053</div><div class="sub">1.6・3.2 秒も含め「区別できた」。<i>s</i> は 0.42・0.40 → 0.23・0.24</div></div>
+    <div class="tile"><div class="sub">同じ 2 本の、学習前との差（0.8 秒）</div><div class="big">−0.077・−0.053</div><div class="sub">1.6 秒も「区別できた」。3.2 秒は区別†。<i>s</i> は 0.42・0.40 → 0.23・0.24</div></div>
   </div>
   <figure>
     <div class="fig-title">刻みごとの <i>G</i><sub>mid</sub>（<code>in</code> の層、step 60000）</div>
@@ -1098,8 +1098,8 @@ table { border-top: 1px solid var(--rule); }
     <p class="small muted">表は、上の図と同じ対（step 60000）の分類を、この資料で数えたものです。元は <code>judge_geom.json</code> の対ごとの分類です。</p>
     <p><b>読めること（物差しとの比べ）</b></p>
     <ul>
-      <li><b>PCA64 の白色化では、自分の潜在で、画素の PCA より <i>G</i><sub>mid</sub> が実用上小さいと区別できた符号はありませんでした。</b>66 対のうち「区別できた」20 対は、すべて大きい側です。V18c（10<sup>−4</sup>・λ = 0.5）と <code>pca</code> の差は、0.8 秒が「小さい」（−0.018・−0.011）、1.6・3.2 秒が「解像度が足りない」（−0.027〜−0.031。区間が −0.03 をまたぐ）でした。</li>
-      <li><b>学習率 10<sup>−4</sup>・λ = 0.5 の V18c の 2 本は、学習前より <i>G</i><sub>mid</sub> が下がりました。</b>差は 0.8・1.6・3.2 秒で −0.077・−0.054・−0.040（seed 0）と −0.053・−0.046・−0.039（seed 1）で、3 つの刻みのすべてで「区別できた」でした。6 つの刻みの同時区間でも同じです。</li>
+      <li><b>PCA64 の白色化では、自分の潜在で、画素の PCA より <i>G</i><sub>mid</sub> が実用上小さいと区別できた符号はありませんでした。</b>66 対のうち「区別できた」19 対は、すべて大きい側です。ほかに 3.2 秒の「区別†」が 1 対あり、これも大きい側です。V18c（10<sup>−4</sup>・λ = 0.5）と <code>pca</code> の差は、0.8 秒が「小さい」（−0.018・−0.011）、1.6・3.2 秒が「解像度が足りない」（−0.027〜−0.031。区間が −0.03 をまたぐ）でした。</li>
+      <li><b>学習率 10<sup>−4</sup>・λ = 0.5 の V18c の 2 本は、学習前より <i>G</i><sub>mid</sub> が下がりました。</b>差は 0.8・1.6・3.2 秒で −0.077・−0.054・−0.040（seed 0）と −0.053・−0.046・−0.039（seed 1）です。0.8・1.6 秒で「区別できた」で、6 つの刻みの同時区間でも同じです。3.2 秒は「区別†」（解像度が足りず、確かめられていない）です。</li>
       <li><b><code>h_mean</code> では、学習前の物差しがある JEPA 15 本のうち 6 本が、0.8 秒で下がる側に区別できました。</b>V18c（10<sup>−4</sup>・λ = 0.5）が −0.117・−0.110、V18 <code>r0.25</code> が −0.071、V18b F が −0.113、V18b M が −0.123、学習率 10<sup>−4</sup>・λ = 0.8 の seed 0 が −0.038 です。VAE の <code>v16</code> も −0.051 で区別できました。<code>h_mean</code> には画素の物差しが無いので、画素とは比べていません。</li>
       <li>seed 0 と 1 の差は、step 6000・60000 の判定する 3 つの刻みで、全ての対が「小さい」でした。</li>
     </ul>
@@ -1163,7 +1163,7 @@ table { border-top: 1px solid var(--rule); }
     <div class="prose">
       <p><b>言えること</b></p>
       <ul>
-        <li>0.8〜3.2 秒の刻みと PCA64 の白色化で、V18c（学習率 10<sup>−4</sup>・λ = 0.5）の <i>z</i> は、学習前より中点の相対誤差が小さく、遅い。画素の PCA との差は、0.8 秒で実用上小さく、1.6・3.2 秒では解像度が足りない。</li>
+        <li>0.8・1.6 秒の刻みと PCA64 の白色化で、V18c（学習率 10<sup>−4</sup>・λ = 0.5）の <i>z</i> は、学習前より中点の相対誤差が小さく、遅い（3.2 秒も同じ向きだが、解像度が足りず、確かめられていない）。画素の PCA との差は、0.8 秒で実用上小さく、1.6・3.2 秒では解像度が足りない。</li>
         <li>そのとき、離れた時刻の観測の尺度での局所の次元は、画素と実用上の差が小さかった。</li>
         <li>学習前より小さいことは <i>k</i> = 256 でも成り立ち、<i>k</i> = 16 では成り立たない（差は実用上小さい）。<code>h_mean</code> で学習前より小さいことは、<i>k</i> = 16・64・256 のすべてで成り立つ。</li>
       </ul>
@@ -1194,7 +1194,7 @@ table { border-top: 1px solid var(--rule); }
       <li>この結論は計量に条件づけられます。<i>k</i> = 16 では、0.8 秒の <i>G</i><sub>mid</sub> は <code>pca</code> 0.454・<code>mean8</code> 0.446 と 1/2 を下回ります。V19 で予測の誤差を測る計量で、<i>G</i><sub>mid</sub> を測り直します。</li>
       <li>0.8 秒未満の刻みは、stack が入力のフレームを共有するので測っていません。等速の外挿が copy に近づくとすれば、短い刻みです。V19 で短い刻みの予測を見るなら、同じ三つ組の和（<code>exp/lib/midpoint.py</code>）で測り直します。</li>
     </ul>
-    <p class="small muted">研究の依頼者に確かめる事項が 1 つ残っています。計画の V-d2 の注には「区間全体が Δ* を超えるかは、その 2 倍の δ で見る」とあります。2Δ* 以上の登録した δ（0.08）は 1.6 秒までしか作れないので、3.2 秒の「区別できた」は、この注の意味では確かめていません。この条件を外してよいかを確かめます。</p>
+    <p class="small muted">計画の V-d2 の注「区間全体が Δ* を超えるかは、その 2 倍の δ で見る」は、研究の依頼者の決定（2026-11-26）で当てました。2Δ* 以上の登録した δ（0.08）は 1.6 秒までしか作れないので、3.2 秒の「区別できた」は「区別†」（解像度が足りず、確かめられていない）としています。</p>
   </div>
 </section>
 
@@ -1795,7 +1795,7 @@ const XT6 = [0, 2e6, 4e6, 6e6];
     .sort((a, b) => { const p = parse(a), q = parse(b); return q.lr - p.lr || p.lam - q.lam || p.seed - q.seed; });
   const MODELS = Object.keys(T.init_of).filter(c => !c.endsWith('@6000'));
   const stOf = (c, p) => ({label: nm(c), color: LAMC[p.lam], dash: lrDash(p.lr), width: 1.8});
-  const CLS = {distinct: '区別できた', small: '小さい', unresolved: '解像度が足りない'};
+  const CLS = {distinct: '区別できた', distinct_unconfirmed: '区別できた†（解像度が足りず、確かめられていない）', small: '小さい', unresolved: '解像度が足りない'};
   const sgn3 = v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3);
 
   // G by lag and the G-s plane
@@ -1824,7 +1824,7 @@ const XT6 = [0, 2e6, 4e6, 6e6];
   // paired differences with pca or the run's own step 0
   const CMP = [['own/pca', '画素の PCA との差（自分の潜在）'], ['own/init', '学習前との差（自分の潜在）'], ['h_mean/init', '学習前との差（h_mean）']];
   let cmp = 'own/pca', lag = 0;
-  const colorOf = g => g[2] === 'distinct' ? (g[0] > 0 ? 'var(--s2)' : 'var(--s1)') : (g[2] === 'small' ? 'var(--s3)' : 'var(--neutral)');
+  const colorOf = g => g[2].startsWith('distinct') ? (g[0] > 0 ? 'var(--s2)' : 'var(--s1)') : (g[2] === 'small' ? 'var(--s3)' : 'var(--neutral)');
   const drawPairs = () => {
     const [place, b] = cmp.split('/');
     const rows = T.pairs[place].filter(x => x.b === b && !x.a.endsWith('@6000'));
@@ -1832,9 +1832,9 @@ const XT6 = [0, 2e6, 4e6, 6e6];
     const pts = rows.map((x, i) => {
       const g = x.G[lag], lo = g[0] - 2 * g[1], hi = g[0] + 2 * g[1];
       const sim = g[3] !== g[2] ? `<br>同時区間（c = ${x.c.toFixed(2)}）: ${CLS[g[3]]}` : '';
-      return {row: i, x: g[0], lo, hi, color: colorOf(g), hollow: g[2] === 'small', tip: `${nm(x.a)} − ${x.init}<br>${LAGS[lag]} 秒: ${sgn3(g[0])} ± ${(2 * g[1]).toFixed(3)}<br>${CLS[g[2]]}${sim}`};
+      return {row: i, x: g[0], lo, hi, color: colorOf(g), hollow: g[2] === 'small' || g[2] === 'distinct_unconfirmed', tip: `${nm(x.a)} − ${x.init}<br>${LAGS[lag]} 秒: ${sgn3(g[0])} ± ${(2 * g[1]).toFixed(3)}<br>${CLS[g[2]]}${sim}`};
     });
-    const lg = [{label: '区別できた（大きい側）', color: 'var(--s2)', shape: 'dot'}, {label: '区別できた（小さい側）', color: 'var(--s1)', shape: 'dot'}, {label: '小さい', color: 'var(--s3)', shape: 'dot', hollow: true}, {label: '解像度が足りない', color: 'var(--neutral)', shape: 'dot'}];
+    const lg = [{label: '区別できた（大きい側）', color: 'var(--s2)', shape: 'dot'}, {label: '区別できた（小さい側）', color: 'var(--s1)', shape: 'dot'}, {label: '区別†（白抜き、3.2 秒）', color: 'var(--ink-3)', shape: 'dot', hollow: true}, {label: '小さい', color: 'var(--s3)', shape: 'dot', hollow: true}, {label: '解像度が足りない', color: 'var(--neutral)', shape: 'dot'}];
     dotChart(document.getElementById('c-t-pairs'), {rows: rows.map(x => nm(x.a) + (b === 'init' ? `（− ${x.init}）` : '')), points: pts, xmin: -0.14, xmax: 0.14, xticks: [-0.12, -0.09, -0.06, -0.03, 0, 0.03, 0.06, 0.09, 0.12], xfmt: v => v === 0 ? '0' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(2), xlabel: `対の差（${LAGS[lag]} 秒）`, refs: [{x: -DS, label: '−Δ*'}, {x: 0}, {x: DS, label: '+Δ*'}], legend: lg, labelWidth: 230, rowH: 22});
   };
   const segBtns = (host, items, get, set) => {
@@ -1851,14 +1851,14 @@ const XT6 = [0, 2e6, 4e6, 6e6];
   drawPairs();
 
   // counts of the classes (step 60000)
-  let h = '<thead><tr><th>比べ</th><th>刻み</th><th class="num">対</th><th class="num">区別（小さい側）</th><th class="num">区別（大きい側）</th><th class="num">小さい</th><th class="num">足りない</th></tr></thead><tbody>';
+  let h = '<thead><tr><th>比べ</th><th>刻み</th><th class="num">対</th><th class="num">区別（小さい側）</th><th class="num">区別（大きい側）</th><th class="num">区別†</th><th class="num">小さい</th><th class="num">足りない</th></tr></thead><tbody>';
   for (const [k, l] of CMP) {
     const [place, b] = k.split('/');
     const rows = T.pairs[place].filter(x => x.b === b && !x.a.endsWith('@6000'));
     for (let i = 0; i < 3; i++) {
       const gs = rows.map(x => x.G[i]);
       const n = f => gs.filter(f).length;
-      h += `<tr><td>${i === 0 ? l : ''}</td><td>${LAGS[i]} 秒</td><td class="num">${gs.length}</td><td class="num">${n(g => g[2] === 'distinct' && g[0] < 0)}</td><td class="num">${n(g => g[2] === 'distinct' && g[0] > 0)}</td><td class="num">${n(g => g[2] === 'small')}</td><td class="num">${n(g => g[2] === 'unresolved')}</td></tr>`;
+      h += `<tr><td>${i === 0 ? l : ''}</td><td>${LAGS[i]} 秒</td><td class="num">${gs.length}</td><td class="num">${n(g => g[2] === 'distinct' && g[0] < 0)}</td><td class="num">${n(g => g[2] === 'distinct' && g[0] > 0)}</td><td class="num">${n(g => g[2] === 'distinct_unconfirmed')}</td><td class="num">${n(g => g[2] === 'small')}</td><td class="num">${n(g => g[2] === 'unresolved')}</td></tr>`;
     }
   }
   document.getElementById('t-t-count').innerHTML = h + '</tbody>';

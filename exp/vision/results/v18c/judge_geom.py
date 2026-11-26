@@ -45,7 +45,9 @@ model's value) reads the models' rows (``MODELS``: each run's
 lays out their curves, their paired differences (against the yardsticks,
 of the models at 60000, of V18c's 6000 and 60000 and of its seeds at 6000)
 with the wording of README's 「言葉づかいの規則」 ($\Delta_*$ 0.03 of $G$ at
-the lags V-d2 resolves, ``judged_lags``; 4 of $\hat d$, no order of two
+the lags V-d2 resolves, ``judged_lags``; a ``distinct`` where V-d2 does not
+make twice $\Delta_*$ apart from 0 is ``distinct_unconfirmed``,
+``confirmed_lags``; 4 of $\hat d$, no order of two
 codes over 20), the TwoNN, the spread's diagnosis against the provisional
 bounds and the K3's rows.
 
@@ -565,6 +567,19 @@ def judged_lags(vd_rows: Sequence[Row], delta: float, g: GeomConf) -> tuple[int,
     )
 
 
+def confirmed_lags(
+    vd_rows: Sequence[Row], delta: float, g: GeomConf
+) -> tuple[int, ...]:
+    r"""The lags where a ``distinct`` is confirmed: the plan's note on V-d2
+    (「区間全体が $\Delta_*$ を超えるかは、その 2 倍の $\delta$ で見る」, applied
+    by the user's decision of 2026-11-26) reads ``judged_lags`` with
+    $2\Delta_*$, i.e. V-d2's smallest registered $\delta \ge 2\Delta_*$ made
+    and apart from 0. That a lag tells a difference of $\Delta_*$ from none
+    (``judged_lags``) does not show that it tells one beyond $\Delta_*$ from
+    one at $\Delta_*$."""
+    return judged_lags(vd_rows, 2 * delta, g)
+
+
 def paired_g(
     rows_a: Sequence[Row],
     rows_b: Sequence[Row],
@@ -573,6 +588,7 @@ def paired_g(
     judged: Sequence[int],
     delta: float = DELTA_G,
     stratum: str = "in",
+    confirmed: Sequence[int] | None = None,
     **variant: Any,
 ) -> dict[str, Any]:
     r"""The paired differences $G_a - G_b$ of each lag of ``g.lags`` (the
@@ -582,8 +598,11 @@ def paired_g(
     c\,\mathrm{SE}^*$ over all the lags ($c$ of ``metrics.max_t_critical``
     of the 128 s resamples, each lag's $t$ by its own resamples' standard
     deviation), and of a ``judged`` lag the wording of each (``classify``;
-    None of another lag: described only). A lag of zero spread (a
-    difference the same in every resample) adds no $t$."""
+    None of another lag: described only). A ``distinct`` at a judged lag
+    not in ``confirmed`` (``confirmed_lags``; None: every judged lag) is
+    ``distinct_unconfirmed`` (「区別できた。ただし解像度が足りず、確かめられて
+    いない」). A lag of zero spread (a difference the same in every resample)
+    adds no $t$."""
     lags, est, res, out = [], [], [], {}
     coef = torch.tensor([1.0, -1.0], dtype=torch.float64)
     for lag in g.lags:
@@ -613,8 +632,11 @@ def paired_g(
         e["lo"], e["hi"] = e["diff"] - 2 * e["se"], e["diff"] + 2 * e["se"]
         e["lo_sim"], e["hi_sim"] = e["diff"] - c * e["se"], e["diff"] + c * e["se"]
         on = lag in judged
-        e["cls"] = classify(e["lo"], e["hi"], delta) if on else None
-        e["cls_sim"] = classify(e["lo_sim"], e["hi_sim"], delta) if on else None
+        sure = confirmed is None or lag in confirmed
+        for key, lo, hi in (("cls", e["lo"], e["hi"]),
+                            ("cls_sim", e["lo_sim"], e["hi_sim"])):  # fmt: skip
+            cls = classify(lo, hi, delta) if on else None
+            e[key] = "distinct_unconfirmed" if cls == "distinct" and not sure else cls
     return {"c": c, "lags": out}
 
 
@@ -772,11 +794,13 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
     step0 = step0_inits(vd)
     init_of = {m: _init_of(meta[m], step0) for m in rows}
     judged = judged_lags(vd, DELTA_G, g)
+    confirmed = confirmed_lags(vd, DELTA_G, g)
     labels = tuple(rows)
     final = tuple(x for x in labels if meta[x]["step"] in (None, FINAL))
     every = {**yard, **rows}
     out: dict[str, Any] = {
-        "delta_g": DELTA_G, "delta_d": DELTA_D, "judged": judged, "meta": meta,
+        "delta_g": DELTA_G, "delta_d": DELTA_D, "judged": judged,
+        "confirmed": confirmed, "meta": meta,
         "curves": curves(every, g, {p: (*YARDSTICKS[p], *labels) for p in YARDSTICKS}),
     }  # fmt: skip
 
@@ -785,7 +809,8 @@ def apply_stage(geom: Path, runs: Path, g: GeomConf) -> dict[str, Any]:
     ) -> list[dict[str, Any]]:
         got = []
         for a, b in specs:
-            pg = paired_g(every[a], every[b], place, g, judged, **variant)
+            pg = paired_g(every[a], every[b], place, g, judged,
+                          confirmed=confirmed, **variant)  # fmt: skip
             if pg["lags"]:
                 d = None if variant else paired_d(every[a], every[b], place, g)
                 got.append({"a": a, "b": b, "G": pg, "d": d})
@@ -865,7 +890,8 @@ _LABELS = ("code", "run", "step", "t", "snap", "place", "source")
 
 def _print_apply(out: Mapping[str, Any], g: GeomConf) -> None:
     print(f"## 適用（Δ* = {out['delta_g']}・{out['delta_d']}、判定する刻み "
-          + "・".join(f"{lag / 10:g} 秒" for lag in out["judged"]) + "）\n")  # fmt: skip
+          + "・".join(f"{lag / 10:g} 秒" for lag in out["judged"]) + "、区別を確かめられる刻み "
+          + "・".join(f"{lag / 10:g} 秒" for lag in out["confirmed"]) + "）\n")  # fmt: skip
     for place, codes in out["curves"].items():
         print(f"\n### `in` の G（2 SE*）と s: {place}\n\n| 符号 | "
               + " | ".join(f"{lag / 10:g} 秒" for lag in g.lags) + " |")  # fmt: skip

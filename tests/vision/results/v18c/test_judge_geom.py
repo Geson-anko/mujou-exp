@@ -26,6 +26,7 @@ from exp.vision.results.v18c.judge_geom import (
     check_keys,
     checks_stage,
     classify,
+    confirmed_lags,
     diag_flags,
     judged_lags,
     k3_hmean_same,
@@ -147,6 +148,17 @@ class TestJudgedLags:
         # Delta* 0.02 -> delta 0.02 itself.
         assert judged_lags(rows, 0.02, G2) == (8, 32)
 
+    def test_the_confirmed_lags_read_twice_delta(self):
+        # The plan's note on V-d2: whether an interval clears Delta* wholly
+        # is seen with twice its delta. 2 x 0.03 -> the registered 0.08: only
+        # lag 16 has it apart from 0.
+        rows = [
+            {"part": "check", "name": "V-d2", "lag": 8, "delta": 0.04, "apart_from_0": True},
+            {"part": "check", "name": "V-d2", "lag": 16, "delta": 0.08, "apart_from_0": True},
+            {"part": "check", "name": "V-d2", "lag": 32, "delta": 0.04, "apart_from_0": True},
+        ]  # fmt: skip
+        assert confirmed_lags(rows, 0.03, G2) == (16,)
+
 
 class TestPairedG:
     def test_a_shift_of_the_numerator_is_exact(self):
@@ -170,6 +182,27 @@ class TestPairedG:
         assert out[0.01]["lags"][8]["cls"] == "small"
         # lag 32 is not judged: described only.
         assert out[0.05]["lags"][32]["cls"] is None
+
+    def test_a_distinct_lag_not_confirmed(self):
+        # Judged at 8 and 16, confirmed (twice delta) at 8 only: the same
+        # exact shift 0.05 is distinct at 8 and distinct_unconfirmed at 16
+        # (「解像度が足りず、確かめられていない」); a small one stays small.
+        den = [4.0, 5.0, 6.0, 3.0]
+        num = [1.0, 3.0, 2.0, 2.5]
+        a = [_mid_row(lag, num, den) for lag in G2.lags]
+        for c, want in ((0.05, ("distinct", "distinct_unconfirmed")),
+                        (-0.05, ("distinct", "distinct_unconfirmed")),
+                        (0.01, ("small", "small"))):  # fmt: skip
+            b = [_mid_row(lag, [n + c * d for n, d in zip(num, den, strict=True)], den)
+                 for lag in G2.lags]  # fmt: skip
+            got = paired_g(b, a, "own", G2, (8, 16), 0.03, confirmed=(8,))["lags"]
+            assert (got[8]["cls"], got[16]["cls"]) == want
+            assert (got[8]["cls_sim"], got[16]["cls_sim"]) == want
+            assert got[32]["cls"] is None
+        # Without ``confirmed`` every judged lag is confirmed (the old reading).
+        b = [_mid_row(lag, [n + 0.05 * d for n, d in zip(num, den, strict=True)], den)
+             for lag in G2.lags]  # fmt: skip
+        assert paired_g(b, a, "own", G2, (8, 16), 0.03)["lags"][16]["cls"] == "distinct"
 
     def test_the_se_is_ratio_se_of_the_contrast(self):
         a = [
