@@ -130,3 +130,23 @@ V-f1〜V-f3 が全て通ったときだけ判定する。各 seed で、対 `pca
 ### Codex さんの批判（設計への反映）
 
 初稿への批判の全文は [memory/agents/codex/v18d-critique.md](../../../../memory/agents/codex/v18d-critique.md) にある。どう扱ったかは計画の「Codex さんの批判を受けた直し」に書いた。この README で変えたのは、選択から Zurich を外したこと、H2（未来の観測の予測）を足したこと、S+T-perm を足して主の腕を S+T に固定したこと、「区別できない」を棄却から保留に移したこと、内容の適格を比から差に変えたこと、の 5 つである。
+
+## 実装（2026-11-27、コミット 709c4b8）
+
+学習の側を実装した。評価の側（`time_val`・`pca-mean-W`・`own`/`refit1024`/`knot-ls`・未来の観測の予測・最小二乗の $D$ の区間）はまだ実装していない。
+
+- `jepa.TimePredictor`・`knot_weights`・`time_errors`・`jepa_time_terms`: 予測器（節 8・32・128・512、0 で初期化）と腕 `T`・`ST`・`STperm` の損失。SIGReg と空間の項は中心の 128 個だけにかけ、$z_\pm$ はエンコーダを 2 回目に呼んで出す。$L_T$ の勾配は 3 つの符号の全てに流れる
+- `iid.draw_lags`・`Units.draw_triplets`: $\log n$ の一様から刻みを引き、3 つの stack の全てのフレームが 1 本の訓練の動画に入る中心を一様に引く。Zurich（`held_out`）は入らない。dyn/copy の訓練・検証・記録の動画は、V18c と同じく JEPA の訓練に入る。`STperm` の標的は、中心と同じ動画の stack を一様に引く
+- `jepa_iid`: `--time-arm {none,T,ST,STperm}`（既定 `none` は V18c と同じ計算）、`--time-weight`、`--time-lr`（既定 1e-3）、`--time-lags`（既定 8:512）。時間の予測器は μP の倍率を持たない別の param group に置く。`train.jsonl` に `time`・`tpred_grad_norm`・`time_bands`（帯ごとの $L_T$）・`roles`（役割と帯ごとの監査）を足し、checkpoint に `tpred` を足した。`jepa_eval.build_run_jepa` は `time_knots` を読んで `tpred` を作る
+- 理論のオラクル（テスト）: $w$ = 0 で V18c の損失と勾配にビットまで一致する。節の形の最小二乗の閉じた式で $L_T$ が残差に一致し、勾配が 0 になる。OU の節の上で $1 - r^{2n}$ に、節の間で共分散から出した母集団の誤差に一致する。反転の系列は誤差 0、周期 12.34 秒の回転では節の形の誤差が 0.05 を超える。有限差分で勾配を確かめた。Adam の最初の 1 step が `time_lr` / warmup に一致し、0 から Adam で学習率 1e-3 を 3000 step 回すと閉じた式の 1% 以内に届く。刻みの分布と中心・置き換えの標的の一様性はカイ二乗で確かめた。既定の `none` の小さな run は、変更前の V18c のコードの値に一致する
+
+### GPU での試し（std-00 の 4090、snapshot 709c4b80b0cf、60 step、学習率 1e-4、$\lambda$ 0.5、$w$ 1、seed 0）
+
+| 腕 | 1 step の秒 | メモリの頂点（GiB） | step 60 の `time` |
+| -- | -- | -- | -- |
+| `none`（V18c） | 0.114 | 4.82 | — |
+| `ST` | 0.252 | 9.38 | 0.655 |
+| `T` | 0.209 | 7.99 | 0.675 |
+| `STperm` | 0.253 | 9.38 | 0.957 |
+
+6000 step の短い run は 1 本 約 25 分、60000 step の長い run は 約 4.2 時間の見込み。`STperm` の `time` が 1 に近いのは、正しい時間の対応が無いときの予想どおりの値である。出力は NAS の `/nas/geson/mujou-exp/runs/v18d-trial/` に置いた。
