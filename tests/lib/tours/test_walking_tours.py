@@ -9,6 +9,7 @@ from exp.lib.tours.walking_tours import (
     MANIFEST,
     data_version,
     eval_clips,
+    eval_starts,
     eval_windows,
     finalize,
     prepare,
@@ -224,6 +225,11 @@ class TestEvalClips:
             eval_clips(root, held_out="H", clips=10, length=10, seed=3)
         )
         assert j[:, 0].tolist() == list(range(0, 100, 10))
+
+    def test_eval_starts_are_the_clips_first_frames(self, root):
+        kw = {"held_out": "H", "clips": 4, "length": 10, "seed": 2}
+        starts = eval_starts(root, **kw)
+        assert torch.equal(starts, self.frame_numbers(eval_clips(root, **kw))[:, 0])
 
     def test_too_many_clips_or_an_unknown_video_raise(self, root):
         with pytest.raises(ValueError, match="clips"):

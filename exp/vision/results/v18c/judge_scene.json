@@ -1,0 +1,145 @@
+{
+ "validity": {
+  "V-c0": {
+   "places365": true,
+   "places_checked": true,
+   "pass": true
+  },
+  "V-c1": {
+   "checks": {
+    "K_ge_3": true,
+    "max_group": 0.6909385113268608,
+    "max_group_of_all": 0.5843493342399597,
+    "max_group_ok": true,
+    "dropped": 0.15426723065439163,
+    "dropped_ok": true,
+    "support": [
+     288,
+     290,
+     298,
+     262,
+     544
+    ],
+    "support_ok": true
+   },
+   "pass": true
+  },
+  "V-c2": {
+   "agree": {
+    "0": 0.4666666666666667,
+    "5": 0.2,
+    "10": 0.4666666666666667,
+    "11": 0.8,
+    "15": 0.9666666666666667
+   },
+   "judged": {
+    "0": 30,
+    "5": 30,
+    "10": 30,
+    "11": 30,
+    "15": 30
+   },
+   "names": {
+    "11": "cultural or historical building/place (millitary, religious)",
+    "0": "shopping and dining",
+    "10": "transportation (roads, parking, bridges, boats, airports, etc.)",
+    "15": "commercial buildings, shops, markets, cities, and towns",
+    "5": "cultural (art, education, religion, millitary, law, politics, etc.)"
+   },
+   "unsure": 0.0,
+   "bad": [],
+   "pass": false
+  },
+  "V-c3": {
+   "mean": 0.0,
+   "label_ba": 1.0,
+   "video": 0.0,
+   "ceiling": 0.7806509283869669,
+   "pass": true
+  },
+  "V-c4": {
+   "color": null,
+   "inc64": null,
+   "pass": null
+  },
+  "V-c5": {
+   "pass": null
+  },
+  "V-c6": {
+   "pass": null
+  },
+  "valid": false,
+  "record": {
+   "L": 43,
+   "2L": 86,
+   "tau_labels": 21.23789166884901,
+   "hit_tau": {}
+  },
+  "V-E1'5": true,
+  "V-E1'6": {
+   "agree": {
+    "0": 0.4375,
+    "1": 0.16666666666666666,
+    "5": 0.16666666666666666,
+    "8": 0.875,
+    "10": 0.4,
+    "11": 0.6842105263157895,
+    "15": 1.0
+   },
+   "judged": {
+    "0": 16,
+    "1": 12,
+    "5": 18,
+    "8": 16,
+    "10": 20,
+    "11": 19,
+    "15": 20
+   },
+   "names": {
+    "1": "workplace (office building, factory, lab, etc.)",
+    "0": "shopping and dining",
+    "5": "cultural (art, education, religion, millitary, law, politics, etc.)",
+    "8": "forest, field, jungle",
+    "15": "commercial buildings, shops, markets, cities, and towns",
+    "11": "cultural or historical building/place (millitary, religious)",
+    "10": "transportation (roads, parking, bridges, boats, airports, etc.)"
+   },
+   "unsure": 0.1357142857142857,
+   "bad": [],
+   "pass": false
+  },
+  "e1f_premise": false
+ },
+ "yardsticks": {
+  "yardstick-label": {
+   "m": 0.7806509283869669,
+   "ba": 1.0,
+   "chance": 0.21934907161303313,
+   "m_zurich": 0.8,
+   "const_folds": 0,
+   "limit_folds": 9,
+   "top_folds": 0,
+   "bottom_folds": 0
+  },
+  "yardstick-mean": {
+   "m": 0.0,
+   "ba": 0.2,
+   "chance": 0.2,
+   "m_zurich": 0.0,
+   "const_folds": null,
+   "limit_folds": null,
+   "top_folds": null,
+   "bottom_folds": null
+  },
+  "yardstick-video": {
+   "m": 0.0,
+   "ba": 0.2,
+   "chance": 0.2,
+   "m_zurich": 0.0,
+   "const_folds": 9,
+   "limit_folds": 0,
+   "top_folds": 0,
+   "bottom_folds": 0
+  }
+ }
+}

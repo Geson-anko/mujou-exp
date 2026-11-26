@@ -1,0 +1,206 @@
+{
+ "checks": {
+  "V-h0a": {
+   "pass": 5,
+   "fail": 0
+  },
+  "V-h0b": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0c": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0d": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0e-window": {
+   "pass": 2,
+   "fail": 0
+  },
+  "V-h0e-nlin": {
+   "pass": 2,
+   "fail": 0
+  },
+  "V-h0f": {
+   "pass": 5,
+   "fail": 0
+  },
+  "V-h0g": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0h-reverse": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0h-thin": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0l": {
+   "pass": 3,
+   "fail": 0
+  },
+  "V-h0m": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0i": {
+   "pass": 1,
+   "fail": 0
+  },
+  "V-h0k": {
+   "pass": 1,
+   "fail": 0
+  }
+ },
+ "failures": [],
+ "records": [
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0e-half",
+   "m": 21,
+   "window": {
+    "lo": 3.0729585287591155,
+    "hi": 3.481538689196006,
+    "lo_cut": false,
+    "hi_cut": false
+   }
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0e-half",
+   "m": 22,
+   "window": null
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0f-walk-half",
+   "code": "walk",
+   "q": "50",
+   "p": {
+    "first": {
+     "lo": 0.8,
+     "hi": 2.2698471760974046,
+     "lo_cut": true,
+     "hi_cut": false
+    },
+    "again": [
+     {
+      "lo": 9.325200225143833,
+      "hi": 25.6,
+      "lo_cut": false,
+      "hi_cut": true
+     }
+    ]
+   },
+   "G": {
+    "first": {
+     "lo": 0.9200995994622555,
+     "hi": 2.488059814509712,
+     "lo_cut": false,
+     "hi_cut": false
+    },
+    "again": [
+     {
+      "lo": 9.758206895396713,
+      "hi": 23.589176554231784,
+      "lo_cut": false,
+      "hi_cut": false
+     }
+    ]
+   },
+   "mean": 13.313536241782636
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0j",
+   "tau": 8.0,
+   "whole_p": {
+    "first": {
+     "lo": 0.1,
+     "hi": 0.33919430091867236,
+     "lo_cut": true,
+     "hi_cut": false
+    },
+    "again": []
+   },
+   "whole_G": {
+    "first": {
+     "lo": 0.1,
+     "hi": 0.33472073421684484,
+     "lo_cut": true,
+     "hi_cut": false
+    },
+    "again": []
+   }
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0j",
+   "tau": 80.0,
+   "whole_p": {
+    "first": {
+     "lo": 0.1,
+     "hi": 0.4517986291925593,
+     "lo_cut": true,
+     "hi_cut": false
+    },
+    "again": []
+   },
+   "whole_G": {
+    "first": {
+     "lo": 0.1,
+     "hi": 0.45011540495512564,
+     "lo_cut": true,
+     "hi_cut": false
+    },
+    "again": []
+   }
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0k-power",
+   "r": 1.4142135623730951,
+   "distinct": 0,
+   "n": 200,
+   "true_ratio": -0.35993680245614573,
+   "true_ratio_mean": 0.32267280982532864,
+   "true_means1": [
+    2.516335484414823,
+    3.2293886605419804
+   ],
+   "true_means": [
+    6.187914261931188,
+    4.9477767224451465
+   ]
+  },
+  {
+   "snap": null,
+   "part": "record",
+   "name": "V-h0k-power",
+   "r": 2.0,
+   "distinct": 200,
+   "n": 200,
+   "true_ratio": -0.7515798088830455,
+   "true_ratio_mean": 0.4945575272765069,
+   "true_means1": [
+    2.516335484414823,
+    4.236591675349521
+   ],
+   "true_means": [
+    6.187914261931188,
+    4.392053658328353
+   ]
+  }
+ ]
+}

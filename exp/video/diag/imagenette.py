@@ -50,6 +50,7 @@ import imageio_ffmpeg
 import torch
 from torch import Tensor, nn
 
+from exp.lib.metrics import PROBE_RIDGES as RIDGES, probe_accuracy
 from exp.lib.optim import StepAdamW
 from exp.video.compose import compose
 from exp.video.jepa.loss import jepa_loss_packed, weighted_sigreg
@@ -70,7 +71,6 @@ __all__ = [
 ]
 
 SIDE = 128
-RIDGES = (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  # of the probe, times n
 
 
 def decode_jpeg(path: Path, side: int = SIDE) -> Tensor:
@@ -186,38 +186,6 @@ def _features(mods: VisionModules, x: Tensor, batch: int, device: str) -> Tensor
             xi = x[i : i + batch].to(device)[:, None]  # (b, 1, 3, S, S)
             out.append(mods.tokens(xi).mean(1).double().cpu())
     return torch.cat(out)
-
-
-def probe_accuracy(
-    f_train: Tensor, y_train: Tensor, f_val: Tensor, y_val: Tensor, classes: int
-) -> float:
-    """The accuracy on val of the ridge regression of the one-hot labels from
-    the standardized features (with a bias), its penalty (``RIDGES`` times
-    the samples) chosen by the accuracy on the last fifth of train, then fit
-    on all of train."""
-    mu, sd = f_train.mean(0), f_train.std(0).clamp(min=1e-8)
-
-    def design(f: Tensor) -> Tensor:
-        z = (f.double() - mu) / sd
-        return torch.cat([z, torch.ones(len(z), 1, dtype=z.dtype)], 1)
-
-    def fit(x: Tensor, y: Tensor, alpha: float) -> Tensor:
-        t = nn.functional.one_hot(y, classes).double()
-        a = x.T @ x + alpha * len(x) * torch.eye(x.shape[1], dtype=x.dtype)
-        return torch.linalg.solve(a, x.T @ t)
-
-    x, xv = design(f_train), design(f_val)
-    cut = len(x) * 4 // 5
-    perm = torch.randperm(len(x), generator=torch.Generator().manual_seed(0))
-    fit_i, hold_i = perm[:cut], perm[cut:]
-    scores = []
-    for alpha in RIDGES:
-        w = fit(x[fit_i], y_train[fit_i], alpha)
-        acc = (x[hold_i] @ w).argmax(1).eq(y_train[hold_i]).double().mean()
-        scores.append(float(acc))
-    best = RIDGES[max(range(len(RIDGES)), key=lambda i: scores[i])]
-    w = fit(x, y_train, best)
-    return float((xv @ w).argmax(1).eq(y_val).double().mean())
 
 
 def _masked_loss(

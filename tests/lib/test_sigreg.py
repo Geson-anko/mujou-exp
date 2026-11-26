@@ -9,6 +9,7 @@ from exp.lib.sigreg import (
     SIGReg,
     ecf_sums,
     epps_pulley,
+    expected_epps_pulley,
     insert_,
     sigreg,
     sigreg_from_sums,
@@ -349,3 +350,63 @@ class TestBatch:
                 assert not sent[~mask].any()
                 if k == 2:  # before it is full: the frames before, in order
                     torch.testing.assert_close(node.buffer[:6], zs[:2].reshape(6, D))
+
+
+FINE_T = torch.linspace(-12, 12, 4801, dtype=torch.float64)  # ~ the integral
+S0 = math.sqrt(2 * math.pi) - math.sqrt(2 * math.pi / 3)
+
+
+def _g(rho: float) -> float:
+    """Fable's G(rho) (``expected_epps_pulley``)."""
+    return math.sqrt(2 * math.pi / (3 - 2 * rho)) - math.sqrt(2 * math.pi / 3)
+
+
+def _ar1_pairs(n: int, r: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """The covariances $r^l$ ``(n - 1, 1)`` of the lags $l$ = 1 .. n - 1 of
+    $n$ samples of an AR(1) of unit variance, and the ordered pairs of each,
+    $2(n - l)$."""
+    lags = torch.arange(1, n, dtype=torch.float64)
+    return (r**lags)[:, None], 2 * (n - lags)
+
+
+class TestExpectedEppsPulley:
+    one = torch.ones(1, dtype=torch.float64)
+    zero = torch.zeros(1, dtype=torch.float64)
+    none = torch.zeros(0, 1, dtype=torch.float64), torch.zeros(0, dtype=torch.float64)
+
+    @pytest.mark.parametrize("n", [5, 500])
+    def test_independent_unit_gaussians_give_s0_whatever_n(self, n):
+        got = expected_epps_pulley(self.zero, self.one, *self.none, n, FINE_T)
+        assert float(got) == pytest.approx(S0, rel=1e-9)
+
+    def test_a_unit_marginal_gives_fables_closed_form(self):
+        n, r = 16, 0.7
+        cov, pairs = _ar1_pairs(n, r)
+        want = S0 + 2 / n * sum((n - l) * _g(r**l) for l in range(1, n))
+        got = expected_epps_pulley(self.zero, self.one, cov, pairs, n, FINE_T)
+        assert float(got) == pytest.approx(want, rel=1e-9)
+
+    def test_a_constant_gives_its_own_statistic(self):
+        """Samples of variance 0 all equal the mean: no expectation to take."""
+        n, m = 7, 0.3
+        x = torch.full((n, 1), m, dtype=torch.float64)
+        got = expected_epps_pulley(self.zero + m, self.zero, *self.none, n)
+        torch.testing.assert_close(got, epps_pulley(x))
+
+    def test_it_is_the_mean_of_the_statistic_of_correlated_gaussians(self):
+        """Monte Carlo of R sequences of an AR(1) of mean 0.4, variance 2 and
+        lag-1 correlation 0.8, through ``epps_pulley`` (17 points)."""
+        n, r, reps, m, s2 = 32, 0.8, 20000, 0.4, 2.0
+        g = torch.Generator().manual_seed(0)
+        e = torch.randn(n, reps, generator=g, dtype=torch.float64)
+        u = torch.empty_like(e)
+        u[0] = e[0]
+        for i in range(1, n):
+            u[i] = r * u[i - 1] + math.sqrt(1 - r**2) * e[i]
+        stat = epps_pulley(m + math.sqrt(s2) * u)  # (reps,)
+        cov, pairs = _ar1_pairs(n, r)
+        got = expected_epps_pulley(self.zero + m, self.one * s2, s2 * cov, pairs, n)
+        se = float(stat.std()) / math.sqrt(reps)
+        assert float(got) == pytest.approx(float(stat.mean()), abs=4 * se)
+        iid = expected_epps_pulley(self.zero + m, self.one * s2, *self.none, n)
+        assert float(got) - float(iid) > 20 * se  # the correlation shows

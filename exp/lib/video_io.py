@@ -71,9 +71,11 @@ def ffmpeg_frames(
     start: float = 0.0,
     duration: float | None = None,
     threads: int = 4,
+    vf: str | None = None,
 ) -> Generator[Tensor]:
     """The frames of the video at ``path``, one u8 ``(3, height, width)``
-    tensor (RGB) per frame, as ``ffmpeg_filter`` makes them.
+    tensor (RGB) per frame, as ``ffmpeg_filter`` makes them (or the filter
+    ``vf``, whose output must be ``width`` x ``height``).
 
     Args:
         path: The video.
@@ -83,6 +85,7 @@ def ffmpeg_frames(
         start: The first second of the video to decode.
         duration: The seconds to decode (``None``: to the end).
         threads: ffmpeg's decoding threads.
+        vf: The ffmpeg filter in place of ``ffmpeg_filter``'s.
 
     Frames are read from ffmpeg's pipe one at a time; closing the iterator
     early stops ffmpeg.
@@ -98,7 +101,9 @@ def ffmpeg_frames(
     if duration is not None:
         cmd += ["-t", repr(float(duration))]
     cmd += ["-i", str(path), "-an", "-sn"]
-    cmd += ["-vf", ffmpeg_filter(fps=fps, width=width, height=height)]
+    if vf is None:
+        vf = ffmpeg_filter(fps=fps, width=width, height=height)
+    cmd += ["-vf", vf]
     cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     n = 3 * width * height
     # stderr goes to a file: a pipe nobody reads could fill and block ffmpeg

@@ -44,6 +44,7 @@ __all__ = [
     "MANIFEST",
     "data_version",
     "eval_clips",
+    "eval_starts",
     "eval_windows",
     "finalize",
     "manifest_entry",
@@ -207,6 +208,29 @@ def videos(root: Path) -> list[str]:
     return sorted(json.loads((root / INDEX).read_text())["videos"])
 
 
+def eval_starts(
+    root: Path, *, held_out: str, clips: int, length: int, seed: int
+) -> Tensor:
+    """The first frames ``(clips,)`` in the held-out video of the clips of
+    ``eval_clips`` (the same arguments), in time order.
+
+    Raises:
+        ValueError: as ``eval_clips``.
+    """
+    if length <= 0:
+        raise ValueError(f"length must be positive, got {length}")
+    if held_out not in videos(root):
+        raise ValueError(f"{held_out!r} is not in {root} ({videos(root)})")
+    frames = U8Reader(root / held_out).index["frames"]
+    slots = frames // length
+    if clips > slots:
+        raise ValueError(
+            f"{held_out} has {frames} frames: {slots} clips of {length}, not {clips}"
+        )
+    g = torch.Generator().manual_seed(seed)
+    return torch.randperm(slots, generator=g)[:clips].sort().values * length
+
+
 def eval_clips(
     root: Path, *, held_out: str, clips: int, length: int, seed: int
 ) -> Tensor:
@@ -215,26 +239,15 @@ def eval_clips(
 
     The video is cut into ``frames // length`` slots of ``length`` frames; the
     clips are the slots of a random subset of ``clips`` of them (drawn by
-    ``seed``), in time order, so no two clips share a frame.
+    ``seed``), in time order, so no two clips share a frame (``eval_starts``).
 
     Raises:
         ValueError: ``length`` is not positive, ``held_out`` is not in the
             data, or it has fewer than ``clips`` slots.
     """
-    if length <= 0:
-        raise ValueError(f"length must be positive, got {length}")
-    if held_out not in videos(root):
-        raise ValueError(f"{held_out!r} is not in {root} ({videos(root)})")
+    starts = eval_starts(root, held_out=held_out, clips=clips, length=length, seed=seed)
     reader = U8Reader(root / held_out)
-    slots = len(reader) // length
-    if clips > slots:
-        raise ValueError(
-            f"{held_out} has {len(reader)} frames: {slots} clips of {length}, "
-            f"not {clips}"
-        )
-    g = torch.Generator().manual_seed(seed)
-    chosen = torch.randperm(slots, generator=g)[:clips].sort().values
-    return torch.stack([reader[s * length : (s + 1) * length] for s in chosen.tolist()])
+    return torch.stack([reader[s : s + length] for s in starts.tolist()])
 
 
 def eval_windows(
