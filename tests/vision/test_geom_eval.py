@@ -21,6 +21,7 @@ refused).
 
 import json
 import math
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from exp.vision.geom_eval import (
     code_rows,
     cut_rule,
     evaluate_run,
+    evaluate_vae,
     evaluate_yard,
     geom_sets,
     population_whitener,
@@ -421,6 +423,23 @@ class TestYard:
             ("k3_hmean", "h_mean"),
         }
         assert (geom / "rows" / "000000.json").exists()
+        # the VAE job: a chunk run (V17) is read on its single stream, the
+        # same data as a spread run's, so the same VAE gives the same rows
+        rows = {}
+        for layout, streams in (("spread", 1), ("chunk", 2)):
+            run = tmp_path / f"vae-{layout}"
+            data = replace(conf.data, layout=layout, streams=streams)
+            (run / "ckpt").mkdir(parents=True)
+            (run / "config.yaml").write_text(
+                yaml.safe_dump(to_dict(replace(conf, data=data)))
+            )
+            shutil.copy(_first_vae(vae_run), run / "ckpt" / "0.0.pt")
+            got = evaluate_vae(run / "ckpt" / "0.0.pt", name=layout, sets_dir=out,
+                               root=root, device="cpu", gconf=TINY, fconf=FILL_TINY,
+                               spacing=EVERY, span=SPAN)  # fmt: skip
+            rows[layout] = [{k: v for k, v in r.items() if k not in ("code", "source")}
+                            for r in json.loads(got.read_text())]  # fmt: skip
+        assert rows["chunk"] == rows["spread"]
 
     def test_v16_must_start_untrained(self, tmp_path):
         (tmp_path / "ckpt").mkdir()

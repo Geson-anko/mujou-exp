@@ -101,7 +101,7 @@ from exp.lib.synth_series import (
 from exp.lib.tours.stacks import tours_root
 from exp.lib.twonn import TwoNN, thinned, twonn
 from exp.vision.compose import from_dict
-from exp.vision.eval import BATCH, PCA_SEED
+from exp.vision.eval import BATCH, PCA_SEED, stream_view
 from exp.vision.fill_eval import FillConf, fill_sets
 from exp.vision.gen_eval import Zurich
 from exp.vision.jepa import JEPAModules
@@ -1808,14 +1808,20 @@ def evaluate_vae(
 ) -> Path:
     """The rows of the VAE checkpoint ``path`` (its run's ``config.yaml``
     two levels up) into ``sets_dir / "vae/rows/<name>.json"``. Returns
-    the file."""
+    the file.
+
+    The sets and the reference are read on the run's ``eval.stream_view``:
+    of a ``"chunk"`` run (V17) the single stream as a spread run of the
+    same ``data.tours`` and ``time.frame``, so the same data as every
+    other code's (``fill_sets`` keeps only those and its own span)."""
     conf = _conf_of(path.parent.parent, device)
+    view, _ = stream_view(conf)
     determinism = configure_determinism(conf.device)
     dev = torch.device(conf.device)
     root = tours_root(conf.data.tours.data_version) if root is None else root
-    sets, zurich = _sets_at(sets_dir, conf, root, gconf)
+    sets, zurich = _sets_at(sets_dir, view, root, gconf)
     kw: dict[str, Any] = {} if span is None else {"span": span}
-    ref = fill_sets(conf, root, fconf, spacing=spacing, **kw).fit
+    ref = fill_sets(view, root, fconf, spacing=spacing, **kw).fit
     mods = build_vae(conf, seed=conf.seed)
     ckpt.load_eval(path, mods.modules())
     out = sets_dir / "vae"
