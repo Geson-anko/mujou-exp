@@ -64,14 +64,14 @@ the targets (the earlier stacks feed the past window).
         --out runs/v18c-width/guard --v17 <ckpt> --dec runs/v18c-gen/yardsticks/posthoc_gen \
         --fit pca:0,1,2 --fit v17:0
     python -m exp.vision.width_guard cheat --config <v18c run> --sets runs/v18c-tlin \
-        --out runs/v18c-width/guard/cheat
+        --out runs/v18c-width/guard/cheat [--only base,mean-8]
     python -m exp.vision.width_guard run <run_dir> --steps 60000 --sets runs/v18c-tlin
 """
 
 import argparse
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -794,13 +794,24 @@ def evaluate_cheat(
     fconf: FillConf = FillConf(),
     spacing: Mapping[str, Any] | None = None,
     span: float | None = None,
+    only: Collection[str] | None = None,
 ) -> Path:
     """V-h2 into ``out``: of each cheat of ``pca`` (``cheat_codes``) its
     width's rows on Zurich ``<name>/width.json`` (the whitened coordinates
     as they are: no whitening anew) and its decoder's guard rows
     ``<name>/rows-d0.json``, the decoders learned on the training intervals;
-    the speeds $s_i$ ``speeds.json``. Returns ``out``."""
+    the speeds $s_i$ ``speeds.json``; with ``only`` those cheats alone (each
+    one's files the same to the byte: its decoder's seed and the guard's
+    noise are of no other cheat). Returns ``out``.
+
+    Raises:
+        ValueError: A name of ``only`` is no cheat.
+    """
     same_k(guard, gconf)
+    names = list(cheat_codes(torch.zeros(0), torch.zeros(guard.k), guard))
+    bad = [n for n in only or () if n not in names]
+    if bad:
+        raise ValueError(f"no cheats {bad} (of {names})")
     gen = guard_gen() if gen is None else gen
     determinism = configure_determinism(conf.device)
     dev = torch.device(conf.device)
@@ -820,6 +831,8 @@ def evaluate_cheat(
         zurich.frames, ws, features=feats, local=loc, conf=guard, gen=gen, dev=dev
     )
     for name, fn in cheat_codes(w_eval, s, guard).items():
+        if only is not None and name not in only:
+            continue
         x = fn(w_eval)
         rows = [{"code": name, "place": "own", "k": guard.k, "ref": "cheat", "key": ws.key}
                 | r for r in white_rows(x, ws, wconf, full=False)]  # fmt: skip
@@ -960,6 +973,8 @@ def main(argv: Sequence[str] | None = None) -> Path:
     yard.add_argument("--v17", type=Path)
     yard.add_argument("--dec", type=Path, help="G's yardsticks' posthoc_gen (uncond)")
     cheat = sub.add_parser("cheat")
+    cheat.add_argument("--only", type=lambda t: tuple(x for x in t.split(",") if x),
+                       default=None, help="only these cheats, comma-separated")  # fmt: skip
     for q in (yard, cheat):
         q.add_argument("--config", type=Path, required=True)
         q.add_argument("--out", type=Path, required=True)
@@ -980,7 +995,8 @@ def main(argv: Sequence[str] | None = None) -> Path:
     if a.job == "yard":
         return evaluate_yard(conf, a.sets, a.out, fit=_fits(a.fit), v17=a.v17, dec=a.dec,
                              root=a.root, inception=a.inception)  # fmt: skip
-    return evaluate_cheat(conf, a.sets, a.out, root=a.root, inception=a.inception)
+    return evaluate_cheat(conf, a.sets, a.out, root=a.root, inception=a.inception,
+                          only=a.only)  # fmt: skip
 
 
 if __name__ == "__main__":

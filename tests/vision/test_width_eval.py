@@ -14,8 +14,11 @@ time (of no phase) and its pooled $G = s/2$; a rotation's period on the
 grid is refused; the anchors' places by hand; the checks V-h0 on their
 full series (the long V-h0i, V-h0k run on few draws only), V-h0e's
 $N_{\mathrm{lin}}$ truth of hand-made directions (a $T$ whose closed margin
-to 1/4 is within $z$ spreads left out); and the yard's, the run's and the
-VAE's jobs end to end on tiny runs.
+to 1/4 is within $z$ spreads left out); the checks run apart (any split of
+the units and of the seeds) merged to the rows run at once, to the byte, and
+a truth of V-h0k alone that of the one stream; and the yard's, the run's
+and the VAE's jobs end to end on tiny runs (the yard of a few codes the
+same files to the byte).
 """
 
 import json
@@ -31,7 +34,7 @@ from exp.lib.linwidth import survival
 from exp.lib.midpoint import Whitener, block_sums, triple_terms, wins
 from exp.lib.synth_series import ou
 from exp.vision.compose import to_dict
-from exp.vision.geom_eval import _sets_at, code_rows as geom_code_rows
+from exp.vision.geom_eval import GeomConf, _sets_at, code_rows as geom_code_rows
 from exp.vision.models import build_vae
 from exp.vision.results.v18c.judge_width import yard_stage
 from exp.vision.width_eval import (
@@ -40,6 +43,8 @@ from exp.vision.width_eval import (
     WidthConf,
     _band_columns_g,
     _band_noise,
+    _band_truth,
+    _gen,
     _rotation_truth,
     _vh0a,
     _vh0b,
@@ -51,14 +56,21 @@ from exp.vision.width_eval import (
     _vh0h,
     _vh0i,
     _vh0k,
+    _vh0k_truth,
     _vh0l,
     _vh0m,
+    check_parts,
+    check_rows,
+    check_units,
     code_rows,
     conditions,
+    evaluate_checks,
     evaluate_run,
     evaluate_vae,
     evaluate_yard,
     lin_sums,
+    merge_checks,
+    merge_checks_into,
     nlin_truth,
     point,
     slots,
@@ -315,6 +327,29 @@ class TestJobs:
                                 "init_c", "init_c1", "init_v16"])  # fmt: skip
         vh = json.loads((out / "yard" / "vh.json").read_text())
         assert vh and all(r["pass"] for r in vh if r["part"] == "check")
+        # a few codes apart (fleet): their files the same to the byte
+        few = evaluate_yard(conf, sets_dir, tmp_path / "few", inits=inits,
+                            init_v16=vae_run, root=root, gconf=TINY, wconf=WTINY,
+                            fconf=FILL_TINY, spacing=EVERY, span=SPAN,
+                            codes=("init_c", "pca", "init_v16"))  # fmt: skip
+        got_few = sorted(p.name for p in (few / "yard" / "rows").iterdir())
+        assert got_few == ["init_c.json", "init_v16.json", "pca.json"]
+        for name in ("rows/init_c.json", "rows/init_v16.json", "rows/pca.json",
+                     "vh.json"):  # fmt: skip
+            assert (few / "yard" / name).read_bytes() == (
+                out / "yard" / name
+            ).read_bytes()
+        color = evaluate_yard(conf, sets_dir, tmp_path / "color", inits={},
+                              init_v16=vae_run, root=root, gconf=TINY, wconf=WTINY,
+                              fconf=FILL_TINY, spacing=EVERY, span=SPAN,
+                              codes=("color",))  # fmt: skip
+        assert not (color / "yard" / "vh.json").exists()
+        assert (color / "yard" / "rows" / "color.json").read_bytes() == (
+            out / "yard" / "rows" / "color.json"
+        ).read_bytes()
+        with pytest.raises(ValueError, match="no yardsticks"):
+            evaluate_yard(conf, sets_dir, tmp_path / "x", inits=inits, init_v16=vae_run,
+                          codes=("pcaa",))  # fmt: skip
         init_c = json.loads((out / "yard" / "rows" / "init_c.json").read_text())
         assert {r["place"] for r in init_c} == {"own", "h_mean"}
         assert {r["key"] for r in init_c} == {
@@ -367,3 +402,64 @@ class TestNlinTruth:
         flat = [[closed[t] for t in lags]] * 5
         got = nlin_truth(cc, w, {"g": white + flat}, 5)
         assert got == {"inside": [8, 16, 32], "beyond": [64], "excluded": []}
+
+
+# a small V-h0 (any of its pass or fail; the merge is of the rows alone)
+CG = replace(GeomConf(), block=160, boot=40)
+CW = WidthConf(max_lag=24, main_lo=4, strat_lags=(), dir_lag=4, lin_ts=(4, 8, 16, 24),
+               max_pair=8)  # fmt: skip
+CC = replace(CheckConf(), n=6 * 160 - 7, d=8, thin_n=6 * 160 - 7,
+             cover_seeds=(1101, 1104), cover_long=2, known_seeds=(1301, 1303),
+             white_dirs=(1, 2), white_dirs_half=(3,), leak_dims=4)  # fmt: skip
+
+
+class TestChecksApart:
+    def test_any_split_merges_to_the_rows_at_once(self):
+        whole = json.dumps(check_rows(CC, CG, CW))
+        units = check_units(CC)
+        short = [u for u in units if u not in ("V-h0i", "V-h0k")]
+        splits = [
+            [check_parts(CC, CG, CW, units)],
+            [check_parts(CC, CG, CW, short[:5]), check_parts(CC, CG, CW, short[5:]),
+             check_parts(CC, CG, CW, ["V-h0i", "V-h0k"], (1101, 1102)),
+             check_parts(CC, CG, CW, ["V-h0k", "V-h0i"], (1102, 1400))],
+            [check_parts(CC, CG, CW, [u], (s, s + 1)) for u in units
+             for s in (1101, 1102, 1103, 1301, 1302)
+             if u in ("V-h0i", "V-h0k") or s == 1101],
+        ]  # fmt: skip
+        for parts in splits:
+            rows = json.loads(json.dumps([r for p in reversed(parts) for r in p]))
+            assert json.dumps(merge_checks(rows, CC)) == whole
+
+    def test_a_missing_or_twice_given_part_is_refused(self):
+        units = check_units(CC)
+        rows = check_parts(CC, CG, CW, units, (1101, 1400))
+        with pytest.raises(ValueError, match="missing"):
+            merge_checks(rows[:-1], CC)
+        with pytest.raises(ValueError, match="twice"):
+            merge_checks(rows + rows[-1:], CC)
+        with pytest.raises(ValueError, match="no check units"):
+            check_parts(CC, CG, CW, ["V-h0z"])
+
+    def test_the_files_apart_merge_to_the_byte(self, tmp_path):
+        evaluate_checks(tmp_path / "once", CC, CG, CW)
+        evaluate_checks(tmp_path / "p0", CC, CG, CW, seeds=(1101, 1103))
+        evaluate_checks(tmp_path / "p1", CC, CG, CW, units=("V-h0i", "V-h0k"),
+                        seeds=(1103, 1400))  # fmt: skip
+        merge_checks_into(tmp_path / "merged", [tmp_path / "p1", tmp_path / "p0"],
+                          CC, CG, CW)  # fmt: skip
+        once = (tmp_path / "once" / "rows.json").read_bytes()
+        assert (tmp_path / "merged" / "rows.json").read_bytes() == once
+        with pytest.raises(ValueError, match="other settings"):
+            merge_checks_into(tmp_path / "m2", [tmp_path / "p0"], replace(CC, seed=7),
+                              CG, CW)  # fmt: skip
+
+    def test_a_truth_of_v_h0k_alone_is_of_the_one_stream(self):
+        ws = synthetic_sets(CC.n, CC.span, CG.block, CW.max_lag)
+        g = _gen(CC.known_truth_seed)
+        stream = [_band_truth(CC, ws, CW, CC.band_period * r, g)["25"]
+                  for r in CC.known_rs]  # fmt: skip
+        for i in range(len(CC.known_rs)):
+            alone = _vh0k_truth(CC, ws, CW, i)
+            assert alone["mean"] == stream[i]["mean"]
+            assert alone["mean1"] == stream[i]["mean1"]

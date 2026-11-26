@@ -2358,6 +2358,27 @@ README の同じ節の「ユーザーの決定（2026-11-26、値を見る前）
 1. **主の幅は $\bar\Delta_1 = 0.8 + \int_{0.8}^{\Delta_{\mathrm{typ}}} p_{1/4}\,d\Delta$** とする。積分は最初の窓の上端までである。窓の最後の格子点から上端までは、上端で $p = 1/2$ とした台形で求める。窓が無ければ 0.8 秒とする（`linwidth.first_mean`）。$\bar\Delta$ と $0.8 + \int S$ は副として並べる。$\bar\Delta$ は周期の戻りも足すので、周期的な動きの多い動画ほど大きく出る。そのため $\bar\Delta$ は符号の性質ではなく、動画の性質を測る。上の「記号と量」「$\Delta_*$」「V19 で判定するときの手順」と、C23・V-h2・V-h1・V-h0k の $\bar\Delta$ は、$\bar\Delta_1$ に読み替える。V-h0b・V-h0c・V-h0h は $\bar\Delta_1$ も照合する。V-h0i は $\bar\Delta_1$ の区間の被覆も求める。両方とも窓が無いと、比は 0 になる。そのため、2 つの符号のどちらも窓が有る抽出が 97.5% 以上のときだけ「小さい」と書く。それ以外は「窓の有無で書く」（`no_window`。理由は C6 と同じ）
 2. **V-h0e の $N_{\mathrm{lin}}$ の真値**: 帯の方向の閉じた $G$ と 1/4 との差が、帯の $k$ 方向の $G_i(T)$ の標準偏差の $\Phi^{-1}(1 - 0.001/k)$ 倍を超える $T$ だけを数える（`width_eval.nlin_truth`）。これで 3.2 秒が外れる
 
+### 並列化（2026-11-26）
+
+fleet で計算機を使い切るため、1 つのジョブを、数値が変わらない単位に分けた。分けた単位は、別々のプロセスで回せる。計画は [memory/agents/speedup-planner/linear-horizon-fleet.md](../../../memory/agents/speedup-planner/linear-horizon-fleet.md) にある。どのプロセスも 1 スレッドで動かし、並列化はプロセスの数で行う。刻みをまとめて大きなテンソル演算にすることはしない。総和の順が変わり、丸めが変わるためである。
+
+- `width_eval checks --only <単位> --seeds lo:hi --out <part>` で V-h0 の一部を回す。`width_eval merge-checks --out runs/v18c-width/checks <part> ...` で結果を結合する。単位は次のとおりである。短い確かめ（V-h0a〜m）、V-h0i の真値、V-h0k の $r$ ごとの真値（`V-h0k-truth-<i>`）、V-h0i・V-h0k の実現（seed で分ける）。V-h0k の真値は、$r$ をまたいで 1 本の乱数列になっている。そのため、前の $r$ の区間を引いて捨ててから、自分の区間を引く。結合した `rows.json` は、一括で回した場合とバイトまで同じになる（テストのオラクル）
+- `width_eval yard --codes pca,color` で、物差しを符号ごとに回す。`vh.json` は `pca` のときだけ書く。`width_guard cheat --only base,mean-8` で、ずるを 1 つずつ回す。どちらも、出力のファイルは一括で回した場合とバイトまで同じになる（テストのオラクル）
+- `exp/lib/joblist.py` は、`runs/v18c-tlin/scripts/apply.sh` と同じ形のリストを読む。1 行が `<名前> <引数...>` である。このリストを、1 台の上で `--parallel` 本ずつ並列に回す。各ジョブは `<cmd> <名前> <GPU> <引数...>` で起動する。ログは `<logs>/<名前>.log` に書き、終了は `<logs>/<リスト名>.done` に書く。標準ライブラリだけで書いてあるので、ホストの `python3` でファイルとして動く
+
+```bash
+# V-h0 を分けて回し、結合する（例: 短い確かめを 1 本ずつ、実現を seed 20 個ずつ）
+OMP_NUM_THREADS=1 python -m exp.vision.width_eval checks --only V-h0e --out runs/v18c-width/checks/parts/h0e
+OMP_NUM_THREADS=1 python -m exp.vision.width_eval checks --only V-h0i,V-h0k --seeds 1101:1121 \
+    --out runs/v18c-width/checks/parts/s1101
+python -m exp.vision.width_eval merge-checks --out runs/v18c-width/checks runs/v18c-width/checks/parts/*
+# 物差しを符号ごとに、ずるを 1 つずつ
+python -m exp.vision.width_eval yard ... --codes init_c,init_c1
+python -m exp.vision.width_guard cheat ... --only drop-32
+# 1 台のリストを並列に（GPU 0 に 2 本）
+python3 exp/lib/joblist.py --list std-00.list --logs <logs> --parallel 2 --gpu 0 -- bash <job.sh>
+```
+
 ## V19: ストリームで標準の SIGReg
 
 - V18 で選んだ設定のまま、データだけを単一ストリームにする

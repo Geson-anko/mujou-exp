@@ -14,7 +14,7 @@ code says (the extrapolation's and the future's on the extrapolation's, the
 midpoint's and the present's on the midpoint's; the copy and the ends miss);
 the guard's whitening must be the width's; and the yard's,
 the cheats' and a run's jobs end to end on tiny runs (a cheap feature in
-place of Inception's).
+place of Inception's; one cheat run apart the same files to the byte).
 """
 
 import json
@@ -235,6 +235,17 @@ class TestJobs:
         assert names == ["base", "drop-1", "mean-1", "mean-2"]
         width = json.loads((cheat / "mean-2" / "width.json").read_text())
         assert {r["stratum"] for r in width if r["part"] == "lin"} == {"common"}
+        # one cheat apart (fleet): its files the same to the byte
+        alone = evaluate_cheat(conf, sets_dir, tmp_path / "alone", only=("mean-2",),
+                               **kw)  # fmt: skip
+        assert sorted(p.name for p in alone.iterdir() if p.is_dir()) == [
+            "ckpt",
+            "mean-2",
+        ]
+        for name in ("mean-2/width.json", "mean-2/rows-d0.json", "speeds.json"):
+            assert (alone / name).read_bytes() == (cheat / name).read_bytes()
+        with pytest.raises(ValueError, match="no cheats"):
+            evaluate_cheat(conf, sets_dir, tmp_path / "x", only=("mean-3",), **kw)
         # the description reads them
         got_g = guard_stage(tmp_path, TINY)
         assert got_g["sigma_dec"] is not None and set(got_g["codes"]) == {

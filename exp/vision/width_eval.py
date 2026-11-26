@@ -55,17 +55,21 @@ V-h0a on the real ``pca``), and the **runs** (``evaluate_run``,
 ``evaluate_vae``; the exploration, a description)::
 
     OMP_NUM_THREADS=1 python -m exp.vision.width_eval checks --out runs/v18c-width/checks
+    # or apart, one process each, then merged (the same rows to the byte)
+    ... checks --out <part> --only V-h0a,V-h0b | --only V-h0i,V-h0k --seeds 1101:1121
+    ... merge-checks --out runs/v18c-width/checks <part> <part> ..
     python -m exp.vision.width_eval yard --sets runs/v18c-tlin --out runs/v18c-width \
         --config <v18c run> --init <..> --init-f <..> --init-m <..> --init-c <..> \
-        --init-c1 <..> --init-v16 <..>
+        --init-c1 <..> --init-v16 <..> [--codes pca,color]
     python -m exp.vision.width_eval run <run_dir> --steps 6000,60000 --sets runs/v18c-tlin
     python -m exp.vision.width_eval vae <ckpt> --name v16 --sets runs/v18c-tlin \
         --out runs/v18c-width
 """
 
 import argparse
+import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from statistics import NormalDist
@@ -141,12 +145,17 @@ from exp.vision.results.v18c.judge_geom import classify
 
 __all__ = [
     "OUT",
+    "SEEDED",
+    "SHORT_UNITS",
     "TARGETS",
+    "YARD_CODES",
     "CheckConf",
     "LinSums",
     "WidthConf",
     "WidthSets",
+    "check_parts",
     "check_rows",
+    "check_units",
     "code_rows",
     "conditions",
     "direction_row",
@@ -157,6 +166,8 @@ __all__ = [
     "evaluate_yard",
     "lin_sums",
     "main",
+    "merge_checks",
+    "merge_checks_into",
     "nlin_truth",
     "point",
     "resampled",
@@ -169,6 +180,7 @@ __all__ = [
 OUT = "posthoc_width"
 TARGETS = {"ext": "future", "mid": "now"}  # each guard read's true candidate
 YARD_INITS = ("init", "init_f", "init_m", "init_c", "init_c1")
+YARD_CODES = ("pca", "color", "mean8", *YARD_INITS, "init_v16")
 QS = (0.25, 0.5)
 
 type Row = dict[str, Any]
@@ -809,35 +821,6 @@ def _contains(iv: tuple[float | None, float | None], v: float) -> bool:
     return hi is not None and (lo is None or lo <= v) and v <= hi
 
 
-def check_rows(
-    cc: CheckConf = CheckConf(),
-    gconf: GeomConf = GeomConf(),
-    wconf: WidthConf = WidthConf(),
-    *,
-    long: bool = True,
-) -> list[Row]:
-    """V-h0a .. V-h0m (``plans/jepa.md``; module docstring), synthetic, on
-    the CPU: rows of ``part`` ``check`` (a failure stops) and ``record``;
-    ``long`` the coverage (V-h0i) and the known differences (V-h0k)."""
-    ws = synthetic_sets(cc.n, cc.span, gconf.block, wconf.max_lag)
-    rows: list[Row] = []
-    rows += _vh0a(cc, ws, wconf)
-    rows += _vh0b(cc, ws, wconf)
-    rows += _vh0c(cc, ws, wconf)
-    rows += _vh0d(cc, ws, wconf)
-    rows += _vh0e(cc, ws, wconf)
-    rows += _vh0f(cc, ws, wconf)
-    rows += _vh0g(cc, ws, wconf)
-    rows += _vh0h(cc, gconf, wconf)
-    rows += _vh0j(cc, ws, wconf)
-    rows += _vh0l(cc, ws, wconf)
-    rows += _vh0m(cc, ws, gconf, wconf)
-    if long:
-        rows += _vh0i(cc, ws, gconf, wconf)
-        rows += _vh0k(cc, ws, gconf, wconf)
-    return rows
-
-
 def _gen(seed: int) -> torch.Generator:
     return torch.Generator().manual_seed(seed)
 
@@ -1277,64 +1260,103 @@ def _band_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf, period: float,
     )  # fmt: skip
 
 
-def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
+def _vh0i_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> dict[str, Any]:
+    """V-h0i's truths: the pooled window's closed upper end, and of
+    ``_band_truth`` (seed ``cover_truth_seed``) $\\bar\\Delta_1$, $\\bar\\Delta$,
+    $\\Delta_{\\mathrm{typ}}$."""
     truth = _band_truth(cc, ws, wconf, cc.band_period, _gen(cc.cover_truth_seed))
     hi_true = _band_noise_window(cc.band_period, cc.band_nu, 0.25)[1] * wconf.step
-    t_mean1, t_mean, t_typ = (
-        truth["25"]["mean1"],
-        truth["25"]["mean"],
-        truth["25"]["typ"],
-    )
+    t = truth["25"]
+    return {"G_hi": hi_true, "mean1": t["mean1"], "mean": t["mean"], "typ": t["typ"]}
+
+
+def _vh0i_draw(
+    cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf, seed: int
+) -> dict[str, Any]:
+    """The intervals of the realization of ``seed`` (V-h0i)."""
+    x = _band_noise(cc.n, cc.d, cc.band_period, cc.band_nu, _gen(seed))
+    d = draws(_common_sums(x, ws, wconf), wconf, gconf)["25"]
+    return {"seed": seed} | {k: list(d[k]) for k in ("G_hi", "mean1", "mean", "typ")}
+
+
+def _vh0i_verdict(
+    cc: CheckConf, truth: Mapping[str, Any], got: Sequence[Mapping[str, Any]]
+) -> list[Row]:
+    """V-h0i of its truths and each realization's intervals (``got``, in
+    order of seed): the share of the intervals holding the truth, each at
+    least ``cover_min`` (the main $\\bar\\Delta_1$ among them)."""
     hits = {"G_hi": 0, "mean1": 0, "mean": 0, "typ": 0}
-    n = 0
-    for seed in range(*cc.cover_seeds):
-        x = _band_noise(cc.n, cc.d, cc.band_period, cc.band_nu, _gen(seed))
-        d = draws(_common_sums(x, ws, wconf), wconf, gconf)["25"]
-        hits["G_hi"] += _contains(d["G_hi"], hi_true)
-        hits["mean1"] += _contains(d["mean1"], t_mean1)
-        hits["mean"] += _contains(d["mean"], t_mean)
-        hits["typ"] += t_typ is not None and _contains(d["typ"], t_typ)
-        n += 1
+    for d in got:
+        for k in ("G_hi", "mean1", "mean"):
+            hits[k] += _contains(d[k], truth[k])
+        hits["typ"] += truth["typ"] is not None and _contains(d["typ"], truth["typ"])
+    n = len(got)
     share = {k: v / n for k, v in hits.items()}
     # the Monte Carlo error of a share near 0.95 of n draws
     mc = math.sqrt(0.95 * 0.05 / n)
     return [_check("V-h0i", all(v >= cc.cover_min for v in share.values()),
-                   share=share, n=n,
-                   truth={"G_hi": hi_true, "mean1": t_mean1, "mean": t_mean, "typ": t_typ},
-                   mc_se=mc)]  # fmt: skip
+                   share=share, n=n, truth=dict(truth), mc_se=mc)]  # fmt: skip
 
 
-def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
-    """The known differences: of each ``known_rs`` the pairs' wording of
-    the main $\\bar\\Delta_1$ by ``judge_geom.classify`` (the rule of the
-    comparisons) and the true $\\log_2$ ratios of $\\bar\\Delta_1$ and
-    $\\bar\\Delta$ (``_band_truth`` of each period)."""
-    rows = []
-    main = torch.arange(wconf.main_lo, wconf.max_lag + 1)
-    x_s = wconf.seconds(main)
+def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
+    return _vh0i_verdict(
+        cc, _vh0i_truth(cc, ws, wconf),
+        [_vh0i_draw(cc, ws, gconf, wconf, s) for s in range(*cc.cover_seeds)],
+    )  # fmt: skip
+
+
+def _vh0k_truth(
+    cc: CheckConf, ws: WidthSets, wconf: WidthConf, i: int
+) -> dict[str, Any]:
+    r"""The truth of ``known_rs[i]``: ``_band_truth`` of the period $20 r$ s
+    on the one stream of seed ``known_truth_seed`` past the ``cover_long``
+    segments of each $r$ before it (drawn and dropped, so a truth alone is
+    the stream's: of every $r$ at once as of each apart)."""
     g_t = _gen(cc.known_truth_seed)
-    truth = {r: _band_truth(cc, ws, wconf, cc.band_period * r, g_t)["25"]
-             for r in cc.known_rs}  # fmt: skip
-    t1 = {r: t["mean1"] for r, t in truth.items()}
-    t = {r: t["mean"] for r, t in truth.items()}
+    for r in cc.known_rs[:i]:
+        for _ in range(cc.cover_long):
+            _band_noise(cc.n, cc.d, cc.band_period * r, cc.band_nu, g_t)
+    t = _band_truth(cc, ws, wconf, cc.band_period * cc.known_rs[i], g_t)["25"]
+    return {"r": cc.known_rs[i], "mean1": t["mean1"], "mean": t["mean"]}
+
+
+def _vh0k_draw(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf,
+               r: float, seed: int) -> dict[str, Any]:  # fmt: skip
+    """The pair of ``seed`` of the ratio ``r`` (V-h0k): the interval of
+    $\\log_2$ of the main $\\bar\\Delta_1$'s ratio (the union of the blocks'
+    lengths) and its wording (``judge_geom.classify``)."""
+    x_s = wconf.seconds(torch.arange(wconf.main_lo, wconf.max_lag + 1))
+    g = _gen(seed)
+    a = _band_noise(cc.n, cc.d, cc.band_period, cc.band_nu, g)
+    b = _band_noise(cc.n, cc.d, cc.band_period * r, cc.band_nu, g)
+    la, lb = _common_sums(a, ws, wconf), _common_sums(b, ws, wconf)
+    ivs = []
+    for pa, pb in ((la, lb), (paired_blocks(la), paired_blocks(lb))):
+        counts = counts_of(pa.n.shape[1], gconf)
+        ra = ratio_resamples(pa.win["25"], pa.n, counts)
+        rb = ratio_resamples(pb.win["25"], pb.n, counts)
+        ivs.append(paired_ratio(x_s, ra, rb, 0.5).mean1)
+    lo, hi = union(ivs)
+    cls = classify(-math.inf if lo is None else lo, math.inf if hi is None else hi,
+                   cc.delta_star)  # fmt: skip
+    return {"r": r, "seed": seed, "mean1": [lo, hi], "cls": cls}
+
+
+def _vh0k_verdict(
+    cc: CheckConf,
+    truths: Sequence[Mapping[str, Any]],
+    got: Sequence[Mapping[str, Any]],
+) -> list[Row]:
+    """V-h0k of the truths (in order of ``known_rs``) and the pairs ``got``:
+    of each $r$ the count of 「区別できた」 and the true $\\log_2$ ratios of
+    $\\bar\\Delta_1$ (``true_ratio``, the main) and $\\bar\\Delta$."""
+    rows = []
+    t1 = {t["r"]: t["mean1"] for t in truths}
+    t = {t["r"]: t["mean"] for t in truths}
     for r in cc.known_rs:
-        distinct = 0
-        for seed in range(*cc.known_seeds):
-            g = _gen(seed)
-            a = _band_noise(cc.n, cc.d, cc.band_period, cc.band_nu, g)
-            b = _band_noise(cc.n, cc.d, cc.band_period * r, cc.band_nu, g)
-            la, lb = _common_sums(a, ws, wconf), _common_sums(b, ws, wconf)
-            ivs = []
-            for pa, pb in ((la, lb), (paired_blocks(la), paired_blocks(lb))):
-                counts = counts_of(pa.n.shape[1], gconf)
-                ra = ratio_resamples(pa.win["25"], pa.n, counts)
-                rb = ratio_resamples(pb.win["25"], pb.n, counts)
-                ivs.append(paired_ratio(x_s, ra, rb, 0.5).mean1)
-            lo, hi = union(ivs)
-            distinct += classify(-math.inf if lo is None else lo,
-                                 math.inf if hi is None else hi,
-                                 cc.delta_star) == "distinct"  # fmt: skip
-        n = cc.known_seeds[1] - cc.known_seeds[0]
+        pairs = [d for d in got if d["r"] == r]
+        distinct = sum(d["cls"] == "distinct" for d in pairs)
+        n = len(pairs)
         true = math.log2(t1[1.0] / t1[r]) if 1.0 in t1 else None
         true_mean = math.log2(t[1.0] / t[r]) if 1.0 in t else None
         if r == 1.0:
@@ -1348,7 +1370,158 @@ def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
     return rows
 
 
+def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
+    """The known differences: of each ``known_rs`` the pairs' wording of
+    the main $\\bar\\Delta_1$ by ``judge_geom.classify`` (the rule of the
+    comparisons) and the true $\\log_2$ ratios (``_vh0k_truth``)."""
+    truths = [_vh0k_truth(cc, ws, wconf, i) for i in range(len(cc.known_rs))]
+    got = [_vh0k_draw(cc, ws, gconf, wconf, r, s)
+           for r in cc.known_rs for s in range(*cc.known_seeds)]  # fmt: skip
+    return _vh0k_verdict(cc, truths, got)
+
+
+# -- the checks apart (fleet) -------------------------------------------------------
+
+SHORT_UNITS = ("V-h0a", "V-h0b", "V-h0c", "V-h0d", "V-h0e", "V-h0f", "V-h0g", "V-h0h",
+               "V-h0j", "V-h0l", "V-h0m")  # fmt: skip
+SEEDED = ("V-h0i", "V-h0k")  # their realizations split by seed
+
+
+def check_units(cc: CheckConf) -> tuple[str, ...]:
+    """The units of V-h0 one process may run apart (``check_parts``): the
+    short checks, the truths of V-h0i and of each ``known_rs`` of V-h0k
+    (``V-h0k-truth-<i>``), and the realizations of V-h0i and V-h0k."""
+    truths = ("V-h0i-truth",) + tuple(
+        f"V-h0k-truth-{i}" for i in range(len(cc.known_rs))
+    )
+    return SHORT_UNITS + truths + SEEDED
+
+
+def _short(name: str, cc: CheckConf, ws: WidthSets, gconf: GeomConf,
+           wconf: WidthConf) -> list[Row]:  # fmt: skip
+    f = {"V-h0a": lambda: _vh0a(cc, ws, wconf), "V-h0b": lambda: _vh0b(cc, ws, wconf),
+         "V-h0c": lambda: _vh0c(cc, ws, wconf), "V-h0d": lambda: _vh0d(cc, ws, wconf),
+         "V-h0e": lambda: _vh0e(cc, ws, wconf), "V-h0f": lambda: _vh0f(cc, ws, wconf),
+         "V-h0g": lambda: _vh0g(cc, ws, wconf), "V-h0h": lambda: _vh0h(cc, gconf, wconf),
+         "V-h0j": lambda: _vh0j(cc, ws, wconf), "V-h0l": lambda: _vh0l(cc, ws, wconf),
+         "V-h0m": lambda: _vh0m(cc, ws, gconf, wconf)}  # fmt: skip
+    return f[name]()
+
+
+def check_rows(
+    cc: CheckConf = CheckConf(),
+    gconf: GeomConf = GeomConf(),
+    wconf: WidthConf = WidthConf(),
+    *,
+    long: bool = True,
+    units: Collection[str] | None = None,
+) -> list[Row]:
+    """V-h0a .. V-h0m (``plans/jepa.md``; module docstring), synthetic, on
+    the CPU: rows of ``part`` ``check`` (a failure stops) and ``record``;
+    ``long`` the coverage (V-h0i) and the known differences (V-h0k);
+    ``units`` (of ``SHORT_UNITS`` and ``SEEDED``) only those, in order."""
+    ws = synthetic_sets(cc.n, cc.span, gconf.block, wconf.max_lag)
+    keep = set(SHORT_UNITS + (SEEDED if long else ())) if units is None else set(units)
+    rows: list[Row] = []
+    for name in SHORT_UNITS:
+        if name in keep:
+            rows += _short(name, cc, ws, gconf, wconf)
+    if "V-h0i" in keep:
+        rows += _vh0i(cc, ws, gconf, wconf)
+    if "V-h0k" in keep:
+        rows += _vh0k(cc, ws, gconf, wconf)
+    return rows
+
+
+def check_parts(
+    cc: CheckConf,
+    gconf: GeomConf,
+    wconf: WidthConf,
+    units: Collection[str],
+    seeds: tuple[int, int] | None = None,
+) -> list[Row]:
+    """The rows of the ``units`` (``check_units``) of one process, for
+    ``merge_checks``: of a short check ``{"part": "unit", "unit", "rows"}``,
+    of a truth ``{"part": "truth", "unit", "value"}``, of each realization
+    of ``SEEDED`` whose seed lies in ``seeds`` (``lo``, ``hi``: $lo \\le$
+    seed $< hi$; None: all) ``{"part": "draw", "unit", "value"}``.
+
+    Raises:
+        ValueError: A unit is not one of ``check_units``.
+    """
+    known = check_units(cc)
+    bad = [u for u in units if u not in known]
+    if bad:
+        raise ValueError(f"no check units {bad} (of {list(known)})")
+    ws = synthetic_sets(cc.n, cc.span, gconf.block, wconf.max_lag)
+    lo, hi = (-math.inf, math.inf) if seeds is None else seeds
+    rows: list[Row] = []
+    for u in known:
+        if u not in units:
+            continue
+        if u in SHORT_UNITS:
+            rows.append({"part": "unit", "unit": u,
+                         "rows": _short(u, cc, ws, gconf, wconf)})  # fmt: skip
+        elif u == "V-h0i-truth":
+            rows.append(
+                {"part": "truth", "unit": u, "value": _vh0i_truth(cc, ws, wconf)}
+            )
+        elif u.startswith("V-h0k-truth-"):
+            i = int(u.removeprefix("V-h0k-truth-"))
+            rows.append({"part": "truth", "unit": u,
+                         "value": _vh0k_truth(cc, ws, wconf, i)})  # fmt: skip
+        elif u == "V-h0i":
+            rows += [{"part": "draw", "unit": u,
+                      "value": _vh0i_draw(cc, ws, gconf, wconf, s)}
+                     for s in range(*cc.cover_seeds) if lo <= s < hi]  # fmt: skip
+        else:
+            rows += [{"part": "draw", "unit": u,
+                      "value": _vh0k_draw(cc, ws, gconf, wconf, r, s)}
+                     for r in cc.known_rs for s in range(*cc.known_seeds)
+                     if lo <= s < hi]  # fmt: skip
+    return rows
+
+
+def merge_checks(parts: Sequence[Row], cc: CheckConf) -> list[Row]:
+    """The rows of ``check_rows`` of the parts' rows (``check_parts``, any
+    split, any order): the short checks' rows in their order, V-h0i and
+    V-h0k of their truths and every realization's values in order of seed.
+
+    Raises:
+        ValueError: A unit or a realization is missing or given twice.
+    """
+    units: dict[str, Any] = {}
+    got: dict[str, dict[Any, Any]] = {u: {} for u in SEEDED}
+    for r in parts:
+        if r["part"] == "draw":
+            v = r["value"]
+            key = (v["r"], v["seed"]) if r["unit"] == "V-h0k" else v["seed"]
+            if key in got[r["unit"]]:
+                raise ValueError(f"{r['unit']} {key} given twice")
+            got[r["unit"]][key] = v
+        else:
+            if r["unit"] in units:
+                raise ValueError(f"{r['unit']} given twice")
+            units[r["unit"]] = r["rows"] if r["part"] == "unit" else r["value"]
+    want_i = list(range(*cc.cover_seeds))
+    want_k = [(r, s) for r in cc.known_rs for s in range(*cc.known_seeds)]
+    missing = [u for u in check_units(cc) if u not in SEEDED and u not in units]
+    missing += [f"V-h0i {s}" for s in want_i if s not in got["V-h0i"]]
+    missing += [f"V-h0k {k}" for k in want_k if k not in got["V-h0k"]]
+    if missing:
+        raise ValueError(f"missing {missing}")
+    rows: list[Row] = [r for u in SHORT_UNITS for r in units[u]]
+    rows += _vh0i_verdict(cc, units["V-h0i-truth"], [got["V-h0i"][s] for s in want_i])
+    truths = [units[f"V-h0k-truth-{i}"] for i in range(len(cc.known_rs))]
+    rows += _vh0k_verdict(cc, truths, [got["V-h0k"][k] for k in want_k])
+    return rows
+
+
 # -- the jobs ----------------------------------------------------------------------
+
+
+def _check_config(cc: CheckConf, gconf: GeomConf, wconf: WidthConf) -> dict[str, Any]:
+    return {"check": asdict(cc), "geom": asdict(gconf), "width": asdict(wconf)}
 
 
 def evaluate_checks(
@@ -1356,12 +1529,48 @@ def evaluate_checks(
     cc: CheckConf = CheckConf(),
     gconf: GeomConf = GeomConf(),
     wconf: WidthConf = WidthConf(),
+    *,
+    units: Collection[str] | None = None,
+    seeds: tuple[int, int] | None = None,
 ) -> Path:
-    """V-h0 into ``out`` (``config.json``, ``rows.json``) on the CPU."""
+    """V-h0 into ``out`` (``config.json``, ``rows.json``) on the CPU; with
+    ``units`` or ``seeds`` a part of it (``check_parts``: ``units`` None all
+    of them) for ``merge_checks_into``."""
     determinism = configure_determinism("cpu")
-    _start(out, {"check": asdict(cc), "geom": asdict(gconf), "width": asdict(wconf)},
-           determinism)  # fmt: skip
-    _write(out / "rows.json", check_rows(cc, gconf, wconf), {})
+    _start(out, _check_config(cc, gconf, wconf), determinism)
+    if units is None and seeds is None:
+        rows = check_rows(cc, gconf, wconf)
+    else:
+        rows = check_parts(cc, gconf, wconf, check_units(cc) if units is None else units,
+                           seeds)  # fmt: skip
+    _write(out / "rows.json", rows, {})
+    return out
+
+
+def merge_checks_into(
+    out: Path,
+    parts: Sequence[Path],
+    cc: CheckConf = CheckConf(),
+    gconf: GeomConf = GeomConf(),
+    wconf: WidthConf = WidthConf(),
+) -> Path:
+    """V-h0's ``rows.json`` in ``out`` of the parts' directories ``parts``
+    (``evaluate_checks`` of ``units``, ``seeds``; ``merge_checks``): the
+    rows of the checks run at once, to the byte.
+
+    Raises:
+        ValueError: A part is of other settings (its ``config.json``), or a
+            unit or a realization is missing or given twice.
+    """
+    want = json.loads(json.dumps(_check_config(cc, gconf, wconf)))
+    rows: list[Row] = []
+    for d in parts:
+        conf = json.loads((d / "config.json").read_text())
+        if {k: conf.get(k) for k in want} != want:
+            raise ValueError(f"{d} is of other settings")
+        rows += json.loads((d / "rows.json").read_text())
+    _start(out, _check_config(cc, gconf, wconf), configure_determinism("cpu"))
+    _write(out / "rows.json", merge_checks(rows, cc), {})
     return out
 
 
@@ -1402,18 +1611,25 @@ def evaluate_yard(
     fconf: FillConf = FillConf(),
     spacing: Mapping[str, Any] | None = None,
     span: float | None = None,
+    codes: Collection[str] | None = None,
 ) -> Path:
     """V-h1: the yardsticks' rows (``out / "yard/rows/<code>.json"``: ``pca``,
     ``color``, ``mean8``, the step 0 of ``inits`` (``YARD_INITS``) and V16's
     VAE of $t = 0$, each place, the sensitivity's whitenings too) on the geom
     sets of ``sets_dir``, and V-h0a on the real ``pca`` (``out /
-    "yard/vh.json"``). Returns ``out``.
+    "yard/vh.json"``); with ``codes`` (of ``YARD_CODES``) only those (``vh.json``
+    with ``pca``), each code's file the same to the byte. Returns ``out``.
 
     Raises:
-        ValueError: A run of ``YARD_INITS`` is not given (or as
-            ``geom_eval``'s yard).
+        ValueError: A code is not of ``YARD_CODES``, or a run of
+            ``YARD_INITS`` among them is not given (or as ``geom_eval``'s
+            yard).
     """
-    missing = [n for n in YARD_INITS if n not in inits]
+    todo = YARD_CODES if codes is None else tuple(c for c in YARD_CODES if c in codes)
+    bad = [c for c in codes or () if c not in YARD_CODES]
+    if bad:
+        raise ValueError(f"no yardsticks {bad} (of {list(YARD_CODES)})")
+    missing = [n for n in YARD_INITS if n in todo and n not in inits]
     if missing:
         raise ValueError(f"the yard needs the runs {missing}")
     determinism = configure_determinism(conf.device)
@@ -1433,30 +1649,39 @@ def evaluate_yard(
             rows += code_rows(ev, rf, ws, gconf, wconf, sens=True, labels=lab)
         _write(yard / "rows" / f"{code}.json", rows, {})
 
-    gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
-    pca_code = PCACode.fit(pixels, ref, gconf.pca_dim, gen=gen, device=conf.device)
-    pca = places_of(_feature_code(pca_code.mu), zurich, ref, ws.n, dev)
-    emit("pca", pca)
-    emit("color", places_of(_feature_code(ColorCode(16).mu), zurich, ref, ws.n, dev))
-    gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
-    mean8 = PCACode.fit(_mean8, ref, gconf.pca_dim, gen=gen, device=conf.device)
-    emit("mean8", places_of(_feature_code(mean8.mu), zurich, ref, ws.n, dev))
+    pca = None
+    if "pca" in todo:
+        gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
+        pca_code = PCACode.fit(pixels, ref, gconf.pca_dim, gen=gen, device=conf.device)
+        pca = places_of(_feature_code(pca_code.mu), zurich, ref, ws.n, dev)
+        emit("pca", pca)
+    if "color" in todo:
+        color = _feature_code(ColorCode(16).mu)
+        emit("color", places_of(color, zurich, ref, ws.n, dev))
+    if "mean8" in todo:
+        gen = torch.Generator().manual_seed(conf.seed + PCA_SEED)
+        mean8 = PCACode.fit(_mean8, ref, gconf.pca_dim, gen=gen, device=conf.device)
+        emit("mean8", places_of(_feature_code(mean8.mu), zurich, ref, ws.n, dev))
     for name in YARD_INITS:
+        if name not in todo:
+            continue
         mods, own, path = _init_of(inits[name], conf.device)
         places = places_of(JepaPlaces(mods).places, zurich, ref, ws.n, dev)
         if own == "zpca":
             places["own"] = _zpca(places["own"], _conf_of(inits[name], None).seed,
                                   gconf.pca_dim)  # fmt: skip
         emit(name, places, {"source": str(path), "t": float(path.stem)})
-    first = _first_vae(init_v16)
-    vae = vae_at(first, conf.device)
-    assert isinstance(vae, VAEModules)
-    emit("init_v16", places_of(VaeTokenCode(vae).places, zurich, ref, ws.n, dev),
-         {"source": str(first), "t": float(first.stem)})  # fmt: skip
-    ev, rf = pca["own"]
-    w = Whitener.fit(rf, gconf.k, c_eps=gconf.c_eps).white(ev)
-    checks = identity_rows(w, ws, CheckConf(), "pca")
-    _write(yard / "vh.json", checks, {"key": ws.key})
+    if "init_v16" in todo:
+        first = _first_vae(init_v16)
+        vae = vae_at(first, conf.device)
+        assert isinstance(vae, VAEModules)
+        emit("init_v16", places_of(VaeTokenCode(vae).places, zurich, ref, ws.n, dev),
+             {"source": str(first), "t": float(first.stem)})  # fmt: skip
+    if pca is not None:
+        ev, rf = pca["own"]
+        w = Whitener.fit(rf, gconf.k, c_eps=gconf.c_eps).white(ev)
+        checks = identity_rows(w, ws, CheckConf(), "pca")
+        _write(yard / "vh.json", checks, {"key": ws.key})
     return out
 
 
@@ -1560,17 +1785,47 @@ def _ints(text: str) -> tuple[int, ...]:
     return tuple(int(x) for x in text.split(",") if x)
 
 
+def _names(text: str) -> tuple[str, ...]:
+    return tuple(x for x in text.split(",") if x)
+
+
+def _range(text: str) -> tuple[int, int]:
+    lo, _, hi = text.partition(":")
+    return int(lo), int(hi)
+
+
 def main(argv: Sequence[str] | None = None) -> Path:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     sub = p.add_subparsers(dest="job", required=True)
     checks = sub.add_parser("checks")
     checks.add_argument("--out", type=Path, required=True)
+    checks.add_argument(
+        "--only",
+        type=_names,
+        default=None,
+        help="a part: these units (check_units), comma-separated",
+    )
+    checks.add_argument(
+        "--seeds",
+        type=_range,
+        default=None,
+        help="a part: V-h0i's and V-h0k's realizations of seeds lo:hi",
+    )
+    merge = sub.add_parser("merge-checks")
+    merge.add_argument("--out", type=Path, required=True)
+    merge.add_argument("parts", type=Path, nargs="+")
     yard = sub.add_parser("yard")
     yard.add_argument("--config", type=Path, required=True)
     yard.add_argument("--out", type=Path, required=True)
     for name in YARD_INITS:
         yard.add_argument(f"--{name.replace('_', '-')}", type=Path, required=True)
     yard.add_argument("--init-v16", type=Path, required=True)
+    yard.add_argument(
+        "--codes",
+        type=_names,
+        default=None,
+        help="only these yardsticks (YARD_CODES), comma-separated",
+    )
     run = sub.add_parser("run")
     run.add_argument("run_dir", type=Path)
     run.add_argument("--steps", type=_ints, required=True)
@@ -1584,12 +1839,14 @@ def main(argv: Sequence[str] | None = None) -> Path:
         q.add_argument("--root", type=Path, default=None)
     a = p.parse_args(argv)
     if a.job == "checks":
-        return evaluate_checks(a.out)
+        return evaluate_checks(a.out, units=a.only, seeds=a.seeds)
+    if a.job == "merge-checks":
+        return merge_checks_into(a.out, a.parts)
     if a.job == "yard":
         conf = _conf_of(a.config, a.device)
         inits = {n: getattr(a, n) for n in YARD_INITS}
         return evaluate_yard(conf, a.sets, a.out, inits=inits, init_v16=a.init_v16,
-                             root=a.root)  # fmt: skip
+                             root=a.root, codes=a.codes)  # fmt: skip
     if a.job == "run":
         return evaluate_run(a.run_dir, steps=a.steps, sets_dir=a.sets, root=a.root,
                             device=a.device)  # fmt: skip
