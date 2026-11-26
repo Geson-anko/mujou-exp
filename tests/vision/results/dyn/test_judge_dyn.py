@@ -15,6 +15,7 @@ from exp.lib.dynpred import GRID
 from exp.vision.results.dyn.judge_dyn import (
     Interval,
     bonferroni_z,
+    check_keys,
     pair,
     psi_interval,
     sigma_ab,
@@ -196,3 +197,12 @@ def test_vp2d_gives_no_se_past_the_invalid_share():
     got = vp2d(rows)
     assert got is not None and got["se"] is None and not got["pass"]
     assert got["invalid"] > 0.025
+
+
+def test_check_keys_stops_on_another_set():
+    row = {"part": "dyn", "key": "z", "train_key": "t"}
+    assert check_keys({"a": [row], "b": [row, {"part": "spec"}]}) == ("z", "t")
+    with pytest.raises(SystemExit):
+        check_keys({"a": [row], "b": [row | {"train_key": "u"}]})
+    with pytest.raises(SystemExit):
+        check_keys({"a": [row, row | {"key": "y"}]})

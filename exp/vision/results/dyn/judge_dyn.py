@@ -40,10 +40,10 @@ on Zurich's common centres is 0 has no number (``summary``, ``pair``,
 ``REL_ROT``, the same $\alpha$), V-p2b (the ridge's bounds and the MLP's
 validation), V-p2d (the MLP's non-inferiority on the record set; the main
 family), $\sigma_{\mathrm{rot}}$ and the yardsticks' pairs; ``--stage
-apply`` the exploration's runs (a description)::
+apply`` the exploration's runs (a description; ``apply_stage``)::
 
     uv run python -m exp.vision.results.dyn.judge_dyn --stage checks|yard|apply \
-        [--dyn runs/v18c-dyn] [--runs runs] [--json out.json]
+        [--dyn runs/v18c-dyn] [--runs runs] [--geom runs/v18c-tlin] [--json out.json]
 """
 
 import argparse
@@ -64,7 +64,9 @@ from exp.lib.metrics import block_counts
 __all__ = [
     "GOOD_NOTE",
     "Interval",
+    "apply_stage",
     "bonferroni_z",
+    "check_keys",
     "main",
     "pair",
     "psi_interval",
@@ -497,28 +499,70 @@ def yard_stage(dyn: Path) -> dict[str, Any]:
     return out
 
 
-def apply_stage(dyn: Path, runs: Path) -> dict[str, Any]:
-    """The exploration (a description): each model's summary of each place
-    and its pairs against ``pca`` and ``mean8`` (own place)."""
-    from exp.vision.results.v18c.judge_geom import MODELS, VAES, _label
+def check_keys(by_label: Mapping[str, Sequence[Row]]) -> tuple[Any, Any]:
+    """The one Zurich sets' ``key`` and training blocks' ``train_key`` of
+    every label's rows (``plans/dyn.md``, 「出力」: rows of other sets are
+    not compared). Stops where a label has none or another."""
+    seen: set[tuple[Any, Any]] = set()
+    for label, rs in by_label.items():
+        keys = {
+            (r.get("key"), r.get("train_key")) for r in rs if r.get("part") == "dyn"
+        }
+        if len(keys) != 1:
+            raise SystemExit(f"{label}: keys {sorted(keys, key=str)} are not one")
+        seen |= keys
+    if len(seen) != 1:
+        raise SystemExit(f"the labels' keys {sorted(seen, key=str)} are not one")
+    return next(iter(seen))
+
+
+def _pairs(a: Sequence[Row], b: Sequence[Row],
+           rp: Mapping[str, Sequence[float]] | None) -> dict[str, Any]:  # fmt: skip
+    return {"lin": pair(a, b, "lin"), "mlp": pair(a, b, "mlp", rp)}
+
+
+def apply_stage(dyn: Path, runs: Path, geom: Path | None = None) -> dict[str, Any]:
+    """The exploration (a description): each model's summary of each place,
+    its pairs against ``pca`` and ``mean8`` (their own place) and against
+    its own step 0 (the yard's checkpoint of the same place: judge_geom's
+    ``_init_of``, V18c's of ``geom``'s ``yard/vd.json``; none where unknown),
+    and the models' pairs of seed 0 against 1 and of step 60000 against
+    6000 (judge_width's ``model_pairs``), each place."""
+    from exp.vision.results.v18c.judge_geom import (
+        MODELS,
+        VAES,
+        _init_of,
+        _label,
+        step0_inits,
+    )
+    from exp.vision.results.v18c.judge_width import model_pairs
 
     yard = {p.stem: _load(p) for p in sorted((dyn / "yard" / "rows").glob("*.json"))}
+    step0 = step0_inits(_load(geom / "yard" / "vd.json")) if geom is not None else {}
     rp = None
     if "rot" in yard and "pca" in yard:
         rp = rot_psis(_place(yard["rot"], "own"), _place(yard["pca"], "own"))
     rows: dict[str, list[Row]] = {}
+    meta: dict[str, dict[str, Any]] = {}
     for name in VAES:
         p = dyn / "vae" / "rows" / f"{name}.json"
         if p.exists():
             rows[name] = _load(p)
-    for run, _, steps in MODELS:
+            meta[name] = {"family": "vae", "step": None, "run": name}
+    for run, family, steps in MODELS:
         for step in steps:
             p = runs / run / "posthoc_dyn" / "rows" / f"{step:06d}.json"
             if p.exists():
                 rows[_label(run, step)] = _load(p)
-    out: dict[str, Any] = {"note": "探索の記述", "models": {}}
+                meta[_label(run, step)] = {"family": family, "step": step,
+                                           "run": run.rsplit("/", 1)[-1]}  # fmt: skip
+    keys = check_keys(rows | yard)
+    out: dict[str, Any] = {"note": "探索の記述", "key": keys, "models": {},
+                           "seeds": {}, "steps": {}}  # fmt: skip
     for label, rs in rows.items():
-        m: dict[str, Any] = {}
+        no_step0 = geom is None and meta[label]["family"] == "v18c"
+        init = None if no_step0 else _init_of(meta[label], step0)
+        m: dict[str, Any] = {"meta": meta[label] | {"init": init}}
         for place in ("own", "h_mean"):
             pr = _place(rs, place)
             if not pr:
@@ -526,11 +570,29 @@ def apply_stage(dyn: Path, runs: Path) -> dict[str, Any]:
             e: dict[str, Any] = {"summary": summary(pr), "pairs": {}}
             for other in ("pca", "mean8"):
                 if other in yard:
-                    o = _place(yard[other], "own")
-                    e["pairs"][other] = {"lin": pair(pr, o, "lin"),
-                                         "mlp": pair(pr, o, "mlp", rp)}  # fmt: skip
+                    e["pairs"][other] = _pairs(pr, _place(yard[other], "own"), rp)
+            if init is not None and init in yard and _place(yard[init], place):
+                e["pairs"]["init"] = _pairs(pr, _place(yard[init], place), rp)
             m[place] = e
         out["models"][label] = m
+    for kind, ab in model_pairs(rows).items():
+        for a, b in ab:
+            out[kind][f"{a}/{b}"] = {
+                place: _pairs(_place(rows[a], place), _place(rows[b], place), rp)
+                for place in ("own", "h_mean")
+                if _place(rows[a], place) and _place(rows[b], place)
+            }
+    for label, m in out["models"].items():
+        for place in ("own", "h_mean"):
+            if place not in m:
+                continue
+            mn = m[place]["summary"]["main"]
+            ws = {
+                o: (v["mlp"] or {}).get("words") for o, v in m[place]["pairs"].items()
+            }
+            print(
+                f"| {label} | {place} | lin {mn.get('lin')} | mlp {mn.get('mlp')} | {ws} |"
+            )
     return out
 
 
@@ -539,6 +601,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     p.add_argument("--stage", choices=("checks", "yard", "apply"), required=True)
     p.add_argument("--dyn", type=Path, default=Path("runs/v18c-dyn"))
     p.add_argument("--runs", type=Path, default=Path("runs"))
+    p.add_argument("--geom", type=Path, default=None,
+                   help="apply: the geom yard (runs/v18c-tlin) for V18c's own step 0")  # fmt: skip
     p.add_argument("--json", type=Path, default=None)
     a = p.parse_args(argv)
     if a.stage == "checks":
@@ -546,7 +610,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     elif a.stage == "yard":
         out = yard_stage(a.dyn)
     else:
-        out = apply_stage(a.dyn, a.runs)
+        out = apply_stage(a.dyn, a.runs, a.geom)
     if a.json is not None:
         a.json.write_text(json.dumps(out, indent=1, default=str) + "\n")
     return out
