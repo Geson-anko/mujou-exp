@@ -63,7 +63,16 @@ from exp.vision.compose import from_dict, to_dict
 from exp.vision.models import VAEModules, build_vae, early_fusion, mup_lr
 from exp.vision.schema.run import RunConf
 
-__all__ = ["CKPT_T", "DATA", "Units", "lr_at", "main", "neg_elbo", "train"]
+__all__ = [
+    "CKPT_T",
+    "DATA",
+    "Units",
+    "draw_lags",
+    "lr_at",
+    "main",
+    "neg_elbo",
+    "train",
+]
 
 DATA = ("span", "all")
 # the stamps (s) of the checkpoints: stream_eval.PROBE_AT, then on to 1e6
@@ -72,9 +81,19 @@ NOISE_SEED = 13  # added to the seed: u, eps (program.NOISE_SEED)
 DRAW_SEED = 17  # added to the seed: the units drawn
 
 
+def draw_lags(b: int, lo: int, hi: int, gen: torch.Generator) -> Tensor:
+    r"""``b`` lags ``(b,)`` int64 of V18d's triples (plans/v18d.md): $\log n$
+    uniform on $[\log lo, \log hi]$, $n$ rounded to the nearest whole
+    number, so $P(n = k)$ is the uniform's mass of $[k - 1/2, k + 1/2]$
+    clipped to $[lo, hi]$."""
+    u = torch.rand(b, generator=gen, dtype=torch.float64)
+    return (math.log(lo) + u * math.log(hi / lo)).exp().round().long()
+
+
 class Units:
     """Draws of the stacks of stream 0 of the run ``conf`` at its units of
-    ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU.
+    ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU; of
+    ``"all"`` also V18d's triples (``draw_triplets``).
 
     Raises:
         ValueError: ``data`` is not of ``DATA``.
@@ -82,13 +101,17 @@ class Units:
 
     def __init__(self, conf: RunConf, root: Path, data: str, *, seed: int) -> None:
         t = conf.data.tours
+        self._lengths: list[int] = []  # of the training videos, in the loop's order
         if data == "span":
             self.count = round(conf.measure.duration / conf.time.frame)
         elif data == "all":
             names = [v for v in videos(root) if v != t.held_out]
-            self.count = sum(len(U8Reader(root / v)) for v in names)  # L
+            self._lengths = [len(U8Reader(root / v)) for v in names]
+            self.count = sum(self._lengths)  # L
         else:
             raise ValueError(f"data must be one of {DATA}, not {data!r}")
+        self._span = (t.frames - 1) * t.stride  # a stack's frames before its last
+        self._advance = t.advance
         self._stream = StackedTourFrames(
             root,
             n=1,
@@ -109,6 +132,51 @@ class Units:
             if ready[0] and not reset[0]:
                 out.append(x[0])
         return torch.stack(out)
+
+    def draw_triplets(
+        self, lags: Tensor, perm: torch.Generator | None = None
+    ) -> Tensor:
+        r"""V18d's triples ``(B, 3, n, 3, S, S)`` u8 at the lags ``lags``
+        ``(B,)`` (``draw_lags``): the stacks ending at the units $u - n$,
+        $u$, $u + n$, the centre $u$ drawn uniformly (from the same generator
+        as ``draw``) from the units whose three stacks' frames are all in one
+        training video (plans/v18d.md, 「三つ組の引き方」). With ``perm``
+        (S+T-perm's) the last is instead the stack ending at a unit drawn
+        uniformly by ``perm`` from the centre's video's units whose stack is
+        whole, whatever the centre's.
+
+        Raises:
+            ValueError: The units are not ``"all"``'s, or ``data.tours.advance``
+                is not 1 (a unit is not a frame), or a lag fits in no video.
+        """
+        if not self._lengths or self._advance != 1:
+            raise ValueError("triples are of the units 'all' of advance 1")
+        longest = max(self._lengths)
+        if int(lags.max()) * 2 + self._span >= longest:
+            raise ValueError(f"a lag of {int(lags.max())} fits in no video")
+        firsts = torch.tensor([0, *self._lengths]).cumsum(0)  # (videos + 1,)
+        out: list[Tensor] = []
+        for n in lags.tolist():
+            while True:
+                u = int(torch.randint(self.count, (1,), generator=self._gen))
+                v = int(torch.searchsorted(firsts, torch.tensor(u), right=True)) - 1
+                local, length = u - int(firsts[v]), self._lengths[v]
+                if local - n - self._span >= 0 and local + n < length:
+                    break
+            ends = [u - n, u, u + n]
+            if perm is not None:
+                whole = length - self._span  # the units of v with a whole stack
+                k = self._span + int(torch.randint(whole, (1,), generator=perm))
+                ends[2] = int(firsts[v]) + k
+            out.append(torch.stack([self._stack(e) for e in ends]))
+        return torch.stack(out)
+
+    def _stack(self, unit: int) -> Tensor:
+        """The stack ``(n, 3, S, S)`` ending at the unit ``unit`` (whole)."""
+        self._stream.load_state_dict({"k": unit})
+        x, ready, _ = self._stream.next()
+        assert ready[0]  # draw_triplets kept the stacks within their video
+        return x[0]
 
 
 def neg_elbo(mods: VAEModules, x: Tensor, u: Tensor, eps: Tensor) -> dict[str, Tensor]:

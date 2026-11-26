@@ -395,14 +395,16 @@ def drift(init: nn.Module, now: nn.Module) -> dict[str, float]:
 
 def build_run_jepa(conf: RunConf, settings: Mapping[str, Any]) -> JEPAModules:
     """The JEPA of a run of ``conf`` and its ``jepa.json`` ``settings`` (its
-    $d$, $P$ and $W$; V18's ``TOKEN_DIM``, ``"learned"`` and none where not
-    recorded), at its step 0."""
+    $d$, $P$, $W$ and V18d's time predictor of its ``time_knots``; V18's
+    ``TOKEN_DIM``, ``"learned"`` and none where not recorded), at its step
+    0."""
     return build_jepa(
         conf,
         seed=conf.seed,
         token_dim=settings.get("token_dim", TOKEN_DIM),
         proj=settings.get("proj", "learned"),
         latent_dim=settings.get("latent_dim"),
+        time_knots=settings.get("time_knots"),
     )
 
 

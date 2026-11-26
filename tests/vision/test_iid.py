@@ -1,20 +1,24 @@
 """``exp.vision.iid``: the negative ELBO against ``torch.distributions``, the
 learning rate's schedule by hand, the units drawn, and a tiny run read by
 ``stream_eval`` (tiny synthetic Walking Tours of ``test_eval``: videos A, B,
-C of 20 frames, H held out; stacks of 2 frames of 16 px)."""
+C of 20 frames, H held out; stacks of 2 frames of 16 px). V18d's lags
+against their log-uniform law, and its triples on videos whose frames carry
+their video and their number."""
 
 import json
 import math
+from pathlib import Path
 
 import pytest
 import torch
 import yaml
+from torch import Tensor
 from torch.distributions import Normal, kl_divergence
 
 from exp.lib import ckpt
 from exp.vision.compose import to_dict
 from exp.vision.eval import stacks_at
-from exp.vision.iid import Units, _optimizer, lr_at, main, neg_elbo
+from exp.vision.iid import Units, _optimizer, draw_lags, lr_at, main, neg_elbo
 from exp.vision.models import build_vae, mup_lr
 from exp.vision.schema import (
     DataConf,
@@ -25,7 +29,7 @@ from exp.vision.schema import (
     ToursConf,
 )
 from exp.vision.stream_eval import evaluate_stream
-from tests.vision.test_eval import SIZE, N, random_tours
+from tests.vision.test_eval import SIZE, N, ramp, random_tours, write_tours
 
 
 def conf_of(**model) -> RunConf:
@@ -142,3 +146,109 @@ def test_a_tiny_run_is_read_by_stream_eval(root, tmp_path, monkeypatch):
     summ = [json.loads(x) for x in (out / "summary.jsonl").read_text().splitlines()]
     assert [r["t"] for r in summ] == times
     assert all(math.isfinite(r["span"]) for r in summ)
+
+
+def chi2(counts: Tensor, probs: Tensor) -> tuple[float, int]:
+    """Pearson's statistic of ``counts`` against ``probs`` and its degrees."""
+    want = probs * counts.sum()
+    return float(((counts - want).square() / want).sum()), len(counts) - 1
+
+
+def under_chi2(counts: Tensor, probs: Tensor) -> bool:
+    """The statistic below its mean plus 5 of its sd (the dof's chi-square)."""
+    stat, dof = chi2(counts.double(), probs.double())
+    return stat < dof + 5 * math.sqrt(2 * dof)
+
+
+class TestDrawLags:
+    @pytest.mark.parametrize(("lo", "hi"), [(8, 512), (1, 20)])
+    def test_the_rounded_log_uniform_law(self, lo, hi):
+        # P(n = k): the uniform's mass of [log(k - 1/2), log(k + 1/2)] in [lo, hi]
+        n = draw_lags(400_000, lo, hi, torch.Generator().manual_seed(0))
+        assert int(n.min()) == lo and int(n.max()) == hi
+        k = torch.arange(lo, hi + 1, dtype=torch.float64)
+        top, bottom = (k + 0.5).clamp(max=hi), (k - 0.5).clamp(min=lo)
+        probs = (top.log() - bottom.log()) / math.log(hi / lo)
+        counts = torch.bincount(n - lo, minlength=hi - lo + 1)
+        assert under_chi2(counts, probs)
+
+
+LENGTHS = {"A": 60, "B": 40, "C": 90, "H": 30}  # H held out
+CODES = {"A": 10, "B": 20, "C": 30, "H": 40}
+
+
+@pytest.fixture
+def numbered(tmp_path) -> Path:
+    """Videos whose frame j is of the color (its video's code, j, 0)."""
+    return write_tours(
+        tmp_path / "n",
+        {v: ramp((CODES[v], 0, 0), (0, 1, 0), m) for v, m in LENGTHS.items()},
+    )
+
+
+def frames_of(x: Tensor) -> tuple[Tensor, Tensor]:
+    """The video codes and the frame numbers ``(..., N)`` of stacks ``(...,
+    N, 3, S, S)`` of ``numbered``."""
+    return x[..., 0, 0, 0].long(), x[..., 1, 0, 0].long()
+
+
+class TestTriplets:
+    def test_the_three_stacks_are_u_minus_n_u_u_plus_n_of_one_video(self, numbered):
+        units = Units(conf_of(), numbered, "all", seed=0)
+        n = draw_lags(3000, 1, 19, torch.Generator().manual_seed(1))
+        x = units.draw_triplets(n)
+        assert x.shape == (3000, 3, N, 3, SIZE, SIZE)
+        video, frame = frames_of(x)  # (B, 3, N)
+        assert (video == video[:, :1, :1]).all()  # one video a triple
+        assert not (video == CODES["H"]).any()  # never the held-out
+        ends = frame[:, :, -1]  # (B, 3): the last frames
+        assert torch.equal(ends[:, 0], ends[:, 1] - n)
+        assert torch.equal(ends[:, 2], ends[:, 1] + n)
+        assert torch.equal(frame[:, :, 0], ends - (N - 1))  # whole, oldest first
+        assert int(frame.min()) >= 0
+        length = {CODES[v]: m for v, m in LENGTHS.items()}
+        assert all(int(e) < length[int(v)] for e, v in zip(ends[:, 2], video[:, 0, 0]))
+
+    def test_the_centre_is_uniform_on_the_units_that_fit(self, numbered):
+        # at n = 7: the centres of video v are its frames 8..L_v - 8, all alike
+        units = Units(conf_of(), numbered, "all", seed=2)
+        n = torch.full((6000,), 7)
+        video, frame = frames_of(units.draw_triplets(n)[:, 1])
+        fit = [
+            (c, j)
+            for v, c in CODES.items()
+            if v != "H"
+            for j in range(7 + N - 1, LENGTHS[v] - 7)
+        ]
+        index = {u: i for i, u in enumerate(fit)}
+        got = torch.tensor(
+            [index[(int(v), int(f))] for v, f in zip(video[:, -1], frame[:, -1])]
+        )
+        counts = torch.bincount(got, minlength=len(fit))
+        assert under_chi2(counts, torch.full((len(fit),), 1 / len(fit)))
+
+    def test_perm_draws_the_target_from_the_centres_video_whatever_its_time(
+        self, numbered
+    ):
+        units = Units(conf_of(), numbered, "all", seed=3)
+        n = torch.full((8000,), 5)
+        x = units.draw_triplets(n, torch.Generator().manual_seed(4))
+        video, frame = frames_of(x)
+        assert (video == video[:, :1, :1]).all()
+        ends = frame[:, :, -1]
+        assert torch.equal(ends[:, 0], ends[:, 1] - n)  # the inputs as S+T's
+        assert torch.equal(frame[:, 2, 0], ends[:, 2] - (N - 1))  # whole
+        c = video[:, 0, 0] == CODES["C"]
+        early = c & (ends[:, 1] < 45)
+        for part in (early, c & ~early):  # the same law, early or late centres
+            whole = LENGTHS["C"] - (N - 1)
+            counts = torch.bincount(ends[part, 2] - (N - 1), minlength=whole)
+            assert under_chi2(counts, torch.full((whole,), 1 / whole))
+
+    def test_a_lag_of_no_video_or_the_span_units_are_refused(self, numbered):
+        units = Units(conf_of(), numbered, "all", seed=0)
+        with pytest.raises(ValueError, match="fits in no video"):
+            units.draw_triplets(torch.tensor([45]))
+        span = Units(conf_of(), numbered, "span", seed=0)
+        with pytest.raises(ValueError, match="'all'"):
+            span.draw_triplets(torch.tensor([2]))
