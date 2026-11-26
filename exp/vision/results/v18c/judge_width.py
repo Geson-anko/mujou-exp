@@ -38,7 +38,8 @@ stops as out of the guard's range).
 ``--stage apply`` (the exploration, a description: 「探索の記述」) reads the
 models' ``posthoc_width/rows/<step>.json`` (``judge_geom.MODELS``) and the
 VAEs' ``<width>/vae/rows``, their widths, their paired ratios against
-``pca``, ``mean8`` and their own step 0, and their guard where there is
+``pca``, ``mean8`` and their own step 0, of each run its seeds and its
+steps 6000 and 60000 (``model_pairs``), and their guard where there is
 one: a wording of a width carries the guard's (``guard_note``: none where
 it passed, else 「ガードで確かめられない」 and the like, and 「ガードの範囲
 外」 of a win beyond 6.4 s). Prints markdown; ``--json`` also writes the
@@ -52,7 +53,7 @@ import argparse
 import json
 import math
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -587,7 +588,7 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
             if ls is None:
                 continue
             e: dict[str, Any] = {"summary": summary(ls, rs, wconf, g, **_main(place, g)),
-                                 "ratios": {}}  # fmt: skip
+                                 "at": at_lags(ls), "ratios": {}}  # fmt: skip
             for other in ("pca", "mean8", init):
                 if other is None or other not in yard:
                     continue
@@ -627,7 +628,29 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
                 for r in e["ratios"].values():
                     r["guard_note"] = note
         out["models"][label] = m
+    out["seeds"], out["steps"] = {}, {}
+    for kind, pairs in model_pairs(out["models"]).items():
+        for a, b in pairs:
+            for place in ("own", "h_mean"):
+                la, lb = _sums(rows[a], place, g), _sums(rows[b], place, g)
+                if la is not None and lb is not None:
+                    out[kind][f"{a}-{b}/{place}"] = pair_ratio(la, lb, wconf, g)
+    out["yard_at"] = {f"{n}/{place}": at_lags(ls) for place, names in YARDSTICKS.items()
+                      for n in names if n in yard
+                      and (ls := _sums(yard[n], place, g)) is not None}  # fmt: skip
     print("（探索の記述。V19 の確証ではない）\n")
+    _print_models(out["models"])
+    print(
+        "\n| 物差し | p₁/₄(0.8) | p₁/₄(1.6) | p₁/₂(0.8) | G(0.8) |\n| -- | -- | -- | -- | -- |"
+    )
+    for name, at in out["yard_at"].items():
+        a = at.get(8, {})
+        print(f"| {name} | {_fmt(a.get('p25'))} | {_fmt(at.get(16, {}).get('p25'))} | "
+              f"{_fmt(a.get('p50'))} | {_fmt(a.get('G'))} |")  # fmt: skip
+    for kind in ("seeds", "steps"):
+        for name, r in out[kind].items():
+            print(f"- {kind} {name}: Δ̄₁ の比 {_iv(r['mean1'])} → {r['mean1_cls']}"
+                  f"（Δ̄ の比 {_iv(r['mean'])} → {r['mean_cls']}）")  # fmt: skip
     for label, m in out["models"].items():
         for place in ("own", "h_mean"):
             if place not in m:
@@ -638,6 +661,64 @@ def apply_stage(width: Path, geom: Path, runs: Path, wconf: WidthConf, g: GeomCo
                       f"{r['mean1_cls']}（Δ̄ の比 {_iv(r['mean'])} → "
                       f"{r['mean_cls']}）{note}")  # fmt: skip
     return out
+
+
+def model_pairs(labels: Collection[str]) -> dict[str, list[tuple[str, str]]]:
+    """The models' paired comparisons beside the yardsticks (a description):
+    each run's seed 0 against its seed 1 at the same step (``seeds``) and
+    each run's step 60000 against its 6000 (``steps``), where both are."""
+    have = set(labels)
+    seeds = [(a, a.replace("-s0@", "-s1@")) for a in sorted(have)
+             if "-s0@" in a and a.replace("-s0@", "-s1@") in have]  # fmt: skip
+    steps = [(a, a.removesuffix("@60000") + "@6000") for a in sorted(have)
+             if a.endswith("@60000") and a.removesuffix("@60000") + "@6000" in have]  # fmt: skip
+    return {"seeds": seeds, "steps": steps}
+
+
+AT_LAGS = (8, 16)  # 0.8 s and 1.6 s: the main range's first lags
+
+
+def at_lags(ls: LinSums, lags: Sequence[int] = AT_LAGS) -> dict[int, dict[str, float]]:
+    r"""$p_{1/4}$, $p_{1/2}$ and the pooled $G$ of ``ls`` at each of ``lags``
+    that it has (a description beside the widths)."""
+    out: dict[int, dict[str, float]] = {}
+    p25, p50, gg = ls.p("25"), ls.p("50"), ls.g()
+    for lag in lags:
+        at = (ls.lags == lag).nonzero()
+        if len(at):
+            i = int(at[0])
+            out[lag] = {"p25": float(p25[i]), "p50": float(p50[i]), "G": float(gg[i])}
+    return out
+
+
+def _span_text(span: Mapping[str, Any] | None) -> str:
+    return "無い" if span is None else _iv((span["lo"], span["hi"]))
+
+
+def _print_models(models: Mapping[str, Any]) -> None:
+    r"""Each model's widths of each place: of the bound 1/4 the main
+    $\bar\Delta_1$ (its interval), $\Delta_{\mathrm{typ}}$, $\bar\Delta$ (its
+    interval), the pooled crossing and $p$'s first windows of the bounds 1/4
+    and 1/2, the whole grid's first window of $p_{1/4}$ (below 0.8 s too),
+    ``at_lags`` and $N_{\mathrm{lin}}$."""
+    print("| 符号 | Δ̄₁ | 区間 | Δ_typ | Δ̄ | 区間 | 窓 1/4 | 窓 1/2 | プール 1/4 "
+          "| プール 1/2 | 全格子の窓 1/4 | p₁/₄(0.8) | p₁/₄(1.6) | p₁/₂(0.8) "
+          "| G(0.8) | N_lin |")  # fmt: skip
+    print("|" + " -- |" * 16)
+    for label, m in models.items():
+        for place in ("own", "h_mean"):
+            if place not in m:
+                continue
+            s, at = m[place]["summary"], m[place]["at"].get(8, {})
+            a16 = m[place]["at"].get(16, {})
+            p, h, d = s["point"]["25"], s["point"]["50"], s["draws"]["25"]
+            print(f"| {label}/{place} | {_fmt(p['mean1'])} | {_iv(d['mean1'])} | "
+                  f"{_fmt(p['typ'])} | {_fmt(p['mean'])} | {_iv(d['mean'])} | "
+                  f"{_span_text(p['p']['first'])} | {_span_text(h['p']['first'])} | "
+                  f"{_span_text(p['G']['first'])} | {_span_text(h['G']['first'])} | "
+                  f"{_span_text(p['whole_p']['first'])} | {_fmt(at.get('p25'))} | "
+                  f"{_fmt(a16.get('p25'))} | {_fmt(at.get('p50'))} | "
+                  f"{_fmt(at.get('G'))} | {s.get('n_lin', '—')} |")  # fmt: skip
 
 
 def _lean(x: Any) -> Any:

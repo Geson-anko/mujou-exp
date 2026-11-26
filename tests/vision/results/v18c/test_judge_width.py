@@ -16,7 +16,8 @@ lag) and a missing row an error; $\sigma_{\mathrm{dec}}$ of hand-made
 seeds, of $c - f$ and of $e - f$; V-h2's families (a claimable strength of
 no guard lag out of range); the notes of the guard on a wording; the main
 whitening's rows alone among the yard's (whose sensitivity has a whitening
-of the same $k$ and reference); the checks counted by hand.
+of the same $k$ and reference); the checks counted by hand; the models'
+seed and step pairs and the values at a lag by hand.
 """
 
 import math
@@ -30,10 +31,12 @@ from exp.vision.geom_eval import GeomConf
 from exp.vision.results.v18c.judge_width import (
     NO_WINDOW,
     _sums,
+    at_lags,
     cheat_pass,
     checks_stage,
     guard_note,
     guard_verdict,
+    model_pairs,
     pair_ratio,
     sigma_dec,
 )
@@ -264,3 +267,25 @@ class TestChecks:
         got = checks_stage(rows)
         assert got["checks"] == {"V-h0a": {"pass": 1, "fail": 1}}
         assert len(got["failures"]) == 1 and len(got["records"]) == 1
+
+
+class TestModelPairs:
+    def test_by_hand(self):
+        labels = ["a-s0@6000", "a-s1@6000", "a-s0@60000", "a-s1@60000",
+                  "b-s0@60000", "v16", "c-s1@6000", "c-s1@60000"]  # fmt: skip
+        got = model_pairs(labels)
+        assert got["seeds"] == [("a-s0@6000", "a-s1@6000"),
+                                ("a-s0@60000", "a-s1@60000")]  # fmt: skip
+        assert got["steps"] == [("a-s0@60000", "a-s0@6000"),
+                                ("a-s1@60000", "a-s1@6000"),
+                                ("c-s1@60000", "c-s1@6000")]  # fmt: skip
+
+
+class TestAtLags:
+    def test_by_hand(self):
+        ls = sums_of([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2])
+        got = at_lags(ls, (2, 5, 9))
+        assert set(got) == {2, 5}  # no lag 9
+        assert got[2]["p25"] == pytest.approx(0.8)
+        assert got[5]["p50"] == pytest.approx(0.5)
+        assert got[5]["G"] == pytest.approx(0.3)
