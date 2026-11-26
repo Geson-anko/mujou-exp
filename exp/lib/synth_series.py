@@ -37,6 +37,26 @@ CPU ``torch.Generator``) draws everything, column by column in order:
   of a time constant $\tau$ in the limit of many steps, $G < 1/4$ for $n <
   1.1514\,\tau$ (the root of $u - 2 + 3e^{-u} - e^{-2u} = 0$) and $G < 1/2$
   at every lag
+
+The direct prediction's checks (``exp.lib.dynpred``; ``plans/dyn.md``) add
+processes of known autocovariance $\Gamma(\ell) = E[x_{t+\ell} x_t^\top]$
+``(d, d)``:
+
+- ``block_rotation``: in each block $b$ of rows, $d/2$ planes turning at
+  $\omega_b = 2\pi$ / ``periods[b % J]`` (times ``radii[b % K]`` with
+  ``radii``), of amplitude $\sqrt2\,\rho_b / \bar\rho$ ($\bar\rho^2$ the
+  mean of the radii's squares; 1 without), the phases drawn anew in each
+  block; mixed over its blocks of weights $\pi$, $\Gamma(\ell) = \sum_b
+  \pi_b (\rho_b / \bar\rho)^2 R(\omega_b \ell)$ in every plane
+  (``rotation_gamma``; $R(\theta)$ the plane's rotation by $\theta$)
+- ``complex_ou``: in every plane the exact discretization of $\dot w =
+  (-\lambda + \omega J) w$ + noise, $w_{t+1} = e^{-\lambda} R(\omega) w_t +
+  \sqrt{1 - e^{-2\lambda}}\,\varepsilon_t$ from its stationary law:
+  $\Gamma(\ell) = e^{-\lambda \ell} R(\omega \ell)$ (``complex_ou_gamma``)
+- ``box_mean``: the mean of the last ``width`` rows, $y_t = \frac1W
+  \sum_{i=0}^{W-1} x_{t-i}$; of an AR(1) of coefficient $r$, $\gamma_y(\ell)
+  = \frac1{W^2} \sum_{i,j=0}^{W-1} r^{\lvert \ell + i - j \rvert}$ exactly
+  (``box_ar1_acf``, a finite sum)
 """
 
 import math
@@ -45,8 +65,13 @@ import torch
 from torch import Tensor
 
 __all__ = [
+    "block_rotation",
+    "box_ar1_acf",
+    "box_mean",
     "chained_rotation",
     "chebyshev",
+    "complex_ou",
+    "complex_ou_gamma",
     "gauss_kernel",
     "kernel_acf",
     "ou",
@@ -54,6 +79,7 @@ __all__ = [
     "ou_integral_d",
     "random_walk",
     "rotation",
+    "rotation_gamma",
     "smooth",
     "spectral",
     "white",
@@ -188,3 +214,111 @@ def ou_integral_d(lag: float, r: float) -> float:
     mean squared increment of ``ou_integral`` per column at the lag $n$
     (module docstring; $n$ may be real: the same formula, continued)."""
     return lag * (1 + r) / (1 - r) - 2 * r * (1 - r**lag) / (1 - r) ** 2
+
+
+def block_rotation(
+    blocks: Tensor,
+    d: int,
+    periods: tuple[float, ...],
+    gen: torch.Generator,
+    radii: tuple[float, ...] | None = None,
+) -> Tensor:
+    r"""``(n, d)`` (``d`` even): the rows of each block $b$ of ``blocks``
+    ``(n,)`` (each block's rows consecutive, numbered from 0 in order) turn
+    in the planes of the columns $2j$, $2j + 1$ at $\omega_b \rho_b$,
+    $\omega_b = 2\pi$ / ``periods[b % J]``, $\rho_b$ = ``radii[b % K]``
+    (1 without), of amplitude $\sqrt2 \rho_b / \bar\rho$ (module
+    docstring): $\sqrt2 \tfrac{\rho_b}{\bar\rho} (\cos, \sin)(\omega_b
+    \rho_b t + \phi_{bj})$ of the row $t$, the phases uniform, drawn by
+    ``gen`` block by block (``chained_rotation``'s draws, in one pass)."""
+    if d % 2:
+        raise ValueError(f"a rotation needs an even d, not {d}")
+    rs = (1.0,) if radii is None else radii
+    norm = math.sqrt(sum(r * r for r in rs) / len(rs))
+    out = torch.empty(len(blocks), d, dtype=_F64)
+    edges = torch.cat([torch.tensor([0]), (blocks[1:] != blocks[:-1]).nonzero().flatten() + 1,
+                       torch.tensor([len(blocks)])]).tolist()  # fmt: skip
+    for lo, hi in zip(edges[:-1], edges[1:], strict=True):
+        b = int(blocks[lo])
+        rho = rs[b % len(rs)]
+        phi = 2 * math.pi * torch.rand(d // 2, generator=gen, dtype=_F64)
+        t = torch.arange(lo, hi, dtype=_F64)[:, None]
+        theta = t * (2 * math.pi / periods[b % len(periods)] * rho) + phi
+        amp = math.sqrt(2) * rho / norm
+        out[lo:hi, 0::2], out[lo:hi, 1::2] = amp * theta.cos(), amp * theta.sin()
+    return out
+
+
+def _plane(theta: float) -> Tensor:
+    c, s = math.cos(theta), math.sin(theta)
+    return torch.tensor([[c, -s], [s, c]], dtype=_F64)
+
+
+def rotation_gamma(
+    lag: int,
+    d: int,
+    omegas: Tensor,
+    weights: Tensor,
+    gains: Tensor | None = None,
+) -> Tensor:
+    r"""$\Gamma(\ell) = \sum_j \pi_j g_j R(\omega_j \ell)$ ``(d, d)`` in
+    every plane of the columns $2j$, $2j + 1$ (block diagonal) of the angular
+    ``omegas`` ``(J,)`` (per step), their ``weights`` $\pi$ ``(J,)`` and
+    ``gains`` $g$ ``(J,)`` (the squared amplitudes over 2; 1 without):
+    ``block_rotation``'s mixed over its blocks."""
+    g = torch.ones(len(omegas), dtype=_F64) if gains is None else gains.to(_F64)
+    plane = torch.zeros(2, 2, dtype=_F64)
+    for om, w, gj in zip(omegas.tolist(), weights.tolist(), g.tolist(), strict=True):
+        plane += w * gj * _plane(om * lag)
+    return torch.block_diag(*[plane] * (d // 2))
+
+
+def complex_ou(
+    n: int, d: int, lam: float, period: float, gen: torch.Generator
+) -> Tensor:
+    r"""``(n, d)`` (``d`` even): in every plane $w_{t+1} = e^{-\lambda}
+    R(\omega) w_t + \sqrt{1 - e^{-2\lambda}}\,\varepsilon_t$ (``lam``
+    $\lambda$ per step, $\omega = 2\pi$ / ``period``) from $w_0 \sim N(0,
+    I)$, each column of unit variance (module docstring)."""
+    if d % 2:
+        raise ValueError(f"a rotation needs an even d, not {d}")
+    e = white(n, d, gen)
+    z = torch.complex(e[:, 0::2], e[:, 1::2])  # (n, d / 2)
+    step = complex(math.exp(-lam) * math.cos(2 * math.pi / period),
+                   math.exp(-lam) * math.sin(2 * math.pi / period))  # fmt: skip
+    c = math.sqrt(1 - math.exp(-2 * lam))
+    x = torch.empty_like(z)
+    x[0] = z[0]
+    for t in range(1, n):
+        x[t] = step * x[t - 1] + c * z[t]
+    out = torch.empty(n, d, dtype=_F64)
+    out[:, 0::2], out[:, 1::2] = x.real, x.imag
+    return out
+
+
+def complex_ou_gamma(lag: int, d: int, lam: float, period: float) -> Tensor:
+    r"""$\Gamma(\ell) = e^{-\lambda \lvert \ell \rvert} R(\omega \ell)$
+    ``(d, d)`` of ``complex_ou`` ($\Gamma(-\ell) = \Gamma(\ell)^\top$)."""
+    plane = math.exp(-lam * abs(lag)) * _plane(2 * math.pi / period * lag)
+    return torch.block_diag(*[plane] * (d // 2))
+
+
+def box_mean(x: Tensor, width: int) -> Tensor:
+    r"""``(n - W + 1, d)``: $y_t = \frac1W \sum_{i=0}^{W-1} x_{t+W-1-i}$, the
+    mean of each ``width`` consecutive rows of ``x`` ``(n, d)`` (the row
+    $t$ of the output ends at the row $t + W - 1$ of ``x``)."""
+    cs = torch.cat([x.new_zeros(1, x.shape[1]), x.cumsum(0)])
+    return (cs[width:] - cs[:-width]) / width
+
+
+def box_ar1_acf(r: float, width: int, lags: Tensor) -> Tensor:
+    r"""$\gamma_y(\ell) = \frac1{W^2} \sum_{i,j=0}^{W-1} r^{\lvert \ell +
+    i - j \rvert}$ ``(L,)`` float64 at the integer ``lags`` of ``box_mean``
+    of a unit-variance AR(1) of coefficient ``r`` (a finite sum: of the
+    $W^2$ terms, $W - \lvert m \rvert$ have $i - j = m$)."""
+    m = torch.arange(-(width - 1), width, dtype=_F64)
+    count = width - m.abs()
+    out = torch.empty(len(lags), dtype=_F64)
+    for i, lag in enumerate(lags.tolist()):
+        out[i] = (count * r ** (lag + m).abs()).sum() / width**2
+    return out

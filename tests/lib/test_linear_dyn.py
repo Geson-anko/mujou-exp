@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from exp.lib.linear_dyn import errors, fit, rollout, select_alpha
+from exp.lib.linear_dyn import errors, fit, fit_scales, rollout, select_alpha
 
 
 def _system(seed: int = 0, d: int = 4, n: int = 50, h: int = 6):
@@ -150,3 +150,19 @@ def test_float64_inputs_are_left_as_they_were():
     select_alpha(z0, z1, zs)
     errors(*fit(z0, z1, alpha=0.1), zs, [1], train=z0)
     assert torch.equal(z0, before[0]) and torch.equal(z1, before[1])
+
+
+class TestFitScales:
+    def test_each_scale_is_fit_at_its_alpha(self):
+        g = torch.Generator().manual_seed(3)
+        z0 = torch.randn(60, 5, generator=g, dtype=torch.float64)
+        z1 = torch.randn(60, 5, generator=g, dtype=torch.float64)
+        c00 = (z0 - z0.mean(0)).T @ (z0 - z0.mean(0))
+        unit = float(c00.trace()) / 5
+        for c, (alpha, a, b) in zip(
+            (1e-3, 1.0), fit_scales(z0, z1, (1e-3, 1.0)), strict=True
+        ):
+            assert alpha == pytest.approx(c * unit, rel=1e-14)
+            a_ref, b_ref = fit(z0, z1, alpha=alpha)
+            torch.testing.assert_close(a, a_ref, rtol=0, atol=1e-13)
+            torch.testing.assert_close(b, b_ref, rtol=0, atol=1e-13)

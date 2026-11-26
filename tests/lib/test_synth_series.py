@@ -21,8 +21,13 @@ import torch
 
 from exp.lib.midpoint import triple_terms
 from exp.lib.synth_series import (
+    block_rotation,
+    box_ar1_acf,
+    box_mean,
     chained_rotation,
     chebyshev,
+    complex_ou,
+    complex_ou_gamma,
     gauss_kernel,
     kernel_acf,
     ou,
@@ -30,6 +35,7 @@ from exp.lib.synth_series import (
     ou_integral_d,
     random_walk,
     rotation,
+    rotation_gamma,
     smooth,
     spectral,
 )
@@ -150,3 +156,67 @@ class TestOUIntegral:
     def test_d_by_hand(self):
         r = 0.5  # D(2) = 2 + 2 r for unit variance: Var(v1 + v2)
         assert ou_integral_d(2, r) == pytest.approx(2 + 2 * r, rel=1e-12)
+
+
+class TestDynProcesses:
+    """The processes of ``plans/dyn.md``'s V-p1 against their autocovariances."""
+
+    def test_block_rotation_of_one_period_is_the_chained_rotation(self):
+        blocks = torch.arange(3000) // 700
+        a = block_rotation(blocks, 6, (37.3, 81.1), torch.Generator().manual_seed(4))
+        b = chained_rotation(blocks, 6, (37.3, 81.1), torch.Generator().manual_seed(4))
+        assert torch.equal(a, b)
+
+    def test_block_rotation_of_radii_is_the_mixed_gamma(self):
+        # every block of one realization: a phase-averaged plane has
+        # E[x_{t+l} x_t^T] = (rho / rho_bar)^2 R(omega rho l) exactly, so the
+        # products over many blocks average to rotation_gamma at the weights
+        radii, period, lag = (0.6, 1.0, 1.4), 50.0, 7
+        blocks = torch.arange(300 * 64) // 64
+        x = block_rotation(
+            blocks, 2, (period,), torch.Generator().manual_seed(5), radii
+        )
+        within = (blocks[lag:] == blocks[:-lag]).nonzero().flatten()
+        prod = x[within + lag, :, None] * x[within, None, :]  # (P, 2, 2)
+        kinds = blocks[within] % 3
+        bar2 = sum(r * r for r in radii) / 3
+        for kind in range(3):
+            rho = radii[kind]
+            want = rotation_gamma(lag, 2, torch.tensor([2 * math.pi / period * rho]),
+                                  torch.ones(1), torch.tensor([rho * rho / bar2]))  # fmt: skip
+            got = prod[kinds == kind]
+            se = got.std(0) / math.sqrt(100)  # one phase per block
+            assert ((got.mean(0) - want).abs() <= T_MAX * se + 1e-12).all()
+
+    @pytest.mark.parametrize("lag", [0, 1, 5, 20])
+    def test_complex_ou_autocovariance(self, lag):
+        lam, period = 0.05, 23.0
+        x = complex_ou(40000, 32, lam, period, torch.Generator().manual_seed(6))
+        want = complex_ou_gamma(lag, 2, lam, period)
+        p = (
+            x[lag:].reshape(-1, 16, 2)[:, :, :, None]
+            * x[: len(x) - lag].reshape(-1, 16, 2)[:, :, None, :]
+        )
+        per_plane = p.mean(0)  # (16, 2, 2): independent planes
+        t = (per_plane.mean(0) - want) / (per_plane.std(0) / 4)
+        assert (t.abs() < T_MAX).all()
+
+    def test_box_ar1_acf_is_the_double_sum(self):
+        r, w = 0.9, 5
+        for lag in (0, 1, 3, 7):
+            want = sum(r ** abs(lag + i - j) for i in range(w) for j in range(w)) / w**2
+            got = float(box_ar1_acf(r, w, torch.tensor([lag]))[0])
+            assert got == pytest.approx(want, rel=1e-14)
+
+    @pytest.mark.parametrize("lag", [0, 2, 6])
+    def test_box_mean_of_ou_follows_box_ar1_acf(self, lag):
+        r, w = 0.8, 4
+        y = box_mean(ou(20000, 64, r, torch.Generator().manual_seed(7)), w)
+        assert len(y) == 20000 - w + 1
+        want = float(box_ar1_acf(r, w, torch.tensor([lag]))[0])
+        assert abs(products_t(y, lag, want)) < T_MAX
+
+    def test_box_mean_by_hand(self):
+        x = torch.arange(6, dtype=torch.float64)[:, None]
+        torch.testing.assert_close(box_mean(x, 3)[:, 0],
+                                   torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64))  # fmt: skip

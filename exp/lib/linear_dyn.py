@@ -29,7 +29,7 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor
 
-__all__ = ["ALPHA_SCALES", "errors", "fit", "rollout", "select_alpha"]
+__all__ = ["ALPHA_SCALES", "errors", "fit", "fit_scales", "rollout", "select_alpha"]
 
 # The ridge alpha = c tr(C00) / D, for c in 1e-8 .. 1e0.
 ALPHA_SCALES = tuple(10.0**e for e in range(-8, 1))
@@ -46,6 +46,22 @@ def fit(z0: Tensor, z1: Tensor, *, alpha: float) -> tuple[Tensor, Tensor]:
     return a, m1 - a @ m0
 
 
+def fit_scales(
+    z0: Tensor, z1: Tensor, scales: Sequence[float] = ALPHA_SCALES
+) -> list[tuple[float, Tensor, Tensor]]:
+    r"""``fit`` at each $\alpha = c\,\mathrm{tr}(C_{00}) / D_0$, $c$ of
+    ``scales`` (``select_alpha``'s grid): ``(alpha, A, b)`` in order, of one
+    pass over the pairs' moments. The pairs may differ in width: ``z0``
+    ``(n, D0)`` -> ``z1`` ``(n, D1)``, $A$ ``(D1, D0)``."""
+    m0, m1, c00, c01 = _moments(z0, z1)
+    unit = float(c00.trace()) / z0.shape[1]  # tr(C00) / D
+    out = []
+    for c in scales:
+        a = _solve(c00, c01, c * unit)
+        out.append((c * unit, a, m1 - a @ m0))
+    return out
+
+
 def _moments(z0: Tensor, z1: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """$\\bar z^0$, $\\bar z^1$, $C_{00}$ and $C_{01} = C_{10}^\\top$ (float64)
     of the pairs, summed over ``_CHUNK`` rows at a time (no float64 copy of
@@ -54,7 +70,7 @@ def _moments(z0: Tensor, z1: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     m0 = z0.sum(0, dtype=torch.float64) / n
     m1 = z1.sum(0, dtype=torch.float64) / n
     c00 = z0.new_zeros(d, d, dtype=torch.float64)
-    c01 = torch.zeros_like(c00)
+    c01 = z0.new_zeros(d, z1.shape[1], dtype=torch.float64)  # D0 x D1
     for i in range(0, n, _CHUNK):
         x = z0[i : i + _CHUNK].double() - m0
         c00.addmm_(x.T, x)
