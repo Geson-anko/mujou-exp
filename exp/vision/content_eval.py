@@ -106,6 +106,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from exp.lib import ckpt
 from exp.lib.fidelity import (
     ContentSums,
     MLPConf,
@@ -153,11 +154,13 @@ from exp.vision.geom_eval import (  # the geom job's own helpers, reused as they
     _feature_code,
     _first_vae,
     _init_of,
+    _jepa_of,
     _mean8,
     _start,
     _write,
     encode_places,
 )
+from exp.vision.jepa_diag import run_ckpts
 from exp.vision.jepa_eval import PCA_SEED, ColorCode, PCACode, vae_at
 from exp.vision.models import VAEModules
 from exp.vision.results.v18c.judge_width import pair_ratio
@@ -226,6 +229,7 @@ __all__ = [
     "front_of",
     "interval_codes",
     "main",
+    "model_source",
     "merge_checks",
     "merge_checks3",
     "merge_checks3_into",
@@ -480,6 +484,62 @@ def _yard_white(
     return WhiteCode(
         places, "own", Whitener.fit(z_ref, guard.k, c_eps=gconf.c_eps), pre
     )
+
+
+# a JEPA run and its step, or a VAE checkpoint (step None)
+type ModelSource = tuple[Path, int | None]
+
+
+def _model_white(
+    source: ModelSource,
+    conf: Any,
+    ref: Tensor,
+    guard: GuardConf,
+    gconf: GeomConf,
+    dev: torch.device,
+) -> WhiteCode:
+    r"""A learned code whitened by the reference as the width read it
+    (``width_eval.evaluate_run``'s own place, ``zpca`` of the run's seed;
+    ``evaluate_vae``'s $\mu$): a JEPA run's checkpoint of the step, or a VAE
+    checkpoint (step None); ``_yard_white``'s ``init*`` with any step.
+
+    Raises:
+        ValueError: The run has no checkpoint of the step.
+    """
+    path, step = source
+    pre = None
+    if step is None:
+        vae = vae_at(path, conf.device)
+        assert isinstance(vae, VAEModules)
+        places: Places = VaeTokenCode(vae).places
+    else:
+        ckpts = run_ckpts(path)
+        if step not in ckpts:
+            raise ValueError(
+                f"{path} has no checkpoint of step {step} (of {list(ckpts)})"
+            )
+        mods, own = _jepa_of(path, conf.device)
+        ckpt.load_eval(ckpts[step], mods.modules())
+        places = JepaPlaces(mods).places
+        if own == "zpca":
+            z = encode_places(places, lambda idx: ref[idx], len(ref), dev)["own"]
+            pre = _zpca_map(z, _conf_of(path, None).seed, gconf.pca_dim)
+    z_ref = encode_places(places, lambda idx: ref[idx], len(ref), dev)["own"]
+    if pre is not None:
+        z_ref = pre(z_ref)
+    return WhiteCode(
+        places, "own", Whitener.fit(z_ref, guard.k, c_eps=gconf.c_eps), pre
+    )
+
+
+def model_source(text: str) -> tuple[str, ModelSource]:
+    """``NAME=RUN@STEP`` (a JEPA run's checkpoint) or ``NAME=CKPT`` (a VAE
+    checkpoint) of the command line."""
+    name, _, rest = text.partition("=")
+    path, at, step = rest.partition("@")
+    if not name or not path:
+        raise ValueError(f"a model is NAME=RUN@STEP or NAME=CKPT, not {text!r}")
+    return name, (Path(path), int(step) if at else None)
 
 
 def content_names(guard: GuardConf) -> tuple[str, ...]:
@@ -2136,6 +2196,7 @@ def evaluate_content3(
     codes: Collection[str] | None = None,
     inits: Mapping[str, Path] | None = None,
     init_v16: Path | None = None,
+    models: Mapping[str, ModelSource] | None = None,
     root: Path | None = None,
     guard: GuardConf = GuardConf(),
     cconf: ContentConf3 = ContentConf3(),
@@ -2148,17 +2209,27 @@ def evaluate_content3(
     """V-h5b's rows (``select_rows``; the codes of ``content_names``, None
     all) into ``out / <code> / content3.json`` and the runs' starts into
     ``out / intervals.json`` (the manifest), each file the same to the byte
-    whichever codes run beside. Returns ``out``.
+    whichever codes run beside. ``models`` adds learned codes by name
+    (``_model_white``; a record of v3 on the width's codes), run beside
+    ``codes`` (with ``models``, ``codes`` None is none of ``content_names``).
+    Returns ``out``.
 
     Raises:
-        ValueError: A code is unknown, a yardstick's run is not given, or the
-            guard's ``k`` is not the width's.
+        ValueError: A code is unknown or a model's name is one of
+            ``content_names``, a yardstick's run is not given, or the guard's
+            ``k`` is not the width's.
     """
     known = content_names(guard)
+    models = dict(models or {})
+    if codes is None and models:
+        codes = ()
     todo = known if codes is None else tuple(c for c in known if c in codes)
     bad = [c for c in codes or () if c not in known]
     if bad:
         raise ValueError(f"no codes {bad} (of {list(known)})")
+    clash = [m for m in models if m in known]
+    if clash:
+        raise ValueError(f"the models {clash} are named as codes")
     inits = dict(inits or {})
     missing = [n for n in todo if (n in YARD_INITS and n not in inits)
                or (n == "init_v16" and init_v16 is None)]  # fmt: skip
@@ -2174,6 +2245,9 @@ def evaluate_content3(
     pca = _yard_code("pca", conf, ref, None, guard, gconf, dev)
     yard = {n: _yard_white(n, conf, ref, inits, init_v16, guard, gconf, dev)
             for n in todo if n in YARD}  # fmt: skip
+    yard |= {
+        n: _model_white(src, conf, ref, guard, gconf, dev) for n, src in models.items()
+    }
     mus = {"pca": pca.mu} | {n: c.mu for n, c in yard.items()}
     train, frames, starts = interval_codes(conf, root, guard, mus, dev)
     rec, r_frames, r_starts = interval_codes(
@@ -2204,7 +2278,7 @@ def evaluate_content3(
     fns = dict(cheat_codes(w_eval, s, guard))
     q = orthogonal(guard.k, cconf.rot_seed)
     fns["rot"] = lambda x: x @ q
-    for name in todo:
+    for name in (*todo, *models):
         if name in fns:
             x_eval = fns[name](w_eval)
             runs = {k: fns[name](v["pca"]) for k, v in xs.items()}
@@ -2275,6 +2349,8 @@ def main(argv: Sequence[str] | None = None) -> Path:
     real3.add_argument("--root", type=Path, default=None)
     for name in (*YARD_INITS, "init_v16"):
         real3.add_argument(f"--{name.replace('_', '-')}", type=Path, default=None)
+    real3.add_argument("--model", action="append", default=[], type=model_source,
+                       help="NAME=RUN@STEP or NAME=VAE_CKPT, repeated")  # fmt: skip
     acf = sub.add_parser("obs-acf")
     acf.add_argument("--config", type=Path, required=True)
     acf.add_argument("--out", type=Path, required=True)
@@ -2298,7 +2374,8 @@ def main(argv: Sequence[str] | None = None) -> Path:
     inits = {n: getattr(a, n) for n in YARD_INITS if getattr(a, n) is not None}
     if a.job == "real3":
         return evaluate_content3(conf, a.sets, a.out, codes=a.codes, inits=inits,
-                                 init_v16=a.init_v16, root=a.root)  # fmt: skip
+                                 init_v16=a.init_v16, models=dict(a.model),
+                                 root=a.root)  # fmt: skip
     return evaluate_content(conf, a.sets, a.out, codes=a.codes, inits=inits,
                             init_v16=a.init_v16, root=a.root, local=a.local,
                             inception=a.inception)  # fmt: skip

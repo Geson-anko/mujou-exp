@@ -57,11 +57,24 @@ cheats' widths ``<width>/guard/cheat/<name>/width.json`` and the yard's
   scores, the gap to the runner-up of another kind and its SE, $E$ and
   $E^d$ of each readout on each set, the extrapolation in the observation
 
+``--stage models3`` (a record of v3 on the width's learned codes; README,
+「線形の幅の結果（探索、ガード v3 つき、2026-11-26）」; v3 stopped at
+V-h5a1, so none of it is a verdict) reads
+``<width>/content3m/<label>/content3.json`` (``content_eval real3
+--model``; the labels of ``judge_geom.MODELS`` and ``VAES``) beside
+``<width>/content3``: of each model its choices, $E$ and $E^d$ of each
+readout on each set, ``content_eval.pair3`` against ``base`` (``pca``) and
+against its own step 0's yardstick (``judge_geom._init_of``, from
+``<geom>/yard/vd.json``) with V-h5b's $\sigma_{\mathrm{rot}}$, and V-h5b4's
+non-inferiority to the least squares on the record's runs.
+
 Prints markdown; ``--json`` also writes the numbers::
 
     uv run python -m exp.vision.results.v18c.judge_content --stage checks|real \
         [--width runs/v18c-width] [--json out.json]
     uv run python -m exp.vision.results.v18c.judge_content --stage checks3|real3 ..
+    uv run python -m exp.vision.results.v18c.judge_content --stage models3 \
+        [--width runs/v18c-width] [--geom runs/v18c-tlin]
 """
 
 import argparse
@@ -95,6 +108,13 @@ from exp.vision.content_eval import (
     sums3,
 )
 from exp.vision.geom_eval import GeomConf
+from exp.vision.results.v18c.judge_geom import (
+    MODELS,
+    VAES,
+    _init_of,
+    _label,
+    step0_inits,
+)
 from exp.vision.results.v18c.judge_width import DELTA, _main, pair_ratio
 from exp.vision.width_eval import WidthConf, counts_of, lin_sums, point
 
@@ -463,12 +483,83 @@ def _print3(out: Mapping[str, Any]) -> None:
               f"非劣でない符号 {bad}")  # fmt: skip
 
 
+def models3_stage(width: Path, geom: Path, g: GeomConf) -> dict[str, Any]:
+    """v3 on the learned codes, a record (module docstring)."""
+    yard = {p.parent.name: _load(p)
+            for p in sorted((width / "content3").glob("*/content3.json"))}  # fmt: skip
+    step0 = step0_inits(_load(geom / "yard" / "vd.json"))
+    meta: dict[str, dict[str, Any]] = {n: {"family": "vae", "step": None, "run": n}
+                                       for n in VAES}  # fmt: skip
+    for run, family, steps in MODELS:
+        for step in steps:
+            meta[_label(run, step)] = {"family": family, "step": step,
+                                       "run": run.rsplit("/", 1)[-1]}  # fmt: skip
+    base = sums3(yard[BASE])
+    nb = len(base.tot)
+    counts = (counts_of(nb, g), counts_of(nb // 2, g))
+    rot = sums3(yard["rot"])
+    sig = (contrast_seed_sd(rot, base, PSI_STAR),
+           contrast_seed_sd(rot, base, PSI_STAR, change=True))  # fmt: skip
+    lin_b = sums3(yard[BASE], "lin", "record")
+    margins = [(1 - 2**-PSI_STAR) * lin_b.value(ch) for ch in (False, True)]
+    rec = block_counts(len(lin_b.tot), NI_DRAWS, torch.Generator().manual_seed(NI_SEED))
+    out: dict[str, Any] = {"note": "探索の記述（v3 は V-h5a1 で止まった）",
+                           "sigma_rot": list(sig), "margins": margins, "models": {}}  # fmt: skip
+    for label, m in meta.items():
+        path = width / "content3m" / label / "content3.json"
+        if not path.exists():
+            continue
+        rows = _load(path)
+        s = sums3(rows)
+        init = _init_of(m, step0)
+        vals = {f"{r['readout']}/{r['set']}": {"E": (v := ContentSums.of_row(r)).value(),
+                                               "Ed": v.value(True)}
+                for r in rows if r["part"] == "sums"}  # fmt: skip
+        pairs = {"pca": pair3(s, base, *counts, sig, PSI_STAR)}
+        if init is not None and init in yard:
+            pairs[init] = pair3(s, sums3(yard[init]), *counts, sig, PSI_STAR)
+        ni = [noninferior(sums3(rows, "sel", "record"), sums3(rows, "lin", "record"), mg,
+                          rec, change=ch) for mg, ch in zip(margins, (False, True), strict=True)]  # fmt: skip
+        out["models"][label] = m | {
+            "init": init, "chosen": chosen3(rows), "values": vals, "pairs": pairs,
+            "comparable": [comparable(s, *counts, change=ch) for ch in (False, True)],
+            "noninferior": ni}  # fmt: skip
+    _print_models3(out)
+    return out
+
+
+def _print_models3(out: Mapping[str, Any]) -> None:
+    s, sd = out["sigma_rot"]
+    print(f"σ_rot(D) = {_fmt(s)}, σ_rot(D^d) = {_fmt(sd)}\n")
+    print("| 符号 | 水準 | 変化 | E | E^d | E_lin | E^d_lin | E（訓練） | E（検証） | "
+          "D 対 pca | D^d 対 pca | 学習前 | D 対 学習前 | D^d 対 学習前 | 非劣 |\n"
+          "| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |")  # fmt: skip
+    for label, m in out["models"].items():
+        v = m["values"]
+
+        def f(key: str, q: str = "E") -> str:
+            return _fmt(v[key][q]) if key in v else "—"
+
+        p = m["pairs"]["pca"]
+        q = m["pairs"].get(m["init"]) if m["init"] else None
+        iv = f"{_iv(q['D'])} | {_iv(q['Dd'])}" if q else "— | —"
+        ni = "".join("○" if x["ok"] else "×" for x in m["noninferior"])
+        ch = m["chosen"]
+        print(f"| {label} | {ch.get('level')} | {ch.get('change')} | {f('sel/eval')} | "
+              f"{f('sel/eval', 'Ed')} | {f('lin/eval')} | {f('lin/eval', 'Ed')} | "
+              f"{f('sel/train')} | {f('sel/val')} | {_iv(p['D'])} | {_iv(p['Dd'])} | "
+              f"{m['init'] or '—'} | {iv} | {ni} |")  # fmt: skip
+
+
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument(
-        "--stage", choices=("checks", "real", "checks3", "real3"), required=True
+        "--stage",
+        choices=("checks", "real", "checks3", "real3", "models3"),
+        required=True,
     )
     p.add_argument("--width", type=Path, default=Path("runs/v18c-width"))
+    p.add_argument("--geom", type=Path, default=Path("runs/v18c-tlin"))
     p.add_argument("--json", type=Path, default=None)
     a = p.parse_args(argv)
     if a.stage == "checks":
@@ -479,6 +570,8 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
     elif a.stage == "real3":
         out = real3_stage(a.width, WidthConf(), GeomConf())
+    elif a.stage == "models3":
+        out = models3_stage(a.width, a.geom, GeomConf())
     else:
         out = real_stage(a.width, WidthConf(), GeomConf())
     if a.json is not None:

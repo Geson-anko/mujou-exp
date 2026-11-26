@@ -43,11 +43,14 @@ code alone the same file and manifest), read by the judge.
 import json
 import math
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
+import yaml
 
+from exp.lib import ckpt
 from exp.lib.fidelity import (
     ContentSums,
     MLPConf,
@@ -60,6 +63,7 @@ from exp.lib.fidelity import (
 )
 from exp.lib.linwidth import windows
 from exp.vision import content_eval
+from exp.vision.compose import to_dict
 from exp.vision.content_eval import (
     ContentConf,
     ContentConf3,
@@ -91,6 +95,7 @@ from exp.vision.content_eval import (
     front_of,
     merge_checks,
     merge_checks3,
+    model_source,
     negative,
     negative_cheats,
     obs_acf3,
@@ -106,7 +111,14 @@ from exp.vision.content_eval import (
     sums3,
 )
 from exp.vision.geom_eval import GeomConf, _sets_at
-from exp.vision.results.v18c.judge_content import checks_stage, real3_stage, real_stage
+from exp.vision.models import build_vae
+from exp.vision.results.v18c.judge_content import (
+    PSI_STAR,
+    checks_stage,
+    models3_stage,
+    real3_stage,
+    real_stage,
+)
 from exp.vision.width_eval import (
     WidthConf,
     _common_sums,
@@ -119,7 +131,7 @@ from tests.vision.test_eval import SIZE, write_tours
 from tests.vision.test_fill_eval import TINY as FILL_TINY
 from tests.vision.test_gen_eval import features
 from tests.vision.test_geom_eval import SPLICED, TINY, tours_with_zurich
-from tests.vision.test_jepa_eval import SPAN, conf_of
+from tests.vision.test_jepa_eval import SPAN, conf_of, tiny_run
 from tests.vision.test_stream_eval import EVERY
 from tests.vision.test_width_eval import WTINY, tiny_sets
 from tests.vision.test_width_guard import GTINY
@@ -772,6 +784,79 @@ class TestReal3:
         assert set(res["b4_far"]) == ({"runs"} | set(codes) if far else {"runs"})
         assert len(res["sigma_rot"]) == 2
         assert set(res["codes"]["base"]["chosen"]) == {"level", "change"}
+
+    @pytest.mark.slow
+    def test_a_models_step_0_is_its_yardstick(self, tmp_path):
+        # a learned code (``--model``) of a run's step 0 is the yardstick
+        # ``init_m`` of the run (zpca), of a VAE's t = 0 checkpoint
+        # ``init_v16``: the same rows but the code's name
+        root = tours_with_zurich(tmp_path / "d")
+        mean = tiny_run(root, tmp_path, "--sigreg-on", "mean", name="mean")
+        conf = replace(conf_of(), device="cpu")
+        vae_run = tmp_path / "vae"
+        vae_run.mkdir()
+        (vae_run / "config.yaml").write_text(yaml.safe_dump(to_dict(conf)))
+        ckpt.save_eval(vae_run, program="vae", group="iid", t=0.0, frame=10,
+                       modules=build_vae(conf, seed=5).modules())  # fmt: skip
+        first = sorted((vae_run / "ckpt").glob("*.pt"))[0]
+        sets_dir = tmp_path / "tlin"
+        _sets_at(sets_dir, conf, root, TINY)
+        kw: dict[str, Any] = dict(root=root, guard=GTINY, cconf=C3, gconf=TINY, wconf=WTINY,
+                                  fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
+        width = tmp_path / "width"
+        yard = evaluate_content3(conf, sets_dir, width / "content3",
+                                 codes=("base", "rot", "init_m", "init_v16"),
+                                 inits={"init_m": mean}, init_v16=vae_run, **kw)  # fmt: skip
+        models = {"m0": (mean, 0), "m4": (mean, 4), "v16": (first, None)}
+        out = evaluate_content3(
+            conf, sets_dir, width / "content3m", models=models, **kw
+        )
+        assert sorted(p.name for p in out.iterdir() if p.is_dir()) == [
+            "m0",
+            "m4",
+            "v16",
+        ]
+
+        def unnamed(path):
+            return [{k: v for k, v in r.items() if k != "code"}
+                    for r in json.loads(path.read_text())]  # fmt: skip
+
+        for model, code in (("m0", "init_m"), ("v16", "init_v16")):
+            assert unnamed(out / model / "content3.json") == unnamed(
+                yard / code / "content3.json"
+            )
+        assert unnamed(out / "m4" / "content3.json") != unnamed(
+            out / "m0" / "content3.json"
+        )
+        assert (out / "intervals.json").read_bytes() == (
+            yard / "intervals.json"
+        ).read_bytes()
+        # the record's reading: v16 (a model of judge_geom.VAES) against its
+        # own step 0 (the same code): D = (1 - 2^-psi*) E
+        got = models3_stage(width, tmp_path / "no-geom", TINY)
+        assert set(got["models"]) == {"v16"}
+        v16 = got["models"]["v16"]
+        assert v16["init"] == "init_v16" and set(v16["pairs"]) == {"pca", "init_v16"}
+        e = v16["pairs"]["init_v16"]["E"]
+        assert e[0] == e[1]
+        assert v16["pairs"]["init_v16"]["D"]["point"] == pytest.approx(
+            (1 - 2**-PSI_STAR) * e[0]
+        )
+        with pytest.raises(ValueError, match="named as codes"):
+            evaluate_content3(conf, sets_dir, tmp_path / "x", models={"color": (mean, 0)},
+                              **kw)  # fmt: skip
+        with pytest.raises(ValueError, match="no checkpoint of step 3"):
+            evaluate_content3(conf, sets_dir, tmp_path / "x", models={"m3": (mean, 3)},
+                              **kw)  # fmt: skip
+
+    def test_the_model_source(self):
+        assert model_source("a=/r/x@60000") == ("a", (Path("/r/x"), 60000))
+        assert model_source("v16=/r/ckpt/1.0.pt") == (
+            "v16",
+            (Path("/r/ckpt/1.0.pt"), None),
+        )
+        with pytest.raises(ValueError, match="NAME="):
+            model_source("/r/x@6000")
 
     @pytest.mark.slow
     def test_the_frame_itself_is_read_back_aligned(self, tmp_path, monkeypatch):
