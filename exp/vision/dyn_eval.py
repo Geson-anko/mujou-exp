@@ -957,19 +957,31 @@ def _lin_unit(
 def _mlp_unit(code: str, syn: _Synth, cc: CheckConf, mconf: MLPConf,
               dev: torch.device) -> dict[str, Any]:  # fmt: skip
     """The MLP of the grid on the long realization: the eval and val sums of
-    each seed, the linear's, the chosen steps."""
+    each seed, the linear's, the chosen steps, and of every set (``train``,
+    ``val``, ``rec``, ``eval``) the totals of the linear's and each seed's
+    numerator and of the two denominators (``totals``, V-p1g's record)."""
     s = syn.sets[code]
     train, val = s["train"], s["val"]
+    mean = train.w.mean(0)
     fits = {n: fit_linear(train, val, n) for n in GRID}
-    run = train_mlp(fits, train, val, {"eval": s["eval"], "val": val}, mconf, dev)
-    lin_val = []
-    for n in GRID:
-        pred, y = fits[n].predict(val)
-        lin_val.append(float(num_sums(pred - y, val)["num_b"].sum()))
+    on = {name: s[name] for name in (*ROLES, "eval")}
+    run = train_mlp(fits, train, val, on, mconf, dev)
+    totals: dict[str, dict[str, list[Any]]] = {}
+    for name, t in on.items():
+        tot: dict[str, list[Any]] = {"lin": [], "copy": [], "clim": []}
+        for n in GRID:
+            pred, y = fits[n].predict(t)
+            d = dens(t, n, mean)
+            tot["lin"].append(float(num_sums(pred - y, t)["num_b"].sum()))
+            tot["copy"].append(float(d["copy_b"].sum()))
+            tot["clim"].append(float(d["clim_b"].sum()))
+        tot["mlp"] = run.sums[name]["num_b"].sum(-1).tolist()  # (L, S)
+        totals[name] = tot
     return {"lags": list(GRID), "seeds": list(run.seeds),
             "steps": [run.times[int(i)] for i in run.chosen],
             "num_b": run.sums["eval"]["num_b"].tolist(),  # (L, S, B)
-            "val": run.sums["val"]["num_b"].sum(-1).tolist(), "lin_val": lin_val}  # fmt: skip
+            "val": totals["val"]["mlp"], "lin_val": totals["val"]["lin"],
+            "totals": totals}  # fmt: skip
 
 
 def check_units(cc: CheckConf = CheckConf()) -> tuple[str, ...]:
@@ -981,13 +993,16 @@ def check_units(cc: CheckConf = CheckConf()) -> tuple[str, ...]:
             "V-p1h")  # fmt: skip
 
 
-def _pair_draw(a: str, b: str, seed: int, cc: CheckConf) -> dict[str, Any]:
-    """The two codes' linear eval sums on the realization of ``seed``."""
+def _pair_draw(a: str, b: str, seed: int, cc: CheckConf, *,
+               population: bool) -> dict[str, Any]:  # fmt: skip
+    """The two codes' linear eval sums on the realization of ``seed``, and
+    with ``population`` the population ratios of the learned predictors
+    (``_lin_unit``; V-p1f's target)."""
     fams = {_family_of(a), _family_of(b)}
     syns = {f: _realization(f, seed, 1, cc) for f in sorted(fams)}
     out: dict[str, Any] = {"seed": seed}
     for c in (a, b):
-        out[c] = _lin_unit(c, syns[_family_of(c)], cc, population=False)
+        out[c] = _lin_unit(c, syns[_family_of(c)], cc, population=population)
     return out
 
 
@@ -1032,10 +1047,12 @@ def check_parts(
             rows.append({"part": "unit", "unit": u,
                          "value": _mlp_unit(code, long_of(code), cc, mconf, dev)})  # fmt: skip
         elif u == "V-p1f":
-            rows += [{"part": "draw", "unit": u, "value": _pair_draw("S10a", "S10b", s, cc)}
+            rows += [{"part": "draw", "unit": u,
+                      "value": _pair_draw("S10a", "S10b", s, cc, population=True)}
                      for s in range(*cc.cover_seeds) if lo <= s < hi]  # fmt: skip
         else:
-            rows += [{"part": "draw", "unit": u, "value": _pair_draw("S4", "S4b", s, cc)}
+            rows += [{"part": "draw", "unit": u,
+                      "value": _pair_draw("S4", "S4b", s, cc, population=False)}
                      for s in range(*cc.null_seeds) if lo <= s < hi]  # fmt: skip
     return rows
 
@@ -1156,22 +1173,21 @@ def _ml(num: Tensor, den: Tensor) -> float:
     return float(mean_log(GRID, num.sum(1) / den.sum(1)))
 
 
-def _sigma_rot(units: Mapping[str, Any], base: str) -> float:
-    """The standard deviation over the seeds of $\\psi_s$ of ``S9-<base>``
-    against ``base`` (the MLP's, of each denominator the larger)."""
+def _sigma_rot(units: Mapping[str, Any], base: str) -> dict[str, float]:
+    """Of each denominator apart, the standard deviation over the seeds of
+    the MLP's $\\psi_s$ of ``S9-<base>`` against ``base``."""
     a, b = units[f"long-S9-{base}"], units[f"long-{base}"]
     _, ra = _mlp_values(units[f"mlp-S9-{base}"])
     _, rb = _mlp_values(units[f"mlp-{base}"])
-    out = 0.0
+    out = {}
     for den in ("copy", "clim"):
         da, db = _t(a[f"{den}_b"]), _t(b[f"{den}_b"])
-        psis = [_ml(x, da) - _ml(y, db) for x, y in zip(ra, rb, strict=True)]
-        out = max(out, stdev(psis))
+        out[den] = stdev([_ml(x, da) - _ml(y, db) for x, y in zip(ra, rb, strict=True)])
     return out
 
 
 def _mlp_vs_lin(units: Mapping[str, Any], code: str, cc: CheckConf,
-                sigma_rot: float) -> dict[str, Any]:  # fmt: skip
+                sigma_rot: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
     """MLP (a) against the linear (b) of one code: the intervals and the
     words, $\\sigma_{ab} = \\max(\\sigma_{\\mathrm{rot}}, s_{ab})$."""
     lin, mv = units[f"long-{code}"], units[f"mlp-{code}"]
@@ -1181,7 +1197,7 @@ def _mlp_vs_lin(units: Mapping[str, Any], code: str, cc: CheckConf,
     for den in ("copy", "clim"):
         d = _t(lin[f"{den}_b"])
         s_ab = stdev([_ml(x, d) - _ml(_t(lin["num_b"]), d) for x in seeds])
-        sigma = max(sigma_rot, s_ab)
+        sigma = max(sigma_rot[den], s_ab)
         iv = psi_interval(GRID, mean_b, d, _t(lin["num_b"]), d, cc.boot, cc.boot_seed,
                           sigma=sigma)  # fmt: skip
         ivs.append(iv)
@@ -1201,6 +1217,46 @@ def _mlp_vs_lin(units: Mapping[str, Any], code: str, cc: CheckConf,
     return out
 
 
+# the design memo's table (section 3.2) of the OU of tau = 3.2 s (32 steps), at
+# Delta / tau = 0.5, 1, 2, 4, 8 (the grid's n = 16 .. 256): of the code and the
+# denominator, the values; S5a is the box of W = tau, S5b of W = 4 tau
+S5_TABLE: dict[str, dict[str, tuple[float, ...]]] = {
+    "copy": {"S4": (0.803, 0.684, 0.568, 0.509, 0.500),
+             "S5a": (0.656, 0.757, 0.600, 0.514, 0.500),
+             "S5b": (0.433, 0.590, 0.672, 0.580, 0.501)},
+    "clim": {"S4": (0.632, 0.865, 0.982, 1.000, 1.000),
+             "S5b": (0.030, 0.140, 0.483, 0.974, 1.000)},
+}  # fmt: skip
+S5_LAGS = (16, 32, 64, 128, 256)
+
+
+def _s5_table(units: Mapping[str, Any]) -> dict[str, Any]:
+    """V-p1g: the table's values beside the oracle's best (``star_*``) and
+    the long realization's linear (estimated) at its lags."""
+    out: dict[str, Any] = {}
+    for den, codes in S5_TABLE.items():
+        for code, want in codes.items():
+            v = units[f"long-{code}"]
+            idx = [GRID.index(n) for n in S5_LAGS]
+            r_hat = _t(v["num_b"]).sum(1) / _t(v[f"{den}_b"]).sum(1)
+            out[f"{code}/{den}"] = {"table": list(want),
+                                    "oracle": [v[f"star_{den}"][i] for i in idx],
+                                    "estimate": [float(r_hat[i]) for i in idx]}  # fmt: skip
+    return out
+
+
+def _sets_values(mv: Mapping[str, Any]) -> dict[str, Any]:
+    """V-p1g: of each set, the linear's and the seeds' mean MLP's
+    $R_{\\mathrm{copy}}$ and $R_{\\mathrm{clim}}$ by lag."""
+    out: dict[str, Any] = {}
+    for name, t in mv["totals"].items():
+        lin, mlp = _t(t["lin"]), _t(t["mlp"]).mean(1)
+        out[name] = {f"{fam}_{den}": (num / _t(t[den])).tolist()
+                     for fam, num in (("lin", lin), ("mlp", mlp))
+                     for den in ("copy", "clim")}  # fmt: skip
+    return out
+
+
 def _vp1cdg(units: Mapping[str, Any], cc: CheckConf) -> list[Row]:
     s4, s8 = _sigma_rot(units, "S4"), _sigma_rot(units, "S8")
     neg = _mlp_vs_lin(units, "S4", cc, s4)
@@ -1209,7 +1265,9 @@ def _vp1cdg(units: Mapping[str, Any], cc: CheckConf) -> list[Row]:
         _check("V-p1c", neg["words"] != "a_better" and neg["val_ok"], **neg),
         _check("V-p1d", pos["words"] == "a_better", **pos),
         _record("V-p1g", sigma_rot={"S4": s4, "S8": s8},
-                steps={c: units[f"mlp-{c}"]["steps"] for c in MLP_CODES}),
+                steps={c: units[f"mlp-{c}"]["steps"] for c in MLP_CODES},
+                sets={c: _sets_values(units[f"mlp-{c}"]) for c in MLP_CODES},
+                s5_table=_s5_table(units)),
     ]  # fmt: skip
 
 
@@ -1244,19 +1302,42 @@ def _vp1e(units: Mapping[str, Any], cc: CheckConf) -> list[Row]:
     return rows
 
 
+def _pop_psi(a: Mapping[str, Any], b: Mapping[str, Any], den: str) -> float:
+    r"""$\psi(\hat M_a, \hat M_b)$ of one realization: the difference of the
+    population $\overline{\log R}$ of the two learned predictors, fixed
+    (``_lin_unit``'s ``pop_<den>``, the eval weights' $\Gamma$)."""
+    return float(
+        mean_log(GRID, _t(a[f"pop_{den}"])) - mean_log(GRID, _t(b[f"pop_{den}"]))
+    )
+
+
 def _vp1f(draws: Sequence[Mapping[str, Any]], cc: CheckConf) -> Row:
-    truth = _oracle_psi("S10a", "S10b", cc)
-    hits = [0, 0]
+    r"""V-p1f: the share of the realizations whose interval holds its own
+    target $\psi(\hat M_a, \hat M_b)$ (``_pop_psi``; the interval is
+    conditional on the learned predictors, as V-p1a's target). The share
+    holding the oracle's best $\psi^*$ (``_oracle_psi``) is recorded: the
+    excess error of the finite training differs by code, so it does not
+    cancel in $\psi$ and $\psi^*$ is not the interval's target."""
+    star = _oracle_psi("S10a", "S10b", cc)
+    hits, hits_star = [0, 0], [0, 0]
+    gap: list[list[float]] = [[], []]
     for dr in draws:
         for i, den in enumerate(("copy", "clim")):
             iv = _psi(dr["S10a"], dr["S10b"], den, cc)
-            hits[i] += (
-                iv.lo is not None and iv.hi is not None and iv.lo <= truth[i] <= iv.hi
-            )
+            if iv.lo is None or iv.hi is None:
+                continue
+            t = _pop_psi(dr["S10a"], dr["S10b"], den)
+            hits[i] += iv.lo <= t <= iv.hi
+            hits_star[i] += iv.lo <= star[i] <= iv.hi
+            gap[i].append(t - star[i])
     share = [h / len(draws) for h in hits]
     return _check(
-        "V-p1f", min(share) >= cc.cover_min, share=share, n=len(draws), truth=truth
-    )
+        "V-p1f", min(share) >= cc.cover_min, share=share, n=len(draws),
+        share_star=[h / len(draws) for h in hits_star], star=star,
+        target_minus_star={d: {"mean": sum(g) / len(g) if g else None,
+                               "sd": stdev(g) if len(g) > 1 else None}
+                           for d, g in zip(("copy", "clim"), gap, strict=True)},
+    )  # fmt: skip
 
 
 def _vp1h(draws: Sequence[Mapping[str, Any]], cc: CheckConf) -> Row:
