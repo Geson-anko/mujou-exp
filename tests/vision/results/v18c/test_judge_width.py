@@ -3,7 +3,10 @@ horizon).
 
 The oracles: blocks of one curve each resample to that curve, so a paired
 ratio's interval is the point ratio by hand and its wording follows
-(``distinct``, ``small``, ``unresolved`` of hand-placed widths); a $p > 0$
+(``distinct``, ``small``, ``unresolved`` of hand-placed widths), of the main
+$\bar\Delta_1$ (the integral to the first window's upper end) and of
+$\bar\Delta$ beside it; two codes of no window are not called alike (C6);
+the main width of a first window and its reappearance by hand; a $p > 0$
 at 25.6 s is a cut; a $\Delta_{\mathrm{typ}}$ ratio is given only of
 windows in every draw; the first window and its reappearance of a
 hand-made periodic $p$; the survival of moments of monotone widths is $p$
@@ -25,6 +28,7 @@ import torch
 
 from exp.vision.geom_eval import GeomConf
 from exp.vision.results.v18c.judge_width import (
+    NO_WINDOW,
     _sums,
     cheat_pass,
     checks_stage,
@@ -68,6 +72,12 @@ class TestPairRatio:
         lo, hi = got["mean"]
         assert lo == pytest.approx(want) and hi == pytest.approx(want)
         assert got["mean_cls"] == "distinct" and want > 0.5
+        # the main: a's window ends at 6 (p = 1/2 there), b's at 3
+        # (2 + 1 + 1 + 1 + 0.75 = 5.75 and 2 + 0.75 = 2.75)
+        want1 = math.log2(5.75 / 2.75)
+        lo, hi = got["mean1"]
+        assert lo == pytest.approx(want1) and hi == pytest.approx(want1)
+        assert got["mean1_cls"] == "distinct"
         assert not got["cut"]
         same = pair_ratio(sums_of(a), sums_of(a), W, G)
         assert same["mean"] == (0.0, 0.0) and same["mean_cls"] == "small"
@@ -86,12 +96,29 @@ class TestPairRatio:
         got = pair_ratio(sums_of(a), sums_of(none), W, G)
         assert got["typ"] is None and got["typ_cls"] is None
         assert got["windowed"][0] == (1.0, 0.0)
+        # a window against none: the main width of none is 2 (the grid's
+        # first lag); the window ends at sqrt(20) (between 4 and 5, linear
+        # in log), its width 2 + 2 + (1 + 1/2)/2 (sqrt(20) - 4)
+        w = 4 + 0.75 * (math.sqrt(20) - 4)
+        lo, hi = got["mean1"]
+        assert lo == pytest.approx(math.log2(w / 2)) and got["mean1_cls"] == "distinct"
+
+    def test_two_codes_of_no_window_are_not_alike(self):
+        # their main widths are 2 alike, the ratio 0: not 「小さい」 (C6)
+        got = pair_ratio(sums_of([0.4] * 8), sums_of([0.3] * 8), W, G)
+        assert got["mean1"] == (0.0, 0.0) and got["mean1_cls"] == NO_WINDOW
 
 
 class TestPoint:
     def test_the_first_window_and_its_reappearance(self):
         p = [1, 1, 1, 0, 0, 1, 1, 0]
         pt = point(sums_of(p), W)
+        # the main width stops at the first window's end (the crossing of
+        # 1/2 between 3 and 4 linear in log: sqrt(12)); the mean goes on
+        hi = math.sqrt(12)
+        assert pt["25"]["mean1"] == pytest.approx(2 + 1 + (1 + 0.5) / 2 * (hi - 3))
+        assert pt["25"]["mean"] == pytest.approx(mean_of(p))
+        assert pt["25"]["mean"] > pt["25"]["mean1"]
         assert pt["25"]["p"]["first"]["lo_cut"]
         assert 3 < pt["25"]["typ"] < 4
         assert len(pt["25"]["p"]["again"]) == 1
@@ -162,11 +189,14 @@ class TestSigmaDec:
         assert sigma_dec(by_seed, "e") == pytest.approx(math.sqrt(0.02))
 
 
-def cheat(lo: float, verdict: str, mean: float) -> dict:
+def cheat(lo: float, verdict: str, mean1: float) -> dict:
+    """A cheat whose main width's ratio is ``(lo, lo + 0.2)``; its
+    $\bar\\Delta$, beside it, the other way (never read by the verdict)."""
     return {
-        "ratio": {"mean": (lo, lo + 0.2)},
+        "ratio": {"mean1": (lo, lo + 0.2), "mean": (-lo - 0.2, -lo)},
         "guard": {"verdict": verdict},
-        "mean": mean,
+        "mean1": mean1,
+        "mean": -mean1,
     }
 
 

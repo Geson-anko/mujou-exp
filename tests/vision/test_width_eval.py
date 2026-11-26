@@ -12,9 +12,10 @@ first runs of the wins; the shifted blocks' sums hold the same triples
 and targets by hand; a band of no noise has the same triple terms at every
 time (of no phase) and its pooled $G = s/2$; a rotation's period on the
 grid is refused; the anchors' places by hand; the checks V-h0 on their
-full series (but V-h0e's $N_{\mathrm{lin}}$ at the edge of the band's window,
-README; and the long V-h0i, V-h0k run on few draws only); and the yard's,
-the run's and the VAE's jobs end to end on tiny runs.
+full series (the long V-h0i, V-h0k run on few draws only), V-h0e's
+$N_{\mathrm{lin}}$ truth of hand-made directions (a $T$ whose closed margin
+to 1/4 is within $z$ spreads left out); and the yard's, the run's and the
+VAE's jobs end to end on tiny runs.
 """
 
 import json
@@ -37,6 +38,7 @@ from exp.vision.width_eval import (
     TARGETS,
     CheckConf,
     WidthConf,
+    _band_columns_g,
     _band_noise,
     _rotation_truth,
     _vh0a,
@@ -57,6 +59,7 @@ from exp.vision.width_eval import (
     evaluate_vae,
     evaluate_yard,
     lin_sums,
+    nlin_truth,
     point,
     slots,
     synthetic_sets,
@@ -263,9 +266,10 @@ class TestChecks:
                 + _vh0m(cc, ws, g, w))  # fmt: skip
         checks = [r for r in rows if r["part"] == "check"]
         failed = [r["name"] for r in checks if not r["pass"]]
-        # README: V-h0e's N_lin at 3.2 s, 4% inside the band's window, is
-        # within the directions' sampling spread of the edge
-        assert set(failed) <= {"V-h0e-nlin"}, failed
+        assert not failed, failed
+        # the user's decision: 3.2 s, 4% inside the band's window, left out
+        nlin = [r for r in checks if r["name"] == "V-h0e-nlin"]
+        assert all(r["excluded"] == [32] for r in nlin), nlin
         names = {r["name"] for r in checks}
         assert {"V-h0a", "V-h0b", "V-h0c", "V-h0d", "V-h0e-window", "V-h0f", "V-h0g",
                 "V-h0h-reverse", "V-h0h-thin", "V-h0l", "V-h0m"} <= names  # fmt: skip
@@ -278,7 +282,7 @@ class TestChecks:
         g, w = replace(GeomConf(), boot=50), WidthConf()
         ws = synthetic_sets(cc.n, cc.span, g.block, w.max_lag)
         (i,) = _vh0i(cc, ws, g, w)
-        assert i["n"] == 2 and set(i["share"]) == {"G_hi", "mean", "typ"}
+        assert i["n"] == 2 and set(i["share"]) == {"G_hi", "mean1", "mean", "typ"}
         k = _vh0k(cc, ws, g, w)
         assert [r["name"] for r in k] == ["V-h0k", "V-h0k-power", "V-h0k-power"]
         assert k[0]["true_ratio"] == 0.0
@@ -342,3 +346,24 @@ def test_whitening_is_of_the_reference():
     want = lin_sums(white_rows(Whitener.fit(ref, TINY.k, c_eps=TINY.c_eps).white(ev),
                                ws, WTINY, full=False)).g()  # fmt: skip
     torch.testing.assert_close(got, want, rtol=1e-12, atol=0)
+
+
+class TestNlinTruth:
+    def test_a_t_within_the_spread_of_the_edge_is_left_out(self):
+        cc = CheckConf()
+        w = WidthConf(main_lo=8, max_lag=64, lin_ts=(8, 16, 32, 64))
+        lags = list(range(8, 65))
+        closed = {t: _band_columns_g(cc, t) for t in lags}
+        # 5 band directions about the closed G, of the spread 0.0158 (z =
+        # 3.54 of 5: 32 s's margin 0.0122 is within, 16 s's 0.186 is not),
+        # 2 white ones at 3/4
+        off = [-0.02, -0.01, 0.0, 0.01, 0.02]
+        band = [[closed[t] + o for t in lags] for o in off]
+        white = [[0.75] * len(lags)] * 2
+        got = nlin_truth(cc, w, {"g": white[:1] + band + white[1:]}, 5)
+        assert got == {"inside": [8, 16], "beyond": [64], "excluded": [32]}
+        assert closed[32] == pytest.approx(0.2378, abs=1e-4)
+        # with no spread every T is in or beyond
+        flat = [[closed[t] for t in lags]] * 5
+        got = nlin_truth(cc, w, {"g": white + flat}, 5)
+        assert got == {"inside": [8, 16, 32], "beyond": [64], "excluded": []}

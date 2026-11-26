@@ -2,7 +2,10 @@ r"""``exp.lib.linwidth``: the windows, the widths and their bootstrap.
 
 The oracles: hand-made curves (no window, a window cut at either end, a
 first window and its reappearance, the crossing linear in $\log\Delta$ by
-hand); the trapezoids of $\bar\Delta$ by hand; of moments each with a width
+hand); the trapezoids of $\bar\Delta$ by hand; the main width
+$\bar\Delta_1$ by hand (to the first window's upper end, $p = 1/2$ there;
+the reappearance left out; $x_0$ of no window; $\bar\Delta$ of a window
+to the grid's end), the vectorized one the loop's of ``windows``; of moments each with a width
 $W_t$ ($p(\Delta) = P(W_t > \Delta)$), $\Delta_{\mathrm{typ}}$ is their
 median exactly where they lie at the geometric midpoints of the grid's
 intervals, an odd number, the median alone in its interval (the crossing
@@ -23,6 +26,8 @@ import torch
 
 from exp.lib.linwidth import (
     draws_summary,
+    first_mean,
+    first_means,
     first_upper,
     mean_width,
     mean_widths,
@@ -85,6 +90,45 @@ class TestMeanWidth:
     def test_of_none_and_of_all(self):
         assert mean_width(X, torch.zeros(5, dtype=F64)) == pytest.approx(0.8)
         assert mean_width(X, torch.ones(5, dtype=F64)) == pytest.approx(12.8)
+
+
+class TestFirstMean:
+    def test_to_the_first_windows_end_by_hand(self):
+        p = curve(0.9, 0.7, 0.3, 0.1, 0.0)
+        hi = math.sqrt(1.6 * 3.2)  # the crossing, linear in log
+        want = 0.8 + 0.8 * (0.9 + 0.7) / 2 + (0.7 + 0.5) / 2 * (hi - 1.6)
+        assert first_mean(X, p) == pytest.approx(want, rel=1e-12)
+
+    def test_the_reappearance_is_left_out(self):
+        p = curve(0.6, 0.2, 0.7, 0.8, 0.9)
+        w = windows(X, p, 0.5, below=False)
+        assert w.first is not None and len(w.again) == 1
+        want = 0.8 + (0.6 + 0.5) / 2 * (w.first.hi - 0.8)
+        assert first_mean(X, p) == pytest.approx(want, rel=1e-12)
+        assert mean_width(X, p) > 4 * first_mean(X, p)
+
+    def test_of_no_window_and_of_a_window_to_the_end(self):
+        assert first_mean(X, curve(0.4, 0.49, 0.1, 0.3, 0.2)) == 0.8
+        p = curve(0.4, 0.6, 0.9, 0.7, 0.5)  # from 0.8 to 12.8, no reappearance
+        assert first_mean(X, p) == pytest.approx(mean_width(X, p), rel=1e-12)
+
+    def test_the_vectorized_is_the_loops(self):
+        g = torch.Generator().manual_seed(1)
+        y = torch.rand(300, 5, generator=g, dtype=F64)
+        got = first_means(X, y)
+        xs = X.tolist()
+        for i in range(300):
+            w = windows(X, y[i], 0.5, below=False)
+            if w.first is None:
+                assert float(got[i]) == 0.8
+                continue
+            want, k = 0.8, 0
+            while k + 1 < len(xs) and xs[k + 1] <= w.first.hi:
+                want += (float(y[i, k]) + float(y[i, k + 1])) / 2 * (xs[k + 1] - xs[k])
+                k += 1
+            if not w.first.hi_cut:
+                want += (float(y[i, k]) + 0.5) / 2 * (w.first.hi - xs[k])
+            assert float(got[i]) == pytest.approx(want, rel=1e-12)
 
 
 def p_of(widths: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -162,6 +206,12 @@ class TestDraws:
         assert got.mean is not None
         lo, hi = got.mean
         assert lo is not None and hi is not None and lo < hi
+        # the main width is 0.8 of a draw of no window: always given
+        assert got.mean1 is not None
+        w = first_mean(X, y[0])
+        # one draw of 0.8 among ten: the 2.5% point 0.225 of the way to w
+        assert got.mean1[0] == pytest.approx(0.8 + 0.225 * (w - 0.8))
+        assert got.mean1[1] == pytest.approx(w)
 
     def test_a_ratio_of_typ_needs_windows_in_975_of_the_draws(self):
         a = torch.stack([curve(0.9, 0.7, 0.3, 0.1, 0.0)] * 100)
@@ -176,6 +226,8 @@ class TestDraws:
         assert lo == pytest.approx(want) and hi == pytest.approx(want)
         mean = float(torch.log2(mean_widths(X, a[:1]) / mean_widths(X, b[:1])))
         assert got.mean[0] == pytest.approx(mean)
+        mean1 = math.log2(first_mean(X, a[0]) / first_mean(X, b[0]))
+        assert got.mean1 == (pytest.approx(mean1), pytest.approx(mean1))
         none = b.clone()
         none[:3] = 0.0  # 3% of the draws of b have no window
         assert paired_ratio(X, a, none, 0.5).typ is None

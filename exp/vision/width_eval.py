@@ -40,7 +40,9 @@ window's upper end of $G_i < 1/4$; 0 of none) and $N_{\mathrm{lin}}(T)$ at
 **The widths of rows** (``LinSums``, ``point``): $p$ and $G$ of the blocks'
 sums; on the main range (lags ``main_lo`` .. ``max_lag``) the first window
 and reappearances of $p_{1/4} \ge 1/2$ and of $G < 1/4$ (and of $1/2$),
-$\Delta_{\mathrm{typ}}$, $\bar\Delta$, the survival's crossing, and below
+$\Delta_{\mathrm{typ}}$, the main width $\bar\Delta_1$ (``linwidth.first_mean``,
+the integral to the first window's upper end), $\bar\Delta$ and the
+survival's $0.8 + \int S$ beside it, the survival's crossing, and below
 the main range the windows of the whole grid (a description beside
 ``mean8``). The bootstrap (``resampled``, ``draws``) is ``geom_eval``'s: the
 blocks drawn by ``metrics.block_counts`` (``boot``, ``boot_seed``) and their
@@ -66,6 +68,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import torch
@@ -75,6 +78,7 @@ from exp.lib import ckpt
 from exp.lib.linwidth import (
     Windows,
     draws_summary,
+    first_mean,
     mean_width,
     n_lin,
     paired_ratio,
@@ -98,6 +102,7 @@ from exp.lib.provenance import configure_determinism
 from exp.lib.synth_series import (
     chained_rotation,
     gauss_kernel,
+    kernel_acf,
     ou,
     ou_integral,
     ou_integral_d,
@@ -152,6 +157,7 @@ __all__ = [
     "evaluate_yard",
     "lin_sums",
     "main",
+    "nlin_truth",
     "point",
     "resampled",
     "slots",
@@ -576,8 +582,9 @@ def _span(w: Windows) -> dict[str, Any]:
 def point(ls: LinSums, wconf: WidthConf) -> dict[str, Any]:
     r"""The point estimates (module docstring) of ``ls`` (all the lags):
     of each bound $q$ the main range's windows of $p_q$ and of $G$,
-    $\Delta_{\mathrm{typ}}$ (``typ``), $\bar\Delta$ (``mean``), the
-    survival's window (``surv``), and the whole grid's windows
+    $\Delta_{\mathrm{typ}}$ (``typ``), the main $\bar\Delta_1$ (``mean1``),
+    $\bar\Delta$ (``mean``), the survival's window (``surv``) and $0.8 +
+    \int S$ (``surv_mean``), and the whole grid's windows
     (``whole``, the description below the main range)."""
     main = ls.restrict(wconf.main_lo)
     x = wconf.seconds(main.lags)
@@ -591,6 +598,7 @@ def point(ls: LinSums, wconf: WidthConf) -> dict[str, Any]:
             "p": _span(wp),
             "G": _span(windows(x, g, fq, below=True)),
             "typ": wp.typical,
+            "mean1": first_mean(x, p),
             "mean": mean_width(x, p),
             "whole_p": _span(windows(xa, ls.p(q), 0.5, below=False)),
             "whole_G": _span(windows(xa, ls.g(), fq, below=True)),
@@ -636,8 +644,9 @@ def draws(
     ls: LinSums, wconf: WidthConf, gconf: GeomConf, shifted: LinSums | None = None
 ) -> dict[str, Any]:
     r"""The intervals of the main range's widths (``point``'s) of 128 s and
-    256 s blocks and their union: of each bound, $p$'s window and $\bar\Delta$
-    (``linwidth.draws_summary``) and the pooled $G$'s window; with
+    256 s blocks and their union: of each bound, $p$'s window, $\bar\Delta_1$
+    and $\bar\Delta$ (``linwidth.draws_summary``) and the pooled $G$'s
+    window; with
     ``shifted`` (the blocks shifted by half a block) its 128 s interval of
     $p$ beside them (``shift``, a description)."""
     main = ls.restrict(wconf.main_lo)
@@ -657,6 +666,7 @@ def draws(
     for q in ("25", "50"):
         out[q] = {
             "typ": union([per[b][q]["p"]["typ"] for b in per]),
+            "mean1": union([per[b][q]["p"]["mean1"] for b in per]),
             "mean": union([per[b][q]["p"]["mean"] for b in per]),
             "G_hi": union([per[b][q]["G"]["typ"] for b in per]),
             "none": max(per[b][q]["p"]["none"] for b in per),
@@ -888,8 +898,8 @@ def _rotation_truth(periods: Tensor, lag: int, half: float = 1 / 6) -> Tensor:
 
 
 def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
-    r"""The rotation: $p$ and the survival exact; the windows and
-    $\bar\Delta$ of the true $p$ to $10^{-10}$; the first window's upper
+    r"""The rotation: $p$ and the survival exact; the windows,
+    $\bar\Delta_1$ and $\bar\Delta$ of the true $p$ to $10^{-10}$; the first window's upper
     ends between 2.0 and 2.1 s and 3.0 and 3.1 s (q = 1/4, 1/2)."""
     x = rotation(cc.n, cc.d, cc.rotation_period, _gen(cc.seed + 1))
     ls = lin_sums(white_rows(x, ws, wconf, full=False))
@@ -903,7 +913,7 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
                           for lag in main.lags.tolist()])  # fmt: skip
         exact = torch.equal(main.p(q), want)
         w = windows(x_s, want, 0.5, below=False)
-        m_want = mean_width(x_s, want)
+        m_want, m1_want = mean_width(x_s, want), first_mean(x_s, want)
         typ = pt[q]["typ"]
         same = (
             typ is not None and w.typical is not None
@@ -911,10 +921,12 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
             and [(a["lo"], a["hi"]) for a in pt[q]["p"]["again"]]
             == [(a.lo, a.hi) for a in w.again]
             and abs(pt[q]["mean"] - m_want) <= 1e-10 * m_want
+            and abs(pt[q]["mean1"] - m1_want) <= 1e-10 * m1_want
         )  # fmt: skip
         ok = ok and exact and same
         out[q] = {"p_exact": exact, "typ": typ, "typ_want": w.typical,
-                  "again": pt[q]["p"]["again"], "mean": pt[q]["mean"],
+                  "again": pt[q]["p"]["again"], "mean1": pt[q]["mean1"],
+                  "mean1_want": m1_want, "mean": pt[q]["mean"],
                   "mean_want": m_want}  # fmt: skip
     surv = ls.surv["25"].sum(1) / main.n.sum(1)
     surv_ok = torch.equal(surv, (main.lags.double() < cc.rotation_period / 6).double())
@@ -926,8 +938,9 @@ def _vh0b(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
 def _vh0c(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     r"""The chained rotations: $p$ the common centres' share of the blocks
     that win and the survival exact, the first window's upper end and the
-    survival's crossing between 2.0 and 2.1 s, $\bar\Delta$ of the true $p$
-    and $0.8 + \int S$ of the true $S$ to $10^{-10}$."""
+    survival's crossing between 2.0 and 2.1 s, $\bar\Delta_1$ and
+    $\bar\Delta$ of the true $p$ and $0.8 + \int S$ of the true $S$ to
+    $10^{-10}$."""
     x = chained_rotation(ws.blocks, cc.d, cc.chain_periods, _gen(cc.seed + 2))
     ls = lin_sums(white_rows(x, ws, wconf, full=False))
     pt = point(ls, wconf)
@@ -947,12 +960,15 @@ def _vh0c(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     exact = bool((p - p_want).abs().max() <= 1e-12)
     exact = exact and bool((s - s_want).abs().max() <= 1e-12)
     m_want, s_mean_want = mean_width(x_s, p_want), mean_width(x_s, s_want)
+    m1_want = first_mean(x_s, p_want)
     typ, surv_w = pt["25"]["typ"], pt["25"]["surv"]["first"]
     ok = (exact and _between(typ, 2.0, 2.1) and surv_w is not None
           and 2.0 < surv_w["hi"] < 2.1
           and abs(pt["25"]["mean"] - m_want) <= 1e-10 * m_want
+          and abs(pt["25"]["mean1"] - m1_want) <= 1e-10 * m1_want
           and abs(pt["25"]["surv_mean"] - s_mean_want) <= 1e-10 * s_mean_want)  # fmt: skip
     return [_check("V-h0c", ok, p_exact=exact, typ=typ, surv_hi=surv_w and surv_w["hi"],
+                   mean1=pt["25"]["mean1"], mean1_want=m1_want,
                    mean=pt["25"]["mean"], mean_want=m_want,
                    surv_mean=pt["25"]["surv_mean"], surv_mean_want=s_mean_want)]  # fmt: skip
 
@@ -970,11 +986,52 @@ def _vh0d(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     return [_check("V-h0d", ok, window=first, want=(lo, hi))]
 
 
+def _band_columns_g(cc: CheckConf, lag: int) -> float:
+    r"""The population $G$ of a column of ``_band_columns`` at ``lag``
+    (steps): $1 - D(2n) / (4 D(n))$, $D(n) = 2(1 - \rho(n))$, $\rho(n) =
+    \rho_a(n) \cos \omega n$, $\rho_a$ the kernel's (``kernel_acf``)."""
+    acf = kernel_acf(gauss_kernel(cc.band_sigma), torch.tensor([lag, 2 * lag]))
+    w = 2 * math.pi / cc.band_period
+    d1, d2 = (2 * (1 - float(acf[i]) * math.cos(w * n))
+              for i, n in enumerate((lag, 2 * lag)))  # fmt: skip
+    return 1 - d2 / (4 * d1)
+
+
+def nlin_truth(
+    cc: CheckConf, wconf: WidthConf, d_row: Row, k_band: int
+) -> dict[str, list[int]]:
+    r"""The $T$ (``lin_ts``) of V-h0e's $N_{\mathrm{lin}}$ truth (the user's
+    decision, 2026-11-26, before any value): a band direction's $G_i(T)$
+    lies off 1/4 by more than $z = \Phi^{-1}(1 - 0.001 / k)$ times the
+    spread of the $k$ = ``k_band`` band directions' $G_i(T)$ (the joint
+    error 0.1% of V-h0i's ground over the $k$ directions), the population
+    $G$ closed (``_band_columns_g``), the spread (its sample standard
+    deviation) of the directions of the check (``d_row``'s ``g``; the band
+    directions the $k$ of the least $G_i$ at ``main_lo``, where the band's
+    $G$ and the white's 3/4 lie far apart): ``inside`` where the $G$ is
+    below 1/4 ($N_{\mathrm{lin}} = k$), ``beyond`` above (0), ``excluded``
+    the rest (3.2 s, 4% inside the window's end $T_0/6$: its margin 0.0122
+    against the spread 0.0056, README)."""
+    g = torch.tensor(d_row["g"], dtype=torch.float64)  # (directions, L)
+    band = g[:, 0].argsort()[:k_band]
+    z = NormalDist().inv_cdf(1 - 0.001 / k_band)
+    out: dict[str, list[int]] = {"inside": [], "beyond": [], "excluded": []}
+    for t in wconf.lin_ts:
+        gi = g[band, t - wconf.main_lo]
+        closed = _band_columns_g(cc, t)
+        if abs(0.25 - closed) <= z * float(gi.std()):
+            out["excluded"].append(t)
+        else:
+            out["inside" if closed < 0.25 else "beyond"].append(t)
+    return out
+
+
 def _vh0e(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
     r"""A band and ``m`` white directions: the pooled window of 1/4 exists of
     the fewer (3) and not of the more (4); $N_{\mathrm{lin}}(T) = 64 - m$
-    where $T < T_0/6$ (a band direction's window, $G = s/2 < 1/4$) and 0
-    beyond. Of 21 and 22 white directions the window of 1/2 is recorded."""
+    where a band direction's $G < 1/4$ and 0 where above, at the $T$ of
+    ``nlin_truth`` (3.2 s left out, the user's decision). Of 21 and 22 white
+    directions the window of 1/2 is recorded."""
     rows = []
     for m in cc.white_dirs + cc.white_dirs_half:
         g = _gen(cc.seed + 4 + m)
@@ -987,15 +1044,16 @@ def _vh0e(cc: CheckConf, ws: WidthSets, wconf: WidthConf) -> list[Row]:
             continue
         has = pt["25"]["G"]["first"] is not None
         (d_row,) = (r for r in rs if r["part"] == "dir")
-        inside = [t for t in wconf.lin_ts if t < cc.band_period / 6]
-        beyond = [t for t in wconf.lin_ts if t > cc.band_period / 6]
+        truth = nlin_truth(cc, wconf, d_row, cc.d - m)
+        inside, beyond = truth["inside"], truth["beyond"]
         ok_n = all(d_row["n_lin"][str(t)] == cc.d - m for t in inside) and all(
             d_row["n_lin"][str(t)] == 0 for t in beyond
         )
         rows.append(_check("V-h0e-window", has == (m == min(cc.white_dirs)), m=m,
                            window=pt["25"]["G"]["first"]))  # fmt: skip
         rows.append(_check("V-h0e-nlin", ok_n, m=m, n_lin=d_row["n_lin"], inside=inside,
-                           beyond=beyond, widths=sorted(d_row["W"])))  # fmt: skip
+                           beyond=beyond, excluded=truth["excluded"],
+                           widths=sorted(d_row["W"])))  # fmt: skip
     return rows
 
 
@@ -1055,7 +1113,8 @@ def _vh0h(cc: CheckConf, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
     # bit; G is equal to rounding: the same runs, the ends to 1e-9
     same_widths = all(
         pf[q][k] == pb[q][k]
-        for q in ("25", "50") for k in ("p", "typ", "mean", "surv", "surv_mean")
+        for q in ("25", "50")
+        for k in ("p", "typ", "mean1", "mean", "surv", "surv_mean")
     )  # fmt: skip
     same_g = all(_same_spans(pf[q]["G"], pb[q]["G"], 1e-9) for q in ("25", "50"))
     ok = same_n and same_w and same_s and rel <= cc.rel and same_widths and same_g
@@ -1221,13 +1280,18 @@ def _band_truth(cc: CheckConf, ws: WidthSets, wconf: WidthConf, period: float,
 def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
     truth = _band_truth(cc, ws, wconf, cc.band_period, _gen(cc.cover_truth_seed))
     hi_true = _band_noise_window(cc.band_period, cc.band_nu, 0.25)[1] * wconf.step
-    t_mean, t_typ = truth["25"]["mean"], truth["25"]["typ"]
-    hits = {"G_hi": 0, "mean": 0, "typ": 0}
+    t_mean1, t_mean, t_typ = (
+        truth["25"]["mean1"],
+        truth["25"]["mean"],
+        truth["25"]["typ"],
+    )
+    hits = {"G_hi": 0, "mean1": 0, "mean": 0, "typ": 0}
     n = 0
     for seed in range(*cc.cover_seeds):
         x = _band_noise(cc.n, cc.d, cc.band_period, cc.band_nu, _gen(seed))
         d = draws(_common_sums(x, ws, wconf), wconf, gconf)["25"]
         hits["G_hi"] += _contains(d["G_hi"], hi_true)
+        hits["mean1"] += _contains(d["mean1"], t_mean1)
         hits["mean"] += _contains(d["mean"], t_mean)
         hits["typ"] += t_typ is not None and _contains(d["typ"], t_typ)
         n += 1
@@ -1235,20 +1299,24 @@ def _vh0i(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
     # the Monte Carlo error of a share near 0.95 of n draws
     mc = math.sqrt(0.95 * 0.05 / n)
     return [_check("V-h0i", all(v >= cc.cover_min for v in share.values()),
-                   share=share, n=n, truth={"G_hi": hi_true, "mean": t_mean, "typ": t_typ},
+                   share=share, n=n,
+                   truth={"G_hi": hi_true, "mean1": t_mean1, "mean": t_mean, "typ": t_typ},
                    mc_se=mc)]  # fmt: skip
 
 
 def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> list[Row]:
-    """The known differences: of each ``known_rs`` the pairs' wording by
-    ``judge_geom.classify`` (the rule of the comparisons) and the true
-    $\\log_2$ ratio of $\\bar\\Delta$ (``_band_truth`` of each period)."""
+    """The known differences: of each ``known_rs`` the pairs' wording of
+    the main $\\bar\\Delta_1$ by ``judge_geom.classify`` (the rule of the
+    comparisons) and the true $\\log_2$ ratios of $\\bar\\Delta_1$ and
+    $\\bar\\Delta$ (``_band_truth`` of each period)."""
     rows = []
     main = torch.arange(wconf.main_lo, wconf.max_lag + 1)
     x_s = wconf.seconds(main)
     g_t = _gen(cc.known_truth_seed)
-    true_mean = {r: _band_truth(cc, ws, wconf, cc.band_period * r, g_t)["25"]["mean"]
-                 for r in cc.known_rs}  # fmt: skip
+    truth = {r: _band_truth(cc, ws, wconf, cc.band_period * r, g_t)["25"]
+             for r in cc.known_rs}  # fmt: skip
+    t1 = {r: t["mean1"] for r, t in truth.items()}
+    t = {r: t["mean"] for r, t in truth.items()}
     for r in cc.known_rs:
         distinct = 0
         for seed in range(*cc.known_seeds):
@@ -1261,19 +1329,22 @@ def _vh0k(cc: CheckConf, ws: WidthSets, gconf: GeomConf, wconf: WidthConf) -> li
                 counts = counts_of(pa.n.shape[1], gconf)
                 ra = ratio_resamples(pa.win["25"], pa.n, counts)
                 rb = ratio_resamples(pb.win["25"], pb.n, counts)
-                ivs.append(paired_ratio(x_s, ra, rb, 0.5).mean)
+                ivs.append(paired_ratio(x_s, ra, rb, 0.5).mean1)
             lo, hi = union(ivs)
             distinct += classify(-math.inf if lo is None else lo,
                                  math.inf if hi is None else hi,
                                  cc.delta_star) == "distinct"  # fmt: skip
         n = cc.known_seeds[1] - cc.known_seeds[0]
-        true = math.log2(true_mean[1.0] / true_mean[r]) if 1.0 in true_mean else None
+        true = math.log2(t1[1.0] / t1[r]) if 1.0 in t1 else None
+        true_mean = math.log2(t[1.0] / t[r]) if 1.0 in t else None
         if r == 1.0:
             rows.append(_check("V-h0k", distinct <= cc.known_max, r=r, distinct=distinct,
-                               n=n, true_ratio=true))  # fmt: skip
+                               n=n, true_ratio=true, true_ratio_mean=true_mean))  # fmt: skip
         else:
             rows.append(_record("V-h0k-power", r=r, distinct=distinct, n=n,
-                                true_ratio=true, true_means=[true_mean[1.0], true_mean[r]]))  # fmt: skip
+                                true_ratio=true, true_ratio_mean=true_mean,
+                                true_means1=[t1[1.0], t1[r]],
+                                true_means=[t[1.0], t[r]]))  # fmt: skip
     return rows
 
 

@@ -18,8 +18,16 @@ in and its neighbour out; a run that starts at the first grid point has $lo
 extrapolated).
 
 **The widths**: $\Delta_{\mathrm{typ}}$ the first window's upper end of $p$
-(``Windows.typical``), and $\bar\Delta = x_0 + \int_{x_0}^{x_{-1}} p\,
-d\Delta$ (trapezoids linear in $\Delta$; ``mean_width``). Where each moment
+(``Windows.typical``); the main one $\bar\Delta_1 = x_0 +
+\int_{x_0}^{\Delta_{\mathrm{typ}}} p\,d\Delta$, the integral up to the first
+window's upper end (``first_mean``: trapezoids linear in $\Delta$ on the
+grid up to the window's last point, and from there to
+$\Delta_{\mathrm{typ}}$ the one of $p = 1/2$ at its end, the crossing's
+value; $x_0$ of no window); and $\bar\Delta = x_0 + \int_{x_0}^{x_{-1}}
+p\,d\Delta$ (``mean_width``), beside it. $\bar\Delta$ adds the
+reappearances too: a periodic motion's returns, of the video rather than of
+the code, so the main width counts only the lags the extrapolation wins
+without a break (README, 「ユーザーの決定（2026-11-26、値を見る前）」). Where each moment
 $t$ wins below its own width $W_t$ and loses above it, $p(\Delta) = P(W_t >
 \Delta)$: the crossing of 1/2 is the median of $W_t$ and $\bar\Delta =
 E[\min(\max(W_t, x_0), x_{-1})]$ (on the grid: the median exactly where
@@ -36,13 +44,16 @@ $[l_t, W_t]$ it is $P(W_t \ge \Delta)$ whatever the $l_t$, its crossing of
 
 **The bootstrap** (``draws_summary``, ``paired_ratio``): each resample's
 curve ``(n, L)``; its first window's upper end (``first_upper``: NaN of no
-window) and $\bar\Delta$. An interval is of the 2.5% and 97.5% order points
+window), $\bar\Delta_1$ and $\bar\Delta$. An interval is of the 2.5% and 97.5% order points
 (``quantile``), a draw of no window counted as below every width: where more
 than 2.5% of the draws have none, the lower end is None (「無い」; at
 exactly 2.5% the next order point). The
 paired ratio of two codes is $\log_2(W_a / W_b)$ of the same draws; of
 $\Delta_{\mathrm{typ}}$ only where both have a window in at least 97.5% of
-the draws (``WINDOWED``), else it is not given.
+the draws (``WINDOWED``), else it is not given. $\bar\Delta_1$ is $x_0$ of a
+draw of no window, so its ratio is given of every draw, and two codes of no
+window have the ratio 0: no small difference (C6; ``judge_width``'s
+wording says so).
 """
 
 import math
@@ -60,6 +71,8 @@ __all__ = [
     "Span",
     "Windows",
     "draws_summary",
+    "first_mean",
+    "first_means",
     "first_upper",
     "mean_width",
     "mean_widths",
@@ -95,23 +108,26 @@ type Interval = tuple[float | None, float | None]
 class DrawSummary:
     r"""``draws_summary``'s: the shares of draws of no window and of a window
     cut at the grid's end, the interval of the first window's upper end and
-    of $\bar\Delta$ (None of a pooled $G$)."""
+    of $\bar\Delta$ and of $\bar\Delta_1$ (None of a pooled $G$)."""
 
     none: float
     cut: float
     typ: Interval
     mean: Interval | None
+    mean1: Interval | None
 
 
 @dataclass(frozen=True)
 class PairedRatio:
     r"""``paired_ratio``'s: the intervals of $\log_2$ of the ratios of
-    $\bar\Delta$ and of $\Delta_{\mathrm{typ}}$ (None: not given), the
+    $\bar\Delta_1$ (the main), of $\bar\Delta$ and of
+    $\Delta_{\mathrm{typ}}$ (None: not given), the
     two codes' shares of draws with a window, whether a draw's first window
     is cut at the grid's end (「打ち切りを含む」) and the two codes' mean
     over the draws of $p$ at the grid's last lag (``tail``: the share of
     the moments $\bar\Delta$ clips there)."""
 
+    mean1: Interval
     mean: Interval
     typ: Interval | None
     windowed: tuple[float, float]
@@ -199,20 +215,25 @@ def survival(won: Tensor) -> Tensor:
     return has[:, None] & (idx[None] <= end[:, None])
 
 
+def _first_runs(ok: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Of each row of ``ok`` ``(n, L)`` bool: whether a point is in, whether
+    its first run ends before the last point, and the first point out after
+    the run (0 where it runs to the end), each ``(n,)``."""
+    idx = torch.arange(ok.shape[1])
+    has = ok.any(1)
+    start = ok.int().argmax(1)  # the first point in (0 where none)
+    out_after = ~ok & (idx[None] > start[:, None])
+    return has, out_after.any(1), out_after.int().argmax(1)
+
+
 def first_upper(
     x: Tensor, y: Tensor, threshold: float, *, below: bool
 ) -> tuple[Tensor, Tensor]:
     """The first window's upper end ``(n,)`` float64 of each curve of ``y``
     ``(n, L)`` (NaN of no window; as ``windows``) and whether it is cut by
     the grid's end ``(n,)`` bool."""
-    ok = meets(y, threshold, below=below)
-    n, length = ok.shape
-    idx = torch.arange(length)
-    has = ok.any(1)
-    start = ok.int().argmax(1)  # the first point in (0 where none)
-    out_after = ~ok & (idx[None] > start[:, None])
-    ends = out_after.any(1)
-    stop = out_after.int().argmax(1)  # the first point out after it
+    has, ends, stop = _first_runs(meets(y, threshold, below=below))
+    n = y.shape[0]
     j = (stop - 1).clamp(min=0)
     xd, yd = x.double(), y.double()
     x0, x1 = xd[j], xd[stop]
@@ -222,6 +243,30 @@ def first_upper(
     hi = torch.where(ends, crossed, xd[-1].expand(n))
     hi = torch.where(has, hi, torch.full_like(hi, math.nan))
     return hi, has & ~ends
+
+
+def first_means(x: Tensor, p: Tensor) -> Tensor:
+    r"""$\bar\Delta_1$ ``(n,)`` float64 of each curve of ``p`` ``(n, L)`` on
+    ``x`` ``(L,)`` (module docstring): $x_0 + \int_{x_0}^{x_j} p\,d\Delta$
+    (trapezoids) to the first window's last point $x_j$ (of $p \ge 1/2$),
+    plus $\tfrac12(p_j + \tfrac12)(\Delta_{\mathrm{typ}} - x_j)$ (none of a
+    window cut at the grid's end); $x_0$ of no window."""
+    xd, pd = x.double(), p.double()
+    n, length = pd.shape
+    has, ends, stop = _first_runs(meets(pd, 0.5, below=False))
+    hi, _ = first_upper(xd, pd, 0.5, below=False)
+    seg = (pd[:, 1:] + pd[:, :-1]) / 2 * (xd[1:] - xd[:-1])  # (n, L - 1)
+    cum = torch.cat([pd.new_zeros(n, 1), seg.cumsum(1)], 1)  # (n, L): to x_k
+    j = torch.where(ends, stop - 1, torch.full_like(stop, length - 1))
+    pj = pd.gather(1, j[:, None])[:, 0]
+    tail = torch.where(ends, (pj + 0.5) / 2 * (hi - xd[j]), torch.zeros_like(pj))
+    inside = xd[0] + cum.gather(1, j[:, None])[:, 0] + tail
+    return torch.where(has, inside, xd[0].expand(n))
+
+
+def first_mean(x: Tensor, p: Tensor) -> float:
+    """``first_means`` of one curve ``p`` ``(L,)``."""
+    return float(first_means(x, p[None])[0])
 
 
 def quantile(values: Tensor, q: float) -> float | None:
@@ -259,18 +304,21 @@ def draws_summary(
     r"""Of the resampled curves ``draws`` ``(n, L)`` on ``x``: the share of
     draws of no window, of a window cut at the grid's end, the interval of
     the first window's upper end and, of a $p$ (not ``below``), of
-    $\bar\Delta$ (module docstring)."""
+    $\bar\Delta$ and $\bar\Delta_1$ (module docstring)."""
     hi, cut = first_upper(x, draws, threshold, below=below)
     a = (1 - level) / 2
-    mean = None
+    mean, mean1 = None, None
     if not below:
         m = mean_widths(x, draws)
         mean = (quantile(m, a), quantile(m, 1 - a))
+        m1 = first_means(x, draws)
+        mean1 = (quantile(m1, a), quantile(m1, 1 - a))
     return DrawSummary(
         none=float(hi.isnan().double().mean()),
         cut=float(cut.double().mean()),
         typ=(quantile(hi, a), quantile(hi, 1 - a)),
         mean=mean,
+        mean1=mean1,
     )
 
 
@@ -283,13 +331,15 @@ def paired_ratio(
     level: float = 0.95,
 ) -> PairedRatio:
     r"""Of two codes' resampled $p$ ``(n, L)`` of the same draws: the
-    interval of $\log_2(ar\Delta_a / ar\Delta_b)$, and of $\log_2$ of the
+    intervals of $\log_2$ of the ratios of $\bar\Delta_1$ (the main) and of
+    $\bar\Delta$, and of $\log_2$ of the
     ratio of the first windows' upper ends (None unless both have a window
     in at least ``WINDOWED`` of the draws; then of the draws where both have
     one), the shares of draws with a window, whether a draw's first window
     runs to the last point (「打ち切りを含む」) and the mean $p$ there."""
     a = (1 - level) / 2
     r = torch.log2(mean_widths(x, draws_a) / mean_widths(x, draws_b))
+    r1 = torch.log2(first_means(x, draws_a) / first_means(x, draws_b))
     ha, ca = first_upper(x, draws_a, threshold, below=False)
     hb, cb = first_upper(x, draws_b, threshold, below=False)
     wa = float((~ha.isnan()).double().mean())
@@ -300,6 +350,7 @@ def paired_ratio(
         t = torch.log2(ha[both] / hb[both])
         typ = (quantile(t, a), quantile(t, 1 - a))
     return PairedRatio(
+        mean1=(quantile(r1, a), quantile(r1, 1 - a)),
         mean=(quantile(r, a), quantile(r, 1 - a)),
         typ=typ,
         windowed=(wa, wb),
