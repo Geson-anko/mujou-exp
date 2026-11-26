@@ -5418,7 +5418,7 @@ $\Delta_*$（$G_{\mathrm{mid}}$ は 0.03、$\hat d$ は 4）と言葉づかい�
 
 ### 集計と読み方
 
-- 集計は `uv run python -m exp.vision.results.v18c.judge_geom --stage apply --geom runs/v18c-tlin --runs runs --json exp/vision/results/v18c/judge_geom.json` で行った（`./runs/` に pull した行のファイルから計算した）。下の表の数字は `judge_geom.json` から取った
+- 集計は `uv run python -m exp.vision.results.v18c.judge_geom --stage apply --geom runs/v18c-tlin --runs runs --json exp/vision/results/v18c/judge_geom.json` で行った（`./runs/` に pull した行のファイルから計算した）。下の表の数字は `judge_geom.json` から取った（約 1.5 MB で、git には入れない。同じコマンドで作り直せる）
 - 表の $G_{\mathrm{mid}}$ は `in` の層の値で、「± 」は $2\,\mathrm{SE}^*$、括弧の中は $s$ である。$G - s/2$ は定常の下限の線からの距離である。`in` の層では下限ではないので、目安として並べた
 - 対の差は「行の符号 − 物差し」で、「± 」は $2\,\mathrm{SE}^*$ である。言葉づかいの分類は、区間 $\pm 2\,\mathrm{SE}^*$ を README の規則に当てたものである。「区別」は「実用上の差を区別できた」、「小」は「実用上の差は小さい」、「足りない」は「解像度が足りない」を表す。6 つの刻みの同時区間（$\pm c\,\mathrm{SE}^*$、$c$ は対ごとに 2.52〜2.72）で分類が変わるときは、括弧に書いた。曲線全体について言うときは、同時区間の分類を使う
 - 学習前の物差しは、その run の step 0 の checkpoint を yard で回したものだけを使った（V18 `r0.25`・`s0` → `init`、V18b F・M の `s0` → `init_f`・`init_m`、V18c → 同じ seed の `init_c`・`init_c1`、`v16` → `init_v16`）。V18 の `r0.5`・`r0.75`・`s1`、V18b の `s1`、`v17` は、step 0 が yard のものと同じかを確かめていない。そのため、学習前との差を出していない
