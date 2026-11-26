@@ -1,6 +1,6 @@
 # 主の評価 dyn/copy の確かめと結果
 
-計画は [plans/dyn.md](../../plans/dyn.md)。設計の経緯は [memory/agents/operator-width/design.md](../../../../memory/agents/operator-width/design.md)、Codex さんの批判は [memory/agents/codex/dyn-critique.md](../../../../memory/agents/codex/dyn-critique.md) にある。
+計画は [plans/dyn.md](../../plans/dyn.md)。考え方と結果を図で読める解説は [dyn-guide.html](../../dyn-guide.html)（ブラウザで開く）。設計の経緯は [memory/agents/operator-width/design.md](../../../../memory/agents/operator-width/design.md)、Codex さんの批判は [memory/agents/codex/dyn-critique.md](../../../../memory/agents/codex/dyn-critique.md) にある。
 
 ## 回す前に決めたこと（2026-11-26）
 

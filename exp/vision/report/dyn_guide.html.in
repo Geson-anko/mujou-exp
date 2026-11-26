@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>予測しやすさの評価</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one reading column of about 46rem; figures widen to 60rem. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #13171e;
+  --ink-2: #4b5462;
+  --ink-3: #6f7886;
+  --rule: #d7dce4;
+  --grid: #e6e9ee;
+  --accent: #2a78d6;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --neutral: #9aa3af;
+  --good: #0a7d0a;
+  --bad: #c03434;
+  --warn: #9a6400;
+  --good-bg: #e3f3e3;
+  --bad-bg: #fbe5e5;
+  --warn-bg: #fbf0d9;
+  --why-bg: #e8f0fb;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+    --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+    --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+    --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+  --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+  --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+  --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.9;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+main { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.4; margin: 0; }
+h1 { font-weight: 900; font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: 0.01em; }
+h2 { font-weight: 900; font-size: 1.5rem; }
+h3 { font-weight: 700; font-size: 1.1rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--grid); padding: 0.05em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+var { font-style: italic; font-family: "Times New Roman", serif; font-size: 1.05em; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+section { display: flex; flex-direction: column; gap: 20px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-3); }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-top: 2px solid var(--ink); padding-top: 14px; max-width: 46rem; }
+.prose { display: flex; flex-direction: column; gap: 14px; max-width: 46rem; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 0.88rem; }
+.ob { text-decoration: overline; }
+
+header.hero { padding-top: 48px; display: flex; flex-direction: column; gap: 18px; max-width: 46rem; }
+.hero .lead { font-size: 1.08rem; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-3); }
+nav.toc { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 18px; }
+nav.toc ol { margin: 6px 0 0; padding-left: 1.4em; font-size: 0.92rem; columns: 2 16rem; column-gap: 2rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+
+.why { max-width: 46rem; background: var(--why-bg); border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+.why .k { font-weight: 700; font-size: 0.86rem; color: var(--accent); }
+.status { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.status ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+
+/* the flow of this guide */
+.flow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-width: 46rem; counter-reset: step; }
+.flow li { position: relative; padding: 10px 0 10px 52px; border-left: 2px solid var(--rule); margin-left: 17px; }
+.flow li::before { counter-increment: step; content: counter(step); position: absolute; left: -18px; top: 10px; width: 34px; height: 34px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); color: var(--accent); font-family: var(--font-mono); font-weight: 500; display: flex; align-items: center; justify-content: center; }
+.flow li b { display: block; }
+.flow .grp { margin: 14px 0 4px 0; font-size: 0.8rem; color: var(--ink-3); font-family: var(--font-mono); letter-spacing: 0.06em; padding-left: 0; border: 0; }
+.flow .grp::before { content: none; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.card .k { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.card h3 { font-size: 1rem; }
+.card p { font-size: 0.92rem; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); line-height: 1.75; max-width: 46rem; }
+.tag { display: inline-block; font-size: 0.74rem; font-weight: 700; border-radius: 3px; padding: 0 6px; margin-right: 6px; vertical-align: 1px; }
+.tag.schema { background: var(--warn-bg); color: var(--warn); }
+.tag.data { background: var(--good-bg); color: var(--good); }
+.chart { width: 100%; max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; }
+.chart svg { display: block; width: 100%; height: auto; }
+
+/* diagrams */
+.dg text { font-family: var(--font-body); fill: var(--ink-2); font-size: 15px; }
+.dg text.strong { fill: var(--ink); font-weight: 700; }
+.dg text.small { font-size: 13px; }
+.dg text.mono { font-family: var(--font-mono); }
+.dg text.big { font-size: 22px; font-weight: 900; fill: var(--ink); }
+.dg text.accent { fill: var(--accent); }
+.dg text.warn { fill: var(--warn); }
+.dg text.onbar { fill: #ffffff; }
+.dg .box { fill: var(--bg); stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .ln { stroke: var(--ink-3); stroke-width: 1.5; fill: none; }
+.dg .axis { stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .gridline { stroke: var(--grid); stroke-width: 1; }
+.dg .chance { stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.dg .tick { stroke-width: 2; }
+.dg .ray { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.dg .cross { stroke: var(--ink); stroke-width: 2.5; }
+.dg .cell { stroke: var(--panel); stroke-width: 1; }
+.dg .c1 { fill: var(--s1); } .dg .c2 { fill: var(--s2); } .dg .c3 { fill: var(--s3); } .dg .c4 { fill: var(--s4); } .dg .cn { fill: var(--neutral); }
+.dg .c2s { stroke: var(--s2); } .dg .c4s { stroke: var(--s4); }
+.dg .hatch { fill: url(#hatch); }
+.dg .qline { fill: none; stroke: var(--ink); stroke-width: 2.5; }
+.dg .shade { fill: var(--grid); }
+.dg .refline { stroke: var(--ink-2); stroke-width: 1.5; }
+.dg .refline.bad { stroke: var(--bad); stroke-dasharray: 5 4; }
+.dg .cloud { fill: var(--why-bg); stroke: var(--ink-3); stroke-width: 1; }
+.dg .ring { fill: none; stroke: var(--s2); stroke-width: 1.5; }
+.dg .whisk { stroke-width: 3; }
+.dg .c1s { stroke: var(--s1); } .dg .c3s { stroke: var(--s3); } .dg .cns { stroke: var(--neutral); }
+.dg text.lab-bad { fill: var(--bad); }
+.defs .hl { stroke: var(--ink-2); stroke-width: 2; }
+.defs .hbg { fill: var(--panel); }
+.defs .ah { fill: var(--ink-3); }
+
+.eq { font-family: var(--font-mono); font-size: 0.9rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; overflow-x: auto; max-width: 46rem; line-height: 1.8; }
+.tbl { width: 100%; max-width: 46rem; overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; line-height: 1.65; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 700; background: var(--grid); }
+tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.badge { display: inline-block; font-size: 0.76rem; font-weight: 700; border-radius: 3px; padding: 0 6px; white-space: nowrap; }
+.badge.ok { background: var(--good-bg); color: var(--good); }
+.badge.ng { background: var(--bad-bg); color: var(--bad); }
+.badge.wait { background: var(--warn-bg); color: var(--warn); }
+blockquote { margin: 0; max-width: 46rem; border-left: 4px solid var(--rule); padding: 6px 16px; color: var(--ink-2); }
+dl.gloss { max-width: 46rem; margin: 0; display: grid; grid-template-columns: minmax(7rem, 11rem) 1fr; gap: 8px 18px; font-size: 0.92rem; }
+dl.gloss dt { font-weight: 700; }
+dl.gloss dd { margin: 0; color: var(--ink-2); }
+@media (max-width: 560px) {
+  dl.gloss { grid-template-columns: 1fr; gap: 2px; }
+  dl.gloss dd { margin-bottom: 10px; }
+  th, td { padding: 6px 8px; }
+}
+/* dyn-guide additions */
+.tbl table { min-width: 34rem; }
+.ctrl { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; font-size: 0.86rem; max-width: 46rem; }
+.ctrl label { display: flex; align-items: center; gap: 6px; }
+.ctrl input[type=range] { width: 9rem; }
+.ctrl select { font: inherit; font-size: 0.84rem; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 2px 4px; max-width: 15rem; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+.seg button { font: inherit; font-size: 0.82rem; background: var(--panel); color: var(--ink-2); border: 0; padding: 2px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.readout { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-2); max-width: 46rem; line-height: 1.7; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8rem; color: var(--ink-2); max-width: 46rem; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; }
+.legend i.dash { background: none !important; border-top: 2px dashed; height: 0; }
+.legend i.hollow { background: none !important; border: 1.5px solid; width: 9px; height: 9px; border-radius: 50%; }
+.tip { position: fixed; display: none; z-index: 10; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; font-size: 0.78rem; line-height: 1.55; color: var(--ink); box-shadow: 0 2px 8px rgba(0,0,0,0.15); max-width: 20rem; }
+.tip .mono { font-family: var(--font-mono); }
+.ch text { font-family: var(--font-body); font-size: 12px; fill: var(--ink-2); }
+.ch text.mono { font-family: var(--font-mono); font-size: 11px; }
+.ch text.ttl { fill: var(--ink); font-weight: 700; font-size: 13px; }
+.ch .grid { stroke: var(--grid); stroke-width: 1; }
+.ch .axis { stroke: var(--ink-3); stroke-width: 1; }
+.ch .zero { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
+.ch .band { fill: var(--grid); opacity: 0.7; }
+.chips { display: inline-flex; gap: 4px; }
+.w-a { color: var(--good); } .w-b { color: var(--bad); } .w-s { color: var(--warn); } .w-n { color: var(--ink-3); }
+.big-n { font-family: var(--font-mono); font-size: 1.6rem; font-weight: 500; color: var(--ink); line-height: 1.2; }
+</style>
+
+<svg class="defs" width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+  </defs>
+</svg>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">mujou-exp · exp/vision · 主の評価 dyn/copy · 2026-11-26〜27</div>
+  <h1>表現の「予測しやすさ」を測る：主の評価 dyn/copy</h1>
+  <p class="lead">この資料は、exp/vision で主の評価に決めた dyn/copy を説明します。dyn/copy は、学んだ表現（符号）の時間変化を、小さなダイナミクスモデルがどれだけ当てられるかを測ります。読み手には、機械学習の基礎を学んだ学部生を想定しています。次の順に説明します。なぜこの量にしたか、どんなずるに弱いか、どう確かめたか、既存の 34 個の符号で何が分かったかです。</p>
+  <div class="meta"><span>2026-11-27 時点</span><span>mujou 5aa37738dd04</span><span>コード snapshot 637b5ae275e8</span><span>PR #33</span><span>計算: std-00〜03（RTX 4090）</span></div>
+  <div class="meta"><span>出典: exp/vision/plans/dyn.md（計画）、exp/vision/results/dyn/README.md（確かめと結果）</span></div>
+</header>
+
+<section class="status" aria-label="いまの状況">
+  <h3>いまの状況（2026-11-27 時点）</h3>
+  <ul>
+    <li>2026-11-26 のユーザーの決定で、dyn/copy を主の評価にしました。線形の幅（等速の外挿）は副の記述に下げました。</li>
+    <li>合成データによる確かめ V-p1（41 項目）と、実データの物差しの確かめ V-p2 は、全て通りました。V-p1 のうち 2 つは、値を見た後に直しています（8 節）。</li>
+    <li>既存の 34 個の符号に当てました。どの符号も、画素の PCA（<code>pca</code>）より「予測が良い」とは区別できませんでした（9〜12 節）。</li>
+    <li>ここでの値は全て<b>探索の記述</b>です。他の量の値を見た後に測ったので、仮説の判定には使いません。</li>
+    <li>内容のガード v3 は、まだ有効性が確かめられていません。そのため、どの符号にも「良い」とは書けません（7 節）。</li>
+  </ul>
+</section>
+
+<nav class="toc" aria-label="目次">
+  <b>目次</b>
+  <ol>
+    <li><a href="#found">分かったこと</a></li>
+    <li><a href="#why">なぜ dyn/copy を主にしたか</a></li>
+    <li><a href="#def">測る量：R<sub>copy</sub> と R<sub>clim</sub></a></li>
+    <li><a href="#fam">予測器の族：線形と 2 層の MLP</a></li>
+    <li><a href="#cheat">2 つのずると 2 つの分母</a></li>
+    <li><a href="#words">判定の言葉</a></li>
+    <li><a href="#guard">ガードと定性評価</a></li>
+    <li><a href="#check">確かめ（合成と物差し）</a></li>
+    <li><a href="#dots">結果 1：符号ごとの値</a></li>
+    <li><a href="#psi">結果 2：対の比の平面</a></li>
+    <li><a href="#curves">結果 3：刻みごとの曲線</a></li>
+    <li><a href="#steps">結果 4：学習の前後と λ</a></li>
+    <li><a href="#say">言えること・言えないこと</a></li>
+    <li><a href="#repro">付録：再現</a></li>
+  </ol>
+</nav>
+
+<section id="found">
+  <div class="sec-head"><div class="eyebrow">01</div><h2>分かったこと</h2></div>
+  <div class="cards">
+    <div class="card"><div class="k">結果 1・2</div><h3>どの符号も pca より「予測が良い」にならなかった</h3><p>学習した JEPA と VAE の 34 個のどれも、<code>pca</code>・<code>mean8</code>・自分の学習前に対して、2 つの分母の両方で予測が良いとは区別できませんでした。最も多い結果は「分母で向きが割れた」です。</p></div>
+    <div class="card"><div class="k">結果 3</div><h3>長い刻みの値は、予測器よりも符号の遅さで決まる</h3><p>25.6 秒の R<sub>clim</sub> は 0.961〜1.000 でした（<code>pca</code> は 0.964）。予測器が、平均の予測より下げられる誤差は 5% 未満です。そのため R<sub>copy</sub> の差は、ほぼ符号の遅さの差です。</p></div>
+    <div class="card"><div class="k">結果 3</div><h3>MLP と 2 点入力は、ほとんど効果がない</h3><p>主の範囲で、MLP − 線形は −0.010〜+0.001、線形 − 1 点入力の線形は −0.012〜+0.0003 でした。1.6 秒以上の刻みでは、34 個の全てで MLP が step 0（線形そのもの）を選びました。</p></div>
+    <div class="card"><div class="k">結果 4</div><h3>学習率 10<sup>−4</sup> では、λ によって向きが分かれる</h3><p>step 6000 から 60000 の間に、λ = 0.5 は符号が遅くなる向きに動き、λ = 0.95 は白い雑音に近づく向きに動きました。線形の幅（副）でも、同じ符号が両端に来ています。</p></div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="sec-head"><div class="eyebrow">02</div><h2>なぜ dyn/copy を主にしたか</h2></div>
+  <div class="prose">
+    <p>JEPA は、動画の各時刻の画像を、符号（ベクトル）に変えます。良い符号なら、時間とともに符号が「単純に」動くはずです。これがこの評価の出発点です。単純に動く符号は、次の時刻の符号を当てやすいからです。</p>
+    <p>これまでの副の量「線形の幅」は、等速の外挿 2w<sub>t</sub> − w<sub>t−Δ</sub> という<b>決まった 1 つのモデル</b>が、copy（今の値をそのまま答える）にどの刻みまで勝つかを測っていました。これは、テイラー展開の 1 次で当てる考え方です。</p>
+    <p>しかし、単純な動きは等速だけではありません。ユーザーは「回転など、数学的に単純な操作で外挿できないか」と考えました。下の図の右のように、符号が円を描いて回る場合、等速の外挿は外れます。それでも、回転の行列を 1 つ掛ければ厳密に当たります。回転や減衰振動は、どれも<b>線形モデル</b>に含まれます。そこで、決まった 1 つのモデルで測るのをやめました。代わりに、「学んだ小さなダイナミクスモデルで、どれだけ当てられるか」という予測しやすさそのものを、主の評価にしました。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 720 290" role="img" aria-label="等速で当たる動きと、回転する動きの比較">
+      <text text-anchor="middle" x="180" y="24" class="strong">直線の動き：等速の外挿で当たる</text>
+      <text text-anchor="middle" x="540" y="24" class="strong">回転する動き：等速は外れ、回転なら当たる</text>
+      <line x1="40" y1="250" x2="320" y2="70" class="ln" stroke-dasharray="3 4"/>
+      <circle cx="80" cy="224" r="6" class="c1"/><text text-anchor="middle" x="80" y="252" class="small mono">w(t−Δ)</text>
+      <circle cx="170" cy="166" r="6" class="c1"/><text text-anchor="middle" x="140" y="190" class="small mono">w(t)</text>
+      <circle cx="260" cy="108" r="7" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="268" y="96" class="small mono" text-anchor="start">w(t+Δ)</text>
+      <circle cx="260" cy="108" r="3" class="c3"/>
+      <line x1="170" y1="166" x2="260" y2="108" class="c2s" stroke-width="2" stroke-dasharray="5 4"/>
+      <text x="230" y="160" class="small" text-anchor="start">copy の誤差</text>
+      <text text-anchor="middle" x="180" y="278" class="small">緑の点（等速の外挿）が真の位置に重なる</text>
+      <circle cx="540" cy="150" r="90" class="ln" stroke-dasharray="3 4"/>
+      <circle cx="476.4" cy="86.4" r="6" class="c1"/><text text-anchor="middle" x="452" y="78" class="small mono">w(t−Δ)</text>
+      <circle cx="540" cy="60" r="6" class="c1"/><text text-anchor="middle" x="540" y="48" class="small mono">w(t)</text>
+      <circle cx="603.6" cy="86.4" r="7" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="612" y="104" class="small mono" text-anchor="start">w(t+Δ)</text>
+      <circle cx="603.6" cy="33.6" r="5" class="c3"/><text x="612" y="36" class="small" text-anchor="start">等速の外挿</text>
+      <line x1="603.6" y1="33.6" x2="603.6" y2="80" class="c3s" stroke-width="2" stroke-dasharray="3 3"/>
+      <line x1="540" y1="60" x2="597" y2="84" class="c2s" stroke-width="2" stroke-dasharray="5 4"/>
+      <text text-anchor="middle" x="540" y="200" class="small">回転の行列 M を掛けると</text>
+      <text text-anchor="middle" x="540" y="218" class="small">w(t+Δ) = M w(t) で厳密に当たる</text>
+      <text text-anchor="middle" x="540" y="278" class="small">等速の外挿は円の外へ出る（緑）</text>
+    </svg></div>
+    <figcaption><span class="tag schema">模式図</span>青は入力の 2 点、黒い輪は当てたい真の位置です。オレンジの破線は copy（w(t) をそのまま答える）の誤差、緑は等速の外挿です。左の直線の動きでは、等速の外挿が厳密に当たります。右の回転では等速の外挿が外れますが、回転の行列を掛ける線形モデルなら誤差は 0 です。図の刻みは 1/8 周です。</figcaption>
+  </figure>
+  <div class="why"><div class="k">ユーザーの決定（2026-11-26）</div><p>「dynamics/copy が主の評価になる。線形なモデルか、2 層ほどの非線形のダイナミクスモデルでの予測誤差が低ければ低いほど良いとする形で決着。潜在空間が壊れていることを避けるために他のガード（崩壊の指標、内容のガード v3）があり、かつ復元の定性評価（拡散のデコーダ）を考える」。線形の幅は副の記述に下がりました。</p></div>
+</section>
+
+<section id="def">
+  <div class="sec-head"><div class="eyebrow">03</div><h2>測る量：R<sub>copy</sub> と R<sub>clim</sub></h2></div>
+  <div class="prose">
+    <p>符号は、そのままでは方向ごとに大きさがばらばらです。そこで、参照の組で当てた PCA で 64 次元に落とし、各方向の分散がほぼ 1 になるように白色化します（線形の幅と同じ座標 w です）。時刻は、8 枚の画像の stack ごとに 0.1 秒刻みです。刻み Δ は 0.1〜25.6 秒です。</p>
+    <p>刻み Δ ごとに、2 点 (w<sub>t</sub>, w<sub>t−Δ</sub>) から w<sub>t+Δ</sub> を当てる予測器を学びます。予測の誤差を、2 つの「何もしない予測」の誤差でそれぞれ割ります。</p>
+  </div>
+  <div class="eq">R<sub>copy</sub>(Δ) = Σ‖ŵ<sub>t+Δ</sub> − w<sub>t+Δ</sub>‖² ／ Σ‖w<sub>t</sub> − w<sub>t+Δ</sub>‖²　　（分母：copy の誤差）<br>R<sub>clim</sub>(Δ) = Σ‖ŵ<sub>t+Δ</sub> − w<sub>t+Δ</sub>‖² ／ Σ‖w̄ − w<sub>t+Δ</sub>‖²　　（分母：平均の予測の誤差。w̄ は訓練の組の平均）</div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 720 250" role="img" aria-label="3 つの誤差の模式図">
+      <line x1="150" y1="215" x2="470" y2="100" class="c2s" stroke-width="2" stroke-dasharray="6 5"/>
+      <line x1="330" y1="160" x2="470" y2="100" class="c1s" stroke-width="2" stroke-dasharray="6 5"/>
+      <line x1="445" y1="135" x2="470" y2="100" stroke="var(--ink)" stroke-width="2.5"/>
+      <path d="M142 207 L158 223 M158 207 L142 223" stroke="var(--ink)" stroke-width="2"/><text text-anchor="middle" x="150" y="243" class="strong">w̄（平均）</text>
+      <circle cx="220" cy="70" r="6" class="c1"/><text text-anchor="middle" x="220" y="56" class="small mono">w(t−Δ)</text>
+      <circle cx="330" cy="160" r="6" class="c1"/><text text-anchor="middle" x="330" y="186" class="small mono">w(t)</text>
+      <line x1="220" y1="70" x2="330" y2="160" class="ln" stroke-dasharray="2 3"/>
+      <circle cx="470" cy="100" r="7" fill="none" stroke="var(--ink)" stroke-width="2"/><text text-anchor="start" x="480" y="94" class="small mono">w(t+Δ)</text>
+      <circle cx="445" cy="135" r="5" fill="var(--ink)"/><text text-anchor="middle" x="445" y="158" class="small mono">ŵ</text>
+      <text x="530" y="150" class="small" text-anchor="start">黒：予測器の誤差（分子）</text>
+      <text x="530" y="175" class="small" text-anchor="start" style="fill:var(--s1)">青の破線：copy の誤差</text>
+      <text x="530" y="200" class="small" text-anchor="start" style="fill:var(--s2)">橙の破線：平均の予測の誤差</text>
+    </svg></div>
+    <figcaption><span class="tag schema">模式図</span>分子（黒）は 2 つの比で共通で、分母だけが違います。R<sub>copy</sub> は、「今の値をそのまま答える」予測より、誤差を何割まで減らせたかを表します。R<sub>clim</sub> は、「いつも平均を答える」予測より、誤差を何割まで減らせたかを表します。どちらも低いほど良く、1 は「何もしない予測と同じ」です。</figcaption>
+  </figure>
+  <dl class="gloss">
+    <dt>R<sub>copy</sub>（主）</dt><dd>予測器の誤差 ÷ copy の誤差。ユーザーの決定で主の量です。低いほど良い。予測できない過程（白い雑音や長い刻み）では 1/2 に近づきます。copy の誤差が、平均の予測の誤差の約 2 倍になるからです。</dd>
+    <dt>R<sub>clim</sub></dt><dd>予測器の誤差 ÷ 平均の予測の誤差。気象の予報でいう「気候値に対する技量」に当たります。低いほど良い。予測できない過程では 1 に近づきます。必ず R<sub>copy</sub> と並べます。</dd>
+    <dt>V/D</dt><dd>R<sub>copy</sub> ÷ R<sub>clim</sub> = (平均の誤差) ÷ (copy の誤差)。予測器によらない、符号そのものの性質です。定常なら 1/(2(1 − r(Δ))) で、r は自己相関です。符号が遅い（r が大きい）ほど V/D は大きくなります。</dd>
+    <dt>主の 1 つの数</dt><dd>0.8〜25.6 秒での log R を、log Δ について平均した値（<span class="ob">log R</span>）。半オクターブ刻みの 11 点（8・11・16・23・32・45・64・91・128・181・256 stack）から、台形則で求めます。自然対数で、低いほど良い。0.8 秒未満は、8 枚の stack の重なりだけで滑らかになるので、記述として別に出します。</dd>
+    <dt>対の比 ψ</dt><dd>符号 a と b の、主の数の差。ψ<sub>copy</sub> = <span class="ob">log R<sub>copy</sub></span>(a) − <span class="ob">log R<sub>copy</sub></span>(b)。ψ<sub>clim</sub> も同じです。負なら a が低い（良い側）です。区間は、Zurich のブロックの抽出から作った ±2 SE です。</dd>
+    <dt>評価の組</dt><dd>Zurich の動画の共通の中心（約 14100 個）。全ての刻みで、同じ時刻の集合を使います。訓練・検証・記録の組は、Zurich 以外の 9 本の動画を、動画ごとに分けて作ります（記録 1 本・検証 1 本・訓練 7 本、128 秒のブロック）。</dd>
+  </dl>
+</section>
+
+<section id="fam">
+  <div class="sec-head"><div class="eyebrow">04</div><h2>予測器の族：線形と 2 層の MLP</h2></div>
+  <div class="prose">
+    <p>予測器は、全ての符号で同じ形・同じ容量・同じ学び方にします。符号どうしの差が、予測器の差ではなく符号の差になるようにするためです。</p>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>族</th><th>形</th><th>含むもの・学び方</th></tr>
+    <tr><td>線形（記録として必ず並べる）</td><td class="n">ŵ = M₁w<sub>t</sub> + M₂w<sub>t−Δ</sub> + b</td><td>copy（M₁ = I）、等速（2I, −I）、回転や減衰の作用素 exp(ΔA)（M₂ = 0）、平均の予測（M = 0）を、全て含みます。切片つきの ridge を閉じた式で解き、強さ α は検証の組で選びます。</td></tr>
+    <tr><td>線形 + 残差 MLP（主）</td><td class="n">ŵ = ŵ<sub>線形</sub> + g(w<sub>t</sub>, w<sub>t−Δ</sub>)</td><td>g は 128 → 512 → 512 → 64 の 2 層（GELU）です。出力層を 0 で初期化するので、step 0 は線形そのものです。検証の組で、500 step ごとの時点から選び（step 0 を含む）、3 seed で平均します。</td></tr>
+    <tr><td>記録の行</td><td>copy・等速・平均・倍率 1 つ・1 点入力の線形</td><td>学ばないか、閉じた式で求めます。1 点入力の線形は、2 つ目の入力 w<sub>t−Δ</sub> がどれだけ効くかを見るために並べます。</td></tr>
+  </table></div>
+  <div class="prose">
+    <p>線形の族は copy と平均の予測を含むので、訓練の組の最小二乗では R<sub>copy</sub> ≤ 1 かつ R<sub>clim</sub> ≤ 1 が保証されます。MLP は step 0 を候補に含むので、検証の組では線形より悪くなりません。ただし、どちらも Zurich では保証されません。そこで、Zurich で R > 1 になった刻みを、分布のずれの印として記録します（34 個の符号ではありませんでした）。</p>
+    <p>主の族を MLP にするのは、記録の組で MLP が線形より悪くないこと（V-p2d）が、物差しの全てで示されたときだけ、と事前に決めました。V-p2d は通ったので、主の族は MLP です。</p>
+  </div>
+</section>
+
+<section id="cheat">
+  <div class="sec-head"><div class="eyebrow">05</div><h2>2 つのずると 2 つの分母</h2></div>
+  <div class="prose">
+    <p>「予測しやすいほど良い」という評価には、予測を上手にしないまま値だけを下げる、ずるがあります。分子は 2 つの比で共通なので、本物の改善（同じ分母のまま誤差が減る）は、2 つの比を両方下げます。一方、次の 2 つのずるは、2 つの分母で逆の向きに出ます。</p>
+    <ul>
+      <li><b>遅くする</b>：符号をゆっくり動かすと、copy がよく当たるようになります。copy の誤差（R<sub>copy</sub> の分母）が小さくなるので、R<sub>copy</sub> は上がり、R<sub>clim</sub> は下がります。</li>
+      <li><b>予測できない方向を混ぜる</b>：白い雑音の方向では、最良の予測が平均で、R<sub>copy</sub> = 1/2、R<sub>clim</sub> = 1 です。これを混ぜると、R<sub>copy</sub> は 1/2 に寄って下がり、R<sub>clim</sub> は 1 に寄って上がります。白色化は分散の小さい方向も 1 まで持ち上げます。そのため、符号の実効の次元が 64 より小さいと、このずるが自然に起きます。</li>
+    </ul>
+    <p>だから、R<sub>copy</sub> だけを見ると雑音を混ぜた符号を褒めることになり、R<sub>clim</sub> だけを見ると遅い符号を褒めることになります。2 つの分母の両方で下がるときだけ「予測が良い」と数える規則にしたのは、このためです。下の図で確かめられます。</p>
+  </div>
+  <figure>
+    <div class="ctrl">
+      <label>OU の時定数 τ <input type="range" id="ou-tau" min="0" max="100" value="50"><span class="num" id="ou-tau-v"></span></label>
+      <label>白い雑音の方向の割合 <input type="range" id="ou-f" min="0" max="90" value="0"><span class="num" id="ou-f-v"></span></label>
+      <label>回転（周期 5 秒）の方向の割合 <input type="range" id="ou-g" min="0" max="50" value="0"><span class="num" id="ou-g-v"></span></label>
+    </div>
+    <div class="chart" id="ou"></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>R<sub>copy</sub>（いまの設定）</span><span><i style="background:var(--s2)"></i>R<sub>clim</sub>（いまの設定）</span><span><i class="dash" style="border-color:var(--s1)"></i>R<sub>copy</sub>（基準：τ = 1.6 秒の OU だけ）</span><span><i class="dash" style="border-color:var(--s2)"></i>R<sub>clim</sub>（基準）</span></div>
+    <div class="readout" id="ou-out"></div>
+    <figcaption><span class="tag schema">閉じた式</span>64 方向のうち、指定した割合を白い雑音、または回転（周期 5 秒、誤差 0 で当たる）に置き換え、残りを OU 過程（平均へ戻る雑音の過程）にした合成の符号です。各方向の最良の線形予測の誤差と分母を足し合わせて描きました。OU はマルコフ過程なので、2 点入力でも 1 点入力と同じ R<sub>copy</sub> = (1 + r)/2、R<sub>clim</sub> = 1 − r²（r = e<sup>−Δ/τ</sup>）です。灰色の帯は 0.8 秒未満（記述の範囲）です。τ を大きくする（遅くする）と、R<sub>copy</sub> は上がり、R<sub>clim</sub> は下がります。雑音を混ぜると、逆に動きます。回転を混ぜると、両方が下がります。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>ただし、2 つの分母の規則でも捕まらないずるがあります。上の図で「回転」を混ぜると、両方の比が下がりました。回転が画像の内容を表しているなら、本物の改善です。しかし、入力によらない時計のような振動を符号に足しても、同じように両方が下がります。また、時間の平均（箱で平滑化する）でも、両方が下がります。</p>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>操作</th><th>R<sub>copy</sub></th><th>R<sub>clim</sub></th><th>何で捕まえるか</th></tr>
+    <tr><td>本物の改善（同じ符号で誤差が減る）</td><td>下がる</td><td>下がる</td><td>—</td></tr>
+    <tr><td>遅くする（τ を大きくする）</td><td>上がる</td><td>下がる</td><td>2 つの分母の規則（「割れ」になる）</td></tr>
+    <tr><td>予測できない方向を混ぜる</td><td>1/2 へ寄る（下がる）</td><td>1 へ寄る（上がる）</td><td>2 つの分母の規則と、実効の次元の記録</td></tr>
+    <tr><td>時間の平均（箱で平滑化）</td><td>短い刻みで下がる</td><td>全ての刻みで下がる</td><td><b>規則では捕まらない。</b>内容のガード v3</td></tr>
+    <tr><td>内容の無い時計（入力によらない振動）</td><td>下がる</td><td>下がる</td><td><b>どの規則でも捕まらない場合がある。</b>物差し <code>clock</code> で大きさを記録し、V19 では未来の観測の予測を並べる</td></tr>
+  </table></div>
+  <div class="prose">
+    <p>時間の平均の大きさは、閉じた式（神託）で計算してあります。τ = 3.2 秒の OU を幅 3.2 秒で平均すると (ψ<sub>copy</sub>, ψ<sub>clim</sub>) = (−0.078, −0.485)、幅 12.8 秒で (−0.201, −1.538) です。どちらも 2 つの分母で下がるので、規則の上では「良い」に見えます。白い方向を混ぜた場合は (−0.157, +0.120) で、「割れ」になります。</p>
+  </div>
+</section>
+
+<section id="words">
+  <div class="sec-head"><div class="eyebrow">06</div><h2>判定の言葉</h2></div>
+  <div class="prose">
+    <p>2 つの符号 a と b を、同じ読む場所・同じ白色化・同じ抽出で比べます。ψ<sub>copy</sub> と ψ<sub>clim</sub> の区間（±2 SE）が 0 のどちら側にあるかで、4 つの言葉を使い分けます。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 720 330" role="img" aria-label="判定の言葉の平面">
+      <rect x="160" y="30" width="200" height="130" fill="var(--warn-bg)"/>
+      <rect x="360" y="30" width="200" height="130" fill="var(--bad-bg)"/>
+      <rect x="160" y="160" width="200" height="130" fill="var(--good-bg)"/>
+      <rect x="360" y="160" width="200" height="130" fill="var(--warn-bg)"/>
+      <line x1="160" y1="160" x2="560" y2="160" class="axis"/>
+      <line x1="360" y1="30" x2="360" y2="290" class="axis"/>
+      <line x1="230" y1="290" x2="490" y2="30" class="ray"/>
+      <text x="560" y="182" class="small" text-anchor="end">ψ<tspan baseline-shift="sub" font-size="10">copy</tspan> →</text>
+      <text x="368" y="44" class="small" text-anchor="start">↑ ψ<tspan baseline-shift="sub" font-size="10">clim</tspan></text>
+      <text text-anchor="middle" x="260" y="226" class="strong" style="fill:var(--good)">a の予測が良い</text>
+      <text text-anchor="middle" x="260" y="246" class="small">両方の分母で a が低い</text>
+      <text text-anchor="middle" x="460" y="96" class="strong" style="fill:var(--bad)">b の予測が良い</text>
+      <text text-anchor="middle" x="260" y="88" class="strong" style="fill:var(--warn)">割れ</text>
+      <text text-anchor="middle" x="260" y="108" class="small">copy で低く clim で高い</text>
+      <text text-anchor="middle" x="260" y="126" class="small">＝白い雑音を混ぜた形</text>
+      <text text-anchor="middle" x="460" y="218" class="strong" style="fill:var(--warn)">割れ</text>
+      <text text-anchor="middle" x="460" y="238" class="small">copy で高く clim で低い</text>
+      <text text-anchor="middle" x="460" y="256" class="small">＝遅くした形</text>
+      <text x="588" y="60" class="small" text-anchor="start">斜めの点線に沿う動き</text>
+      <text x="588" y="78" class="small" text-anchor="start">＝予測の上手さの差</text>
+      <text x="588" y="110" class="small" text-anchor="start">点線に直交する動き</text>
+      <text x="588" y="128" class="small" text-anchor="start">＝遅さ（V/D）の差</text>
+      <text text-anchor="middle" x="360" y="318" class="small">区間が 0 をまたぐときは「区別できない」</text>
+    </svg></div>
+    <figcaption><span class="tag schema">模式図</span>横軸が ψ<sub>copy</sub>、縦軸が ψ<sub>clim</sub> です。左下（両方が負）だけが「a の予測が b より良いと区別できた」です。左上と右下は「分母で向きが割れた」です。2 つの差は ψ<sub>copy</sub> − ψ<sub>clim</sub> = <span class="ob">log(V/D)</span> の差で、予測器によらない遅さの差です。斜めの点線（ψ<sub>copy</sub> = ψ<sub>clim</sub>）からのずれは遅さの差を表し、点線に沿った動きは、平均の予測に対する上手さの差を表します。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>「a は b より<b>良い</b>」と書けるのは、左下に入り、さらに次の 2 つを満たすときだけです。(i) a が崩壊の指標（K1〜K3・<code>token_r2</code>）で崩壊していない。(ii) 内容のガード v3 で、a が b より内容を落としていないことが、水準と変化の両方で示される。v3 の有効性が確かめられるまでは「内容の比べは未確立」と添え、「良い」とは書きません。</p>
+    <p>実用上の大きさの余裕は置いていません。線形の族には seed の揺れが無いので、小さな差でも「区別できた」になりえます。そのため、ψ の値と区間を必ず数で書き、「大きい」とは書きません。言える範囲は、Zurich の 1 本の動画の中での、その checkpoint の比べまでです。</p>
+  </div>
+</section>
+
+<section id="guard">
+  <div class="sec-head"><div class="eyebrow">07</div><h2>ガードと定性評価</h2></div>
+  <div class="prose">
+    <p>予測しやすさは、潜在空間が壊れていても高くなりえます。極端な例では、全ての画像に同じ符号を出せば、予測は必ず当たります。そこで、dyn/copy の値を読む前に、別の物差しで潜在空間を見張ります。</p>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="k">崩壊の指標</div><h3>K1〜K3・token_r2</h3><p>崩壊した符号の値は読みません。V18b M の 2 本は K3 で崩壊しています（<code>token_r2</code> 0.899・0.906）。他の JEPA は崩壊していません。定数の符号は R = 0/0 なので「測れない」として、先に除きます。</p></div>
+    <div class="card"><div class="k">内容のガード v3</div><h3>観測の内容を落としていないか</h3><p>時間の平均と時計は、2 つの分母の規則を通ってしまう場合があります。これを見つけるのが内容のガード v3 です。ただし、並行して開発中で、有効性はまだ確かめられていません。そのため、内容の比較は未確立です。</p></div>
+    <div class="card"><div class="k">実効の次元</div><h3>participation ratio</h3><p>参照の組の固有値から、符号が実際に使っている次元の数を記録します。この数が小さいと、白色化で雑音の方向が持ち上がります。すると、予測できない方向を混ぜるずるが、意図せず起きます。</p></div>
+    <div class="card"><div class="k">定性評価（計画）</div><h3>拡散のデコーダで復元を見る</h3><p>符号から画像を復元して、目で確かめます。遅くなった符号が「内容を保った平滑化」なのか「内容を捨てた平均」なのかは、数だけでは決められないからです。</p></div>
+  </div>
+</section>
+
+<section id="check">
+  <div class="sec-head"><div class="eyebrow">08</div><h2>確かめ（合成と物差し）</h2></div>
+  <div class="prose">
+    <p>学習した符号に当てる前に、2 段階の確かめを置きました。外れたら止めるという決まりです。通る条件を探して規則を変えることはしません。</p>
+    <p><b>V-p1（合成）</b>は、真の値が閉じた式で分かる合成の系列を使い、推定量と判定の規則を確かめます。ガウス過程では、2 点入力の最良の線形予測の誤差は、自己共分散だけで決まります。これを「神託」と呼び、推定と照らし合わせます。</p>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>確かめ</th><th>合否</th><th>値</th></tr>
+    <tr><td>V-p1a 推定量と、学んだ係数の母集団の誤差の一致</td><td><span class="badge ok">通る</span></td><td>10 合成とも 4 SE 以内（ずれ ÷ 4SE の最大は 0.63）</td></tr>
+    <tr><td>V-p1b 恒等式と不変性</td><td><span class="badge ok">通る</span></td><td>13 合成。S9-S8 は値を見た後の直し（下）の後</td></tr>
+    <tr><td>V-p1c 陰性の対照（OU。MLP が線形を超えないはず）</td><td><span class="badge ok">通る</span></td><td>MLP は 16 の刻みの全てで step 0 を選び、ψ = 0</td></tr>
+    <tr><td>V-p1d 陽性の対照（振幅で周期が変わる回転。MLP だけが勝てる）</td><td><span class="badge ok">通る</span></td><td>MLP 対 線形の ψ = −0.381 [−0.459, −0.303]、「MLP が良い」</td></tr>
+    <tr><td>V-p1e 判定の規則と神託の一致</td><td><span class="badge ok">通る</span></td><td>4 対とも一致。例：白い方向の注入は、神託 (−0.157, +0.120)、推定 (−0.163, +0.115) で「割れ」。時間の平均（幅 3.2 秒）は、神託 (−0.078, −0.485)、推定 (−0.073, −0.481) で、規則の上では「良い」</td></tr>
+    <tr><td>V-p1f 区間の被覆（200 の実現）</td><td><span class="badge ok">通る</span></td><td>的を含む割合は copy・clim とも 0.945（閾値 0.90）。値を見た後に的を直しました（下）</td></tr>
+    <tr><td>V-p1h 差の無い対で誤って「区別できた」と言う回数</td><td><span class="badge ok">通る</span></td><td>0 / 200（閾値 13）</td></tr>
+  </table></div>
+  <div class="prose">
+    <p><b>値を見た後の直しが 2 つあります。</b>どちらも、元の結果・理由・直した後の結果を README に書きました。</p>
+    <ul>
+      <li><b>V-p1f の的</b>：初めは、区間が神託の最良の ψ* を含む割合を数えました。結果は 0.725 で、閾値を下回りました。区間は「学んだ予測器を固定した」条件つきの量です。そのため、的は ψ* ではなく、学んだ予測器の母集団での ψ が正しいと分かりました（訓練が有限であることによる誤差は符号ごとに違い、差をとっても打ち消し合いません）。的を直すと 0.945 で通りました。ψ* を含む割合（0.68・0.745）も記録しています。</li>
+      <li><b>V-p1b の S9-S8</b>：ほぼ決定論的な系列で、直交変換の前後の分子の一致を相対 10<sup>−10</sup> で比べたところ、丸め誤差のために外れました（1.08 × 10<sup>−10</sup>）。R が 10<sup>−5</sup> の桁だと、丸め誤差の相対的な大きさが約 6600 倍に増えるためです。丸め誤差の物差しを √(分子 × 分母) にしたところ、閾値の数 10<sup>−10</sup> は変えずに通りました。</li>
+    </ul>
+    <p><b>V-p2（実データの物差し）</b>は、学習していない符号を使い、不変性と実装の保証を確かめて、値を記録します。<code>pca</code> に無作為な直交変換をかけた <code>rot</code> は、線形の値が相対 6.9 × 10<sup>−15</sup> まで一致しました。記録の組での MLP の非劣性（V-p2d）も、全ての物差しで通りました。これにより、主の族は MLP に決まりました。</p>
+  </div>
+  <div class="tbl"><table>
+    <tr><th>物差し（own の MLP）</th><th>何か</th><th>主の数 copy / clim</th><th>対 pca の ψ（言葉）</th></tr>
+    <tr><td><code>pca</code></td><td>画素の PCA</td><td class="n">−0.509 / −0.245</td><td>—</td></tr>
+    <tr><td><code>clock</code></td><td><code>pca</code> の速い 8 方向を、入力によらない回転に置き換えた</td><td class="n">−0.670 / −0.388</td><td class="n">−0.161 / −0.143（a 良）</td></tr>
+    <tr><td><code>color</code></td><td>パッチごと・チャネルごとの画素の平均</td><td class="n">−0.562 / −0.313</td><td class="n">−0.054 / −0.069（a 良）</td></tr>
+    <tr><td><code>mean8</code></td><td>8 枚の画像を時間で平均した画像の PCA</td><td class="n">−0.482 / −0.238</td><td class="n">+0.027 / +0.007（b 良）</td></tr>
+    <tr><td><code>init_*</code></td><td>学習前のエンコーダ</td><td class="n">−0.512〜−0.561 / −0.166〜−0.246</td><td>「区別できない」か「割れ」</td></tr>
+  </table></div>
+  <div class="prose">
+    <p>内容の無い時計 <code>clock</code> は、物差しの中で最も大きく下げました（ψ<sub>copy</sub> = −0.161）。「どの規則でも見つけられない場合がある」と予告した穴が、実データの規模で現れたことになります。dyn/copy の「良い」は、内容のガードと組み合わせないと読めません。</p>
+  </div>
+</section>
+
+<section id="dots">
+  <div class="sec-head"><div class="eyebrow">09 · 結果 1</div><h2>符号ごとの値</h2></div>
+  <div class="prose">
+    <p>問い：学習した符号の主の数は、物差しと比べてどこにあるか。条件：34 個の符号（V18 4・V18b 4・V18c 24・VAE 2）、Zurich、主の範囲 0.8〜25.6 秒、MLP は 3 seed の平均です。</p>
+  </div>
+  <figure>
+    <div class="ctrl"><span>読む場所</span><span class="seg" id="dots-place"><button aria-pressed="true" data-v="own">自分の潜在（own）</button><button aria-pressed="false" data-v="h_mean">h_mean</button></span></div>
+    <div class="chart" id="dots-chart"></div>
+    <div class="legend"><span><i class="dot" style="background:var(--good)"></i>対 pca で a 良</span><span><i class="dot" style="background:var(--warn)"></i>割れ</span><span><i class="dot" style="background:var(--neutral)"></i>区別できない</span><span><i class="dot" style="background:var(--bad)"></i>b（pca）良</span><span><i class="hollow" style="border-color:var(--ink-2)"></i>線形</span><span><i style="background:var(--ink)"></i>pca</span><span><i class="dash" style="border-color:var(--ink)"></i>mean8</span></div>
+    <figcaption><span class="tag data">実データ</span>左が <span class="ob">log R<sub>copy</sub></span>、右が <span class="ob">log R<sub>clim</sub></span> で、どちらも左ほど低い（予測しやすい）ことを表します。塗った点が主の MLP、輪が線形です。色は、MLP の対 <code>pca</code> の言葉を表します。縦の実線は <code>pca</code>、破線は <code>mean8</code>（どちらも own の MLP）です。h_mean に切り替えても、物差しの線は own のままです（README と同じ比べ方）。V18b M の 2 本は崩壊しているので読みません。点に触れると値が出ます。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>図から読めること：</p>
+    <ul>
+      <li>own の R<sub>copy</sub> の主の数は −0.41〜−0.62 に広がります。しかし、<code>pca</code>（−0.509）より左にあり、かつ R<sub>clim</sub> でも左にある符号はありません。左に寄った符号（例：V18c 1e-4 λ0.95 の step 60000 は −0.616）は、R<sub>clim</sub> では右端（−0.021）にあります。</li>
+      <li>own の MLP の対 <code>pca</code> の言葉は、「割れ」23、「区別できない」6、「b 良」5、「a 良」0 です。</li>
+      <li>塗った点と輪はほとんど重なります。MLP − 線形は −0.010〜+0.001 です。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="psi">
+  <div class="sec-head"><div class="eyebrow">10 · 結果 2</div><h2>対の比の平面</h2></div>
+  <div class="prose">
+    <p>問い：各符号は、物差しに対して 6 節の平面のどこに来るか。区間は ±2 SE<sub>tot</sub> です（Zurich の 128 秒と 256 秒のブロックで、それぞれ 2000 回の抽出から SE を求め、大きいほうをとります。MLP は seed の揺れも足します）。</p>
+  </div>
+  <figure>
+    <div class="ctrl">
+      <span>相手</span><span class="seg" id="psi-base"><button aria-pressed="true" data-v="pca">pca</button><button aria-pressed="false" data-v="mean8">mean8</button><button aria-pressed="false" data-v="init">自分の学習前</button></span>
+      <span>族</span><span class="seg" id="psi-fam"><button aria-pressed="true" data-v="mlp">MLP</button><button aria-pressed="false" data-v="lin">線形</button></span>
+      <span>読む場所</span><span class="seg" id="psi-place"><button aria-pressed="true" data-v="own">own</button><button aria-pressed="false" data-v="h_mean">h_mean</button></span>
+    </div>
+    <div class="chart" id="psi-chart"></div>
+    <div class="legend"><span><i class="dot" style="background:var(--good)"></i>a 良</span><span><i class="dot" style="background:var(--warn)"></i>割れ</span><span><i class="dot" style="background:var(--neutral)"></i>区別できない</span><span><i class="dot" style="background:var(--bad)"></i>b 良</span><span>◇ 物差し（対 pca、own のときだけ）</span></div>
+    <div class="readout" id="psi-count"></div>
+    <figcaption><span class="tag data">実データ</span>横軸 ψ<sub>copy</sub>、縦軸 ψ<sub>clim</sub>。原点が相手と同じ値です。十字の線が ±2 SE<sub>tot</sub> の区間です。斜めの点線は ψ<sub>copy</sub> = ψ<sub>clim</sub>（遅さが相手と同じ）です。相手が「自分の学習前」のときは、学習前の物差しがある 28 個だけを描きます。◇ は物差しの <code>clock</code>・<code>color</code>・<code>mean8</code>・学習前のエンコーダの、<code>pca</code> に対する値です。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>図から読めること：</p>
+    <ul>
+      <li>左下（a 良）に入る符号は、どの相手・族・読む場所でも 0 個です。左下に入っているのは物差しの <code>clock</code> と <code>color</code> だけです。</li>
+      <li>own の多くの点は左上（copy で低く clim で高い）にあります。これは白い雑音を混ぜた形と同じ向きです。右下（copy で高く clim で低い。遅くなった形）は、own では V18c 1e-4 λ0.5 の step 60000 の 2 個です。h_mean では V18b F なども右下に来ます。</li>
+      <li>点は斜めの点線から大きく離れ、点線に直交する向きに並びます。ψ<sub>copy</sub> − ψ<sub>clim</sub> は予測器によらない遅さの差なので、「割れ」は予測の上手さの差より、遅さの差の表れと読めます。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="curves">
+  <div class="sec-head"><div class="eyebrow">11 · 結果 3</div><h2>刻みごとの曲線</h2></div>
+  <div class="prose">
+    <p>問い：主の数は、どの刻みの値で決まっているか。線形は 0.1 秒刻みの全 256 点、MLP は半オクターブの 16 点です。</p>
+  </div>
+  <figure>
+    <div class="ctrl">
+      <label>符号 a <select id="cv-a"></select></label>
+      <label>比べる b <select id="cv-b"></select></label>
+    </div>
+    <div class="chart" id="cv"></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>R<sub>copy</sub>（a、線形）</span><span><i style="background:var(--s2)"></i>R<sub>clim</sub>（a、線形）</span><span><i class="dot" style="background:var(--ink)"></i>a の MLP</span><span><i class="dash" style="border-color:var(--s1)"></i>b の R<sub>copy</sub></span><span><i class="dash" style="border-color:var(--s2)"></i>b の R<sub>clim</sub></span></div>
+    <div class="readout" id="cv-out">グラフに触れると、その刻みの値が出ます。</div>
+    <figcaption><span class="tag data">実データ</span>横軸は刻み Δ（秒、対数）、縦軸は R（低いほど良い）です。灰色の帯は 0.8 秒未満（記述の範囲）です。横の点線は 1/2（予測できない過程の R<sub>copy</sub> の極限）と 1 です。own の読む場所だけを描いています。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>図から読めること：</p>
+    <ul>
+      <li>長い刻みでは R<sub>clim</sub> がほぼ 1 に達します。25.6 秒の R<sub>clim</sub> は、学習した符号と VAE の own で 0.961〜1.000 です（<code>pca</code> は 0.964）。予測器が平均の予測より下げられる誤差は、5% 未満です。</li>
+      <li>このとき R<sub>copy</sub> = (V/D) R<sub>clim</sub> ≈ V/D なので、R<sub>copy</sub> は 1/2 の近くの値になり、ほぼ符号の自己相関だけで決まります。</li>
+      <li>MLP の点は、1.6 秒以上の刻みで線形の線に乗ります。34 個の全てで、MLP が step 0（線形そのもの）を選んだからです。0.1〜0.8 秒では MLP の寄与が大きく、VAE v17 の own では 0.1〜0.8 秒の copy が −0.692（線形）から −1.040（MLP）に下がります。</li>
+      <li>0.1〜0.8 秒の <span class="ob">log R<sub>copy</sub></span>（own の線形）は、学習した符号で −0.16〜−0.69 です。どれも <code>pca</code>（−0.940）より高い値です。つまり、短い刻みで copy に対して稼ぐ分は、<code>pca</code> より小さいということです。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="steps">
+  <div class="sec-head"><div class="eyebrow">12 · 結果 4</div><h2>学習の前後と λ</h2></div>
+  <div class="prose">
+    <p>問い：V18c で学習を続けると（step 6000 → 60000）、符号はどちらへ動くか。own の線形の主の数を、copy と clim の平面に描きます。</p>
+  </div>
+  <figure>
+    <div class="chart" id="st"></div>
+    <div class="legend"><span><i style="background:var(--s3)"></i>λ = 0.5</span><span><i style="background:var(--neutral)"></i>λ = 0.8</span><span><i style="background:var(--s4)"></i>λ = 0.95</span><span><i style="background:var(--ink-2)"></i>実線：学習率 10<sup>−4</sup></span><span><i class="dash" style="border-color:var(--ink-2)"></i>破線：学習率 10<sup>−5</sup></span><span>◇ 物差し</span></div>
+    <figcaption><span class="tag data">実データ</span>横軸 <span class="ob">log R<sub>copy</sub></span>、縦軸 <span class="ob">log R<sub>clim</sub></span>（own、線形）。矢印は同じ run の step 6000 から 60000 への動きで、s0・s1 の 2 本ずつです。右下へ動くのが「遅くなる」向き、左上へ動くのが「白くなる」向きです（6 節の平面と同じ向き）。左下が両方で良い向きです。</figcaption>
+  </figure>
+  <div class="prose">
+    <p>図から読めること：</p>
+    <ul>
+      <li>学習率 10<sup>−4</sup>・λ = 0.5 は右下へ動きます（own の線形の ψ = +0.128 / −0.127、s0）。符号が遅くなりました。</li>
+      <li>学習率 10<sup>−4</sup>・λ = 0.95 は左上へ動きます（−0.063 / +0.071）。step 60000 の R<sub>clim</sub> の主の数は −0.021・−0.018（R<sub>clim</sub> にして約 0.98）で、平均の予測とほとんど同じです。白い雑音に近づきました。λ = 0.8 は「区別できない」です。</li>
+      <li>学習率 10<sup>−5</sup> の動きは小さく、|ψ| ≤ 0.04 です。seed の違い（s0 と s1）も小さく、V18c の own の MLP で |ψ| ≤ 0.012 です。</li>
+      <li>線形の幅（副）でも、同じ符号が両端に来ました。λ = 0.5 は窓が伸びた側、λ = 0.8・0.95 は窓が消えた側です。どちらの量も、この 34 個では主に、符号の時間の 2 次の統計（遅さ・白さ）を見ています。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="say">
+  <div class="sec-head"><div class="eyebrow">13</div><h2>言えること・言えないこと</h2></div>
+  <div class="prose">
+    <p><b>言えること</b>（探索の記述。Zurich の 1 本の動画、PCA64 の白色化の中で）：</p>
+    <ol>
+      <li>測った 34 個の符号はどれも、2 つの分母の両方で <code>pca</code>・<code>mean8</code>・自分の学習前より予測しやすいとは、区別できなかった。</li>
+      <li>主の範囲では、平均の予測に対して予測器が下げる誤差は小さく（25.6 秒で 5% 未満）、R<sub>copy</sub> の差はほぼ符号の遅さ（V/D）の差である。2 層の MLP は線形にほとんど何も足さない。</li>
+      <li>学習率 10<sup>−4</sup> で長く学ぶと、λ = 0.5 は遅い向きに、λ = 0.95 は白い向きに動く。λ = 0.8 はその間にある。</li>
+      <li>seed による違いは、物差しとの差より小さい。</li>
+    </ol>
+    <p><b>言えないこと</b>：</p>
+    <ol>
+      <li>確証ではない。値は他の量を見た後に測った。V19 では、事前に決めた手順に従い、ここでの値で規則を変えない。</li>
+      <li>「良い」「予測しやすい表現」とは言えない。内容のガード v3 が確かめられていない。時間の平均と時計は、2 つの分母の規則を通りうる。</li>
+      <li>「割れ」の符号のうち、どちらの向きが望ましいかは、この量だけでは決まらない。遅くなったことが、内容を保った平滑化なのか、内容を捨てた平均なのかは、内容のガードと拡散のデコーダの復元で見る必要がある。</li>
+      <li>V18b M の値は、崩壊しているので読まない。</li>
+    </ol>
+  </div>
+  <div class="why"><div class="k">V19 での予想（Claude の推測）</div>
+    <p>V19 とシャッフルの対照の主の比べは、「区別できない」か「割れ」になると予想します。「a が良い」になるのは、時系列で学んだことで 25.6 秒の R<sub>clim</sub> が 0.90 を下回るときだけで、その見込みは 3 割程度です。MLP − 線形の絶対値は 0.02 未満と予想します。V19 が時間の順序から遅い成分を学ぶなら、copy で上がり clim で下がる向きの「割れ」になります。そのときは、内容のガード v3 と未来の観測の予測で、平均のずるなのか、内容のある遅さなのかを分ける必要があります。</p>
+  </div>
+</section>
+
+<section id="repro">
+  <div class="sec-head"><div class="eyebrow">付録</div><h2>再現</h2></div>
+  <div class="prose small">
+    <ul>
+      <li>mujou：<code>5aa37738dd04</code>。適用のコード snapshot：<code>637b5ae275e8</code>。集計の snapshot：<code>bf7dc0c76e31</code>。</li>
+      <li>実装：<code>exp/lib/dynpred.py</code>（族・比・主の数・神託）、<code>exp/lib/synth_series.py</code>、<code>exp/vision/dyn_eval.py</code>（組・符号化・確かめ・CLI）、<code>exp/vision/results/dyn/judge_dyn.py</code>（区間・判定の言葉）。</li>
+      <li>計算：std-00〜03 の RTX 4090 に 1 本ずつ、コンテナの中で実行しました。34 個とも rc=0、約 60 分です。初めの起動は、snapshot を固定しない job.sh を呼んだ誤りで止めたので、全て回し直しました（README の「実行」）。</li>
+      <li>集計：<code>judge_dyn --stage apply --dyn runs/v18c-dyn --runs runs --geom runs/v18c-tlin --json runs/v18c-dyn/judge_apply.json</code>（sha256 <code>b78cb104a88e…</code>）。380 万バイトあるので git には入れていません。</li>
+      <li>この資料：<code>uv run python -m exp.vision.report.build_dyn_guide data &lt;judge_apply.json&gt; &lt;judge_yard.json&gt;</code> で <code>exp/vision/report/dyn_guide_data.json</code> を作り、<code>… build_dyn_guide build</code> で HTML を書きます。本文は <code>exp/vision/report/dyn_guide.html.in</code> にあります。</li>
+      <li>数字の正：<a href="results/dyn/README.md">exp/vision/results/dyn/README.md</a>。計画：<a href="plans/dyn.md">exp/vision/plans/dyn.md</a>。</li>
+    </ul>
+  </div>
+</section>
+</main>
+
+<script type="application/json" id="data">/*DATA*/{}</script>
+<script>
+(() => {
+const D = JSON.parse(document.getElementById('data').textContent);
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function tx(parent, x, y, s, attrs = {}) {
+  const t = el('text', Object.assign({ x, y }, attrs), parent);
+  t.textContent = s;
+  return t;
+}
+const lin = (d0, d1, r0, r1) => v => r0 + (v - d0) / (d1 - d0) * (r1 - r0);
+const lg = (d0, d1, r0, r1) => v => r0 + (Math.log(v) - Math.log(d0)) / (Math.log(d1) - Math.log(d0)) * (r1 - r0);
+const f3 = v => (v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3));
+const f2 = v => (Math.abs(v) < 1e-9 ? '0' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(2));
+const r3 = v => (v == null ? '—' : v.toFixed(3));
+const WORD = { a_better: ['a 良', 'var(--good)'], b_better: ['b 良', 'var(--bad)'], split: ['割れ', 'var(--warn)'], none: ['区別できない', 'var(--neutral)'] };
+const tip = document.createElement('div');
+tip.className = 'tip';
+document.body.appendChild(tip);
+function showTip(ev, html) {
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(4, Math.min(ev.clientX + 12, innerWidth - w - 8)) + 'px';
+  tip.style.top = Math.max(4, Math.min(ev.clientY + 12, innerHeight - h - 8)) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+function svgIn(id, W, H, label) {
+  const box = document.getElementById(id);
+  box.innerHTML = '';
+  return el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'ch', role: 'img', 'aria-label': label }, box);
+}
+function seg(id, onChange) {
+  const box = document.getElementById(id);
+  box.addEventListener('click', ev => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    for (const x of box.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+    onChange(b.dataset.v);
+  });
+  return () => box.querySelector('[aria-pressed="true"]').dataset.v;
+}
+const MAIN_N = [8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256];
+function mainNumber(fn) {
+  let s = 0;
+  for (let i = 1; i < MAIN_N.length; i++) {
+    const a = MAIN_N[i - 1], b = MAIN_N[i];
+    s += 0.5 * (Math.log(fn(a)) + Math.log(fn(b))) * (Math.log(b) - Math.log(a));
+  }
+  return s / Math.log(256 / 8);
+}
+
+/* ---------- 05: OU explainer (closed forms) ---------- */
+(function ou() {
+  const tauS = document.getElementById('ou-tau'), fS = document.getElementById('ou-f'), gS = document.getElementById('ou-g');
+  const tauOf = v => 0.2 * Math.pow(64, v / 100);  // 0.2 s .. 12.8 s, 1.6 s at the middle
+  const T = 5.0;
+  function R(n, tau, f, g) {
+    const d = n / 10, r = Math.exp(-d / tau), o = 1 - f - g;
+    const num = o * (1 - r * r) + f;
+    const dcopy = o * 2 * (1 - r) + 2 * f + g * 2 * (1 - Math.cos(2 * Math.PI * d / T));
+    const dclim = 1;
+    return { copy: num / dcopy, clim: num / dclim };
+  }
+  const W = 680, H = 300, m = { l: 48, r: 16, t: 16, b: 40 };
+  const x = lg(0.1, 25.6, m.l, W - m.r), y = lin(0, 1.1, H - m.b, m.t);
+  function draw() {
+    const tau = tauOf(+tauS.value), f = +fS.value / 100;
+    let g = +gS.value / 100;
+    if (f + g > 0.95) g = 0.95 - f;
+    document.getElementById('ou-tau-v').textContent = tau.toFixed(2) + ' 秒';
+    document.getElementById('ou-f-v').textContent = Math.round(f * 100) + '%';
+    document.getElementById('ou-g-v').textContent = Math.round(g * 100) + '%';
+    const svg = svgIn('ou', W, H, 'OU の合成での R の曲線');
+    el('rect', { x: x(0.1), y: m.t, width: x(0.8) - x(0.1), height: H - m.b - m.t, class: 'band' }, svg);
+    for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+      el('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: v === 0.5 || v === 1 ? 'zero' : 'grid' }, svg);
+      tx(svg, m.l - 6, y(v) + 4, v.toFixed(2), { 'text-anchor': 'end', class: 'mono' });
+    }
+    for (const v of [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6]) {
+      el('line', { x1: x(v), x2: x(v), y1: H - m.b, y2: H - m.b + 4, class: 'axis' }, svg);
+      tx(svg, x(v), H - m.b + 16, String(v), { 'text-anchor': 'middle', class: 'mono' });
+    }
+    tx(svg, (m.l + W - m.r) / 2, H - 6, '刻み Δ（秒）', { 'text-anchor': 'middle' });
+    el('line', { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: 'axis' }, svg);
+    const ns = Array.from({ length: 256 }, (_, i) => i + 1);
+    const path = (fn, key) => ns.map((n, i) => (i ? 'L' : 'M') + x(n / 10).toFixed(1) + ' ' + y(Math.min(1.1, fn(n)[key])).toFixed(1)).join(' ');
+    const base = n => R(n, 1.6, 0, 0), cur = n => R(n, tau, f, g);
+    el('path', { d: path(base, 'copy'), fill: 'none', style: 'stroke:var(--s1)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, svg);
+    el('path', { d: path(base, 'clim'), fill: 'none', style: 'stroke:var(--s2)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, svg);
+    el('path', { d: path(cur, 'copy'), fill: 'none', style: 'stroke:var(--s1)', 'stroke-width': 2.5 }, svg);
+    el('path', { d: path(cur, 'clim'), fill: 'none', style: 'stroke:var(--s2)', 'stroke-width': 2.5 }, svg);
+    const mb = { copy: mainNumber(n => base(n).copy), clim: mainNumber(n => base(n).clim) };
+    const mc = { copy: mainNumber(n => cur(n).copy), clim: mainNumber(n => cur(n).clim) };
+    const pc = mc.copy - mb.copy, pl = mc.clim - mb.clim, e = 1e-4;
+    const w = pc < -e && pl < -e ? '両方で下がる（規則の上では「良い」）' : pc > e && pl > e ? '両方で上がる' : (pc < -e && pl > e) || (pc > e && pl < -e) ? '分母で向きが割れる' : '基準と同じ';
+    document.getElementById('ou-out').textContent =
+      `主の数（0.8〜25.6 秒）　いま: copy ${f3(mc.copy)} / clim ${f3(mc.clim)}　基準: copy ${f3(mb.copy)} / clim ${f3(mb.clim)}　差 ψ: ${f3(pc)} / ${f3(pl)} → ${w}`;
+  }
+  for (const s of [tauS, fS, gS]) s.addEventListener('input', draw);
+  draw();
+})();
+
+/* ---------- 09: dot plot ---------- */
+const MODELS = D.models;
+const yardMain = (code) => D.yard[code].summary.main;
+(function dots() {
+  const getPlace = seg('dots-place', draw);
+  function draw() {
+    const place = getPlace();
+    const rowH = 15, top = 40, W = 720, labW = 178, gap = 24, pw = (W - labW - gap - 10) / 2;
+    const H = top + MODELS.length * rowH + 40;
+    const svg = svgIn('dots-chart', W, H, '符号ごとの主の数');
+    const panels = [
+      { key: 'copy', x0: labW, dom: [-0.68, -0.32], title: 'log R_copy の平均（左ほど低い）' },
+      { key: 'clim', x0: labW + pw + gap, dom: [-0.46, 0.02], title: 'log R_clim の平均（左ほど低い）' },
+    ];
+    for (const p of panels) {
+      const sx = lin(p.dom[0], p.dom[1], p.x0, p.x0 + pw);
+      p.sx = sx;
+      tx(svg, p.x0 + pw / 2, 16, p.title, { 'text-anchor': 'middle', class: 'ttl' });
+      const step = 0.1;
+      for (let v = Math.ceil(p.dom[0] / step) * step; v <= p.dom[1] + 1e-9; v += step) {
+        el('line', { x1: sx(v), x2: sx(v), y1: top - 6, y2: H - 30, class: 'grid' }, svg);
+        tx(svg, sx(v), H - 16, (Math.abs(v) < 1e-9 ? 0 : v).toFixed(1).replace('-', '−'), { 'text-anchor': 'middle', class: 'mono' });
+      }
+      const pca = yardMain('pca').mlp[p.key], m8 = yardMain('mean8').mlp[p.key];
+      el('line', { x1: sx(pca), x2: sx(pca), y1: top - 10, y2: H - 30, style: 'stroke:var(--ink)', 'stroke-width': 1.5 }, svg);
+      el('line', { x1: sx(m8), x2: sx(m8), y1: top - 10, y2: H - 30, style: 'stroke:var(--ink)', 'stroke-width': 1.2, 'stroke-dasharray': '4 3' }, svg);
+      tx(svg, sx(pca), top - 12, 'pca', { 'text-anchor': 'middle', class: 'mono' });
+    }
+    let lastG = null;
+    MODELS.forEach((md, i) => {
+      const yy = top + i * rowH + rowH / 2;
+      if (md.group !== lastG) {
+        if (i) el('line', { x1: 0, x2: W, y1: yy - rowH / 2, y2: yy - rowH / 2, class: 'grid' }, svg);
+        lastG = md.group;
+      }
+      tx(svg, labW - 8, yy + 4, md.label, { 'text-anchor': 'end', class: 'mono', 'font-size': 10.5 });
+      const s = md[place].summary.main;
+      const word = md[place].pairs.pca.mlp.w;
+      const col = WORD[word][1];
+      for (const p of panels) {
+        const g = el('g', {}, svg);
+        el('circle', { cx: p.sx(s.lin[p.key]), cy: yy, r: 4, fill: 'none', style: 'stroke:var(--ink-2)', 'stroke-width': 1.2 }, g);
+        el('circle', { cx: p.sx(s.mlp[p.key]), cy: yy, r: 3.6, style: `fill:${col}` }, g);
+        const hit = el('rect', { x: p.x0, y: yy - rowH / 2, width: pw, height: rowH, fill: 'transparent' }, svg);
+        hit.addEventListener('mousemove', ev => showTip(ev, `<b>${md.label}</b>（${place}）<br><span class="mono">MLP copy ${f3(s.mlp.copy)} / clim ${f3(s.mlp.clim)}<br>線形 copy ${f3(s.lin.copy)} / clim ${f3(s.lin.clim)}</span><br>対 pca（MLP）: ${WORD[word][0]}`));
+        hit.addEventListener('mouseleave', hideTip);
+      }
+    });
+  }
+  draw();
+})();
+
+/* ---------- 10: psi plane ---------- */
+(function psi() {
+  const gb = seg('psi-base', draw), gf = seg('psi-fam', draw), gp = seg('psi-place', draw);
+  function draw() {
+    const base = gb(), fam = gf(), place = gp();
+    const pts = [];
+    for (const md of MODELS) {
+      const p = md[place].pairs[base];
+      if (!p) continue;
+      pts.push({ label: md.label, q: p[fam], yard: false });
+    }
+    if (base === 'pca' && place === 'own') {
+      for (const code of ['clock', 'color', 'mean8', 'init', 'init_c', 'init_f', 'init_m']) pts.push({ label: code, q: D.yard[code].vs_pca[fam], yard: true });
+    }
+    let lo = -0.05, hi = 0.05;
+    for (const p of pts) for (const k of ['copy', 'clim']) { lo = Math.min(lo, p.q[k][1]); hi = Math.max(hi, p.q[k][2]); }
+    lo -= 0.02; hi += 0.02;
+    const W = 620, H = 520, m = { l: 56, r: 16, t: 16, b: 44 };
+    const sx = lin(lo, hi, m.l, W - m.r), sy = lin(lo, hi, H - m.b, m.t);
+    const svg = svgIn('psi-chart', W, H, '対の比の平面');
+    const st = hi - lo > 0.4 ? 0.1 : 0.05;
+    for (let v = Math.ceil(lo / st) * st; v <= hi; v += st) {
+      const vv = Math.abs(v) < 1e-9 ? 0 : v;
+      el('line', { x1: sx(vv), x2: sx(vv), y1: m.t, y2: H - m.b, class: vv === 0 ? 'axis' : 'grid' }, svg);
+      el('line', { x1: m.l, x2: W - m.r, y1: sy(vv), y2: sy(vv), class: vv === 0 ? 'axis' : 'grid' }, svg);
+      tx(svg, sx(vv), H - m.b + 16, f2(vv), { 'text-anchor': 'middle', class: 'mono' });
+      tx(svg, m.l - 6, sy(vv) + 4, f2(vv), { 'text-anchor': 'end', class: 'mono' });
+    }
+    el('line', { x1: sx(lo), y1: sy(lo), x2: sx(hi), y2: sy(hi), class: 'zero' }, svg);
+    tx(svg, (m.l + W - m.r) / 2, H - 8, 'ψ_copy（左ほど a の R_copy が低い）', { 'text-anchor': 'middle' });
+    const yl = tx(svg, 14, (m.t + H - m.b) / 2, 'ψ_clim（下ほど a の R_clim が低い）', { 'text-anchor': 'middle' });
+    yl.setAttribute('transform', `rotate(-90 14 ${(m.t + H - m.b) / 2})`);
+    tx(svg, sx(lo) + 6, sy(lo) - 8, 'a 良', { style: 'fill:var(--good)', class: 'ttl' });
+    tx(svg, sx(hi) - 6, sy(hi) + 16, 'b 良', { style: 'fill:var(--bad)', class: 'ttl', 'text-anchor': 'end' });
+    tx(svg, sx(lo) + 6, sy(hi) + 16, '割れ（白い形）', { style: 'fill:var(--warn)', class: 'ttl' });
+    tx(svg, sx(hi) - 6, sy(lo) - 8, '割れ（遅い形）', { style: 'fill:var(--warn)', class: 'ttl', 'text-anchor': 'end' });
+    const cnt = { a_better: 0, split: 0, none: 0, b_better: 0 };
+    for (const p of pts) {
+      const c = p.q.copy, l = p.q.clim, col = WORD[p.q.w][1];
+      if (!p.yard) cnt[p.q.w]++;
+      const g = el('g', {}, svg);
+      el('line', { x1: sx(c[1]), x2: sx(c[2]), y1: sy(l[0]), y2: sy(l[0]), style: `stroke:${col}`, 'stroke-width': 1.2, opacity: 0.7 }, g);
+      el('line', { x1: sx(c[0]), x2: sx(c[0]), y1: sy(l[1]), y2: sy(l[2]), style: `stroke:${col}`, 'stroke-width': 1.2, opacity: 0.7 }, g);
+      if (p.yard) {
+        const X = sx(c[0]), Y = sy(l[0]);
+        el('path', { d: `M${X} ${Y - 6} L${X + 6} ${Y} L${X} ${Y + 6} L${X - 6} ${Y} Z`, style: `fill:var(--panel);stroke:${col}`, 'stroke-width': 1.8 }, g);
+        tx(g, X + 8, Y - 6, p.label, { class: 'mono' });
+      } else {
+        el('circle', { cx: sx(c[0]), cy: sy(l[0]), r: 4.2, style: `fill:${col};stroke:var(--panel)`, 'stroke-width': 1 }, g);
+      }
+      const hit = el('circle', { cx: sx(c[0]), cy: sy(l[0]), r: 9, fill: 'transparent' }, svg);
+      hit.addEventListener('mousemove', ev => showTip(ev, `<b>${p.label}</b>${p.yard ? '（物差し、対 pca）' : ''}<br><span class="mono">ψ_copy ${f3(c[0])} [${f3(c[1])}, ${f3(c[2])}]<br>ψ_clim ${f3(l[0])} [${f3(l[1])}, ${f3(l[2])}]</span><br>${WORD[p.q.w][0]}`));
+      hit.addEventListener('mouseleave', hideTip);
+    }
+    const n = pts.filter(p => !p.yard).length;
+    document.getElementById('psi-count').textContent = `描いた符号 ${n} 個：a 良 ${cnt.a_better}・割れ ${cnt.split}・区別できない ${cnt.none}・b 良 ${cnt.b_better}`;
+  }
+  draw();
+})();
+
+/* ---------- 11: curves ---------- */
+(function curves() {
+  const opts = [];
+  for (const code of Object.keys(D.yard)) opts.push({ id: 'y:' + code, label: '物差し ' + code, s: D.yard[code].summary });
+  for (const md of MODELS) opts.push({ id: 'm:' + md.key, label: md.label, s: md.own.summary });
+  const A = document.getElementById('cv-a'), B = document.getElementById('cv-b');
+  for (const sel of [A, B]) for (const o of opts) { const op = document.createElement('option'); op.value = o.id; op.textContent = o.label; sel.appendChild(op); }
+  A.value = 'm:v18c-lr1e-4-lam0.95-r0.5-s0@60000';
+  B.value = 'y:pca';
+  const byId = id => opts.find(o => o.id === id);
+  const W = 680, H = 320, m = { l: 48, r: 16, t: 16, b: 40 };
+  const x = lg(0.1, 25.6, m.l, W - m.r), y = lin(0, 1.1, H - m.b, m.t);
+  function draw() {
+    const a = byId(A.value), b = byId(B.value);
+    const svg = svgIn('cv', W, H, 'R の刻みごとの曲線');
+    el('rect', { x: x(0.1), y: m.t, width: x(0.8) - x(0.1), height: H - m.b - m.t, class: 'band' }, svg);
+    for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+      el('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: v === 0.5 || v === 1 ? 'zero' : 'grid' }, svg);
+      tx(svg, m.l - 6, y(v) + 4, v.toFixed(2), { 'text-anchor': 'end', class: 'mono' });
+    }
+    for (const v of [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6]) {
+      el('line', { x1: x(v), x2: x(v), y1: H - m.b, y2: H - m.b + 4, class: 'axis' }, svg);
+      tx(svg, x(v), H - m.b + 16, String(v), { 'text-anchor': 'middle', class: 'mono' });
+    }
+    el('line', { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: 'axis' }, svg);
+    tx(svg, (m.l + W - m.r) / 2, H - 6, '刻み Δ（秒）', { 'text-anchor': 'middle' });
+    const path = (c, key) => c.lags.map((n, i) => (i ? 'L' : 'M') + x(n / 10).toFixed(1) + ' ' + y(Math.min(1.1, c[key][i])).toFixed(1)).join(' ');
+    for (const [k, col] of [['copy', 'var(--s1)'], ['clim', 'var(--s2)']]) {
+      el('path', { d: path(b.s.curves.lin, k), fill: 'none', style: `stroke:${col}`, 'stroke-width': 1.4, 'stroke-dasharray': '5 4', opacity: 0.8 }, svg);
+      el('path', { d: path(a.s.curves.lin, k), fill: 'none', style: `stroke:${col}`, 'stroke-width': 2.4 }, svg);
+      const mc = a.s.curves.mlp;
+      mc.lags.forEach((n, i) => el('circle', { cx: x(n / 10), cy: y(Math.min(1.1, mc[k][i])), r: 3.4, style: `fill:${col};stroke:var(--ink)`, 'stroke-width': 1 }, svg));
+    }
+    const cross = el('line', { y1: m.t, y2: H - m.b, class: 'axis', opacity: 0 }, svg);
+    const hit = el('rect', { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: 'transparent' }, svg);
+    const out = document.getElementById('cv-out');
+    hit.addEventListener('mousemove', ev => {
+      const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+      const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+      const d = Math.exp(Math.log(0.1) + (p.x - m.l) / (W - m.r - m.l) * Math.log(256));
+      const n = Math.max(1, Math.min(256, Math.round(d * 10)));
+      cross.setAttribute('x1', x(n / 10)); cross.setAttribute('x2', x(n / 10)); cross.setAttribute('opacity', 1);
+      const la = a.s.curves.lin, lb = b.s.curves.lin, i = la.lags.indexOf(n);
+      const mi = a.s.curves.mlp.lags.indexOf(n);
+      const mtxt = mi >= 0 ? `　a の MLP: copy ${r3(a.s.curves.mlp.copy[mi])} / clim ${r3(a.s.curves.mlp.clim[mi])}（選んだ step ${a.s.steps[String(n)]}）` : '';
+      out.textContent = `Δ = ${(n / 10).toFixed(1)} 秒　a（線形）: copy ${r3(la.copy[i])} / clim ${r3(la.clim[i])}　b（線形）: copy ${r3(lb.copy[i])} / clim ${r3(lb.clim[i])}${mtxt}`;
+    });
+    hit.addEventListener('mouseleave', () => cross.setAttribute('opacity', 0));
+    const sa = a.s.main, sb = b.s.main;
+    out.textContent = `主の数（MLP）　a: copy ${f3(sa.mlp.copy)} / clim ${f3(sa.mlp.clim)}　b: copy ${f3(sb.mlp.copy)} / clim ${f3(sb.mlp.clim)}　25.6 秒の R（線形）　a: ${r3(a.s.r256.copy)} / ${r3(a.s.r256.clim)}　b: ${r3(b.s.r256.copy)} / ${r3(b.s.r256.clim)}`;
+  }
+  A.addEventListener('change', draw); B.addEventListener('change', draw);
+  draw();
+})();
+
+/* ---------- 12: steps ---------- */
+(function steps() {
+  const W = 620, H = 460, m = { l: 56, r: 16, t: 16, b: 44 };
+  const dx = [-0.66, -0.38], dy = [-0.30, 0.0];
+  const sx = lin(dx[0], dx[1], m.l, W - m.r), sy = lin(dy[0], dy[1], H - m.b, m.t);
+  const svg = svgIn('st', W, H, '学習の前後の動き');
+  for (let v = -0.65; v <= -0.38; v += 0.05) { el('line', { x1: sx(v), x2: sx(v), y1: m.t, y2: H - m.b, class: 'grid' }, svg); tx(svg, sx(v), H - m.b + 16, v.toFixed(2).replace('-', '−'), { 'text-anchor': 'middle', class: 'mono' }); }
+  for (let v = -0.30; v <= 0.0001; v += 0.05) { el('line', { x1: m.l, x2: W - m.r, y1: sy(v), y2: sy(v), class: 'grid' }, svg); tx(svg, m.l - 6, sy(v) + 4, (Math.abs(v) < 1e-9 ? 0 : v).toFixed(2).replace('-', '−'), { 'text-anchor': 'end', class: 'mono' }); }
+  tx(svg, (m.l + W - m.r) / 2, H - 8, 'log R_copy の平均（own、線形）', { 'text-anchor': 'middle' });
+  const yl = tx(svg, 14, (m.t + H - m.b) / 2, 'log R_clim の平均', { 'text-anchor': 'middle' });
+  yl.setAttribute('transform', `rotate(-90 14 ${(m.t + H - m.b) / 2})`);
+  const defs = el('defs', {}, svg);
+  const MK = { '0.5': 'var(--s3)', '0.8': 'var(--neutral)', '0.95': 'var(--s4)', g: 'var(--ink-3)' };
+  for (const [k, c] of Object.entries(MK)) {
+    const mk = el('marker', { id: 'ah-' + k.replace('.', ''), viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' }, defs);
+    el('path', { d: 'M0 0 L10 5 L0 10 z', style: `fill:${c}` }, mk);
+  }
+  const mkOf = k => `url(#ah-${k.replace('.', '')})`;
+  const byKey = Object.fromEntries(MODELS.map(md => [md.key, md]));
+  const LC = { '0.5': 'var(--s3)', '0.8': 'var(--neutral)', '0.95': 'var(--s4)' };
+  for (const s of D.steps) {
+    const a = byKey[s.a], b = byKey[s.b];
+    const lam = s.a.match(/lam([\d.]+)-/)[1], lr = s.a.match(/lr([^-]+)-/)[1];
+    const pa = a.own.summary.main.lin, pb = b.own.summary.main.lin;
+    const ln = el('line', { x1: sx(pb.copy), y1: sy(pb.clim), x2: sx(pa.copy), y2: sy(pa.clim), style: `stroke:${LC[lam]}`, 'stroke-width': 2, 'marker-end': mkOf(lam) }, svg);
+    if (lr === '1e-5') ln.setAttribute('stroke-dasharray', '5 3');
+    el('circle', { cx: sx(pb.copy), cy: sy(pb.clim), r: 3, style: `fill:${LC[lam]}` }, svg);
+    const q = s.own.lin;
+    const hit = el('line', { x1: sx(pb.copy), y1: sy(pb.clim), x2: sx(pa.copy), y2: sy(pa.clim), stroke: 'transparent', 'stroke-width': 12 }, svg);
+    hit.addEventListener('mousemove', ev => showTip(ev, `<b>${a.label.replace(' @60k', '')}</b><br>step 6000 → 60000（own、線形）<br><span class="mono">ψ ${f3(q.copy[0])} / ${f3(q.clim[0])}</span>　${WORD[q.w][0]}`));
+    hit.addEventListener('mouseleave', hideTip);
+  }
+  for (const code of ['pca', 'mean8', 'init_c']) {
+    const p = D.yard[code].summary.main.lin, X = sx(p.copy), Y = sy(p.clim);
+    el('path', { d: `M${X} ${Y - 6} L${X + 6} ${Y} L${X} ${Y + 6} L${X - 6} ${Y} Z`, style: 'fill:var(--panel);stroke:var(--ink)', 'stroke-width': 1.6 }, svg);
+    tx(svg, X + 8, Y + 4, code, { class: 'mono' });
+  }
+  const ox = sx(-0.585), oy = sy(-0.235);
+  el('line', { x1: ox, y1: oy, x2: ox + 44, y2: oy + 34, style: 'stroke:var(--ink-3)', 'stroke-width': 1.5, 'marker-end': mkOf('g') }, svg);
+  tx(svg, ox + 48, oy + 50, '遅くなる向き', { 'text-anchor': 'middle' });
+  el('line', { x1: ox, y1: oy, x2: ox - 34, y2: oy - 28, style: 'stroke:var(--ink-3)', 'stroke-width': 1.5, 'marker-end': mkOf('g') }, svg);
+  tx(svg, ox - 30, oy - 36, '白くなる向き', { 'text-anchor': 'middle' });
+})();
+})();
+</script>
