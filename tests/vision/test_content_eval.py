@@ -19,6 +19,25 @@ end to end on a tiny run (one code alone the same file to the byte), read
 by the judge; and its alignment: a code that is the stack's last frame
 itself (pooled as the observation) is read back by the least squares with
 $E = E^d = 1$ on the training set, the held-out runs and Zurich.
+
+v3's oracles: the parts' shares solved in closed form are the plan's
+(0.1466, 0.1034; 0.1608, 0.0892) and sum to 1 and, of the change, to $r$;
+the calibrations' noises (0.49336, 0.0023702) and the difference's and the
+pair's $E^d$ of the former ($-0.509$, $+0.0060$) are the plan's and, of a
+long realization (the conditional mean linear, so the least squares reach
+the best), the empirical shares, $r$ and the least squares' $E$, $\psi$,
+$\psi^d$ and $E^d$ are the closed forms'; the positive codes give each
+other back and share the scene, the cheats keep it; the starts overlap as
+registered and the validation runs lie the gap away; a readout that
+memorizes the runs (a scene in the code, its detail independent in the
+observation) loses on the validation runs to the least squares, its detail's
+$E$ above 0 in sample and below out of it, and the choice keeps the least
+squares, not worse on the record's runs and not past the best; the
+observation itself is read back by the least squares at $E = E^d = 1$ on
+every set, from the pair and from the level's difference (on the real data's
+job too, of the stack's last frame); the checks apart merge to the rows of
+one run, byte for byte; the real data's job end to end on a tiny run (one
+code alone the same file and manifest), read by the judge.
 """
 
 import json
@@ -34,6 +53,8 @@ from exp.lib.fidelity import (
     MLPConf,
     content_sums,
     fit_linear,
+    kind_of,
+    pair_inputs,
     pool_obs,
     predict_linear,
 )
@@ -41,23 +62,48 @@ from exp.lib.linwidth import windows
 from exp.vision import content_eval
 from exp.vision.content_eval import (
     ContentConf,
+    ContentConf3,
+    RunSet,
+    SelectConf,
+    Synth3Conf,
     SynthConf,
+    _noisy3,
+    calib3,
+    calib3_d,
     calib_noise,
     calib_noise_d,
     change_explained,
+    change_parts3,
+    cheats3,
     check_parts,
+    check_parts3,
     check_units,
+    check_units3,
+    chosen3,
+    columns3,
     content_rows,
+    diff_ed3,
+    draw_starts,
     evaluate_content,
+    evaluate_content3,
+    front3,
     front_of,
     merge_checks,
+    merge_checks3,
     negative,
     negative_cheats,
     orthogonal,
+    pair3,
+    pair_ed3,
+    parts3,
     positive,
+    process3,
+    select_rows,
+    starts3,
+    sums3,
 )
 from exp.vision.geom_eval import GeomConf, _sets_at
-from exp.vision.results.v18c.judge_content import checks_stage, real_stage
+from exp.vision.results.v18c.judge_content import checks_stage, real3_stage, real_stage
 from exp.vision.width_eval import (
     WidthConf,
     _common_sums,
@@ -66,9 +112,10 @@ from exp.vision.width_eval import (
     white_rows,
 )
 from exp.vision.width_guard import _past_mean
+from tests.vision.test_eval import SIZE, write_tours
 from tests.vision.test_fill_eval import TINY as FILL_TINY
 from tests.vision.test_gen_eval import features
-from tests.vision.test_geom_eval import TINY, tours_with_zurich
+from tests.vision.test_geom_eval import SPLICED, TINY, tours_with_zurich
 from tests.vision.test_jepa_eval import SPAN, conf_of
 from tests.vision.test_stream_eval import EVERY
 from tests.vision.test_width_eval import WTINY, tiny_sets
@@ -355,3 +402,361 @@ class TestReal:
         for s in lin.values():
             assert s.value() == pytest.approx(1, abs=1e-6)
             assert s.value(True) == pytest.approx(1, abs=1e-6)
+
+
+# -- v3 -------------------------------------------------------------------------------------
+
+SEL = SelectConf(widths=(4, 8), every=10, mlp=MLPConf(hidden=8, steps=30, batch=32),
+                 seeds=(1, 2, 3), v2_width=8, se_draws=50)  # fmt: skip
+SC3 = replace(Synth3Conf(), n=6 * 160 - 7, period=61.3, total=6000, run=64, train_count=16,
+              record_count=4, val_count=6, gap=32, windows=(2, 4), ell=20.0, f_tau=6.0,
+              long_parts=2, seeds=(2101, 2103), cal_seeds=(2301, 2303), select=SEL)  # fmt: skip
+LONG = replace(Synth3Conf(), ell=20.0)  # ergodic within a test's series
+
+
+class TestParts3:
+    def test_the_registered_shares(self):
+        sc = Synth3Conf()
+        neg, pos = parts3(sc, False), parts3(sc, True)
+        assert neg["g"][0] == pytest.approx(0.1466, abs=5e-5)
+        assert neg["n"][0] == pytest.approx(0.1034, abs=5e-5)
+        assert pos["g"][0] == pytest.approx(0.1608, abs=5e-5)
+        assert pos["n"][0] == pytest.approx(0.0892, abs=5e-5)
+        for p in (neg, pos):
+            assert sum(s for s, _ in p.values()) == pytest.approx(1.0)
+            assert sum(s * f for s, f in p.values()) == pytest.approx(sc.r)
+        # the change the codes hold: about 0.088 (negative) and 0.016 (positive)
+        assert pair_ed3(sc, 0.0) == pytest.approx(0.088, abs=5e-4)
+        c = change_parts3(sc, True)
+        held = (c["k1"] + c["k4"] + c["k5"] + c["s"]) / sum(c.values())
+        assert held == pytest.approx(0.016, abs=5e-4)
+
+    def test_the_registered_calibrations(self):
+        sc = Synth3Conf()
+        s2, s2d = calib3(sc), calib3_d(sc)
+        assert s2 == pytest.approx(0.49336, abs=5e-5)
+        assert s2d == pytest.approx(0.0023702, abs=5e-7)
+        assert diff_ed3(sc, s2) == pytest.approx(-0.509, abs=5e-4)
+        assert pair_ed3(sc, s2) == pytest.approx(0.0060, abs=5e-5)
+        assert math.log2(pair_ed3(sc, s2d) / pair_ed3(sc, 0.0)) == pytest.approx(-0.1)
+        # the level's: kept - f sigma2 / (1 + sigma2) is 2^-0.1 of kept
+        f = parts3(sc, False)["f"][0]
+        assert (sc.kept - f * s2 / (1 + s2)) / sc.kept == pytest.approx(2**-0.1)
+
+
+def _lstsq3(x: torch.Tensor, y: torch.Tensor) -> tuple[float, float, float]:
+    """$E$, the level's difference's $E^d$ and the pair's $E^d$ of the least
+    squares in sample."""
+    n = len(y)
+    t = torch.arange(1, n)
+    blocks = torch.zeros(n - 1, dtype=torch.long)
+    lv = predict_linear(fit_linear(x, y), x).double()
+    xp = pair_inputs(x[None])[0]
+    d = torch.cat([torch.zeros_like(y[:1]), y[1:] - y[:-1]])
+    cp = predict_linear(fit_linear(xp[1:], d[1:]), xp).double()
+    a = content_sums(y, [lv], y.mean(0), t, blocks, 1)
+    b = content_sums(y, [lv], y.mean(0), t, blocks, 1, dpreds=[cp])
+    return a.value(), a.value(True), b.value(True)
+
+
+class TestProcess3:
+    @pytest.mark.slow
+    def test_a_long_series_against_the_closed_forms(self):
+        g = _gen(1)
+        n = 300000
+        y, c = process3(n, LONG, False, g)
+        cols = columns3(LONG, False)
+        p = parts3(LONG, False)
+        v = y.var(0)
+        eps = p["eps"][0] / y.shape[1]  # each column's white noise
+        for name, key in (("s", "s"), ("n", "n"), ("g", "g")):
+            want = p[key][0] + eps * len(cols[name])
+            assert float(v[cols[name]].sum()) == pytest.approx(want, rel=0.06)
+        d = y[1:] - y[:-1]
+        r = float(d.square().sum(1).mean() / (y - y.mean(0)).square().sum(1).mean())
+        assert r == pytest.approx(LONG.r, abs=0.002)
+        m = c["mixed"]
+        assert m.shape[1] == 2 + LONG.f_dims + LONG.scene
+        assert torch.allclose(m.var(0), torch.ones(m.shape[1], dtype=F64), atol=0.05)
+        # the scene's columns are the code's: y_s = sqrt(share / 16) s
+        s_code = m[:, 2 + LONG.f_dims :]
+        s_obs = y[:, cols["s"]]
+        resid = s_obs - math.sqrt(p["s"][0] / LONG.scene) * s_code
+        assert float(resid.var(0).max()) == pytest.approx(eps, rel=0.05)
+        # the least squares reach the closed forms (the conditional mean is
+        # linear); of the same observation, so the ratios are precise
+        s2, s2d = calib3(LONG), calib3_d(LONG)
+        e0, _, p0 = _lstsq3(m, y)
+        e1, d1, p1 = _lstsq3(_noisy3(m, s2, LONG, g), y)
+        _, _, p2 = _lstsq3(_noisy3(m, s2d, LONG, g), y)
+        assert e0 == pytest.approx(LONG.kept, abs=0.005)
+        assert p0 == pytest.approx(pair_ed3(LONG, 0.0), abs=0.002)
+        assert math.log2(e1 / e0) == pytest.approx(-LONG.psi_star, abs=0.01)
+        assert math.log2(p2 / p0) == pytest.approx(-LONG.psi_star, abs=0.02)
+        assert d1 == pytest.approx(diff_ed3(LONG, s2), abs=0.03)
+        assert p1 == pytest.approx(pair_ed3(LONG, s2), abs=0.002)
+
+    def test_the_positive_codes_and_the_cheats(self):
+        y, c = process3(500, SC3, True, _gen(2))
+        assert y.shape == (500, 6 + 48)
+        assert c["slow"].shape == (500, 2 + 16) and c["fast"].shape == (500, 4 + 16)
+        assert torch.equal(c["slow"][:, 2:], c["fast"][:, 4:])  # the same scene
+        f = c["fast"] / math.sqrt(2)
+        cos = f[:, 2] * f[:, 0] + f[:, 3] * f[:, 1]  # cos(5t - 4t)
+        assert torch.allclose(cos, c["slow"][:, 0] / math.sqrt(2), atol=1e-12)
+        _, cn = process3(300, SC3, False, _gen(3))
+        m = cn["mixed"]
+        ch = cheats3(SC3)
+        drop = ch["drop"](m)
+        assert not drop[:, 2:4].any() and torch.equal(drop[:, :2], m[:, :2])
+        assert torch.equal(drop[:, 4:], m[:, 4:])  # the scene is kept
+        runs = torch.stack([m[:64], m[64:128]])
+        assert torch.equal(ch["mean-4"](runs)[1], _past_mean(m[64:128], 4))
+
+
+class TestDraws3:
+    def test_draw_starts(self):
+        tr = draw_starts(1000, 50, 30, 1)
+        assert len(tr) == 30 and all(0 <= k <= 950 for k in tr)
+        assert tr == draw_starts(1000, 50, 30, 1)
+        assert any(
+            abs(a - b) < 50 for a in tr for b in tr if a != b
+        )  # overlaps allowed
+        rec = draw_starts(1000, 50, 3, 2, tr[:5], tries=10000)
+        assert all(abs(k - j) >= 50 for k in rec for j in tr[:5])
+        assert all(abs(a - b) >= 50 for a in rec for b in rec if a != b)
+        with pytest.raises(ValueError, match="runs in"):
+            draw_starts(100, 50, 5, 1, [], tries=200)
+
+    def test_the_registered_runs(self):
+        sc = Synth3Conf()
+        st = starts3(sc)
+        assert [len(st[k]) for k in ("train", "record", "val")] == [512, 64, 128]
+        for v in st["val"]:
+            assert all(
+                abs(v - j) >= sc.run + sc.gap for j in st["train"] + st["record"]
+            )
+            assert v + sc.run <= sc.total
+        assert all(abs(a - b) >= sc.run for a in st["val"] for b in st["val"] if a != b)
+        assert all(abs(a - j) >= sc.run for a in st["record"] for j in st["train"])
+
+
+def _memorize_sets(seed: int, n_runs: int, length: int = 32
+                   ) -> tuple[RunSet, torch.Tensor, torch.Tensor]:  # fmt: skip
+    """Runs whose code is $(z_t, s_r)$ and observation $(z_t A, n_r)$:
+    $z$ white, the scene $s_r$ and the detail $n_r$ constant in a run and
+    independent. The best readout is $(z A, 0)$ (``A`` the identity on 2
+    columns, $n$ of variance 0.25 in 4)."""
+    g = _gen(seed)
+    z = torch.randn(n_runs, length, 2, generator=g, dtype=F64)
+    s = torch.randn(n_runs, 1, 8, generator=g, dtype=F64).expand(-1, length, -1)
+    dn = 0.5 * torch.randn(n_runs, 1, 4, generator=g, dtype=F64).expand(-1, length, -1)
+    return RunSet(torch.cat([z, s], -1), torch.cat([z, dn], -1)), z, dn
+
+
+class TestSelect:
+    def test_the_choice_does_not_keep_a_readout_that_memorized_the_runs(self):
+        # v2's readout learns n_r from s_r on the training runs and errs on
+        # others (V-h4b's failure, V-h5a0's mechanism); the choice by the
+        # validation runs keeps the least squares, near E* on the record's
+        train, _, _ = _memorize_sets(1, 48)
+        val, _, _ = _memorize_sets(2, 32)
+        rec, _, dn = _memorize_sets(3, 32)
+        ws = synthetic_sets(6 * 160 - 7, 7, 160, 24)
+        ev, _, _ = _memorize_sets(4, 31, 32)
+        x_ev, y_ev = ev.flat()
+        sc = SelectConf(alphas=(0.0, 0.1), widths=(64,), every=1000,
+                        mlp=MLPConf(hidden=64, steps=3000, batch=256, lr=3e-3), seeds=(1, 2),
+                        v2_width=64, se_draws=50)  # fmt: skip
+        rows = select_rows({}, train, val, rec, [(x_ev[: ws.n], y_ev[: ws.n])], ws, sc, CPU,
+                           components={"n": [2, 3, 4, 5]})  # fmt: skip
+        v2_val, lin_val = (
+            sums3(rows, "v2", "val").value(),
+            sums3(rows, "lin", "val").value(),
+        )
+        assert v2_val < lin_val
+        assert (
+            sums3(rows, "v2", "train", "n").value()
+            > 0
+            > sums3(rows, "v2", "val", "n").value()
+        )
+        chosen = chosen3(rows)
+        assert kind_of(chosen["level"]) == "lin"
+        sel_rec = sums3(rows, "sel", "record").value()
+        assert sel_rec >= sums3(rows, "lin", "record").value() - 0.02
+        # nothing beats the best readout (z A, 0) on the same record runs
+        # (E's anchors past each run's first) beyond the runs' chance
+        y_rec = rec.y[:, 1:].flatten(0, 1)
+        mean = train.y.flatten(0, 1).mean(0)
+        best = 1 - float(dn[:, 1:].square().sum() / (y_rec - mean).square().sum())
+        assert sel_rec <= best + 0.02
+        lv = next(r for r in rows if r["part"] == "select" and r["target"] == "level")
+        assert lv["selected"] == min(lv["scores"], key=lambda k: lv["scores"][k])
+        assert kind_of(lv["runner"]) == "mlp" and lv["gap"] > 0 and lv["gap_se"] > 0
+        ch = next(r for r in rows if r["part"] == "select" and r["target"] == "change")
+        assert "diff" in ch["scores"] and len(ch["scores"]) == 2 + 3 + 1
+
+    def test_the_observation_itself_is_read_back(self):
+        # the code is the observation: the least squares give E = E^d = 1 on
+        # every set, by the pair's readout and by the level's difference
+        g = _gen(5)
+        ws = synthetic_sets(6 * 160 - 7, 7, 160, 24)
+
+        def runs(n: int) -> RunSet:
+            y = torch.randn(n, 16, 3, generator=g, dtype=F64).cumsum(1)
+            return RunSet(y, y)
+
+        y_ev = torch.randn(ws.n, 3, generator=g, dtype=F64).cumsum(0) / 10
+        rows = select_rows({"code": "y"}, runs(8), runs(4), runs(4), [(y_ev, y_ev)], ws,
+                           SEL, CPU)  # fmt: skip
+        for st in ("train", "val", "record", "eval"):
+            for ro in ("lin", "lin-diff"):
+                s = sums3(rows, ro, st)
+                assert s.value() == pytest.approx(1, abs=1e-6)
+                assert s.value(True) == pytest.approx(1, abs=1e-6)
+        assert {r["readout"] for r in rows if r["part"] == "sums"} == {
+            "sel", "lin", "lin-diff", "v2"}  # fmt: skip
+        with pytest.raises(KeyError):
+            sums3(rows, "sel", "zurich")
+
+
+class TestChecks3Apart:
+    def test_any_split_merges_to_the_rows_at_once(self):
+        whole = check_parts3(SC3, CG, CW, check_units3())
+        merged = json.dumps(merge_checks3(whole, SC3, CG))
+        split = (check_parts3(SC3, CG, CW, ["V-h5a2-long", "V-h5a1-long"])
+                 + check_parts3(SC3, CG, CW, ["V-h5a3", "V-h5a1"], (2102, 2302))
+                 + check_parts3(SC3, CG, CW, ["V-h5a2"], (2101, 2103))
+                 + check_parts3(SC3, CG, CW, ["V-h5a1", "V-h5a3"], (2101, 2102))
+                 + check_parts3(SC3, CG, CW, ["V-h5a3"], (2302, 2303)))  # fmt: skip
+        assert json.dumps(merge_checks3(list(reversed(split)), SC3, CG)) == merged
+        names = {r["name"] for r in json.loads(merged)}
+        assert names == {"V-h5a-sigma", "V-h5a0", "V-h5a0-d", "V-h5a4", "V-h5a1",
+                         "V-h5a1-share", "V-h5a2", "V-h5a2-count", "V-h5a3", "V-h5a3-d",
+                         "V-h5a3-power", "V-h5a3-chosen", "V-h5a-long-chosen"}  # fmt: skip
+        with pytest.raises(ValueError, match="missing"):
+            merge_checks3(split[1:], SC3, CG)
+        with pytest.raises(ValueError, match="twice"):
+            merge_checks3(split + split[:1], SC3, CG)
+        with pytest.raises(ValueError, match="no check units"):
+            check_parts3(SC3, CG, CW, ["V-h5z"])
+        got = checks_stage(json.loads(merged), "V-h5a")
+        assert set(got["checks"]) == {"V-h5a0", "V-h5a0-d", "V-h5a4", "V-h5a1", "V-h5a2",
+                                      "V-h5a2-count", "V-h5a3", "V-h5a3-d"}  # fmt: skip
+        long2 = next(r for r in whole if r.get("unit") == "V-h5a2-long")["value"]
+        assert set(long2["content"]) == {"mixed", "drop", "mean-2", "mean-4", "mixed-rot",
+                                         "noisy", "noisy-d"}  # fmt: skip
+        draw = next(r for r in whole if r.get("unit") == "V-h5a2")["value"]
+        assert {r["part"] for r in draw["content"]["mixed"]} == {"select", "sums"}
+
+    def test_the_pairs_contrast(self):
+        _, ws = tiny_sets()
+        g = _gen(8)
+        y = torch.randn(ws.n, 3, generator=g, dtype=F64)
+        nb = ws.n_blocks
+        t, blocks = ws.common, ws.blocks[ws.common - ws.max_lag]
+        s = content_sums(y, [0.5 * y], y.mean(0), t, blocks, nb)
+        c = (counts_of(nb, TINY), counts_of(nb // 2, TINY))
+        p = pair3(s, s, *c, (0.01, 0.02), 0.1)
+        rho = 2**-0.1
+        assert p["D"]["point"] == pytest.approx((1 - rho) * s.value())
+        assert p["sigma"] == [0.01, 0.02] and p["psi"][0] == 0.0
+        f = front3((1.0, 2.0), s, s, *c, (0.0, 0.0), 0.5, 0.1)
+        assert f["verdict"] in ("kept", "unresolved", "incomparable")
+        assert front3((0.1, 2.0), s, s, *c, (0.0, 0.0), 0.5, 0.1)["verdict"] == "width"
+
+
+C3 = ContentConf3(obs=2, select=SEL, ext_lags=(1, 2), record_count=HOLD, val_count=1,
+                  val_gap=2)  # fmt: skip
+
+
+class TestReal3:
+    @pytest.mark.slow
+    def test_end_to_end_and_the_judge(self, tmp_path):
+        root = tours_with_zurich(tmp_path / "d")
+        conf = replace(conf_of(), device="cpu")
+        sets_dir = tmp_path / "tlin"
+        _sets_at(sets_dir, conf, root, TINY)
+        kw: dict[str, Any] = dict(root=root, guard=GTINY, cconf=C3, gconf=TINY, wconf=WTINY,
+                                  fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
+        width = tmp_path / "width"
+        codes = ("base", "rot", "mean-1", "mean-2", "drop-1", "color", "mean8")
+        out = evaluate_content3(conf, sets_dir, width / "content3", codes=codes, **kw)
+        assert sorted(p.name for p in out.iterdir() if p.is_dir()) == sorted(codes)
+        rows = json.loads((out / "base" / "content3.json").read_text())
+        got = {(r["part"], r.get("readout"), r.get("set")) for r in rows}
+        want = {("sums", ro, st) for ro in ("sel", "lin", "lin-diff", "v2")
+                for st in ("train", "val", "record", "eval")}  # fmt: skip
+        assert got == want | {("select", None, None), ("obs_ext", "sel", None)}
+        man = json.loads((out / "intervals.json").read_text())
+        starts = {r["set"]: r["starts"] for r in man}
+        length = GTINY.cheat_length
+        assert len(starts["val"]) == 1 and len(starts["record"]) == HOLD
+        for v in starts["val"]:
+            assert all(abs(v - j) >= length + C3.val_gap
+                       for j in starts["train"] + starts["record"])  # fmt: skip
+        alone = evaluate_content3(
+            conf, sets_dir, tmp_path / "alone", codes=("mean-2",), **kw
+        )
+        assert (alone / "mean-2" / "content3.json").read_bytes() == \
+            (out / "mean-2" / "content3.json").read_bytes()  # fmt: skip
+        assert (alone / "intervals.json").read_bytes() == (
+            out / "intervals.json"
+        ).read_bytes()
+        with pytest.raises(ValueError, match="no codes"):
+            evaluate_content3(conf, sets_dir, tmp_path / "x", codes=("mean-3",), **kw)
+        # the cheats' widths (any rows of the tiny sets) and the judge
+        _, ws = tiny_sets()
+        g = _gen(6)
+        base = torch.randn(ws.n, 2, generator=g, dtype=F64)
+        for name, x in (("base", base), ("mean-1", _past_mean(base, 1)),
+                        ("mean-2", _past_mean(base, 2))):  # fmt: skip
+            path = width / "guard" / "cheat" / name / "width.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(white_rows(x, ws, WTINY, full=False)))
+        res = real3_stage(width, WTINY, TINY)
+        assert set(res["b1"]["fronts"]) == {"mean-1", "mean-2"}
+        assert res["b2"]["codes"] == ["base", "drop-1"]
+        assert set(res["b3"]["pairs"]) == {"rot-base", "base-rot"}
+        assert res["b3"]["comparable"]["init"] is None and not res["b3"]["pass"]
+        assert set(res["b4"]["codes"]) == set(codes) and len(res["b4"]["margins"]) == 2
+        assert len(res["sigma_rot"]) == 2
+        assert set(res["codes"]["base"]["chosen"]) == {"level", "change"}
+
+    @pytest.mark.slow
+    def test_the_frame_itself_is_read_back_aligned(self, tmp_path, monkeypatch):
+        # the code: the stack's last frame pooled as the observation; the
+        # least squares read it back (E = 1) and its change from the pair
+        # and from the level's difference (E^d = 1) on every set
+        # videos long enough for the runs of 16 stacks of the three sets
+        g = _gen(9)
+        frames = {v: torch.randint(256, (80, 3, SIZE, SIZE), generator=g, dtype=torch.uint8)
+                  for v in ("A", "B", "C")} | {"H": SPLICED}  # fmt: skip
+        root = write_tours(tmp_path / "d", frames)
+        conf = replace(conf_of(), device="cpu")
+        sets_dir = tmp_path / "tlin"
+        _sets_at(sets_dir, conf, root, TINY)
+        obs = 2
+
+        class Frame:
+            def raw(self, x: torch.Tensor) -> torch.Tensor:
+                return pool_obs(x[:, -1].cpu(), obs).double()
+
+            def white(self, raw: torch.Tensor) -> torch.Tensor:
+                return raw.double()
+
+            def mu(self, x: torch.Tensor) -> torch.Tensor:
+                return self.raw(x).float()
+
+        monkeypatch.setattr(content_eval, "_yard_white", lambda *a, **k: Frame())
+        guard = replace(GTINY, cheat_count=4, cheat_length=16)
+        cconf = replace(C3, val_gap=0)
+        out = evaluate_content3(conf, sets_dir, tmp_path / "w", codes=("color",), root=root,
+                                guard=guard, cconf=cconf, gconf=TINY, wconf=WTINY,
+                                fconf=FILL_TINY, spacing=EVERY, span=SPAN)  # fmt: skip
+        rows = json.loads((out / "color" / "content3.json").read_text())
+        for st in ("train", "val", "record", "eval"):
+            for ro in ("lin", "lin-diff"):
+                s = sums3(rows, ro, st)
+                assert s.value() == pytest.approx(1, abs=1e-5)
+                assert s.value(True) == pytest.approx(1, abs=1e-5)

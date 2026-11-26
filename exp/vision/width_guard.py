@@ -374,6 +374,77 @@ def interval_draws(
         yield k, torch.stack(stacks)
 
 
+def run_starts_ok(lengths: Sequence[int], back: int, length: int) -> Tensor:
+    """``(L,)`` bool over the loop of the videos of ``lengths``: whether the
+    run of ``length`` stacks from each start lies within one video and its
+    first stack is ready (``back`` frames of its video before it, the
+    stack's reach): ``interval_draws``' rejection of a cut, by arithmetic."""
+    ok = []
+    for n in lengths:
+        local = torch.arange(n)
+        ok.append((local >= back) & (local + length - 1 < n))
+    return torch.cat(ok) if ok else torch.zeros(0, dtype=torch.bool)
+
+
+def slot_starts(ok: Tensor, length: int, count: int, seed: int) -> list[int]:
+    """``count`` starts (sorted) of runs of ``length`` overlapping no other,
+    of the admissible starts ``ok`` ``(L,)`` bool: the slots of the greedy
+    packing (the first admissible start, then the first at least ``length``
+    past the last slot: the most runs that fit) and of them ``count`` drawn
+    uniformly without replacement by a generator of ``seed``. Drawing one
+    at a time jams before the packing is full (random sequential adsorption
+    covers about 3/4 of a line), so v3's validation runs are slots.
+
+    Raises:
+        ValueError: Fewer than ``count`` slots.
+    """
+    slots: list[int] = []
+    nxt = -1
+    for k in ok.nonzero().flatten().tolist():
+        if k >= nxt:
+            slots.append(k)
+            nxt = k + length
+    if len(slots) < count:
+        raise ValueError(f"{len(slots)} slots for {count} runs")
+    perm = torch.randperm(len(slots), generator=torch.Generator().manual_seed(seed))
+    return sorted(slots[i] for i in perm[:count].tolist())
+
+
+def slot_draws(
+    conf: Any,
+    root: Path,
+    length: int,
+    count: int,
+    seed: int,
+    avoid: Collection[int],
+    gap: int,
+) -> Iterator[tuple[int, Tensor]]:
+    """As ``interval_draws`` of ``avoid``, but the starts ``slot_starts`` of
+    those whose runs lie at least ``gap`` stacks from every run of
+    ``avoid`` (v3's validation runs, ``plans/jepa.md``).
+
+    Raises:
+        ValueError: Fewer than ``count`` slots.
+        RuntimeError: A slot's run is not within one video (a bug).
+    """
+    t = conf.data.tours
+    stream = StackedTourFrames(root, n=1, held_out=t.held_out, frames=t.frames,
+                               stride=t.stride, advance=1)  # fmt: skip
+    lengths = [len(U8Reader(root / v)) for v in videos(root) if v != t.held_out]
+    ok = run_starts_ok(lengths, (t.frames - 1) * t.stride, length)
+    for j in avoid:
+        ok[max(0, j - length - gap + 1) : j + length + gap] = False
+    for k in slot_starts(ok, length, count, seed):
+        stream.load_state_dict({"k": k})
+        stacks = []
+        for i in range(length):
+            x, ready, reset = stream.next()
+            if not bool(ready[0]) or (i > 0 and bool(reset[0])):
+                raise RuntimeError(f"the slot {k}'s run crosses a cut")
+            stacks.append(x[0])
+        yield k, torch.stack(stacks)
+
+
 def interval_runs(conf: Any, root: Path, conf_g: GuardConf) -> Iterator[Tensor]:
     """The runs of the cheats' training set (module docstring) in order,
     each its stacks u8 ``(L, n, 3, S, S)`` (``interval_draws`` of

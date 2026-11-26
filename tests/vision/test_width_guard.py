@@ -14,7 +14,11 @@ code says (the extrapolation's and the future's on the extrapolation's, the
 midpoint's and the present's on the midpoint's; the copy and the ends miss);
 the guard's whitening must be the width's; and the yard's,
 the cheats' and a run's jobs end to end on tiny runs (a cheap feature in
-place of Inception's; one cheat run apart the same files to the byte).
+place of Inception's; one cheat run apart the same files to the byte); v3's
+validation slots: the admissible starts by hand (within one video, the first
+stack ready), the greedy packing by hand and a seeded choice of it, and the
+slot draws on tiny data at least the gap from the avoided runs, overlapping
+none, crossing no cut.
 """
 
 import json
@@ -41,8 +45,11 @@ from exp.vision.width_guard import (
     evaluate_yard,
     guard_anchors,
     load_decoder,
+    run_starts_ok,
     same_k,
     save_decoder,
+    slot_draws,
+    slot_starts,
 )
 from tests.lib.test_flow_decoder import SMALL
 from tests.vision.test_fill_eval import TINY as FILL_TINY
@@ -263,3 +270,34 @@ class TestJobs:
         got = evaluate_run(run, steps=(0,), sets_dir=sets_dir, device="cpu", **kw)
         rows = json.loads((got / "rows" / "000000.json").read_text())
         assert rows and rows[0]["part"] in ("no_lag", "guard")
+
+
+class TestSlots:
+    def test_the_admissible_starts_by_hand(self):
+        # videos of 6 and 5 frames, a stack reaching 1 frame back, runs of 3
+        ok = run_starts_ok([6, 5], 1, 3)
+        assert ok.tolist() == [False, True, True, True, False, False,
+                               False, True, True, False, False]  # fmt: skip
+
+    def test_the_slots_pack_and_draw(self):
+        ok = torch.ones(20, dtype=torch.bool)
+        ok[5:8] = False
+        # the admissible starts 0..4 and 8..19: the greedy packing of runs
+        # of 4 is 0, 4, 8, 12, 16
+        got = slot_starts(ok, 4, 5, 1)
+        assert got == [0, 4, 8, 12, 16]
+        some = slot_starts(ok, 4, 3, 2)
+        assert len(some) == 3 and set(some) <= set(got) and some == sorted(some)
+        assert slot_starts(ok, 4, 3, 2) == some
+        with pytest.raises(ValueError, match="slots"):
+            slot_starts(ok, 4, 6, 1)
+
+    def test_the_slot_draws_keep_the_gap_and_the_cuts(self, tmp_path):
+        root = tours_with_zurich(tmp_path / "d")
+        conf = replace(conf_of(), device="cpu")
+        avoid = [3]
+        got = list(slot_draws(conf, root, 4, 3, 5, avoid, 2))
+        starts = [k for k, _ in got]
+        assert all(abs(k - 3) >= 4 + 2 for k in starts)
+        assert all(abs(a - b) >= 4 for a in starts for b in starts if a != b)
+        assert all(run.shape[0] == 4 for _, run in got)

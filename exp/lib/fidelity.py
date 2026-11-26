@@ -45,10 +45,23 @@ claimed wide: where the width's ratio clears $+\Delta_*$ wholly, ``kept``
 $\psi^d$ above $-\psi_*$), ``dropped`` (an upper end below $-\psi_*$),
 ``unresolved`` (else), ``incomparable`` (the other code not comparable;
 checked first); else ``width`` (the width's own rule).
+
+**v3** (``plans/jepa.md``, 「線形の幅の内容のガード v3」): the readout is
+chosen among candidates (``candidate_names``: ``fit_ridge`` of each
+$\alpha$, the MLPs of ``fit_mlp_path`` stopped every so many steps) by the
+error on held-out runs (``run_errors``, ``select_candidate``); the change's
+readout reads $d_t$ from the pair $(c_t, c_{t-1})$ (``pair_inputs``; v2's
+difference ``diff_predictor`` a candidate beside), passed to
+``content_sums`` as ``dpreds``. The verdicts use the contrast $D = E_a -
+2^{-\psi_*} E_b$ (``contrast_interval``; of $E_b > 0$ its bound is
+$\psi$'s, and it stays smooth where $E_a \le 0$), $\sigma$ the larger of
+the rotation's and the pair's own per-seed spread (``contrast_seed_sd``),
+and ``contrast_verdict``; ``noninferior`` checks the chosen readout against
+the least squares on the record's runs.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -59,18 +72,34 @@ __all__ = [
     "VERDICTS",
     "ContentSums",
     "MLPConf",
+    "Predictor",
+    "candidate_names",
     "comparable",
     "content_sums",
+    "contrast_interval",
+    "contrast_seed_sd",
+    "contrast_seeds",
+    "contrast_verdict",
+    "diff_predictor",
     "error_lag1",
     "fit_linear",
     "fit_mlp",
+    "fit_mlp_path",
+    "fit_ridge",
     "front_verdict",
+    "kind_of",
+    "linear_predictor",
     "mlp",
+    "noninferior",
+    "pair_inputs",
     "pool_obs",
     "predict",
     "predict_linear",
     "ratio_interval",
+    "run_errors",
     "seed_sigma",
+    "select_candidate",
+    "snapshot_predictor",
     "stack_seeds",
 ]
 
@@ -122,6 +151,23 @@ def fit_mlp(
     after ``torch.manual_seed(seed)`` (the global generator restored), its
     batches by a CPU generator of ``seed``. Returns the net (eval) and the
     loss of every 100th step."""
+    net, losses, _ = _train(x, y, conf, seed, dev, None)
+    return net, losses
+
+
+def fit_mlp_path(
+    x: Tensor, y: Tensor, conf: MLPConf, seed: int, dev: torch.device, every: int
+) -> tuple[nn.Module, list[dict[str, Tensor]]]:
+    """``fit_mlp``'s readout (the same steps, so its last state is
+    ``fit_mlp``'s net) and its state dicts (on the CPU) after every
+    ``every`` steps: the early stops of v3's candidates."""
+    net, _, snaps = _train(x, y, conf, seed, dev, every)
+    return net, snaps
+
+
+def _train(
+    x: Tensor, y: Tensor, conf: MLPConf, seed: int, dev: torch.device, every: int | None
+) -> tuple[nn.Module, list[float], list[dict[str, Tensor]]]:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
         net = mlp(x.shape[1], y.shape[1], conf)
@@ -129,7 +175,8 @@ def fit_mlp(
     xd, yd = x.float().to(dev), y.float().to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=conf.lr)
     gen = torch.Generator().manual_seed(seed)
-    losses = []
+    losses: list[float] = []
+    snaps: list[dict[str, Tensor]] = []
     for step in range(conf.steps):
         idx = torch.randint(len(xd), (conf.batch,), generator=gen).to(dev)
         loss = (net(xd[idx]) - yd[idx]).square().mean()
@@ -138,7 +185,11 @@ def fit_mlp(
         opt.step()
         if step % 100 == 0:
             losses.append(float(loss.detach()))
-    return net.eval(), losses
+        if every is not None and (step + 1) % every == 0:
+            snaps.append(
+                {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+            )
+    return net.eval(), losses, snaps
 
 
 @torch.no_grad()
@@ -152,6 +203,24 @@ def fit_linear(x: Tensor, y: Tensor, batch: int = 8192) -> Tensor:
     r"""The least squares $[x, 1] B \approx y$ in float64: $B$ ``(D + 1,
     K)`` the minimum-norm solution of the normal equations (``gelsd``),
     accumulated ``batch`` rows at a time."""
+    xtx, xty = _normal(x, y, batch)
+    return torch.linalg.lstsq(xtx, xty, driver="gelsd").solution
+
+
+def fit_ridge(x: Tensor, y: Tensor, alpha: float, batch: int = 8192) -> Tensor:
+    r"""v3's linear candidate: $\min_B \sum_u \lVert y_u - [x_u, 1] B
+    \rVert^2 + \alpha N \lVert B_x \rVert_F^2$ ($N$ the rows, $B_x$ ``(D,
+    K)`` without the intercept, which is not shrunk) in float64, the normal
+    equations solved by ``gelsd`` (of $\alpha = 0$ ``fit_linear``'s). Of an
+    orthogonal centred design ($x^\top x = N I$, $x^\top 1 = 0$) $B_x$ is
+    the least squares' times $1 / (1 + \alpha)$."""
+    xtx, xty = _normal(x, y, batch)
+    pen = torch.full((x.shape[1] + 1,), alpha * len(x), dtype=_F64)
+    pen[-1] = 0
+    return torch.linalg.lstsq(xtx + torch.diag(pen), xty, driver="gelsd").solution
+
+
+def _normal(x: Tensor, y: Tensor, batch: int) -> tuple[Tensor, Tensor]:
     d = x.shape[1]
     xtx = torch.zeros(d + 1, d + 1, dtype=_F64)
     xty = torch.zeros(d + 1, y.shape[1], dtype=_F64)
@@ -159,7 +228,7 @@ def fit_linear(x: Tensor, y: Tensor, batch: int = 8192) -> Tensor:
         a = torch.cat([xc.to(_F64), torch.ones(len(xc), 1, dtype=_F64)], 1)
         xtx += a.T @ a
         xty += a.T @ yc.to(_F64)
-    return torch.linalg.lstsq(xtx, xty, driver="gelsd").solution
+    return xtx, xty
 
 
 def predict_linear(b: Tensor, x: Tensor) -> Tensor:
@@ -239,11 +308,15 @@ def content_sums(
     blocks: Tensor,
     n_blocks: int,
     batch: int = 4096,
+    dpreds: Sequence[Tensor] | None = None,
 ) -> ContentSums:
     r"""The sums (module docstring) at the anchors ``t`` ``(A,)`` (each with
     $t - 1 \ge 0$ of its video) of the blocks ``blocks`` ``(A,)``: ``y``
     ``(n, K)`` the observations of every time, ``preds`` each seed's
-    $g(c)$ ``(n, K)``, ``mean`` $\bar y$ ``(K,)``. Float64."""
+    $g(c)$ ``(n, K)``, ``mean`` $\bar y$ ``(K,)``. Float64. With ``dpreds``
+    (v3) each seed's change readout $\hat d$ ``(n, K)`` (its row $t$ the
+    prediction of $y_t - y_{t-1}$; its seeds need not be ``preds``') stands
+    for $g(c_t) - g(c_{t-1})$."""
 
     def sq(v: Tensor) -> Tensor:
         return v.to(_F64).square().sum(1)
@@ -256,9 +329,11 @@ def content_sums(
         acc["dtot"].append(sq(y1 - y0))
         d = y1 - y0
         acc["err"].append(torch.stack([sq(y1 - p[tc]) for p in preds]))
-        acc["derr"].append(
-            torch.stack([sq(d - (p[tc].to(_F64) - p[tc - 1].to(_F64))) for p in preds])
-        )
+        if dpreds is None:
+            dh = [p[tc].to(_F64) - p[tc - 1].to(_F64) for p in preds]
+        else:
+            dh = [q[tc].to(_F64) for q in dpreds]
+        acc["derr"].append(torch.stack([sq(d - h) for h in dh]))
 
     def bsum(v: Tensor) -> Tensor:
         return v.new_zeros(*v.shape[:-1], n_blocks).index_add_(-1, blocks, v)
@@ -402,3 +477,171 @@ def front_verdict(
     if hi(psi) < -psi_star or hi(psi_d) < -psi_star:
         return "dropped"
     return "unresolved"
+
+
+# -- v3: the readout chosen on held-out runs, the change read directly, the contrast ------
+
+
+type Predictor = Callable[[Tensor], Tensor]
+
+
+def candidate_names(
+    alphas: Sequence[float], widths: Sequence[int], steps: int, every: int
+) -> list[str]:
+    """v3's candidates in the order of its ties: ``lin-<alpha>`` (the
+    smaller first), then ``mlp-<width>-<step>`` (the narrower, then the
+    fewer steps first)."""
+    lin = [f"lin-{a:g}" for a in alphas]
+    return lin + [
+        f"mlp-{h}-{k}" for h in widths for k in range(every, steps + 1, every)
+    ]
+
+
+def kind_of(name: str) -> str:
+    """A candidate's kind: ``lin``, ``mlp`` or ``diff``."""
+    return name.split("-")[0]
+
+
+def select_candidate(scores: Mapping[str, float], order: Sequence[str]) -> str:
+    """The candidate of ``order`` of the least score (a NaN as $+\\infty$),
+    of a tie the first in ``order``: v3's choice by the validation runs'
+    error (``plans/jepa.md``). Of every candidate $m$ its held-out error is
+    within $\\delta$ of its own, so the chosen one's is at most $\\min_m R_m +
+    2\\delta$."""
+    best, low = order[0], math.inf
+    for i, c in enumerate(order):
+        v = scores[c]
+        v = math.inf if math.isnan(v) else v
+        if i == 0 or v < low:
+            best, low = c, v
+    return best
+
+
+def snapshot_predictor(net: nn.Module, state: Mapping[str, Tensor], dev: torch.device
+                       ) -> Predictor:  # fmt: skip
+    """$g(x)$ of ``net`` with the weights ``state`` (loaded at each call,
+    so one net serves the snapshots of a path)."""
+
+    def g(x: Tensor) -> Tensor:
+        net.load_state_dict(state)
+        return predict(net, x, dev)
+
+    return g
+
+
+def linear_predictor(b: Tensor) -> Predictor:
+    """$[x, 1] B$ of ``fit_ridge``'s or ``fit_linear``'s ``b``."""
+    return lambda x: predict_linear(b, x)
+
+
+def pair_inputs(x: Tensor) -> Tensor:
+    r"""$(c_t, c_{t-1})$ ``(..., L, 2D)`` of the codes ``(..., L, D)`` along
+    dim -2 (the first time paired with itself: no anchor reads it)."""
+    prev = torch.cat([x[..., :1, :], x[..., :-1, :]], -2)
+    return torch.cat([x, prev], -1)
+
+
+def diff_predictor(g: Predictor, d: int) -> Predictor:
+    r"""v2's change of the level readout $g$ as a readout of the pair:
+    $(c_t, c_{t-1}) \mapsto g(c_t) - g(c_{t-1})$ (``d`` the code's
+    dimension)."""
+    return lambda x: g(x[:, :d]) - g(x[:, d:])
+
+
+def run_errors(pred: Tensor, y: Tensor, runs: Tensor, n_runs: int) -> Tensor:
+    r"""$\sum \lVert y - \hat y \rVert^2$ of each run ``(n_runs,)`` float64
+    (``runs`` ``(n,)`` each row's)."""
+    e = (y.to(_F64) - pred.to(_F64)).square().sum(1)
+    return torch.zeros(n_runs, dtype=_F64).index_add_(0, runs, e)
+
+
+def contrast_interval(
+    a: ContentSums,
+    b: ContentSums,
+    counts: Tensor,
+    counts2: Tensor,
+    sigma: float,
+    psi_star: float,
+    *,
+    change: bool = False,
+) -> dict[str, float]:
+    r"""v3's verdict statistic $D = E_a - 2^{-\psi_*} E_b$ (of $E^d$ with
+    ``change``) and its interval $\hat D \pm 2\sqrt{\mathrm{SE}^{*2} +
+    \sigma^2}$, $\mathrm{SE}^*$ the larger standard deviation of $D^*$ over
+    the draws ``counts`` of the blocks and ``counts2`` of their adjacent
+    pairs. Of $E_b > 0$, $D > 0 \iff \psi > -\psi_*$: the bound of
+    ``ratio_interval``'s verdict, smooth through $E_a \le 0$."""
+    rho = 2.0**-psi_star
+    point = a.value(change) - rho * b.value(change)
+    sds = [float((sa.draws(c, change) - rho * sb.draws(c, change)).std())
+           for sa, sb, c in ((a, b, counts), (a.paired(), b.paired(), counts2))]  # fmt: skip
+    se = max(sds)
+    tot = math.sqrt(se * se + sigma * sigma)
+    return {"point": point, "se": se, "lo": point - 2 * tot, "hi": point + 2 * tot}
+
+
+def contrast_seeds(
+    a: ContentSums, b: ContentSums, psi_star: float, *, change: bool = False
+) -> Tensor:
+    r"""The per-seed $D_s = E_{a,s} - 2^{-\psi_*} E_{b,s}$: the seeds paired
+    in order, a single seed (a linear readout) against each of the other's.
+
+    Raises:
+        ValueError: The two have other numbers of seeds, neither one.
+    """
+    ea, eb = a.per_seed(change), b.per_seed(change)
+    if len(ea) != len(eb) and 1 not in (len(ea), len(eb)):
+        raise ValueError(f"{len(ea)} seeds against {len(eb)}")
+    return ea - 2.0**-psi_star * eb
+
+
+def contrast_seed_sd(
+    a: ContentSums, b: ContentSums, psi_star: float, *, change: bool = False
+) -> float:
+    """The sample standard deviation ($n - 1$) of ``contrast_seeds``; 0 of a
+    single value (both readouts linear)."""
+    d = contrast_seeds(a, b, psi_star, change=change)
+    return float(d.std()) if len(d) >= 2 else 0.0
+
+
+def contrast_verdict(
+    width: tuple[float | None, float | None],
+    d: Mapping[str, float],
+    d_d: Mapping[str, float],
+    is_comparable: bool,
+    delta_star: float,
+) -> str:
+    """v3's front verdict of the width's ratio interval ``width`` and the
+    intervals ``d``, ``d_d`` of ``contrast_interval`` ($E$, $E^d$):
+    ``width`` where the width does not clear $+\\Delta_*$ wholly, then
+    ``incomparable``, ``kept`` (both lower ends above 0), ``dropped`` (an
+    upper end below 0), else ``unresolved``."""
+    lo_w = width[0]
+    if lo_w is None or not lo_w > delta_star:
+        return "width"
+    if not is_comparable:
+        return "incomparable"
+    if d["lo"] > 0 and d_d["lo"] > 0:
+        return "kept"
+    if d["hi"] < 0 or d_d["hi"] < 0:
+        return "dropped"
+    return "unresolved"
+
+
+def noninferior(
+    sel: ContentSums,
+    lin: ContentSums,
+    margin: float,
+    counts: Tensor,
+    *,
+    change: bool = False,
+) -> dict[str, float | bool]:
+    r"""Whether the chosen readout is not worse than the least squares by
+    ``margin`` (V-h5a4, V-h5b4): the difference $E_{\mathrm{sel}} -
+    E_{\mathrm{lin}}$ (of $E^d$ with ``change``) of the same blocks (the
+    record's runs), its draws of ``counts`` paired, the 2.5% percentile
+    ``lo`` of the draws and ``ok`` ($lo > -m$)."""
+    point = sel.value(change) - lin.value(change)
+    dr = sel.draws(counts, change) - lin.draws(counts, change)
+    lo = float(torch.quantile(dr, _TAIL))
+    return {"point": point, "lo": lo, "margin": margin, "ok": lo > -margin}
