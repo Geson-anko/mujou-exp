@@ -74,7 +74,8 @@ repos:
           - --skip=uv.lock
           # "ALM" = Augmented Lagrangian Method; "crate" is a Rust package;
           # "millitary" is in Places365's official group names, quoted as is.
-          - --ignore-words-list=alm,crate,millitary
+          # "Savin" is an author's name; "SIE" a method; "Reacher" a DMC task.
+          - --ignore-words-list=alm,crate,millitary,savin,sie,reacher
           # the images embedded in the report pages (exp/*/report*.html)
           - --ignore-regex=data:image/[a-z]+;base64,[A-Za-z0-9+/=]+
 
