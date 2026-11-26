@@ -189,7 +189,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <header class="hero">
   <div class="eyebrow">exp/vision · V18c · 評価指標の解説 · 2026-11-25〜26</div>
   <h1>JEPA の評価指標を、一歩ずつ</h1>
-  <p class="lead">この資料は、exp/vision の V18c で使っている評価指標を説明します。読み手には、機械学習の基礎を学んだ学部生を想定しています。何を学ばせているかから始め、なぜ今の指標にたどり着いたのか、その指標で何が言えて何が言えないのかまでを、順に説明します。後半の 10〜15 節では、符号の空間で時間の流れがどれだけ真っすぐかを測る「時間の線形性と情報の幅」を説明します。16〜23 節では、等速の外挿がどの刻みまで copy に勝つかを測る「線形の幅」を説明します。</p>
+  <p class="lead">この資料は、exp/vision の V18c で使っている評価指標を説明します。読み手には、機械学習の基礎を学んだ学部生を想定しています。何を学ばせているかから始め、なぜ今の指標にたどり着いたのか、その指標で何が言えて何が言えないのかまでを、順に説明します。後半の 10〜15 節では、符号の空間で時間の流れがどれだけ真っすぐかを測る「時間の線形性と情報の幅」を説明します。16〜23 節では、等速の外挿がどの刻みまで copy に勝つかを測る「線形の幅」を説明します。24〜28 節では、線形の幅の確かめの結果と、ガードを作り直している経緯を説明します。</p>
   <div class="meta"><span>2026-11-26 時点</span><span>出典: exp/vision/README.md の V18c の節、exp/vision/plans/jepa.md</span></div>
 </header>
 
@@ -200,7 +200,9 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <li>実装の確かめのうち、V-s4 と V-s5 が通りました。各 checkpoint の値はまだ出ていません。</li>
     <li>V18c では、この指標で学習の良し悪しを判定しません。数値を並べて記述し、V19 で主の指標にするかを決めます。</li>
     <li>時間の線形性と情報の幅（10〜15 節）は、有効性の確かめを通り、モデルにかけました。結果は <a href="report-jepa.html#v18c-tlin">report-jepa.html</a> にあります。白色化した評価の分散の診断の境（15 節）は仮の値で、ユーザーが決め直します。</li>
-    <li>線形の幅（16〜23 節）は、定義と規則を V19 の値を見る前に登録しました。合成の確かめ V-h0 では、V-h0i（区間の被覆）だけが外れました。そこで真値の置き方を直し、判定し直しています（22 節）。物差しとモデルの値は、まだ読んでいません。</li>
+    <li>線形の幅（16〜23 節）は、定義と規則を V19 の値を見る前に登録しました。合成の確かめ V-h0 は、V-h0i の真値を直して判定し直し、全て通りました（22 節）。</li>
+    <li>拡散のデコーダのガードは、ずるを捕まえられず（V-h2、25 節）、観測の内容で作り直したガードも実データで外れました（V-h4b、27 節）。ガードは作り直している最中です。</li>
+    <li>V18c までの符号の線形の幅は、探索の記述として測りました。0.8 秒以上にはどの符号にも窓が無く、0.8 秒未満でも学習した符号は画素の物差しより幅が狭い結果でした（28 節）。「狭い」はガード無しで言えますが、「広い」はガードを待ちます。</li>
   </ul>
 </section>
 
@@ -231,6 +233,11 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <li><a href="#s21">ガード</a></li>
     <li><a href="#s22">合成の確かめ（V-h0）</a></li>
     <li><a href="#s23">探索と確証の区別</a></li>
+    <li><a href="#s24">物差しとガードの解像度（V-h1・V-h3）</a></li>
+    <li><a href="#s25">ずるを捕まえられなかった（V-h2）</a></li>
+    <li><a href="#s26">内容のガード（前線）</a></li>
+    <li><a href="#s27">内容のガードの確かめ（V-h4）</a></li>
+    <li><a href="#s28">いま言えること</a></li>
     <li><a href="#gloss">用語集</a></li>
   </ol>
 </nav>
@@ -238,7 +245,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <section id="flow">
   <div class="sec-head"><div class="eyebrow">00</div><h2>この資料の流れ</h2></div>
   <div class="prose">
-    <p>評価指標の形には、どれも理由があります。その理由は、前の段を知らないと見えません。そこで、次の 23 の段階を順に説明します。各節の始めには「なぜこれを測るのか」を書きます。</p>
+    <p>評価指標の形には、どれも理由があります。その理由は、前の段を知らないと見えません。そこで、次の 28 の段階を順に説明します。各節の始めには「なぜこれを測るのか」を書きます。</p>
   </div>
   <ol class="flow">
     <li class="grp">前提をそろえる</li>
@@ -270,6 +277,12 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <li><b>ガード</b>崩壊の指標を見ます。また、外挿した点を画像に戻し、正しい時刻を当てられるかを調べます。この 2 つで、ずるを見張ります。</li>
     <li><b>合成の確かめ</b>答えの分かる系列で実装を確かめました。外れた V-h0i の理由と、真値の直しを説明します。</li>
     <li><b>探索と確証の区別</b>V18c までの値は探索の記述にし、V19 の checkpoint で確証します。</li>
+    <li class="grp">線形の幅の確かめの結果と、ガードの作り直し</li>
+    <li><b>物差しとガードの解像度</b>物差しには 0.8 秒以上の窓が無く、ガードが読めるのは 6.4 秒だけでした。</li>
+    <li><b>ずるを捕まえられなかった</b>ずるが勝つ短い刻みで、デコーダの絵は時刻を見分けられませんでした。</li>
+    <li><b>内容のガード</b>幅と、観測をどれだけ戻せるか（保たれた内容）の 2 本の軸で読みます。</li>
+    <li><b>内容のガードの確かめ</b>合成では通り、実データでは読み出しの過学習と、差で変化を測る難しさで外れました。</li>
+    <li><b>いま言えること</b>「物差しより狭い」はガード無しで言えます。「広い」はガードの作り直しを待ちます。</li>
   </ol>
 </section>
 
@@ -931,7 +944,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <p>符号の時間の動きを学ぶモデルを、ダイナミクスモデルと呼びます。線形の幅が広い符号では、ダイナミクスモデルが、遠い先まで単純な規則で予測できます。予測を何歩も重ねても、誤差が積み上がりにくくなります。ユーザーは、これが長い記憶を持った世界のシミュレーションに効くと考えています。</p>
     <h3>他の手法とは「平均的な幅」で比べる</h3>
     <p>測るのは、1 つの刻みでの値ではありません。どの刻みまで線形性が成り立つかです。VAE・MAE・JEPA などの符号を、同じ物差し（12 節の白色化した PCA64）に載せ、「平均的な線形の幅」で比べます。</p>
-    <p>ただし、幅だけを見ると、ずるができます（20 節）。そこで、崩壊の指標と、拡散のデコーダで意味が保たれているかどうかという 2 つで見張ります（21 節）。これをガードと呼びます。</p>
+    <p>ただし、幅だけを見ると、ずるができます（20 節）。そこで、崩壊の指標と、拡散のデコーダで意味が保たれているかどうかという 2 つで見張ります（21 節）。これをガードと呼びます。拡散のデコーダのガードは確かめで外れたので、作り直しています（24〜28 節）。</p>
   </div>
 </section>
 
@@ -1069,6 +1082,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   <div class="why">
     <div class="k">なぜガードが要るのか</div>
     <p>幅は、意味を捨てても広がります（20 節）。そこで、幅を「広い」と書いてよいのは、符号が崩れておらず、外挿した点にまだ意味が残っているときだけにします。それを確かめる 2 つの仕組みがガードです。</p>
+    <p>この節は、はじめに登録した設計です。拡散のデコーダのガードは、確かめ V-h2 でずるを捕まえられず、止めました（25 節）。作り直した内容のガードは 26・27 節で説明します。</p>
   </div>
   <div class="prose">
     <h3>崩壊の指標</h3>
@@ -1134,7 +1148,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
         <tr><td class="n">V-h0l</td><td>入力・正解・copy・外挿・中点の時刻を取り違えていないこと</td><td><span class="badge ok">通った</span></td></tr>
         <tr><td class="n">V-h0m</td><td>評価の側の統計が白色化に漏れていないこと</td><td><span class="badge ok">通った</span></td></tr>
         <tr><td class="n">V-h0k</td><td>真の差が 0 の対で、「区別できた」と誤って答える回数が少ないこと</td><td><span class="badge ok">通った</span> 0/200（閾値 13 以下）</td></tr>
-        <tr><td class="n">V-h0i</td><td>95% 区間が真値を含む割合が 0.90 以上であること（200 の実現）</td><td><span class="badge ng">外れた</span> 主の幅 <span class="ob">Δ</span><sub>1</sub> は 0.935 で通ったが、プールの窓の上端が 0.51。真値を直して判定し直す（下）</td></tr>
+        <tr><td class="n">V-h0i</td><td>95% 区間が真値を含む割合が 0.90 以上であること（200 の実現）</td><td><span class="badge ok">通った</span> 真値を直して判定し直した後。プールの窓の上端は 0.935（直す前は 0.51 で外れた）。<span class="ob">Δ</span><sub>1</sub> は 0.935</td></tr>
       </tbody>
     </table>
   </div>
@@ -1150,12 +1164,12 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   </figure>
   <div class="prose">
     <h3>真値の直し</h3>
-    <p>被覆は、推定が目指している量（推定の的）に対して確かめるものです。推定は格子の上で横切りを求めます。そのため的は、閉じた式の <var>G</var> を同じ格子で同じようにつないだ値（3.05584 秒）です。V-h0i の結果を見た後に、ユーザーの承認を得て、真値をこの値に直しました（2026-11-26）。区間は計算し直さず、判定だけをやり直します。参考に、この真値での被覆は 0.935 です。</p>
+    <p>被覆は、推定が目指している量（推定の的）に対して確かめるものです。推定は格子の上で横切りを求めます。そのため的は、閉じた式の <var>G</var> を同じ格子で同じようにつないだ値（3.05584 秒）です。V-h0i の結果を見た後に、ユーザーの承認を得て、真値をこの値に直しました（2026-11-26）。区間は計算し直さず、判定だけをやり直しました。<b>判定し直した被覆は 0.935 で、閾値 0.90 を超えて通りました。</b>実現・seed・閾値は変えていません。</p>
     <p>これは、通る条件を探した結果ではありません。真値と推定の的を、同じ定義にそろえる直しです。連続の値との差 0.0011 秒は、格子で区切ったことによる決まった偏りです。この差は、格子の幅（0.1 秒）や Δ*（0.5 オクターブ）より 2 桁以上小さい値です。格子を細かくすると、差は格子の幅の 2 乗に比例して 0 に近づきます。閾値 0.90・実現・seed は変えていません。V-h0d は、はじめから「真値を含む格子の間」で照合しているので、この偏りの影響を受けずに通っています。<span class="ob">Δ</span><sub>1</sub>・<span class="ob">Δ</span>・Δ<sub>typ</sub> の真値は、長さ 100 倍の実現に同じ推定を当てた値なので、この偏りを持ちません。</p>
     <p>直した後も、読み方に 1 つ制限を付けます。プールの横切りでは、格子の解像度（0.1 秒）より細かい差は読みません。直した後の判定は、README の「線形の幅の有効性」に記録します。この直しで変えるのは、合成の確かめの真値の置き方だけです。実データの幅の定義・境・Δ*・区間・ガードは変えていません。</p>
     <h3>記録として分かったこと</h3>
     <p>V-h0k では、帯の周期を √2 倍にした対で「区別できた」が 0/200、2 倍にした対で 200/200 でした。周期を √2 倍にしても、<span class="ob">Δ</span><sub>1</sub> の真の差は 0.360 オクターブで、Δ* = 0.5 オクターブより小さくなります。0.8 秒から積分を始めることなどが理由です。そのため、「区別できた」が 0 なのは規則どおりです。周期 2 倍の真の差は 0.752 オクターブでした。</p>
-    <p>V-h1（物差しの密な格子）、V-h3（ガードの解像度）、V-h2（ずるの族）の値は、V-h0 の判定が決まるまで読みません。</p>
+    <p>V-h0 が全て通ったので、V-h1（物差し）、V-h3（ガードの解像度）、V-h2（ずるの族）に進みました。結果は 24・25 節で説明します。</p>
   </div>
 </section>
 
@@ -1191,8 +1205,146 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   </div>
 </section>
 
+<section id="s24">
+  <div class="sec-head"><div class="eyebrow">24</div><h2>物差しとガードの解像度（V-h1・V-h3）</h2></div>
+  <div class="why">
+    <div class="k">なぜ確かめるのか</div>
+    <p>合成の確かめ（22 節）が通ったので、次に実データで 2 つを確かめました（2026-11-26）。1 つは、画素などの物差しで幅がどう出るか（V-h1）です。もう 1 つは、拡散のデコーダのガードが、どの刻みで時刻を見分けられるか（V-h3）です。</p>
+  </div>
+  <div class="prose">
+    <h3>V-h1：物差しには、0.8 秒以上の窓が無かった</h3>
+    <p>物差し 9 個（<code>pca</code>・<code>color</code>・<code>mean8</code>・学習前の 6 個）のどれにも、0.8 秒以上の窓はありませんでした。主の幅 <span class="ob">Δ</span><sub>1</sub> は全て 0.8 秒です。0.8 秒の <var>p</var><sub>1/4</sub> は、<code>pca</code> で 0.101、<code>mean8</code> で 0.113 でした。0.8 秒未満では、<code>pca</code> に 0.388 秒まで、<code>mean8</code> に 0.437 秒までの窓がありました。学習前の符号の多くには、0.8 秒未満にも窓がありませんでした。</p>
+    <p>どの物差しも <span class="ob">Δ</span><sub>1</sub> が 0.8 秒なので、物差しどうしの比はどれも 0 になりました。Δ* を見直す材料にはならないので、Δ* は登録どおり 0.5 オクターブのままです。</p>
+    <h3>V-h3：天井が床から離れるのは、6.4 秒だけだった</h3>
+    <p>ガードが読めるのは、本物の未来の符号を描いた絵（天井）が、copy の絵（床）より十分に当たる刻みだけです（21 節）。<code>pca</code> のデコーダで調べると、天井が床から離れたのは 6.4 秒だけでした（seed 2 では 3.2 秒も）。デコーダの学習の揺れ σ<sub>dec</sub> は、天井 − 床で 0.0147、外挿 − 床で 0.00914 と決まりました。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 300" role="img" aria-label="V-h3 の天井・床・外挿の正解率"><line class="gridline" x1="70.0" y1="250.0" x2="640.0" y2="250.0"/><text x="62.0" y="255.0" text-anchor="end" class="mono small">0.00</text><line class="gridline" x1="70.0" y1="204.5" x2="640.0" y2="204.5"/><text x="62.0" y="209.54545454545453" text-anchor="end" class="mono small">0.05</text><line class="gridline" x1="70.0" y1="159.1" x2="640.0" y2="159.1"/><text x="62.0" y="164.09090909090907" text-anchor="end" class="mono small">0.10</text><line class="gridline" x1="70.0" y1="113.6" x2="640.0" y2="113.6"/><text x="62.0" y="118.63636363636365" text-anchor="end" class="mono small">0.15</text><line class="gridline" x1="70.0" y1="68.2" x2="640.0" y2="68.2"/><text x="62.0" y="73.18181818181816" text-anchor="end" class="mono small">0.20</text><rect class="c3" x="90.0" y="147.3" width="34.0" height="102.7" fill-opacity="0.85" rx="2"/><text x="107.0" y="142.27272727272725" text-anchor="middle" class="mono small" font-size="11">0.113</text><rect class="cn" x="132.0" y="147.3" width="34.0" height="102.7" fill-opacity="0.85" rx="2"/><text x="149.0" y="142.27272727272725" text-anchor="middle" class="mono small" font-size="11">0.113</text><rect class="c1" x="174.0" y="131.8" width="34.0" height="118.2" fill-opacity="0.85" rx="2"/><text x="191.0" y="126.81818181818181" text-anchor="middle" class="mono small" font-size="11">0.130</text><text x="149.0" y="270.0" text-anchor="middle" class="mono small">0.8 秒</text><rect class="c3" x="230.0" y="132.7" width="34.0" height="117.3" fill-opacity="0.85" rx="2"/><text x="247.0" y="127.72727272727272" text-anchor="middle" class="mono small" font-size="11">0.129</text><rect class="cn" x="272.0" y="150.9" width="34.0" height="99.1" fill-opacity="0.85" rx="2"/><text x="289.0" y="145.90909090909093" text-anchor="middle" class="mono small" font-size="11">0.109</text><rect class="c1" x="314.0" y="140.9" width="34.0" height="109.1" fill-opacity="0.85" rx="2"/><text x="331.0" y="135.90909090909093" text-anchor="middle" class="mono small" font-size="11">0.120</text><text x="289.0" y="270.0" text-anchor="middle" class="mono small">1.6 秒</text><rect class="c3" x="370.0" y="108.2" width="34.0" height="141.8" fill-opacity="0.85" rx="2"/><text x="387.0" y="103.18181818181819" text-anchor="middle" class="mono small" font-size="11">0.156</text><rect class="cn" x="412.0" y="143.6" width="34.0" height="106.4" fill-opacity="0.85" rx="2"/><text x="429.0" y="138.63636363636363" text-anchor="middle" class="mono small" font-size="11">0.117</text><rect class="c1" x="454.0" y="150.9" width="34.0" height="99.1" fill-opacity="0.85" rx="2"/><text x="471.0" y="145.90909090909093" text-anchor="middle" class="mono small" font-size="11">0.109</text><text x="429.0" y="270.0" text-anchor="middle" class="mono small">3.2 秒</text><rect class="c3" x="510.0" y="78.2" width="34.0" height="171.8" fill-opacity="0.85" rx="2"/><text x="527.0" y="73.18181818181819" text-anchor="middle" class="mono small" font-size="11">0.189</text><rect class="cn" x="552.0" y="156.4" width="34.0" height="93.6" fill-opacity="0.85" rx="2"/><text x="569.0" y="151.36363636363637" text-anchor="middle" class="mono small" font-size="11">0.103</text><rect class="c1" x="594.0" y="149.1" width="34.0" height="100.9" fill-opacity="0.85" rx="2"/><text x="611.0" y="144.0909090909091" text-anchor="middle" class="mono small" font-size="11">0.111</text><text x="569.0" y="270.0" text-anchor="middle" class="mono small">6.4 秒</text><line class="chance" x1="70.0" y1="149.0" x2="640.0" y2="149.0"/><text x="642" y="152.98989898989902" text-anchor="start" class="mono small">1/9</text><line class="axis" x1="70.0" y1="250.0" x2="640.0" y2="250.0"/><rect class="c3" x="70.0" y="12" width="12" height="12" rx="2"/><text x="88.0" y="23" text-anchor="start" class="small">天井 c（本物の z(t+Δ) の絵）</text><rect class="cn" x="320.0" y="12" width="12" height="12" rx="2"/><text x="338.0" y="23" text-anchor="start" class="small">床 f（copy の絵）</text><rect class="c1" x="470.0" y="12" width="12" height="12" rx="2"/><text x="488.0" y="23" text-anchor="start" class="small">外挿 e の絵</text><text x="569.0" y="290.0" text-anchor="middle" class="small accent">ここだけ天井が床から離れる</text></svg></div>
+    <figcaption><span class="tag data">README の値</span><code>pca</code> の 1 つ目のデコーダ（d0）が、9 個の候補から正しい時刻を当てた割合です。点線は当て推量の 1/9 です。0.8 秒と 1.6 秒では、本物の符号を描いた天井（緑）も当て推量とほとんど同じです。本物のフレームそのものなら、0.1 秒の違いでも 0.994〜1.000 の割合で当たります。そのため、時刻の情報を落としているのは、PCA64 を条件にしたデコーダの絵の側です。</figcaption>
+  </figure>
+</section>
+
+<section id="s25">
+  <div class="sec-head"><div class="eyebrow">25</div><h2>拡散のデコーダのガードは、ずるを捕まえられなかった（V-h2）</h2></div>
+  <div class="why">
+    <div class="k">なぜ止めたのか</div>
+    <p>ガードの役目は、ずるで広げた幅を「広い」と言わせないことです（20・21 節）。そこで、<code>pca</code> の符号からわざとずるを作り、ガードがそれを捕まえるかを確かめました。捕まえられなかったので、規則どおりここで止めました。</p>
+  </div>
+  <div class="prose">
+    <p>過去の時間の平均を長くすると、主の幅 <span class="ob">Δ</span><sub>1</sub> は 0.8 → 0.8 → 1.07 → 1.54 → 1.92 秒と伸びました。20 節の定理（幅を広げるには遅くするしかない）のとおりです。幅の物差しは、ずるに正しく反応しました。強さ 0 より主張できるほど伸びたのは、6.4 秒と 12.8 秒の平均です。</p>
+    <p>ところが、この 2 つのずるが潜在で copy に勝つのは、0.8 秒と 1.6 秒の刻みだけでした。その刻みでは、24 節で見たとおり、<code>pca</code> 自身の天井も床から離れません。ガードには何も見えないので、判定は「確かめられない」になりました。登録の規則では、「確かめられない」はずるを捕まえたことになりません。</p>
+    <p>速い方向を捨てるずる（16〜56 方向）では、どの強さでも 0.8 秒に窓ができず、<span class="ob">Δ</span><sub>1</sub> は 0.8 秒のままでした。主張できる差が出なかったので、この族では確かめられませんでした。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 280" role="img" aria-label="V-h2：幅は伸びたが、ガードが見えない刻みだった"><line class="gridline" x1="60.0" y1="207.3" x2="300.0" y2="207.3"/><text x="52.0" y="212.33333333333331" text-anchor="end" class="mono small">0.8</text><line class="gridline" x1="60.0" y1="162.0" x2="300.0" y2="162.0"/><text x="52.0" y="167.0" text-anchor="end" class="mono small">1.2</text><line class="gridline" x1="60.0" y1="116.7" x2="300.0" y2="116.7"/><text x="52.0" y="121.66666666666667" text-anchor="end" class="mono small">1.6</text><line class="gridline" x1="60.0" y1="71.3" x2="300.0" y2="71.3"/><text x="52.0" y="76.33333333333334" text-anchor="end" class="mono small">2.0</text><text x="85.0" y="250.0" text-anchor="middle" class="mono small">0</text><text x="137.0" y="250.0" text-anchor="middle" class="mono small">0.8</text><text x="189.0" y="250.0" text-anchor="middle" class="mono small">3.2</text><text x="241.0" y="250.0" text-anchor="middle" class="mono small">6.4</text><text x="293.0" y="250.0" text-anchor="middle" class="mono small">12.8</text><polyline class="qline" points="85.0,207.3 137.0,207.3 189.0,176.7 241.0,123.5 293.0,80.4"/><circle class="cn" cx="85.0" cy="207.3" r="6"/><text x="85.0" y="195.33333333333331" text-anchor="middle" class="mono small" font-size="11">0.80</text><circle class="cn" cx="137.0" cy="207.3" r="6"/><text x="137.0" y="195.33333333333331" text-anchor="middle" class="mono small" font-size="11">0.80</text><circle class="cn" cx="189.0" cy="176.7" r="6"/><text x="189.0" y="164.73333333333332" text-anchor="middle" class="mono small" font-size="11">1.07</text><circle class="c2" cx="241.0" cy="123.5" r="6"/><text x="241.0" y="111.46666666666665" text-anchor="middle" class="mono small" font-size="11">1.54</text><circle class="c2" cx="293.0" cy="80.4" r="6"/><text x="293.0" y="68.4" text-anchor="middle" class="mono small" font-size="11">1.92</text><text x="180" y="272.0" text-anchor="middle" class="small">過去の平均の長さ（秒）</text><text x="180" y="22" text-anchor="middle" class="strong">主の幅（秒）</text><text x="180" y="42" text-anchor="middle" class="small">橙：強さ 0 より主張できるほど伸びた</text><text x="510" y="22" text-anchor="middle" class="strong">ガードの刻みで何が起きたか</text><text x="360.0" y="72" text-anchor="start" class="small">ずるが潜在で copy に勝つ刻み</text><line class="gridline" x1="385.0" y1="90.0" x2="655.0" y2="90.0"/><circle class="c2" cx="400.0" cy="90.0" r="8"/><circle class="c2" cx="480.0" cy="90.0" r="8"/><circle class="ring" cx="560.0" cy="90" r="6" style="stroke: var(--neutral)"/><circle class="ring" cx="640.0" cy="90" r="6" style="stroke: var(--neutral)"/><text x="360.0" y="142" text-anchor="start" class="small">pca の天井が床から離れる刻み</text><line class="gridline" x1="385.0" y1="160.0" x2="655.0" y2="160.0"/><circle class="ring" cx="400.0" cy="160" r="6" style="stroke: var(--neutral)"/><circle class="ring" cx="480.0" cy="160" r="6" style="stroke: var(--neutral)"/><circle class="ring" cx="560.0" cy="160" r="6" style="stroke: var(--neutral)"/><circle class="c3" cx="640.0" cy="160.0" r="8"/><text x="400.0" y="200" text-anchor="middle" class="mono small">0.8 秒</text><text x="480.0" y="200" text-anchor="middle" class="mono small">1.6 秒</text><text x="560.0" y="200" text-anchor="middle" class="mono small">3.2 秒</text><text x="640.0" y="200" text-anchor="middle" class="mono small">6.4 秒</text><text x="510" y="232" text-anchor="middle" class="small lab-bad">2 つが重ならないので、ずるを見分けられない</text></svg></div>
+    <figcaption><span class="tag data">README の値</span>左は、過去の平均の長さと主の幅 <span class="ob">Δ</span><sub>1</sub> です。右は、ガードの 4 つの刻みのうち、ずる（平均 6.4・12.8 秒）が潜在で勝つ刻み（上）と、<code>pca</code> の天井が床から離れる刻み（下、d0）です。塗った点が「はい」です。2 つの列が重ならないので、ガードはずるを見分けられません。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>理由は 2 つある</h3>
+    <ul>
+      <li><b>解像度が足りない</b>：ずるが幅を稼ぐ短い刻みで、デコーダの絵に時刻の情報が残っていません。実装の誤りは見つかりませんでした。</li>
+      <li><b>問いの形にも穴がある</b>：時刻の同定は、「残った内容で、近い候補の中から正しい時刻を選べるか」を問います。遅い内容さえ残っていれば、速い内容を全て捨てても選べます。Codex さんの反例では、周期 30 秒と 0.9 秒の回転を足して 9 フレームで平均すると、速い回転は消えます。それでも、遅い回転から全ての刻みで時刻を当てられ、幅だけが伸びます。</li>
+    </ul>
+    <p>閾値・刻み・候補の間隔・seed を変えて、通る条件を探すことはしません。ガードを作り直すなら、それは新しい設計です。V19 の値を見る前に登録し直します。</p>
+  </div>
+</section>
+
+<section id="s26">
+  <div class="sec-head"><div class="eyebrow">26</div><h2>内容のガード：幅と保たれた内容の 2 本の軸で読む</h2></div>
+  <div class="why">
+    <div class="k">なぜこの形にしたのか</div>
+    <p>幅を広げるには、符号を遅くするしかありません（20 節）。遅くする方法には、速い内容を捨てるもの（ずる）と、同じ内容をまっすぐな座標に並べ直すもの（望む改善）があります。幅だけでは、この 2 つを区別できません。そこで、幅と「保たれた内容」の 2 本の軸で読むことにしました。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 300" role="img" aria-label="幅と内容の 2 本の軸（前線）の模式図"><line class="axis" x1="80.0" y1="260.0" x2="600.0" y2="260.0"/><line class="axis" x1="80.0" y1="260.0" x2="80.0" y2="40.0"/><text x="600.0" y="286.0" text-anchor="end" class="small">線形の幅（右ほど広い）→</text><text x="70.0" y="30.0" text-anchor="start" class="small">↑ 保たれた観測の内容 E</text><rect class="shade" x="80.0" y="110.0" width="520.0" height="22" fill-opacity="0.9"/><line class="refline" x1="80.0" y1="110.0" x2="600.0" y2="110.0"/><text x="596.0" y="126.0" text-anchor="end" class="small">許す損失 ψ* の範囲</text><circle class="cn" cx="190.0" cy="110.0" r="8"/><text x="190.0" y="94.0" text-anchor="middle" class="small">比べる相手 b</text><line class="ln" x1="202.0" y1="110.0" x2="448.0" y2="114.0" marker-end="url(#ah)"/><circle class="c3" cx="460.0" cy="114.0" r="8"/><text x="460.0" y="94.0" text-anchor="middle" class="small">広くて、内容を保った</text><text x="460.0" y="76.0" text-anchor="middle" class="strong">（望む改善）</text><line class="ln" x1="200.0" y1="120.0" x2="430.0" y2="214.0" stroke-dasharray="4 4" marker-end="url(#ah)"/><circle class="c2" cx="440.0" cy="220.0" r="8"/><text x="454.0" y="225.0" text-anchor="start" class="small">広いが、内容を落とした（ずる）</text></svg></div>
+    <figcaption><span class="tag schema">模式図</span>横軸が線形の幅、縦軸が保たれた観測の内容です。比べる相手（灰色）から右へ動くほど幅が広がります。ずる（橙）は、幅を得る代わりに内容を落とし、右下へ動きます。この右下がりの線を前線と呼びます。望む改善（緑）は、内容を許す損失 ψ<sub>*</sub> の範囲に保ったまま、右へ動きます。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>内容を、観測の再構成で測る</h3>
+    <p>内容の軸は、「同じ時刻の符号から、その時刻の観測をどれだけ戻せるか」で測ります。観測は、stack の最後のフレームを 32×32 画素に縮めたものです。符号は、幅を測った座標そのもの（白色化した PCA64）です。符号から観測を戻す小さなネットワーク（MLP）を、読み出しと呼びます。読み出しは Zurich 以外の動画で学び、Zurich で評価します。並べ直した符号を罰さないように、読み出しは線形ではなく非線形にしました。</p>
+    <ul>
+      <li><b>現在の内容 <var>E</var></b>：観測の分散のうち、読み出しで説明できた割合です。1 なら完全に戻せ、0 なら平均の絵と同じです。</li>
+      <li><b>変化の内容 <var>E</var><sup>d</sup></b>：0.1 秒の観測の変化のうち、読み出しの差で説明できた割合です。画面の一部だけの速い動きは、全画面の誤差には小さくしか効きません。そこで、変化そのものを的にした量も並べます。</li>
+    </ul>
+    <h3>比べ方</h3>
+    <p>2 つの符号 <var>a</var>・<var>b</var> の内容の比を、ψ = log<sub>2</sub>(<var>E</var><sub>a</sub> / <var>E</var><sub>b</sub>) とします。負なら、<var>a</var> が内容を落としています。変化の内容でも、同じ形の ψ<sup>d</sup> を作ります。許す損失 ψ<sub>*</sub> は 0.1 オクターブ（説明された分散の 6.7%）です。これは理論から導いた値ではなく、実用上の選択として登録しました。</p>
+    <ul>
+      <li>幅の比が +Δ* を丸ごと超え、ψ・ψ<sup>d</sup> の下端がどちらも −ψ<sub>*</sub> を超える：<b>内容を落とさずに、幅が実用上広いと区別できた</b></li>
+      <li>幅の比が +Δ* を丸ごと超え、どちらかの上端が −ψ<sub>*</sub> を下回る：<b>幅は広いが、内容を落とした</b>（前線の上を動いただけ）</li>
+      <li>比べる相手の <var>E</var>・<var>E</var><sup>d</sup> の下端が 0 を超えないときは、「内容を比べられない」とし、幅を広いとは言いません。</li>
+    </ul>
+    <p>速い方向を捨てる射影のように、同じ時刻の符号の関数で作ったずるでは、読み出しの最良の誤差は、元の符号より小さくなりません（命題 1）。ただしこの命題は、読み出しが族の中の最良に届くことを前提にしています。</p>
+  </div>
+</section>
+
+<section id="s27">
+  <div class="sec-head"><div class="eyebrow">27</div><h2>内容のガードの確かめ（V-h4）：合成では通り、実データで外れた</h2></div>
+  <div class="why">
+    <div class="k">何を確かめたか</div>
+    <p>答えの分かる合成の系列（V-h4a）と、<code>pca</code> から作ったずる（V-h4b）で、内容のガードが働くかを確かめました（2026-11-26）。V19 の値もモデルの値も計算していません。</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>確かめ</th><th>何を確かめるか</th><th>結果</th></tr></thead>
+      <tbody>
+        <tr><td class="n">V-h4a1</td><td>合成：内容を保ったまま遅い座標に並べ直した符号が、「落とさずに広い」になる</td><td><span class="badge ok">通った</span> <span class="ob">Δ</span><sub>1</sub> 4.98 秒 対 1.04 秒、ψ [−0.0022, 0.0008]</td></tr>
+        <tr><td class="n">V-h4a2</td><td>合成：幅を伸ばしたずるが、全て「内容を落とした」になる</td><td><span class="badge ok">通った</span> ψ の上端 −1.58〜−1.39。200 の実現で「落とさずに広い」は 0</td></tr>
+        <tr><td class="n">V-h4a3</td><td>合成：ちょうど ψ<sub>*</sub> だけ落とした符号を、誤って「落とさずに」と言う回数が少ない</td><td><span class="badge ok">通った</span> 3/200（閾値 13 以下）</td></tr>
+        <tr><td class="n">V-h4b1</td><td>実データ：時間の平均のずる（6.4・12.8 秒）が「内容を落とした」になる</td><td><span class="badge ng">外れた</span> 相手の <code>pca</code> の <var>E</var><sup>d</sup> が −0.024 で「内容を比べられない」</td></tr>
+        <tr><td class="n">V-h4b2</td><td>実データ：捨てる方向を増やすと <var>E</var> が増えない</td><td><span class="badge ng">外れた</span> 0.546・0.453・0.403・0.421（56 方向で増えた）</td></tr>
+        <tr><td class="n">V-h4b3</td><td>実データ：本物の物差しを「落とした」と言わない</td><td><span class="badge ng">外れた</span> 物差しの 9 個全てで <var>E</var><sup>d</sup> の比べる条件を満たさない</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <h3>外れた理由 1：読み出しが、学んだ区間を覚えてしまった</h3>
+    <p>読み出しの MLP は、相関の強い 512 個の区間を約 39 周して学びます。訓練に使っていない区間（分布は訓練と同じ）で確かめると、どの符号でも MLP の <var>E</var> が最小二乗の <var>E</var> を下回りました（<code>pca</code> で 0.609 対 0.737）。時間の平均の符号は、1 つの区間の中でほとんど動きません。そのため MLP は、「区間の名前」から「その区間の平均の絵」への対応を覚えたと考えます。訓練の外では、この対応は平均の絵より悪くなり、<var>E</var> が負になりました（12.8 秒の平均で −1.659）。命題 1 の前提「読み出しが族の中の最良に届く」が、同じ分布の上で崩れていました。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 335" role="img" aria-label="MLP の読み出しの過学習"><line class="gridline" x1="232.5" y1="20.0" x2="232.5" y2="290.0"/><text x="232.5" y="308" text-anchor="middle" class="mono small">-1.5</text><line class="gridline" x1="315.0" y1="20.0" x2="315.0" y2="290.0"/><text x="315.0" y="308" text-anchor="middle" class="mono small">-1</text><line class="gridline" x1="397.5" y1="20.0" x2="397.5" y2="290.0"/><text x="397.5" y="308" text-anchor="middle" class="mono small">-0.5</text><line class="gridline" x1="480.0" y1="20.0" x2="480.0" y2="290.0"/><text x="480.0" y="308" text-anchor="middle" class="mono small">0</text><line class="gridline" x1="562.5" y1="20.0" x2="562.5" y2="290.0"/><text x="562.5" y="308" text-anchor="middle" class="mono small">0.5</text><line class="gridline" x1="645.0" y1="20.0" x2="645.0" y2="290.0"/><text x="645.0" y="308" text-anchor="middle" class="mono small">1</text><text x="10" y="40.0" text-anchor="start" class="strong">pca</text><rect class="c1" x="480.0" y="48.0" width="140.2" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="63.0" text-anchor="start" class="small">訓練の中</text><text x="626.25" y="63.0" text-anchor="start" class="mono small">0.850</text><rect class="c2" x="480.0" y="74.0" width="100.5" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="89.0" text-anchor="start" class="small">訓練の外の区間</text><text x="586.485" y="89.0" text-anchor="start" class="mono small">0.609</text><rect class="c4" x="480.0" y="100.0" width="104.3" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="115.0" text-anchor="start" class="small">Zurich</text><text x="590.28" y="115.0" text-anchor="start" class="mono small">0.632</text><rect class="cn" x="480.0" y="126.0" width="121.6" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="141.0" text-anchor="start" class="small">最小二乗・訓練の外</text><text x="607.605" y="141.0" text-anchor="start" class="mono small">0.737</text><text x="10" y="176.0" text-anchor="start" class="strong">平均 12.8 秒</text><rect class="c1" x="480.0" y="184.0" width="131.3" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="199.0" text-anchor="start" class="small">訓練の中</text><text x="617.34" y="199.0" text-anchor="start" class="mono small">0.796</text><rect class="c2" x="206.3" y="210.0" width="273.7" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="225.0" text-anchor="start" class="small">訓練の外の区間</text><text x="200.265" y="225.0" text-anchor="end" class="mono small">-1.659</text><rect class="c4" x="203.1" y="236.0" width="276.9" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="251.0" text-anchor="start" class="small">Zurich</text><text x="197.13" y="251.0" text-anchor="end" class="mono small">-1.678</text><rect class="cn" x="480.0" y="262.0" width="63.9" height="20" fill-opacity="0.85" rx="2"/><text x="24" y="277.0" text-anchor="start" class="small">最小二乗・訓練の外</text><text x="549.855" y="277.0" text-anchor="start" class="mono small">0.387</text><line class="axis" x1="480.0" y1="20.0" x2="480.0" y2="290.0"/><text x="645.0" y="325" text-anchor="end" class="small">E（説明された分散の割合。1 で完全、0 で平均と同じ）</text></svg></div>
+    <figcaption><span class="tag data">README の値</span><code>pca</code> と、12.8 秒の平均のずるの <var>E</var> です。MLP の値は 3 つの seed の平均です。訓練の中では両方とも 0.8 前後ですが、訓練の外の区間と Zurich では大きく下がります。灰色は、訓練の外の区間での最小二乗の値です。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>外れた理由 2：水準の読み出しの差では、変化を測れない</h3>
+    <p><var>E</var><sup>d</sup> では、変化を、水準を戻す読み出しの差 <var>g</var>(<var>c</var><sub>t</sub>) − <var>g</var>(<var>c</var><sub>t−1</sub>) で予測します。この差の誤差は、隣り合う時刻の水準の誤差の差です。水準の誤差の自己相関を ρ とすると、差の誤差は約 2(1 − ρ) × 水準の誤差 になります。Zurich では、0.1 秒の変化の分散が、水準の分散の 7.25% しかありません。<code>pca</code> では、ρ = 0.90 でも、差の誤差が変化の分散とほぼ同じ大きさになり、<var>E</var><sup>d</sup> ≈ 0 になりました。そのため、本物の物差しを含む全ての符号で <var>E</var><sup>d</sup> ≤ 0 でした。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg" viewBox="0 0 680 240" role="img" aria-label="水準の読み出しの差で変化を測る難しさ"><text x="250.0" y="52" text-anchor="end" class="strong">0.1 秒の変化の分散</text><text x="250.0" y="72" text-anchor="end" class="small">（水準の分散に対する割合）</text><rect class="c1" x="260.0" y="40" width="290.0" height="28" fill-opacity="0.85" rx="2"/><text x="558.0" y="59" text-anchor="start" class="mono small">0.0725</text><text x="250.0" y="122" text-anchor="end" class="strong">差の誤差 ≈ 2(1 − ρ)ΣE²</text><text x="250.0" y="142" text-anchor="end" class="small">= 2 × 0.10 × 0.37</text><rect class="c2" x="260.0" y="110" width="296.0" height="28" fill-opacity="0.85" rx="2"/><text x="564.0" y="129" text-anchor="start" class="mono small">0.074</text><text x="340" y="200" text-anchor="middle" class="strong">Eᵈ = 1 − 差の誤差 ÷ 変化の分散 ≈ 1 − 0.074 ÷ 0.0725 ≈ 0</text><text x="340" y="224" text-anchor="middle" class="small">ρ は水準の誤差の lag 1 の自己相関（0.90）、ΣE² は水準の誤差の割合（1 − 0.632）</text></svg></div>
+    <figcaption><span class="tag data">README の値</span>上は 0.1 秒の変化の分散（水準の分散に対する割合）、下は <code>pca</code> の MLP での差の誤差の見積もりです。2 つがほぼ同じなので、<var>E</var><sup>d</sup> は 0 に近くなります。</figcaption>
+  </figure>
+  <div class="prose">
+    <h3>外れた理由 3：合成の確かめが、この 2 つを捕まえられなかった</h3>
+    <p>合成の符号は 2〜4 次元と小さく、訓練の系列は 1 本の長い連続した系列でした。実データの「相関の強い 512 個の区間」という構造がないので、過学習も <var>E</var><sup>d</sup> の問題も起きなかったと考えます（推測）。</p>
+    <p>最小二乗の読み出しは、ここで外れた形を示しませんでした（捨てる方向を増やすと単調に下がる）。しかし、最小二乗は、非線形に並べ直した符号を罰してしまいます。この結果を見てから最小二乗に切り替えると、通る条件を探すことになるので、記録にとどめました。</p>
+  </div>
+</section>
+
+<section id="s28">
+  <div class="sec-head"><div class="eyebrow">28</div><h2>いま言えること：「狭い」はガード無しで言える</h2></div>
+  <div class="why">
+    <div class="k">なぜガード無しで言えるのか</div>
+    <p>ガードは、内容を捨てて幅を見かけ上広げる操作を防ぐためのものです。こうした操作で、幅が狭く見えることはありません。そのため、「物差しより狭い」という結果は、ガードが無くても言えます。ガードが必要になるのは、「広い」と主張するとき（V19 以降）です。</p>
+  </div>
+  <div class="prose">
+    <h3>実データの結果（探索の記述）</h3>
+    <p>学習した符号 34 個（V18・V18b・V18c・VAE）と物差しの線形の幅を測りました。結果は <a href="report-jepa.html#v18c-width">report-jepa.html の 18 節</a>に図でまとめています。23 節のとおり、これらは探索の記述です。</p>
+    <ul>
+      <li><b>0.8 秒以上には、どの符号にも窓がありません。</b><span class="ob">Δ</span><sub>1</sub> は全て 0.8 秒で、0.8 秒以上の幅では符号の違いを言えません。</li>
+      <li><b>0.8 秒未満でも、学習した符号は画素の物差しより幅が狭い。</b>窓の上端は、学習した符号で 0.138〜0.310 秒か窓が無い状態で、<code>pca</code> の 0.388 秒、<code>mean8</code> の 0.437 秒より短い値です。</li>
+      <li>学習前に窓が無かった符号の多くで、学習後に 0.2〜0.3 秒の窓が現れました。V18c（学習率 10<sup>−4</sup>）の λ = 0.8・0.95 では、60000 step で窓が消え、0.8 秒のプールの <var>G</var> が 0.69〜0.72 に上がりました。λ = 0.5 では、境 1/2 の <span class="ob">Δ</span> が伸びました（1.75 秒、<code>pca</code> は 1.37 秒）が、窓はありません。この伸びが内容を保ったものかは、ガードが無いので言えません。</li>
+    </ul>
+    <h3>作り直しの方向</h3>
+    <p>いまは、ガードを作り直している最中です。理論から出る方向は次の 3 つで、どれも V19 の値を見る前に登録し直します。</p>
+    <ol>
+      <li><b>読み出しを、族の中の最良に近づける</b>：訓練の外の区間の誤差で、学習を止める時点などを選びます。命題 1 は母集団の誤差についての命題なので、同じ分布の独立な区間で選ぶことは、その前提に近づける操作です。</li>
+      <li><b>変化を、変化を的にした読み出しで測る</b>：前後 2 時刻の符号から、観測の変化を直接に読みます。水準の誤差の自己相関に左右されなくなります。</li>
+      <li><b>合成の確かめも、区間の構造にそろえて回し直す</b>：実データで起きた 2 つの問題を、合成でも捕まえられるようにします。</li>
+    </ol>
+  </div>
+</section>
+
 <section id="gloss">
-  <div class="sec-head"><div class="eyebrow">24</div><h2>用語集</h2></div>
+  <div class="sec-head"><div class="eyebrow">29</div><h2>用語集</h2></div>
   <dl class="gloss">
     <dt>stack</dt><dd>連続する 8 フレーム（0.8 秒分）を 64×64 画素で重ねた、1 回分の入力。</dd>
     <dt>パッチ・トークン</dt><dd>画像を区切った小区画がパッチで、その画素を並べたベクトルがトークン。V18c のパッチは 8×8 画素で、1 つの stack に 64 個ある。</dd>
@@ -1261,11 +1413,17 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <dt>オクターブ・幅の Δ*</dt><dd>幅の比の log<sub>2</sub>。1 オクターブは 2 倍。幅の Δ* は 0.5 オクターブ（約 1.41 倍）。</dd>
     <dt>雑音の床・U 字</dt><dd>フレームごとの独立な揺れのせいで、短い刻みで外挿が負けること。<var>G</var><sub>mid</sub> が刻みに対して U 字になる。</dd>
     <dt>ずる</dt><dd>意味を捨てて幅を広げること。時間の平均、速い方向を捨てる、状態だけで滑らかにする、など。</dd>
-    <dt>ガード</dt><dd>幅を「広い」と書く前の見張り。崩壊の指標と、拡散のデコーダで外挿した点の時刻を当てられるかを見る。</dd>
+    <dt>ガード</dt><dd>幅を「広い」と書く前の見張り。はじめは崩壊の指標と拡散のデコーダで外挿した点の時刻を当てられるかを見たが、V-h2 で外れた。観測の内容で作り直したガードも V-h4b で外れ、作り直している。</dd>
     <dt>天井・床（ガード）</dt><dd>天井は本物の未来の符号 <var>z</var>(<var>t</var> + Δ) の絵、床は今の符号 <var>z</var>(<var>t</var>)（copy）の絵が、的の時刻を当てる割合。</dd>
     <dt>SE<sub>tot</sub>・σ<sub>dec</sub></dt><dd>σ<sub>dec</sub> はデコーダの学習の揺れ。SE<sub>tot</sub> は錨の揺れ SE* と合わせた √(SE*² + σ<sub>dec</sub>²)。</dd>
     <dt>通った・割れた・保留・確かめられない</dt><dd>ガードの判定の 4 つの書き方（21 節の表）。</dd>
     <dt>V-h0〜V-h3</dt><dd>線形の幅の有効性の確かめ。V-h0 は合成の系列、V-h1 は物差しの材料、V-h3 はガードの解像度、V-h2 はずるとガード。</dd>
+    <dt>V-h4（a・b）</dt><dd>内容のガードの有効性の確かめ。V-h4a は合成の系列、V-h4b は実データ（<code>pca</code> から作ったずると物差し）。</dd>
+    <dt>前線</dt><dd>幅を横軸、保たれた内容を縦軸にした平面で、幅を得る代わりに内容を落とす右下がりの線。この線の上を動くだけなら、ずると読む。</dd>
+    <dt>観測・読み出し</dt><dd>観測は stack の最後のフレームを 32×32 画素に縮めたもの。読み出しは、同じ時刻の符号から観測を戻す MLP（Zurich 以外の動画で学ぶ）。</dd>
+    <dt><var>E</var>・<var>E</var><sup>d</sup></dt><dd><var>E</var> は観測の分散のうち読み出しで説明できた割合（現在の内容）。<var>E</var><sup>d</sup> は 0.1 秒の観測の変化のうち、読み出しの差で説明できた割合（変化の内容）。</dd>
+    <dt>ψ・ψ<sup>d</sup>・ψ<sub>*</sub></dt><dd>2 つの符号の内容の比 log<sub>2</sub>(<var>E</var><sub>a</sub>/<var>E</var><sub>b</sub>) と、変化の内容の比。負なら <var>a</var> が内容を落とした。ψ<sub>*</sub> = 0.1 オクターブは許す損失。</dd>
+    <dt>訓練の中・訓練の外の区間</dt><dd>読み出しを学んだ区間そのものと、同じ動画の、学びに使っていない区間。2 つの差で過学習の大きさを読む。</dd>
     <dt>探索の記述・確証</dt><dd>定義を決める前に関連する値を見た比べは探索の記述で、仮説の判定に使わない。値を見る前に固定した規則で V19 を判定するのが確証。</dd>
     <dt>P16・F・M</dt><dd>前の実験の長い run。P16 は V18（パッチ 16）、F は V18b（パッチ 4）、M は V18b で K3 に崩れた run。</dd>
   </dl>

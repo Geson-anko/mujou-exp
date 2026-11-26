@@ -286,6 +286,8 @@ table { border-top: 1px solid var(--rule); }
 .sweep .cell { white-space: nowrap; }
 #t-s-old td, #t-s-old th { white-space: nowrap; }
 .jepafig .arrow8 { marker-end: url(#ah8); }
+.callout { max-width: 46rem; background: var(--warn-bg); border-left: 4px solid var(--warn); border-radius: 0 6px 6px 0; padding: 12px 16px; }
+.ob { text-decoration: overline; }
 </style>
 <body>
 <main>
@@ -321,6 +323,7 @@ table { border-top: 1px solid var(--rule); }
     <a href="#v18c-long">V18c 長い run</a>
     <a href="#v18c-self">補完の同定</a>
     <a href="#v18c-tlin">時間の線形性</a>
+    <a href="#v18c-width">線形の幅</a>
     <a href="#verdict">予想の判定</a>
     <a href="#next">今後の進め方</a>
     <a href="#repro">再現</a>
@@ -369,6 +372,11 @@ table { border-top: 1px solid var(--rule); }
       <div class="k">V18c · 時間の線形性（記述）</div>
       <h3>PCA64 の白色化では、画素より真っすぐと区別できた符号は無かった</h3>
       <p>前後 2 時刻の符号の平均が本物の中間からどれだけ外れるか（<i>G</i><sub>mid</sub>）を、PCA64 で白色化して測りました。画素の PCA より実用上小さいと区別できた符号はありませんでした。学習率 10<sup>−4</sup>・λ = 0.5 の V18c は、学習前より下がり、遅くなりました（0.8 秒で −0.077・−0.053）。λ を上げると逆に上がりました。画素との比べの向きは、白色化の <i>k</i> で変わります。この計量と 0.8 秒以上の刻みでは、等速の外挿の誤差は copy の 2.14 倍以上でした。そのため V19 では、等速の外挿は弱い対照です。</p>
+    </article>
+    <article class="finding">
+      <div class="k">V18c · 線形の幅（探索）</div>
+      <h3>どの符号も、0.8 秒以上では等速の外挿が copy に勝たない</h3>
+      <p>等速の外挿が copy に勝つ刻みの幅（線形の幅）を、学習した符号 34 個と物差し 9 個で測りました。0.8 秒以上に窓がある符号は 1 つもなく、主の幅は全て 0.8 秒でした。0.8 秒未満の窓の上端は、学習した符号では 0.138〜0.310 秒か、窓が無い状態です。どれも画素の <code>pca</code>（0.388 秒）・<code>mean8</code>（0.437 秒）より短い値です。学習した符号は、画素の物差しより線形の幅が狭いと言えます。この「狭い」はガードが無くても言えますが、「広い」と言うためのガードは作り直している最中です。</p>
     </article>
   </div>
 </section>
@@ -1198,8 +1206,79 @@ table { border-top: 1px solid var(--rule); }
   </div>
 </section>
 
+<section id="v18c-width" aria-labelledby="h-v18c-width">
+  <div class="sec-head"><div class="eyebrow">18 · V18c 線形の幅（探索）</div><h2 id="h-v18c-width">等速の外挿は、どの刻みまで copy に勝つか</h2></div>
+  <div class="prose">
+    <p><b>問い</b>　符号の軌跡 <i>z</i>(<i>t</i>) が滑らかなら、小さな刻み Δ では、テイラー展開の 1 次で近似できます。今の速さのまま進む予測 2<i>z</i>(<i>t</i>) − <i>z</i>(<i>t</i> − Δ) を、等速の外挿と呼びます。今の符号をそのまま使う予測を、copy と呼びます。等速の外挿が copy に勝つ刻みの長さを、線形の幅と呼びます。研究の依頼者は、JEPA で大事なのはこの幅を広げることだと考えています。ここでは、V18c までの符号と物差しの線形の幅を測りました。定義と図による説明は、<a href="eval-guide.html#s16">eval-guide.html の 16〜28 節</a>にあります。</p>
+    <p><b>方法</b>　符号は、各モデルの自分の潜在を、参照の組で PCA64 に白色化したものです。三つ組ごとに、続く 2 つの変位の相関 <i>ρ</i> が 1/2 を超えれば、外挿の勝ちとします（境 1/4、主）。<i>ρ</i> が 0 を超えれば勝ちとする緩い境（境 1/2）も、副として並べます。刻み Δ ごとに、勝つ三つ組の割合 <i>p</i>(Δ) を数えます。数える三つ組の中心は、全ての刻みで同じ約 14100 個です。<i>p</i> ≥ 1/2 となる連続した刻みの区間を、窓と呼びます。主の幅 <span class="ob">Δ</span><sub>1</sub> は、0.8 秒から最初の窓の上端まで <i>p</i> を積分し、0.8 を足した値です。窓が無ければ 0.8 秒です。0.8 秒より短い刻みは、stack が 8 枚（0.8 秒）を重ねるので、8 枚の平均（<code>mean8</code>）と並べた記述にとどめます。</p>
+    <p><b>対象</b>　物差し 9 個（画素の <code>pca</code>・<code>mean8</code>・<code>color</code>、学習前の 6 個）と、学習した符号 34 個です。34 個の内訳は、VAE 2 本（<code>v16</code>・<code>v17</code>）、V18・V18b の 8 本の step 60000、V18c の 12 本の step 6000 と 60000 です。</p>
+  </div>
+  <div class="callout">
+    <p><b>この節の値は、すべて探索の記述です。</b>V18c までの符号は、6 つの刻みの値を見た後に、線形の幅を定義して測りました。そのため、仮説の支持や棄却には使いません。また、幅を「広い」と言うために必要なガードは、確かめ（V-h2・V-h4）で外れ、作り直しています。そのため、どの幅も「ガードで確かめられない」状態です。ただし、「物差しより狭い」という結果は、ガードが無くても言えます。ガードは、内容を捨てて幅を見かけ上広げる操作（ずる）を防ぐためのものです。こうした操作では、幅は狭く見えません。</p>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="sub">0.8 秒以上に窓がある符号</div><div class="big">0</div><div class="sub">学習した符号 34 個と物差し 9 個のすべてで、境 1/4 でも 1/2 でも窓が無い。主の幅 <span class="ob">Δ</span><sub>1</sub> は全て 0.8 秒</div></div>
+    <div class="tile"><div class="sub">0.8 秒未満の窓の上端（境 1/4）</div><div class="big">0.138〜0.310 秒</div><div class="sub">学習した符号（または窓が無い）。<code>pca</code> は 0.388 秒、<code>mean8</code> は 0.437 秒</div></div>
+    <div class="tile"><div class="sub">0.8 秒で外挿が勝つ割合 <i>p</i><sub>1/4</sub></div><div class="big">0.000〜0.085</div><div class="sub">学習した符号。<code>pca</code> は 0.101、<code>mean8</code> は 0.113</div></div>
+  </div>
+  <figure>
+    <div class="fig-title">符号ごとの線形の幅（自分の潜在、PCA64）</div>
+    <div class="seg" id="seg-w-qty" role="group" aria-label="表示する量"></div>
+    <div class="chart" id="c-w-dots"></div>
+    <figcaption>1 行が 1 つの符号です。上の 9 行が物差し（灰色）、次の 2 行が VAE、その下が V18・V18b の step 60000（黒）と V18c の 12 本です。V18c は色が λ で、塗りつぶしが step 60000、白抜きが step 6000 です。ボタンで表示する量を切り替えます。「0.8 秒未満の窓の上端」では、<b>右ほど線形の幅が広い</b>ことを表します。窓が無い符号は、左端の「無い」の列に置きました。点線は 0.8 秒で、これより右に窓がある符号はありません。<i>p</i> では、点線の 1/2 を超えると窓になります。プールの <i>G</i> では、境 1/4 を下回ると窓になります。境 1/2 の <span class="ob">Δ</span> では、横線が 128 秒と 256 秒のブロックのブートストラップによる区間です。値は <code>judge_width_yard.json</code> と <code>judge_width_apply.json</code> をそのまま丸めました。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること（符号ごと）</b></p>
+    <ul>
+      <li><b>0.8 秒以上では、どの符号にも窓がありません。</b>境 1/4 でも 1/2 でも、<i>p</i> の窓もプールの横切りもありません。主の幅 <span class="ob">Δ</span><sub>1</sub> は、学習した符号も物差しも全て 0.8 秒です。全ての抽出で窓が無いので、0.8 秒以上の幅では、符号の違いを言えません。</li>
+      <li><b>0.8 秒未満でも、学習した符号は画素の物差しより幅が狭い。</b>境 1/4 の窓の上端は、学習した符号で 0.138〜0.310 秒か、窓が無い状態です。<code>pca</code> の 0.388 秒、<code>mean8</code> の 0.437 秒を超えた符号はありません。</li>
+      <li>0.8 秒の <i>p</i><sub>1/4</sub> は、学習した符号で 0.000〜0.085 です。<code>pca</code>（0.101）と <code>mean8</code>（0.113）より小さい値です。プールの <i>G</i>(0.8) は 0.562〜0.721 で、境 1/4 から遠い値です。</li>
+      <li>境 1/2 では、V18c（学習率 10<sup>−4</sup>・λ = 0.5）の step 60000 の <span class="ob">Δ</span> が 1.75・1.62 秒で、<code>pca</code>（1.37 秒）・<code>mean8</code>（1.38 秒）より長い点推定になりました。ただし窓は無く、区間は物差しの区間と重なります。</li>
+      <li><code>h_mean</code> でも、どの符号にも 0.8 秒以上の窓はありません（<span class="ob">Δ</span> は 0.800〜0.817 秒）。</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="fig-title">学習の前後と λ（V18c の 12 本、自分の潜在）</div>
+    <div class="seg" id="seg-w-ba" role="group" aria-label="表示する量"></div>
+    <div class="chart" id="c-w-ba"></div>
+    <figcaption>1 本の線が 1 つの run です。左から、学習前（seed 0 は <code>init_c</code>、seed 1 は <code>init_c1</code>）、step 6000、step 60000 を表します。色は λ、実線は学習率 10<sup>−4</sup>、破線は 10<sup>−5</sup> です。「0.8 秒未満の窓の上端」では、窓が無い点を下端の「無い」に置きました。値は上の図と同じです。</figcaption>
+  </figure>
+  <div class="prose">
+    <p><b>読めること（学習の前後と λ）</b></p>
+    <ul>
+      <li><b>学習の前後</b>: 学習前に 0.8 秒未満の窓が無かった符号（<code>init_c</code>・<code>init_c1</code>・<code>init</code>・<code>init_f</code>・<code>init_v16</code>）の多くで、学習後に 0.205〜0.310 秒の窓が現れました。0.8 秒の <i>p</i><sub>1/4</sub> も、学習前の 0.000〜0.006 から少し上がりました（V18c 0.000〜0.027、V18 0.003〜0.020、V18b 0.035〜0.085、<code>v16</code> 0.038）。</li>
+      <li><b>λ（学習率 10<sup>−4</sup>）</b>: step 6000 では、3 つの λ はほとんど同じでした（<i>p</i><sub>1/4</sub>(0.8) 0.008〜0.020、窓の上端 0.259〜0.278 秒）。step 60000 では分かれました。λ = 0.8・0.95 では、0.8 秒未満の窓（境 1/4）が消え、プールの <i>G</i>(0.8) が 0.691〜0.721 に上がりました。λ = 0.5 では窓が残り、<i>p</i><sub>1/2</sub>(0.8) が 0.300・0.289 から 0.497・0.475 に上がり、境 1/2 の <span class="ob">Δ</span> が 1.09・1.06 秒から 1.75・1.62 秒に伸びました。</li>
+      <li><b>学習率 10<sup>−5</sup></b>: step 6000 から 60000 への動きは小さい値でした（<i>p</i><sub>1/4</sub>(0.8) 0.003〜0.012、窓の上端 0.205〜0.249 秒）。λ = 0.8・0.95 は、10<sup>−4</sup> と同じ向きに小さく動きました。</li>
+      <li><b>seed</b>: 同じ設定の 2 本は、どの値も近い値でした（例: 10<sup>−4</sup>・λ = 0.5 の step 60000 で、窓の上端 0.228・0.214 秒）。</li>
+    </ul>
+  </div>
+  <div class="duo">
+    <div class="prose">
+      <p><b>言えること</b>（探索の記述。Zurich の 1 本の動画と、PCA64 の計量の中で）</p>
+      <ul>
+        <li>測った全ての符号で、等速の外挿が copy に勝つ刻みは、三つ組の過半では 0.8 秒に届かない。0.8 秒以上の幅では、符号の違いを言えない。</li>
+        <li>0.8 秒未満では、学習した符号の窓はどれも <code>pca</code> と <code>mean8</code> より短い。V18c までの学習は、画素の物差しより線形な区間を広げていない。この「狭い」は、ずるでは作れないので、ガードが無くても言える。</li>
+        <li>学習率 10<sup>−4</sup> で λ を 0.8・0.95 にして長く学ぶと、短い刻みの線形性まで弱くなる。λ = 0.5 では、境 1/2 の <i>p</i> と <span class="ob">Δ</span> が伸びる。</li>
+        <li>seed による違いは、ここで見た比べの差より小さい。</li>
+      </ul>
+    </div>
+    <div class="prose">
+      <p><b>言えないこと</b></p>
+      <ul>
+        <li>幅が「広い」こと。λ = 0.5 の境 1/2 の伸びや、学習後に現れた 0.8 秒未満の窓は、時間の平均のずるでも作れます。それを見分けるガードは作り直している最中です（<a href="eval-guide.html#s24">eval-guide.html の 24〜28 節</a>）。</li>
+        <li>0.8 秒未満の値を、符号器の成果と読むこと。8 枚の平均だけでも窓ができるので、<code>mean8</code> と並べた記述にとどめます。区間も付けていません。</li>
+        <li>λ = 0.5 の伸びが、遅くしたことによるのか、まっすぐな座標への並べ直しによるのか。時間の 2 次の統計では分けられません。</li>
+        <li>確証。V19 の判定は、計画の手順に従って、ここの値とは別に行います。</li>
+      </ul>
+    </div>
+  </div>
+  <div class="prose">
+    <p class="small muted">0.8 秒以上の主の幅の対の比（<code>pca</code>・<code>mean8</code>・自分の学習前・seed・step との 178 対）は、全て区間が [0, 0] で、分類は「窓の有無で書く」でした。副の <span class="ob">Δ</span> の比の区間は、全ての対で ±0.14 オクターブの中にあります（Δ* は 0.5 オクターブ）。予想 6 の <i>p</i><sub>1/4</sub>(0.8) は 0.25〜0.50 と予想しましたが、実際は 0.017〜0.027 で外れました。予想 7（<i>N</i><sub>lin</sub>(1.6) が 5〜25）も外れ、予想 8（プールの横切りは 0.8 秒以上に無い）は当たりました。</p>
+  </div>
+</section>
+
 <section id="verdict" aria-labelledby="h-verdict">
-  <div class="sec-head"><div class="eyebrow">18</div><h2 id="h-verdict">予想の判定</h2></div>
+  <div class="sec-head"><div class="eyebrow">19</div><h2 id="h-verdict">予想の判定</h2></div>
   <div class="prose">
     <p>予想と判定の規則は、どれも run を回す前に README に書きました。結果を見た後に変えたのは 1 か所だけです。V18c の主の指標の 2 回目で、最初の実行の結果を見た後、研究の依頼者の決定で位置の確かめの参照を作り直しました（理由とともに README に記録しました）。補完の同定の確かめの閾値（V-s6）と <code>swap</code> の扱いは、数値を出す前に研究の依頼者が承認しました。V18c では、崩壊しないこと（L1）だけを判定し、補完の同定は記述にとどめます。</p>
   </div>
@@ -1230,6 +1309,7 @@ table { border-top: 1px solid var(--rule); }
         <tr><td>V18c. 予想 7（V18c の 60000 の <i>z</i>: 0.8 秒の <i>G</i><sub>mid</sub> は 0.25〜0.50、<i>s</i> は 0.05〜0.25）</td><td><span class="chip ng">外れ</span></td><td><i>G</i><sub>mid</sub> は 12 本とも 0.572〜0.722。<i>s</i> は 2 本（0.23・0.24）だけが範囲の中</td></tr>
         <tr><td>V18c. 予想 8（V18b M の <code>zpca</code> の <i>s</i> が JEPA の中で最小）</td><td><span class="chip ng">外れ</span></td><td>0.8 秒の <i>s</i> は M が 0.28・0.27、V18c（10<sup>−4</sup>・λ = 0.5）が 0.23・0.24</td></tr>
         <tr><td>V18c. 時間の線形性と情報の幅</td><td><span class="chip mid">記述</span></td><td>有効性の確かめはすべて通った。PCA64 で <code>pca</code> より実用上小さいと区別できた符号は 66 対のうち 0</td></tr>
+        <tr><td>V18c. 線形の幅（探索）</td><td><span class="chip mid">記述</span></td><td>0.8 秒以上に窓がある符号は 43 個のうち 0。予想 6 の <i>p</i><sub>1/4</sub>(0.8)（0.25〜0.50）と予想 7（<i>N</i><sub>lin</sub>(1.6) が 5〜25）は外れ、予想 8（プールの横切りは 0.8 秒以上に無い）は当たった。ガードは V-h2・V-h4b で外れ、作り直している</td></tr>
         <tr><td>V18c. 自分の表現空間での補完の同定</td><td><span class="chip mid">記述</span></td><td>実装の確かめは 156 checkpoint のすべてで通った。予想 1・8 が当たり、3（対照との差）と 7（<code>swap</code>）は予想より大きい側に外れた</td></tr>
       </tbody>
     </table>
@@ -1250,7 +1330,7 @@ table { border-top: 1px solid var(--rule); }
 </section>
 
 <section id="next" aria-labelledby="h-next">
-  <div class="sec-head"><div class="eyebrow">19</div><h2 id="h-next">今後の進め方</h2></div>
+  <div class="sec-head"><div class="eyebrow">20</div><h2 id="h-next">今後の進め方</h2></div>
   <div class="prose">
     <h3>V18・V18b から持ち込んだもの</h3>
     <ul>
@@ -1265,6 +1345,7 @@ table { border-top: 1px solid var(--rule); }
       <li>学習率 10<sup>−4</sup> の λ = 0.8・0.95 では、予測の誤差が 6000 step から下がりませんでした。λ = 0.5 は 60000 まで下がり続けました。</li>
       <li>外部の特徴やラベルを的にした主の指標は、3 回とも有効性の確かめを通りませんでした。自分の表現空間での補完の同定は、実装の確かめをすべて通り、学習とともに伸びる量として測れました。</li>
       <li><b>符号の空間の時間の流れ（記述）</b>: PCA64 の白色化では、画素の PCA より中点の誤差が実用上小さいと区別できた符号はありませんでした。学習率 10<sup>−4</sup>・λ = 0.5 の V18c だけが、学習前より中点の誤差が下がり、遅くなりました。画素との比べの向きは白色化の <i>k</i> で変わります。白色化した評価の分散の診断の境は、仮の値のままです。</li>
+      <li><b>線形の幅（探索）</b>: どの符号も、0.8 秒以上では等速の外挿が copy に勝ちません。0.8 秒未満でも、学習した符号の窓は画素の物差しより短い値でした。幅を「広い」と言うためのガードは、拡散のデコーダ版（V-h2）も観測の内容の版（V-h4b）も、確かめで外れました。読み出しの選び方と、変化を直接に読む形に直して、V19 の値を見る前に登録し直します。</li>
       <li><b>学習率で局所性が分かれました。</b>学習率 10<sup>−4</sup> では、長く学ぶと、エンコーダが隠した部分のトークンに文脈を混ぜるようになります。10<sup>−5</sup> は、60000 でも局所な符号に近いままでした。</li>
     </ul>
     <h3>V19 の設定は、研究の依頼者と決める</h3>
@@ -1295,7 +1376,7 @@ table { border-top: 1px solid var(--rule); }
 <section id="repro" aria-labelledby="h-repro">
   <div class="sec-head"><div class="eyebrow">付録</div><h2 id="h-repro">再現</h2></div>
   <div class="prose">
-    <p>mujou は <code>5aa3773</code>、data_version は <code>ad6e56b5995e</code> です（V18・V18b・V18c で同じ）。判定の規則・予想・数字の詳細は <a href="README.md">README.md</a> の V18・V18b・V18c にあり、計画は <a href="plans/jepa.md">plans/jepa.md</a>、指標の解説は <a href="eval-guide.html">eval-guide.html</a> です。判定の数字は <a href="results/v18/judge.json">results/v18/judge.json</a>・<a href="results/v18b/judge.json">results/v18b/judge.json</a> と、<code>results/v18c/</code> の <a href="results/v18c/judge_screen.json">judge_screen.json</a>・<a href="results/v18c/judge.json">judge.json</a>・<a href="results/v18c/judge_m_checks.json">judge_m_checks.json</a>・<a href="results/v18c/judge_scene.json">judge_scene.json</a>・<a href="results/v18c/judge_long.json">judge_long.json</a>・<a href="results/v18c/judge_self.json">judge_self.json</a> から読みました。時間の線形性と情報の幅の数字は <code>results/v18c/judge_geom.json</code>（約 1.5 MB で git に入れていません。下のコマンドで作り直せます）から読みました。run の出力は <code>runs/&lt;batch&gt;/</code> にあり、git には入れていません。この資料は <code>uv run python -m exp.vision.report.build_jepa</code> で作りました。</p>
+    <p>mujou は <code>5aa3773</code>、data_version は <code>ad6e56b5995e</code> です（V18・V18b・V18c で同じ）。判定の規則・予想・数字の詳細は <a href="README.md">README.md</a> の V18・V18b・V18c にあり、計画は <a href="plans/jepa.md">plans/jepa.md</a>、指標の解説は <a href="eval-guide.html">eval-guide.html</a> です。判定の数字は <a href="results/v18/judge.json">results/v18/judge.json</a>・<a href="results/v18b/judge.json">results/v18b/judge.json</a> と、<code>results/v18c/</code> の <a href="results/v18c/judge_screen.json">judge_screen.json</a>・<a href="results/v18c/judge.json">judge.json</a>・<a href="results/v18c/judge_m_checks.json">judge_m_checks.json</a>・<a href="results/v18c/judge_scene.json">judge_scene.json</a>・<a href="results/v18c/judge_long.json">judge_long.json</a>・<a href="results/v18c/judge_self.json">judge_self.json</a> から読みました。時間の線形性と情報の幅の数字は <code>results/v18c/judge_geom.json</code>（約 1.5 MB で git に入れていません。下のコマンドで作り直せます）から読みました。線形の幅の数字は <a href="results/v18c/judge_width_yard.json">judge_width_yard.json</a> と <code>results/v18c/judge_width_apply.json</code>（約 780 KB で git に入れていません。下のコマンドで作り直せます）から読みました。run の出力は <code>runs/&lt;batch&gt;/</code> にあり、git には入れていません。この資料は <code>uv run python -m exp.vision.report.build_jepa</code> で作りました。</p>
   </div>
   <div class="tablewrap">
     <table>
@@ -1313,6 +1394,7 @@ table { border-top: 1px solid var(--rule); }
         <tr><td><code>v18c-scene</code></td><td>主の指標の 3 回目（場面のカテゴリ）</td><td class="num">9b5812b1ba4c</td></tr>
         <tr><td><code>v18c-self</code></td><td>自分の表現空間での補完の同定（156 checkpoint）</td><td class="num">486a3b99da78</td></tr>
         <tr><td><code>v18c-tlin</code></td><td>時間の線形性と情報の幅（組・確かめ・物差し、VAE 2 本・V18 と V18b の 8 本・V18c の 24 checkpoint への適用）。JEPA の行は各 run の <code>posthoc_geom/</code></td><td class="num">e9fa78310471（<code>v17</code> は 9ca6b7541804）</td></tr>
+        <tr><td><code>v18c-width</code></td><td>線形の幅（合成の確かめ・物差し・拡散のデコーダのガード・ずる・34 個への適用）。JEPA の行は各 run の <code>posthoc_width/</code>。内容のガード（V-h4）は <code>content/</code></td><td class="num">a0e2b914f38c（V-h4 は e3c6b2c48d82）</td></tr>
         <tr><td><code>v18-baselines</code>・<code>v18b-baselines</code>・<code>v18c-baselines</code></td><td>物差し</td><td></td></tr>
       </tbody>
     </table>
@@ -1346,6 +1428,10 @@ uv run python -m exp.vision.results.v18c.judge_scene --json exp/vision/results/v
 uv run python -m exp.vision.results.v18c.judge_long --runs runs --json exp/vision/results/v18c/judge_long.json
 uv run python -m exp.vision.results.v18c.judge_self --runs runs --json exp/vision/results/v18c/judge_self.json
 uv run python -m exp.vision.results.v18c.judge_geom --stage apply --geom runs/v18c-tlin --runs runs --json exp/vision/results/v18c/judge_geom.json
+# 線形の幅（確かめは README の「線形の幅の有効性」。適用は checkpoint ごと）
+python -m exp.vision.width_eval run &lt;runs&gt;/v18c-long/&lt;run&gt; --steps 6000,60000 --sets &lt;runs&gt;/v18c-tlin --device cuda
+uv run python -m exp.vision.results.v18c.judge_width --stage yard --width runs/v18c-width --json exp/vision/results/v18c/judge_width_yard.json
+uv run python -m exp.vision.results.v18c.judge_width --stage apply --width runs/v18c-width --geom runs/v18c-tlin --runs runs --json exp/vision/results/v18c/judge_width_apply.json
 uv run python -m exp.vision.report.build_jepa</pre>
   <div class="prose">
     <p class="small muted">この資料のために計算した値は、時間の線形性の節の分類の数の表（<code>judge_geom.json</code> の対ごとの分類を数えたもの）だけです。表と図の値は、judge.json と runs/ の記録をそのまま丸めたものです。V18c の値は、<code>results/v18c/</code> の JSON と、G の行（<code>runs/</code> の各 run の <code>posthoc_gen/rows</code>）をそのまま丸めたものです。V18b の Imagenette の評価のジョブには、待ち受けスクリプトの終了コードの扱いの誤りで「失敗」の印が付きましたが、記録は 4 本とも全 19 行そろっています。</p>
@@ -1906,6 +1992,89 @@ const XT6 = [0, 2e6, 4e6, 6e6];
     }
   });
   dotChart(document.getElementById('c-t-d'), {rows: codes.map(nm), points: ptsD, xmin: 4, xmax: 37, xticks: [5, 10, 15, 20, 25, 30, 35], xlabel: 'TwoNN の推定次元（pre・k = 64）', refs: [{x: 20, label: '20'}], legend: [{label: '自分の潜在', color: 'var(--ink-2)', shape: 'dot'}, {label: 'h_mean', color: 'var(--ink-2)', shape: 'square', hollow: true}].concat([0.5, 0.8, 0.95].map(l => ({label: `λ = ${l}`, color: LAMC[l], shape: 'dot'}))), labelWidth: 190, rowH: 20});
+})();
+// the linear horizon (exploration; judge_width_yard.json and judge_width_apply.json)
+(() => {
+  const W = D.v18c_width, C = W.codes;
+  // row of a code: [win25, win50, p25(0.8), p50(0.8), G(0.8), mean1, mean50, lo50, hi50]
+  const nm = c => W.names[c] || c;
+  const parse = c => {
+    const m = c.match(/^v18c-lr(1e-\d)-lam([\d.]+)-r0\.5-s(\d)@(\d+)$/);
+    return m ? {lr: m[1] === '1e-4' ? 0.0001 : 0.00001, lam: +m[2], seed: +m[3], step: +m[4]} : null;
+  };
+  const runs = [...new Set(Object.keys(C).filter(parse).map(c => c.split('@')[0]))]
+    .sort((a, b) => { const p = parse(a + '@0'), q = parse(b + '@0'); return q.lr - p.lr || p.lam - q.lam || p.seed - q.seed; });
+  const others = Object.keys(C).filter(c => !W.yard.includes(c) && !parse(c));
+  const rows = W.yard.concat(others).concat(runs);
+  const label = r => runs.includes(r) ? nm(r + '@60000') : nm(r);
+  const QTY = [
+    ['win', '0.8 秒未満の窓の上端'],
+    ['p25', 'p₁/₄(0.8)'],
+    ['p50', 'p₁/₂(0.8)'],
+    ['G', 'プールの G(0.8)'],
+    ['mean50', '境 1/2 の Δ̄'],
+  ];
+  const NONE = 0;  // where a code of no window sits
+  const tipOf = (c, x) => `${nm(c)}<br>窓の上端（境 1/4）: ${x[0] == null ? '無い' : fmt(x[0]) + ' 秒'}<br>窓の上端（境 1/2）: ${x[1] == null ? '無い' : fmt(x[1]) + ' 秒'}<br>p₁/₄(0.8) ${fmt(x[2])}・p₁/₂(0.8) ${fmt(x[3])}<br>プールの G(0.8) ${fmt(x[4])}<br>Δ̄₁ ${fmt(x[5], 2)} 秒・境 1/2 の Δ̄ ${fmt(x[6], 2)} [${fmt(x[7], 2)}, ${fmt(x[8], 2)}] 秒`;
+  const colOf = c => { const p = parse(c); return p ? LAMC[p.lam] : (W.yard.includes(c) ? 'var(--neutral)' : 'var(--ink)'); };
+  const OPT = {
+    win: {xmin: -0.02, xmax: 0.9, xticks: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], xfmt: v => v === 0 ? '無い' : v.toFixed(1), xlabel: '0.8 秒未満の最初の窓の上端（秒、境 1/4）', refs: [{x: 0.8, label: '0.8 秒'}]},
+    p25: {xmin: 0, xmax: 0.12, xticks: [0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12], xfmt: v => v.toFixed(2), xlabel: '0.8 秒で外挿が勝つ割合（境 1/4）', refs: []},
+    p50: {xmin: 0, xmax: 0.6, xticks: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6], xfmt: v => v.toFixed(1), xlabel: '0.8 秒で外挿が勝つ割合（境 1/2）', refs: [{x: 0.5, label: '1/2'}]},
+    G: {xmin: 0.2, xmax: 0.78, xticks: [0.25, 0.35, 0.45, 0.55, 0.65, 0.75], xfmt: v => v.toFixed(2), xlabel: 'プールした G_mid（0.8 秒、左ほど真っすぐ）', refs: [{x: 0.25, label: '境 1/4'}, {x: 0.75, label: '3/4'}]},
+    mean50: {xmin: 0.75, xmax: 2.5, xticks: [0.8, 1.2, 1.6, 2.0, 2.4], xfmt: v => v.toFixed(1), xlabel: '境 1/2 の平均の幅 Δ̄（秒）', refs: [{x: 0.8, label: '0.8 秒'}]},
+  };
+  let qty = 'win';
+  const val = (x, k) => k === 'win' ? (x[0] == null ? NONE : x[0]) : k === 'p25' ? x[2] : k === 'p50' ? x[3] : k === 'G' ? x[4] : x[6];
+  const drawDots = () => {
+    const pts = [];
+    rows.forEach((r, i) => {
+      const keys = runs.includes(r) ? [r + '@6000', r + '@60000'] : [r];
+      for (const c of keys) {
+        const x = C[c];
+        if (!x) continue;
+        const hollow = c.endsWith('@6000') || (qty === 'win' && x[0] == null);
+        const pt = {row: i, x: val(x, qty), color: colOf(c), hollow, tip: tipOf(c, x)};
+        if (qty === 'mean50') { pt.lo = x[7]; pt.hi = x[8]; }
+        pts.push(pt);
+      }
+    });
+    const lg = [{label: '物差し', color: 'var(--neutral)', shape: 'dot'}, {label: 'VAE・V18・V18b', color: 'var(--ink)', shape: 'dot'}]
+      .concat([0.5, 0.8, 0.95].map(l => ({label: `V18c λ = ${l}`, color: LAMC[l], shape: 'dot'})))
+      .concat([{label: '白抜き: V18c の step 6000' + (qty === 'win' ? '・窓が無い' : ''), color: 'var(--ink-3)', shape: 'dot', hollow: true}]);
+    dotChart(document.getElementById('c-w-dots'), {rows: rows.map(label), points: pts, legend: lg, labelWidth: 200, rowH: 20, ...OPT[qty]});
+  };
+  const segW = document.getElementById('seg-w-qty');
+  for (const [k, l] of QTY) {
+    const btn = document.createElement('button'); btn.textContent = l; btn.dataset.key = k;
+    btn.setAttribute('aria-pressed', k === qty ? 'true' : 'false');
+    btn.addEventListener('click', () => { qty = k; segW.querySelectorAll('button').forEach(e => e.setAttribute('aria-pressed', e.dataset.key === qty ? 'true' : 'false')); drawDots(); });
+    segW.appendChild(btn);
+  }
+  drawDots();
+
+  // before and after training
+  const BA = [['win', '0.8 秒未満の窓の上端'], ['p50', 'p₁/₂(0.8)'], ['G', 'プールの G(0.8)']];
+  let qb = 'win';
+  const drawBA = () => {
+    const series = runs.map(r => {
+      const p = parse(r + '@0');
+      const ys = [C[p.seed ? 'init_c1' : 'init_c'], C[r + '@6000'], C[r + '@60000']].map(x => val(x, qb));
+      return {label: nm(r + '@60000'), color: LAMC[p.lam], dash: lrDash(p.lr), width: 1.8, xs: [0, 1, 2], ys, marker: true};
+    });
+    const o = qb === 'win' ? {ymin: 0, ymax: 0.32, yticks: [0, 0.1, 0.2, 0.3], yfmt: v => v === 0 ? '無い' : v.toFixed(1), ylabel: '窓の上端（秒）'}
+      : qb === 'p50' ? {ymin: 0, ymax: 0.55, yticks: [0, 0.1, 0.2, 0.3, 0.4, 0.5], ylabel: 'p₁/₂(0.8)', refs: [{y: 0.5, label: '1/2'}]}
+      : {ymin: 0.55, ymax: 0.75, yticks: [0.55, 0.6, 0.65, 0.7, 0.75], ylabel: 'G(0.8)'};
+    lineChart(document.getElementById('c-w-ba'), {series, width: 720, height: 300, xmin: -0.2, xmax: 2.2, xticks: [0, 1, 2], xfmt: i => ['学習前', '6000', '60000'][i] || '', xlabel: 'step', nearest: true, legend: cLegend, ...o});
+  };
+  const segB = document.getElementById('seg-w-ba');
+  for (const [k, l] of BA) {
+    const btn = document.createElement('button'); btn.textContent = l; btn.dataset.key = k;
+    btn.setAttribute('aria-pressed', k === qb ? 'true' : 'false');
+    btn.addEventListener('click', () => { qb = k; segB.querySelectorAll('button').forEach(e => e.setAttribute('aria-pressed', e.dataset.key === qb ? 'true' : 'false')); drawBA(); });
+    segB.appendChild(btn);
+  }
+  drawBA();
 })();
 })();
 </script>

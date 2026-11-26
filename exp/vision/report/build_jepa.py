@@ -5,8 +5,9 @@ with BP and i.i.d. minibatches), from the runs and the page template
 The judged numbers come from the two ``judge.json`` of ``results/v18`` and
 ``results/v18b`` (the rules applied by their ``judge.py``). V18c's numbers come
 from the JSON of ``results/v18c`` (``judge_screen``, ``judge_long``,
-``judge_self``, ``judge``, ``judge_m_checks``, ``judge_scene`` and
-``judge_geom``; the last is not in git and is rebuilt by its command in the
+``judge_self``, ``judge``, ``judge_m_checks``, ``judge_scene``, ``judge_geom``,
+``judge_width_yard`` and ``judge_width_apply``; ``judge_geom`` and
+``judge_width_apply`` are not in git and are rebuilt by their commands in the
 README), and G's
 ``top1`` from the rows its ``judge.py`` reads. The rest is read
 from ``runs/``: the yardsticks (``v18-baselines``, ``v18b-baselines``), V18's
@@ -374,6 +375,63 @@ def v18c_geom() -> dict[str, Any]:
     }
 
 
+WIDTH_YARD = [
+    "pca",
+    "mean8",
+    "color",
+    "init",
+    "init_f",
+    "init_m",
+    "init_c",
+    "init_c1",
+    "init_v16",
+]
+
+
+def _width_row(summary: dict[str, Any], at: dict[str, Any]) -> list[Any]:
+    """One code's linear horizon on its own latent: the upper ends of the
+    first window below 0.8 s (bounds 1/4 and 1/2; ``None``: no window),
+    ``p`` of both bounds and the pooled ``G`` at 0.8 s, the main width
+    ``mean1`` and the bound-1/2 mean width with its interval."""
+    pt = summary["point"]
+
+    def hi(q: str) -> float | None:
+        w = pt[q]["whole_p"]["first"]
+        return None if w is None else _r8(w["hi"])
+
+    lo50, hi50 = summary["draws"]["50"]["mean"]
+    return [
+        hi("25"),
+        hi("50"),
+        _r8(at["8"]["p25"]),
+        _r8(at["8"]["p50"]),
+        _r8(at["8"]["G"]),
+        _r8(pt["25"]["mean1"]),
+        _r8(pt["50"]["mean"]),
+        _r8(lo50),
+        _r8(hi50),
+    ]
+
+
+def v18c_width() -> dict[str, Any]:
+    """The linear horizon of the exploration (``judge_width_yard.json`` for
+    the yardsticks, ``judge_width_apply.json`` for the models; the latter is
+    not in git and is rebuilt by its command in the README)."""
+    yard = _load("judge_width_yard.json")["codes"]
+    apply = _load("judge_width_apply.json")
+    codes = {
+        c: _width_row(yard[f"{c}/own"], apply["yard_at"][f"{c}/own"])
+        for c in WIDTH_YARD
+    }
+    for c, m in apply["models"].items():
+        codes[c] = _width_row(m["own"]["summary"], m["own"]["at"])
+    return {
+        "codes": codes,
+        "names": {c: geom_name(c) for c in codes},
+        "yard": WIDTH_YARD,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--runs", type=Path, default=ROOT / "runs")
@@ -410,6 +468,7 @@ def main() -> None:
         "v18c_gen": v18c_gen(args.runs),
         "v18c_metric": v18c_metric(),
         "v18c_geom": v18c_geom(),
+        "v18c_width": v18c_width(),
     }
     data["img"]["e1g"] = image(V18C / "e1g.jpg", "720")
     page = (HERE / "jepa.html.in").read_text()

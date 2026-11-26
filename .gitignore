@@ -51,3 +51,5 @@ Thumbs.db
 
 # V18c time linearity aggregate (~1.5 MB; rebuilt by `judge_geom --stage apply` from runs/)
 exp/vision/results/v18c/judge_geom.json
+# V18c linear horizon aggregate (~780 KB; rebuilt by `judge_width --stage apply` from runs/)
+exp/vision/results/v18c/judge_width_apply.json

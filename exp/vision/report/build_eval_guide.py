@@ -7,7 +7,10 @@ data drawn is the G bar chart, whose numbers are copied from the README
 
 Sections 16-23 (the linear horizon) draw schematics and closed forms; the
 band-plus-noise curves are exact, and V-h0i's numbers come from the README
-("線形の幅の有効性").
+("線形の幅の有効性"). Sections 24-28 (the results of the checks, the guard
+rebuilt on the observation's content and its validity) draw the README's
+numbers ("線形の幅の有効性", "線形の幅の結果", "線形の幅のガードの作り直しの
+有効性") and one schematic (the front).
 
 Subcommands for the prose review (the yomiyasu pass):
 
@@ -1610,7 +1613,283 @@ def fig_lh_explore() -> str:
     return svg("0 0 660 180", "".join(b), "探索と確証の区別")
 
 
+# V-h3 (README, 「線形の幅の有効性」): pca's first decoder (d0)
+VH3_LAGS = [0.8, 1.6, 3.2, 6.4]
+VH3_C = [0.113, 0.129, 0.156, 0.189]
+VH3_F = [0.113, 0.109, 0.117, 0.103]
+VH3_E = [0.130, 0.120, 0.109, 0.111]
+
+
+def fig_lh_vh3() -> str:
+    """README numbers (V-h3, ``pca`` d0): ceiling, floor and extrapolation
+    by lag, with the chance 1/9."""
+    b = []
+    x0, y0, h, top = 70.0, 250.0, 200.0, 0.22
+
+    def Y(v: float) -> float:
+        return y0 - v / top * h
+
+    for t in [0, 0.05, 0.1, 0.15, 0.2]:
+        b.append(_seg(x0, Y(t), 640, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 5, f"{t:.2f}", anchor="end", cls="mono small"))
+    bw = 34.0
+    for i, lag in enumerate(VH3_LAGS):
+        gx = x0 + 20 + i * 140
+        for j, (v, cls) in enumerate(
+            [(VH3_C[i], "c3"), (VH3_F[i], "cn"), (VH3_E[i], "c1")]
+        ):
+            x = gx + j * (bw + 8)
+            b.append(
+                f'<rect class="{cls}" x="{x:.1f}" y="{Y(v):.1f}" width="{bw}" '
+                f'height="{y0 - Y(v):.1f}" fill-opacity="0.85" rx="2"/>'
+            )
+            b.append(text(x + bw / 2, Y(v) - 5, f"{v:.3f}", cls="mono small", size=11))
+        b.append(text(gx + 59, y0 + 20, f"{lag} 秒", cls="mono small"))
+    b.append(_seg(x0, Y(1 / 9), 640, Y(1 / 9), "chance"))
+    b.append(text(642, Y(1 / 9) + 4, "1/9", anchor="start", cls="mono small"))
+    b.append(_seg(x0, y0, 640, y0, "axis"))
+    items = [
+        ("c3", "天井 c（本物の z(t+Δ) の絵）"),
+        ("cn", "床 f（copy の絵）"),
+        ("c1", "外挿 e の絵"),
+    ]
+    for k, (cls, lab) in enumerate(items):
+        lx = x0 + [0, 250, 400][k]
+        b.append(f'<rect class="{cls}" x="{lx}" y="12" width="12" height="12" rx="2"/>')
+        b.append(text(lx + 18, 23, lab, anchor="start", cls="small"))
+    b.append(
+        text(
+            x0 + 20 + 3 * 140 + 59,
+            y0 + 40,
+            "ここだけ天井が床から離れる",
+            cls="small accent",
+        )
+    )
+    return svg("0 0 680 300", "".join(b), "V-h3 の天井・床・外挿の正解率")
+
+
+# V-h2 (README): the mean family's main width, and the lags where it wins
+VH2_STRENGTH = ["0", "0.8", "3.2", "6.4", "12.8"]
+VH2_MEAN1 = [0.8, 0.8, 1.07, 1.54, 1.92]
+
+
+def fig_lh_vh2() -> str:
+    """README numbers (V-h2): the main width grows with the past mean's
+    length, but the cheat wins only at 0.8 and 1.6 s, where the guard cannot
+    see (its ceiling leaves the floor only at 6.4 s)."""
+    b = []
+    x0, y0, h = 60.0, 230.0, 170.0
+
+    def Y(v: float) -> float:
+        return y0 - (v - 0.6) / 1.5 * h
+
+    for t in [0.8, 1.2, 1.6, 2.0]:
+        b.append(_seg(x0, Y(t), 300, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 5, f"{t:.1f}", anchor="end", cls="mono small"))
+    pts = []
+    for i, (st, v) in enumerate(zip(VH2_STRENGTH, VH2_MEAN1, strict=True)):
+        x = x0 + 25 + i * 52
+        pts.append((x, Y(v)))
+        b.append(text(x, y0 + 20, st, cls="mono small"))
+    b.append(f'<polyline class="qline" points="{_pts(pts)}"/>')
+    for i, (x, y) in enumerate(pts):
+        cls = "c2" if i >= 3 else "cn"
+        b.append(_dot(x, y, cls, 6))
+        b.append(text(x, y - 12, f"{VH2_MEAN1[i]:.2f}", cls="mono small", size=11))
+    b.append(text(180, y0 + 42, "過去の平均の長さ（秒）", cls="small"))
+    b.append(text(180, 22, "主の幅（秒）", cls="strong"))
+    b.append(text(180, 42, "橙：強さ 0 より主張できるほど伸びた", cls="small"))
+    # right: lags
+    lx0 = 360.0
+
+    def X(lag: float) -> float:
+        return lx0 + 40 + math.log2(lag / 0.8) * 80
+
+    b.append(text(510, 22, "ガードの刻みで何が起きたか", cls="strong"))
+    rows = [
+        (90, "ずるが潜在で copy に勝つ刻み", [0.8, 1.6], "c2"),
+        (160, "pca の天井が床から離れる刻み", [6.4], "c3"),
+    ]
+    for y, lab, wins, cls in rows:
+        b.append(text(lx0, y - 18, lab, anchor="start", cls="small"))
+        b.append(_seg(X(0.8) - 15, y, X(6.4) + 15, y, "gridline"))
+        for lag in [0.8, 1.6, 3.2, 6.4]:
+            if lag in wins:
+                b.append(_dot(X(lag), y, cls, 8))
+            else:
+                b.append(
+                    f'<circle class="ring" cx="{X(lag):.1f}" cy="{y}" r="6" style="stroke: var(--neutral)"/>'
+                )
+    for lag in [0.8, 1.6, 3.2, 6.4]:
+        b.append(text(X(lag), 200, f"{lag} 秒", cls="mono small"))
+    b.append(
+        text(
+            510, 232, "2 つが重ならないので、ずるを見分けられない", cls="small lab-bad"
+        )
+    )
+    return svg(
+        "0 0 680 280", "".join(b), "V-h2：幅は伸びたが、ガードが見えない刻みだった"
+    )
+
+
+def fig_lh_front() -> str:
+    """Schematic of the front: width against the content kept. A cheat moves
+    right and down along the front; a wanted change moves right and stays."""
+    b = []
+    x0, y0, w, h = 80.0, 260.0, 520.0, 220.0
+    b.append(_seg(x0, y0, x0 + w, y0, "axis"))
+    b.append(_seg(x0, y0, x0, y0 - h, "axis"))
+    b.append(
+        text(x0 + w, y0 + 26, "線形の幅（右ほど広い）→", anchor="end", cls="small")
+    )
+    b.append(
+        text(
+            x0 - 10, y0 - h - 10, "↑ 保たれた観測の内容 E", anchor="start", cls="small"
+        )
+    )
+    by = y0 - 150
+    b.append(
+        f'<rect class="shade" x="{x0}" y="{by:.1f}" width="{w}" height="22" fill-opacity="0.9"/>'
+    )
+    b.append(_seg(x0, by, x0 + w, by, "refline"))
+    b.append(text(x0 + w - 4, by + 16, "許す損失 ψ* の範囲", anchor="end", cls="small"))
+    bx = x0 + 110
+    b.append(_dot(bx, by, "cn", 8))
+    b.append(text(bx, by - 16, "比べる相手 b", cls="small"))
+    gx = x0 + 380
+    b.append(arrow(bx + 12, by, gx - 12, by + 4))
+    b.append(_dot(gx, by + 4, "c3", 8))
+    b.append(text(gx, by - 16, "広くて、内容を保った", cls="small"))
+    b.append(text(gx, by - 34, "（望む改善）", cls="strong"))
+    cx, cy = x0 + 360, y0 - 40
+    b.append(arrow(bx + 10, by + 10, cx - 10, cy - 6, dashed=True))
+    b.append(_dot(cx, cy, "c2", 8))
+    b.append(
+        text(
+            cx + 14,
+            cy + 5,
+            "広いが、内容を落とした（ずる）",
+            anchor="start",
+            cls="small",
+        )
+    )
+    return svg("0 0 680 300", "".join(b), "幅と内容の 2 本の軸（前線）の模式図")
+
+
+# V-h4b (README): E of the MLP readout in and out of the training intervals
+VH4_E = [
+    (
+        "pca",
+        [
+            ("訓練の中", 0.850, "c1"),
+            ("訓練の外の区間", 0.609, "c2"),
+            ("Zurich", 0.632, "c4"),
+            ("最小二乗・訓練の外", 0.737, "cn"),
+        ],
+    ),
+    (
+        "平均 12.8 秒",
+        [
+            ("訓練の中", 0.796, "c1"),
+            ("訓練の外の区間", -1.659, "c2"),
+            ("Zurich", -1.678, "c4"),
+            ("最小二乗・訓練の外", 0.387, "cn"),
+        ],
+    ),
+]
+
+
+def fig_lh_overfit() -> str:
+    """README numbers (V-h4b): the MLP's E falls outside its training
+    intervals, below least squares; for the 12.8 s mean it turns negative."""
+    b = []
+    zx, sc = 480.0, 165.0  # x of E = 0, px per unit
+
+    def X(v: float) -> float:
+        return zx + v * sc
+
+    y = 30.0
+    for t in [-1.5, -1.0, -0.5, 0, 0.5, 1.0]:
+        b.append(_seg(X(t), 20, X(t), 290, "gridline"))
+        b.append(text(X(t), 308, f"{t:g}", cls="mono small"))
+    for code, bars in VH4_E:
+        b.append(text(10, y + 10, code, anchor="start", cls="strong"))
+        y += 18
+        for lab, v, cls in bars:
+            x1, x2 = sorted([X(0), X(v)])
+            b.append(
+                f'<rect class="{cls}" x="{x1:.1f}" y="{y:.1f}" width="{x2 - x1:.1f}" height="20" fill-opacity="0.85" rx="2"/>'
+            )
+            b.append(text(24, y + 15, lab, anchor="start", cls="small"))
+            tx = X(v) + (6 if v >= 0 else -6)
+            b.append(
+                text(
+                    tx,
+                    y + 15,
+                    f"{v:.3f}",
+                    anchor="start" if v >= 0 else "end",
+                    cls="mono small",
+                )
+            )
+            y += 26
+        y += 14
+    b.append(_seg(X(0), 20, X(0), 290, "axis"))
+    b.append(
+        text(
+            X(1.0),
+            325,
+            "E（説明された分散の割合。1 で完全、0 で平均と同じ）",
+            anchor="end",
+            cls="small",
+        )
+    )
+    return svg("0 0 680 335", "".join(b), "MLP の読み出しの過学習")
+
+
+def fig_lh_diff() -> str:
+    """README numbers (V-h4b, ``base``): the error of a difference of level
+    readouts is as large as the change itself, so E^d is about 0."""
+    b = []
+    x0, sc = 260.0, 4000.0
+    rows = [
+        ("0.1 秒の変化の分散", "（水準の分散に対する割合）", 0.0725, "c1"),
+        ("差の誤差 ≈ 2(1 − ρ)ΣE²", "= 2 × 0.10 × 0.37", 0.074, "c2"),
+    ]
+    for i, (a, c, v, cls) in enumerate(rows):
+        y = 40 + i * 70
+        b.append(text(x0 - 10, y + 12, a, anchor="end", cls="strong"))
+        b.append(text(x0 - 10, y + 32, c, anchor="end", cls="small"))
+        b.append(
+            f'<rect class="{cls}" x="{x0}" y="{y}" width="{v * sc:.1f}" height="28" fill-opacity="0.85" rx="2"/>'
+        )
+        b.append(
+            text(x0 + v * sc + 8, y + 19, f"{v}", anchor="start", cls="mono small")
+        )
+    b.append(
+        text(
+            340,
+            200,
+            "Eᵈ = 1 − 差の誤差 ÷ 変化の分散 ≈ 1 − 0.074 ÷ 0.0725 ≈ 0",
+            cls="strong",
+        )
+    )
+    b.append(
+        text(
+            340,
+            224,
+            "ρ は水準の誤差の lag 1 の自己相関（0.90）、ΣE² は水準の誤差の割合（1 − 0.632）",
+            cls="small",
+        )
+    )
+    return svg("0 0 680 240", "".join(b), "水準の読み出しの差で変化を測る難しさ")
+
+
 FIGURES: dict[str, Callable[[], str]] = {
+    "lh_vh3": fig_lh_vh3,
+    "lh_vh2": fig_lh_vh2,
+    "lh_front": fig_lh_front,
+    "lh_overfit": fig_lh_overfit,
+    "lh_diff": fig_lh_diff,
     "lh_taylor": fig_lh_taylor,
     "lh_angle": fig_lh_angle,
     "lh_pcurve": fig_lh_pcurve,
