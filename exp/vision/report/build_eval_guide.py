@@ -5,6 +5,10 @@ replaced by the schematic figure drawn by ``FIGURES[name]``. The only real
 data drawn is the G bar chart, whose numbers are copied from the README
 ("V18c: 生成と Inception・未観測の部分の評価の結果", results 2 and 3).
 
+Sections 16-23 (the linear horizon) draw schematics and closed forms; the
+band-plus-noise curves are exact, and V-h0i's numbers come from the README
+("線形の幅の有効性").
+
 Subcommands for the prose review (the yomiyasu pass):
 
 - ``build``: write the HTML.
@@ -985,7 +989,636 @@ def tl_whatif() -> str:
     )
 
 
+# --- the linear horizon (sections 16-23) ---------------------------------
+
+
+def _pts(pts: list[tuple[float, float]]) -> str:
+    return " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+
+
+def _dot(x: float, y: float, cls: str, r: float = 5) -> str:
+    return f'<circle class="{cls}" cx="{x:.1f}" cy="{y:.1f}" r="{r}"/>'
+
+
+def _seg(x1: float, y1: float, x2: float, y2: float, cls: str, extra: str = "") -> str:
+    return (
+        f'<line class="{cls}" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" '
+        f'y2="{y2:.1f}"{extra}/>'
+    )
+
+
+def fig_lh_taylor() -> str:
+    """Schematic: on a curved path, the constant-velocity extrapolation is close
+    for a small step and misses for a large one (bend over 60 degrees)."""
+    b = []
+    panels = (
+        (22.0, 165.0, 250.0, 165.0, "小さな刻み Δ"),
+        (70.0, 480.0, 245.0, 100.0, "大きな刻み Δ"),
+    )
+    for step, cx, cy, r, title in panels:
+
+        def p(
+            deg: float, cx: float = cx, cy: float = cy, r: float = r
+        ) -> tuple[float, float]:
+            a = math.radians(deg)
+            return cx + r * math.cos(a), cy - r * math.sin(a)
+
+        arc = [p(180 - k * 1.8) for k in range(101)]
+        b.append(f'<polyline class="ln cns" points="{_pts(arc)}"/>')
+        p0, p1, p2 = p(90 + step), p(90), p(90 - step)
+        ext = (2 * p1[0] - p0[0], 2 * p1[1] - p0[1])
+        b.append(
+            _seg(
+                p1[0],
+                p1[1],
+                ext[0],
+                ext[1],
+                "ln",
+                ' stroke-dasharray="5 4" marker-end="url(#ah)"',
+            )
+        )
+        b.append(_seg(ext[0], ext[1], p2[0], p2[1], "refline bad"))
+        b.append(_seg(p1[0], p1[1], p2[0], p2[1], "refline", ' stroke-dasharray="2 3"'))
+        b.append(_dot(p0[0], p0[1], "c1"))
+        b.append(_dot(p1[0], p1[1], "c1"))
+        b.append(_dot(p2[0], p2[1], "c3", 6))
+        b.append(f'<circle class="ring" cx="{ext[0]:.1f}" cy="{ext[1]:.1f}" r="7"/>')
+        b.append(text(cx, 24, title, cls="strong"))
+        b.append(text(p0[0] - 4, p0[1] + 24, "z(t−Δ)", anchor="end", cls="mono small"))
+        b.append(
+            text(p1[0] - 6, p1[1] - 12, "z(t)＝copy", anchor="end", cls="mono small")
+        )
+        b.append(
+            text(p2[0] + 4, p2[1] + 24, "z(t+Δ)", anchor="start", cls="mono small")
+        )
+        b.append(
+            text(ext[0] + 12, ext[1] + 4, "外挿", anchor="start", cls="small warn")
+        )
+    b.append(text(165, 300, "外挿（橙の輪）は本物（緑）のすぐ近く", cls="small"))
+    b.append(text(165, 320, "→ 外挿が copy に勝つ", cls="small"))
+    b.append(text(480, 300, "曲がりが効き、外挿の誤差（赤）が", cls="small"))
+    b.append(text(480, 320, "copy の誤差（点線）より大きい → 負ける", cls="small"))
+    return svg("0 0 660 335", "".join(b), "テイラー展開と線形の幅の模式図")
+
+
+def fig_lh_angle() -> str:
+    """Schematic: with equal steps, rho is the cosine of the bend angle; the
+    main bound 1/4 is 60 degrees and the second bound 1/2 is 90 degrees."""
+    b = []
+    panels = [
+        (30, "曲がり 30°", "ρ = 0.87、G = 0.07", "勝つ", "good"),
+        (60, "曲がり 60°", "ρ = 1/2、G = 1/4", "主の境", "warn"),
+        (90, "曲がり 90°", "ρ = 0、G = 1/2", "副の境", "warn"),
+    ]
+    L = 70.0
+    for i, (deg, title, val, verdict, tone) in enumerate(panels):
+        x0, y0 = 30 + i * 215, 170.0
+        pm, p0 = (x0, y0), (x0 + L, y0)
+        a = math.radians(deg)
+        p1 = (p0[0] + L * math.cos(a), p0[1] - L * math.sin(a))
+        ext = (p0[0] + L, p0[1])
+        b.append(
+            _seg(
+                pm[0],
+                pm[1],
+                p0[0],
+                p0[1],
+                "ln c1s",
+                ' stroke-width="2.5" marker-end="url(#ah)"',
+            )
+        )
+        b.append(
+            _seg(
+                p0[0],
+                p0[1],
+                p1[0],
+                p1[1],
+                "ln c1s",
+                ' stroke-width="2.5" marker-end="url(#ah)"',
+            )
+        )
+        b.append(_seg(p0[0], p0[1], ext[0], ext[1], "ln", ' stroke-dasharray="5 4"'))
+        b.append(_seg(ext[0], ext[1], p1[0], p1[1], "refline bad"))
+        b.append(f'<circle class="ring" cx="{ext[0]:.1f}" cy="{ext[1]:.1f}" r="6"/>')
+        b.append(_dot(p1[0], p1[1], "c3", 5))
+        b.append(text(pm[0] + L / 2, y0 + 20, "a", cls="mono"))
+        b.append(text((p0[0] + p1[0]) / 2 - 12, (p0[1] + p1[1]) / 2, "b", cls="mono"))
+        rr = 22
+        arc_end = (p0[0] + rr * math.cos(a), p0[1] - rr * math.sin(a))
+        b.append(
+            f'<path class="ln" d="M{p0[0] + rr:.1f} {p0[1]:.1f} A{rr} {rr} 0 0 0 '
+            f'{arc_end[0]:.1f} {arc_end[1]:.1f}"/>'
+        )
+        b.append(text(x0 + 85, 26, title, cls="strong"))
+        b.append(text(x0 + 85, 205, val, cls="mono small"))
+        cls = "small accent" if tone == "good" else "small warn"
+        b.append(text(x0 + 85, 226, verdict, cls=cls))
+    b.append(
+        text(
+            330,
+            256,
+            "青：続く 2 つの変位 a・b（同じ長さ）。破線と橙の輪：等速の外挿。赤：外挿の誤差",
+            cls="small",
+        )
+    )
+    return svg("0 0 660 270", "".join(b), "曲がりの角度と 2 つの境")
+
+
+def _p_schema(d: float) -> float:
+    """A made-up p(Delta): noise loses at short lags, a window, a decline, and
+    one periodic return."""
+    rise = 1 / (1 + math.exp(-(d - 1.15) / 0.22))
+    fall = 1 / (1 + math.exp((d - 4.2) / 0.7))
+    back = 0.52 * math.exp(-(((d - 10.8) / 0.9) ** 2))
+    return 0.1 + 0.72 * rise * fall + back
+
+
+def _cross(f: Callable[[float], float], lo: float, hi: float, level: float) -> float:
+    for _ in range(60):
+        m = (lo + hi) / 2
+        if (f(lo) - level) * (f(m) - level) <= 0:
+            hi = m
+        else:
+            lo = m
+    return (lo + hi) / 2
+
+
+def fig_lh_pcurve() -> str:
+    """Schematic: p(Delta), the first window, Delta_typ, the area that makes the
+    main width, and a periodic return that is not counted."""
+    x0, w, y0, h = 70.0, 540.0, 30.0, 220.0
+    dmax = 14.0
+
+    def X(d: float) -> float:
+        return x0 + d / dmax * w
+
+    def Y(p: float) -> float:
+        return y0 + h - p * h
+
+    lo = _cross(_p_schema, 0.8, 2.0, 0.5)
+    hi = _cross(_p_schema, 2.0, 7.0, 0.5)
+    r1 = _cross(_p_schema, 8.0, 10.8, 0.5)
+    r2 = _cross(_p_schema, 10.8, 13.0, 0.5)
+    b = []
+    area = (
+        [(X(0.8), Y(0))]
+        + [
+            (X(0.8 + (hi - 0.8) * k / 80), Y(_p_schema(0.8 + (hi - 0.8) * k / 80)))
+            for k in range(81)
+        ]
+        + [(X(hi), Y(0))]
+    )
+    b.append(f'<polygon class="c1" fill-opacity="0.18" points="{_pts(area)}"/>')
+    ret = (
+        [(X(r1), Y(0.5))]
+        + [
+            (X(r1 + (r2 - r1) * k / 40), Y(_p_schema(r1 + (r2 - r1) * k / 40)))
+            for k in range(41)
+        ]
+        + [(X(r2), Y(0.5))]
+    )
+    b.append(f'<polygon class="hatch" points="{_pts(ret)}"/>')
+    for t in (0, 0.5, 1):
+        b.append(_seg(x0, Y(t), x0 + w, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 4, f"{t:g}", anchor="end", cls="mono small"))
+    b.append(_seg(x0, Y(0.5), x0 + w, Y(0.5), "chance"))
+    for d in (0.8, 2, 4, 6, 8, 10, 12, 14):
+        b.append(text(X(d), y0 + h + 18, f"{d:g}", cls="mono small"))
+    b.append(_seg(x0, y0 + h, x0 + w, y0 + h, "axis"))
+    b.append(_seg(x0, y0, x0, y0 + h, "axis"))
+    curve = [
+        (X(0.3 + k * (dmax - 0.3) / 300), Y(_p_schema(0.3 + k * (dmax - 0.3) / 300)))
+        for k in range(301)
+    ]
+    b.append(f'<polyline class="qline" points="{_pts(curve)}"/>')
+    b.append(_seg(X(0.8), y0, X(0.8), y0 + h, "ray"))
+    yb = Y(1) + 26
+    b.append(_seg(X(lo), yb, X(hi), yb, "whisk c1s"))
+    b.append(
+        text((X(lo) + X(hi)) / 2, yb - 8, "最初の窓（p ≥ 1/2）", cls="small accent")
+    )
+    b.append(_seg(X(hi), yb, X(hi), Y(0.5), "ray"))
+    b.append(_dot(X(hi), Y(0.5), "c1"))
+    b.append(
+        text(
+            X(hi) + 8,
+            Y(0.5) + 20,
+            "Δ_typ（窓の上端）",
+            anchor="start",
+            cls="mono small accent",
+        )
+    )
+    b.append(
+        text(
+            X(2.5),
+            Y(0.07),
+            'この面積 + 0.8 = <tspan text-decoration="overline">Δ</tspan>₁',
+            cls="small accent",
+        )
+    )
+    b.append(text(X((r1 + r2) / 2), Y(0.98) + 8, "周期の戻り", cls="small"))
+    b.append(text(X((r1 + r2) / 2), Y(0.98) + 26, "（再出現。数えない）", cls="small"))
+    b.append(
+        text(
+            x0 + w, y0 + h + 40, "刻み Δ（秒。目盛りは線形）", anchor="end", cls="small"
+        )
+    )
+    b.append(
+        text(
+            x0 - 56, y0 - 10, "p(Δ)：外挿が勝つ瞬間の割合", anchor="start", cls="small"
+        )
+    )
+    return svg(f"0 0 640 {y0 + h + 50}", "".join(b), "p(Δ) と窓と主の幅の模式図")
+
+
+BAND_T = 20.0  # the band's period in seconds (V-h0d)
+
+
+def _g_band_noise(d: float, nu: float) -> float:
+    """Pooled G_mid of one band (period BAND_T) plus white noise of variance
+    ratio nu: G = (s * s/2 + 3/4 nu) / (s + nu) with s = 1 - cos(2 pi d / T)."""
+    s = 1 - math.cos(2 * math.pi * d / BAND_T)
+    return (s * s / 2 + 0.75 * nu) / (s + nu)
+
+
+def fig_lh_ushape() -> str:
+    """Closed form: G_mid of a band plus white noise; the noise floor at short
+    lags turns the interval [0, W] into a window, or removes it."""
+    x0, w, y0, h = 70.0, 540.0, 24.0, 250.0
+    lmin, lmax = math.log(0.1), math.log(6.4)
+    gmax = 0.8
+
+    def X(d: float) -> float:
+        return x0 + (math.log(d) - lmin) / (lmax - lmin) * w
+
+    def Y(g: float) -> float:
+        return y0 + h - g / gmax * h
+
+    lo = 0.25 - math.sqrt(1 / 16 - 1 / 32)
+    hi = 0.25 + math.sqrt(1 / 16 - 1 / 32)
+    d_lo = math.acos(1 - lo) * BAND_T / (2 * math.pi)
+    d_hi = math.acos(1 - hi) * BAND_T / (2 * math.pi)
+    b = [
+        f'<rect class="shade" x="{X(d_lo):.1f}" y="{y0}" width="{X(d_hi) - X(d_lo):.1f}" height="{h}"/>'
+    ]
+    for t in (0, 0.25, 0.5, 0.75):
+        b.append(_seg(x0, Y(t), x0 + w, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 4, f"{t:g}", anchor="end", cls="mono small"))
+    b.append(_seg(x0, Y(0.25), x0 + w, Y(0.25), "refline bad"))
+    b.append(text(x0 + w, Y(0.25) - 6, "境 1/4", anchor="end", cls="small lab-bad"))
+    for d in (0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4):
+        b.append(text(X(d), y0 + h + 18, f"{d:g}", cls="mono small"))
+    b.append(_seg(x0, y0 + h, x0 + w, y0 + h, "axis"))
+    b.append(_seg(x0, y0, x0, y0 + h, "axis"))
+    series = [
+        (0.0, "c3s", "ν = 0（雑音なし）"),
+        (1 / 32, "c1s", "ν = 1/32"),
+        (1 / 8, "c2s", "ν = 1/8"),
+    ]
+    for k, (nu, cls, lab) in enumerate(series):
+        pts = []
+        for j in range(401):
+            d = math.exp(lmin + (lmax - lmin) * j / 400)
+            pts.append((X(d), Y(min(_g_band_noise(d, nu), gmax))))
+        b.append(
+            f'<polyline class="ln {cls}" points="{_pts(pts)}" stroke-width="2.5"/>'
+        )
+        ly = Y(0.55) + 20 * k
+        b.append(
+            _seg(x0 + 12, ly - 4, x0 + 36, ly - 4, f"ln {cls}", ' stroke-width="2.5"')
+        )
+        b.append(text(x0 + 42, ly, lab, anchor="start", cls="small"))
+    b.append(
+        text((X(d_lo) + X(d_hi)) / 2, Y(0.06), "ν = 1/32 の窓", cls="small accent")
+    )
+    b.append(
+        text(
+            (X(d_lo) + X(d_hi)) / 2,
+            Y(0.06) + 16,
+            f"{d_lo:.2f}〜{d_hi:.2f} 秒",
+            cls="mono small accent",
+        )
+    )
+    b.append(
+        text(
+            x0 + w, y0 + h + 40, "刻み Δ（秒。対数の目盛り）", anchor="end", cls="small"
+        )
+    )
+    b.append(text(x0 - 56, y0 - 8, "G_mid", anchor="start", cls="mono small"))
+    return svg(f"0 0 640 {y0 + h + 50}", "".join(b), "雑音の床と U 字")
+
+
+def fig_lh_slow() -> str:
+    """Theory: for a stationary code G_mid >= s/2, so G_mid < 1/4 needs s < 1/2."""
+    x0, w, y0, h = 70.0, 520.0, 20.0, 260.0
+    gmax = 0.8
+
+    def X(s: float) -> float:
+        return x0 + s * w
+
+    def Y(g: float) -> float:
+        return y0 + h - g / gmax * h
+
+    b = [
+        f'<polygon class="shade" points="{X(0)},{Y(0)} {X(1)},{Y(0.5)} {X(1)},{Y(0)}"/>',
+        text(X(0.8), Y(0.12), "定常なら届かない", cls="small"),
+        f'<polygon class="c3" fill-opacity="0.25" points="{X(0)},{Y(0)} {X(0.5)},{Y(0.25)} {X(0)},{Y(0.25)}"/>',
+    ]
+    for t in (0, 0.25, 0.5, 0.75):
+        b.append(_seg(x0, Y(t), x0 + w, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 4, f"{t:g}", anchor="end", cls="mono small"))
+    for t in (0, 0.25, 0.5, 0.75, 1):
+        b.append(text(X(t), y0 + h + 20, f"{t:g}", cls="mono small"))
+    b.append(_seg(x0, y0 + h, x0 + w, y0 + h, "axis"))
+    b.append(_seg(x0, y0, x0, y0 + h, "axis"))
+    b.append(_seg(X(0), Y(0), X(1), Y(0.5), "refline"))
+    b.append(
+        text(X(0.7), Y(0.35) + 20, "下限の線 G = s/2", anchor="start", cls="small")
+    )
+    b.append(_seg(x0, Y(0.25), x0 + w, Y(0.25), "refline bad"))
+    b.append(
+        text(
+            X(0.99),
+            Y(0.25) - 6,
+            "境 1/4（外挿が copy に勝つ）",
+            anchor="end",
+            cls="small lab-bad",
+        )
+    )
+    b.append(_seg(X(0.5), y0, X(0.5), y0 + h, "ray"))
+    b.append(text(X(0.5) + 6, y0 + 14, "s = 1/2", anchor="start", cls="mono small"))
+    b.append(text(X(0.04), Y(0.17), "勝てるのは", anchor="start", cls="small accent"))
+    b.append(
+        text(X(0.04), Y(0.17) + 18, "この三角だけ", anchor="start", cls="small accent")
+    )
+    b.append(
+        text(
+            x0 + w,
+            y0 + h + 40,
+            "s（その刻みで動く割合）→ 遅いほど左",
+            anchor="end",
+            cls="small",
+        )
+    )
+    b.append(text(x0 - 56, y0 - 4, "G_mid", anchor="start", cls="mono small"))
+    return svg(f"0 0 640 {y0 + h + 50}", "".join(b), "幅を広げるには遅くなる必要がある")
+
+
+def fig_lh_guard() -> str:
+    """Schematic of the decoder guard: decode the extrapolated latent, pick
+    the closest of nine nearby real frames; ceiling, floor and the
+    extrapolation's rate (made-up values)."""
+    b = []
+    b.append(box(10, 40, 120, 44, ["z(t−Δ)・z(t)", "潜在の符号"]))
+    b.append(arrow(130, 62, 158, 62))
+    b.append(box(160, 40, 140, 44, ["外挿", "2z(t) − z(t−Δ)"]))
+    b.append(arrow(300, 62, 328, 62))
+    b.append(box(330, 40, 120, 44, ["flow デコーダ", "同じ形・後付け"]))
+    b.append(arrow(450, 62, 478, 62))
+    b.append(grid(480, 30, 4, 16, "c1", _opacities(11, 16, 0.25, 0.85)))
+    b.append(text(512, 112, "描いた絵", cls="small"))
+    for j in range(-4, 5):
+        x = 330 + j * 62 - 22
+        cls = "c3" if j == 0 else "cn"
+        b.append(grid(x, 162, 3, 15, cls, _opacities(30 + j, 9, 0.25, 0.85)))
+        b.append(text(x + 22, 226, f"{j:+d}" if j else "0（的）", cls="mono small"))
+    b.append(
+        text(
+            330,
+            250,
+            "候補：時刻 t + Δ + jΔ の本物のフレーム（j = −4〜4、9 個）",
+            cls="small",
+        )
+    )
+    b.append(
+        '<polyline class="ln" points="560,62 600,62 600,140 352,140 352,158" marker-end="url(#ah)"/>'
+    )
+    b.append(
+        text(
+            360,
+            130,
+            "Inception の特徴で最も近い候補を選ぶ",
+            anchor="start",
+            cls="small",
+        )
+    )
+    # bars: ceiling, extrapolation, floor (made-up)
+    x0, top, bw = 170.0, 280.0, 300.0
+    rows = [
+        ("天井 c：D(z(t+Δ))", 0.62, "c3"),
+        ("e：外挿の絵", 0.44, "c1"),
+        ("床 f：D(z(t))＝copy", 0.26, "cn"),
+    ]
+    for i, (lab, v, cls) in enumerate(rows):
+        y = top + i * 30
+        b.append(text(x0 - 8, y + 14, lab, anchor="end", cls="small"))
+        b.append(
+            f'<rect class="{cls}" x="{x0}" y="{y}" width="{v * bw:.1f}" height="18" fill-opacity="0.85" rx="2"/>'
+        )
+    yb = top + 3 * 30
+    b.append(_seg(x0 + bw / 9, top - 8, x0 + bw / 9, yb - 6, "chance"))
+    b.append(text(x0 + bw / 9, yb + 10, "1/9", cls="mono small"))
+    b.append(_seg(x0, yb - 6, x0 + bw, yb - 6, "axis"))
+    b.append(text(x0 + bw, yb + 10, "1", cls="mono small"))
+    b.append(
+        text(
+            x0 + bw + 14,
+            top + 14,
+            "天井 − 床 − 2SE_tot > 0 なら",
+            anchor="start",
+            cls="small",
+        )
+    )
+    b.append(
+        text(
+            x0 + bw + 14,
+            top + 32,
+            "この刻みでガードが読める",
+            anchor="start",
+            cls="small",
+        )
+    )
+    b.append(
+        text(
+            x0 + bw + 14,
+            top + 58,
+            "e − f の区間の下端 > 0 なら",
+            anchor="start",
+            cls="small",
+        )
+    )
+    b.append(
+        text(
+            x0 + bw + 14,
+            top + 76,
+            "外挿の絵が copy に勝つ",
+            anchor="start",
+            cls="small",
+        )
+    )
+    return svg(f"0 0 660 {yb + 24}", "".join(b), "拡散のデコーダのガードの模式図")
+
+
+VH0I_TRUE = 3.05693  # the continuous crossing (README, V-h0i)
+VH0I_GRID = 3.05584  # the closed G interpolated on the 0.1 s grid
+VH0I_MEAN, VH0I_SD = 3.05580, 0.00055  # the realisations' interval midpoints
+VH0I_WIDTH = 0.0022  # the median interval width
+
+
+def fig_lh_vh0i() -> str:
+    """Closed form and README numbers: the grid interpolation's bias that made
+    V-h0i fail. The example intervals are drawn, not the real ones."""
+    b = []
+    # top: the closed G between the grid points 3.0 and 3.1 s
+    x0, w, y0, h = 80.0, 500.0, 30.0, 150.0
+    dlo, dhi, glo, ghi = 2.99, 3.11, 0.240, 0.258
+
+    def X(d: float) -> float:
+        return x0 + (d - dlo) / (dhi - dlo) * w
+
+    def Y(g: float) -> float:
+        return y0 + h - (g - glo) / (ghi - glo) * h
+
+    nu = 1 / 32
+    curve = [
+        (
+            X(dlo + (dhi - dlo) * k / 200),
+            Y(_g_band_noise(dlo + (dhi - dlo) * k / 200, nu)),
+        )
+        for k in range(201)
+    ]
+    for t in (0.245, 0.25, 0.255):
+        b.append(_seg(x0, Y(t), x0 + w, Y(t), "gridline"))
+        b.append(text(x0 - 8, Y(t) + 4, f"{t:g}", anchor="end", cls="mono small"))
+    b.append(_seg(x0, Y(0.25), x0 + w, Y(0.25), "refline bad"))
+    b.append(text(x0 + w, Y(0.25) - 6, "1/4", anchor="end", cls="mono small lab-bad"))
+    b.append(f'<polyline class="ln c1s" points="{_pts(curve)}" stroke-width="2.5"/>')
+    g0, g1 = _g_band_noise(3.0, nu), _g_band_noise(3.1, nu)
+    chord = []
+    for k in range(41):
+        d = 3.0 * (3.1 / 3.0) ** (k / 40)
+        frac = (math.log(d) - math.log(3.0)) / (math.log(3.1) - math.log(3.0))
+        chord.append((X(d), Y(g0 + (g1 - g0) * frac)))
+    b.append(
+        f'<polyline class="ln c2s" points="{_pts(chord)}" stroke-dasharray="6 4" stroke-width="2"/>'
+    )
+    for d, g in ((3.0, g0), (3.1, g1)):
+        b.append(_dot(X(d), Y(g), "c2", 5))
+        b.append(text(X(d), y0 + h + 18, f"{d:.1f} 秒（格子）", cls="mono small"))
+    b.append(text(X(3.003), Y(0.2565), "青：閉じた式の G", anchor="start", cls="small"))
+    b.append(
+        text(
+            X(3.003),
+            Y(0.2565) + 18,
+            "橙の破線：格子の 2 点を log Δ でつないだ線",
+            anchor="start",
+            cls="small",
+        )
+    )
+    b.append(
+        text(
+            X(3.097),
+            Y(0.2415),
+            "この縮尺では 2 本はほぼ重なる",
+            anchor="end",
+            cls="small",
+        )
+    )
+    b.append(_seg(X(VH0I_TRUE), y0, X(VH0I_TRUE), y0 + h, "ray"))
+    b.append(_seg(X(VH0I_GRID), y0, X(VH0I_GRID), y0 + h, "ray"))
+    # bottom: magnified strip with example intervals
+    sy = y0 + h + 50
+    s0, sw = 80.0, 500.0
+    slo, shi = 3.0525, 3.0595
+
+    def S(d: float) -> float:
+        return s0 + (d - slo) / (shi - slo) * sw
+
+    b.append(_seg(X(VH0I_TRUE), y0 + h, S(VH0I_TRUE), sy, "ray"))
+    b.append(_seg(X(VH0I_GRID), y0 + h, S(VH0I_GRID), sy, "ray"))
+    rng = random.Random(7)
+    n = 12
+    for i in range(n):
+        c = rng.gauss(VH0I_MEAN, VH0I_SD)
+        y = sy + 12 + i * 11
+        hit = c - VH0I_WIDTH / 2 <= VH0I_TRUE <= c + VH0I_WIDTH / 2
+        cls = "c3s" if hit else "cns"
+        b.append(
+            _seg(S(c - VH0I_WIDTH / 2), y, S(c + VH0I_WIDTH / 2), y, f"whisk {cls}")
+        )
+    yb = sy + 12 + n * 11
+    b.append(_seg(S(VH0I_TRUE), sy, S(VH0I_TRUE), yb, "refline bad"))
+    b.append(
+        _seg(S(VH0I_GRID), sy, S(VH0I_GRID), yb, "refline", ' stroke-dasharray="6 4"')
+    )
+    b.append(
+        text(
+            S(VH0I_TRUE) + 6,
+            yb + 16,
+            f"連続の真値 {VH0I_TRUE}",
+            anchor="start",
+            cls="mono small lab-bad",
+        )
+    )
+    b.append(
+        text(
+            S(VH0I_GRID) - 6,
+            yb + 16,
+            f"格子でつないだ値 {VH0I_GRID}",
+            anchor="end",
+            cls="mono small",
+        )
+    )
+    for d in (3.053, 3.055, 3.057, 3.059):
+        b.append(text(S(d), yb + 36, f"{d:.3f}", cls="mono small"))
+    b.append(
+        text(
+            s0,
+            sy - 6,
+            "拡大：区間の例（模式。緑は連続の真値を含む、灰は含まない）",
+            anchor="start",
+            cls="small",
+        )
+    )
+    return svg(f"0 0 640 {yb + 48}", "".join(b), "V-h0i が外れた理由")
+
+
+def fig_lh_explore() -> str:
+    """Schematic: what was seen before what was fixed, and where each value
+    sits (exploration or confirmation)."""
+    b = []
+    xs = [10, 175, 340, 505]
+    rows = [
+        ["V18c の 6 刻み", "モデルの値を見た"],
+        ["線形の幅の定義", "を固定（11-26）"],
+        ["V-h0〜V-h3", "物差しの確かめ"],
+        ["V19 の checkpoint", "で判定"],
+    ]
+    for i, (x, lines) in enumerate(zip(xs, rows, strict=True)):
+        b.append(box(x, 40, 145, 54, lines))
+        if i < 3:
+            b.append(arrow(x + 145, 67, xs[i + 1] - 2, 67))
+    b.append('<rect class="shade" x="10" y="112" width="310" height="54" rx="6"/>')
+    b.append(text(165, 134, "V18c までの符号の細かい刻みの値", cls="small"))
+    b.append(text(165, 154, "＝ 探索の記述（支持・棄却に使わない）", cls="strong"))
+    b.append(
+        '<rect class="c1" fill-opacity="0.15" x="340" y="112" width="310" height="54" rx="6"/>'
+    )
+    b.append(text(495, 134, "V19 の値を見る前に決めた規則で", cls="small"))
+    b.append(text(495, 154, "＝ 確証（区別できた・小さい・足りない）", cls="strong"))
+    b.append(text(330, 24, "時間の順 →", cls="small"))
+    return svg("0 0 660 180", "".join(b), "探索と確証の区別")
+
+
 FIGURES: dict[str, Callable[[], str]] = {
+    "lh_taylor": fig_lh_taylor,
+    "lh_angle": fig_lh_angle,
+    "lh_pcurve": fig_lh_pcurve,
+    "lh_ushape": fig_lh_ushape,
+    "lh_slow": fig_lh_slow,
+    "lh_guard": fig_lh_guard,
+    "lh_vh0i": fig_lh_vh0i,
+    "lh_explore": fig_lh_explore,
     "tl_double": fig_tl_double,
     "tl_gs": fig_tl_gs,
     "tl_whiten": fig_tl_whiten,
