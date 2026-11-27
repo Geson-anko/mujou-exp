@@ -16,15 +16,24 @@ sum; the readout of a code that holds a part $u$ of the observation $y =
 \Sigma_y$ and, of AR(1) parts of $r_u$, $r_v$, $E^{d,\mathrm{lin}} =
 \frac{(1 - r_u)\,\mathrm{tr}\,\Sigma_u}{(1 - r_u)\,\mathrm{tr}\,\Sigma_u +
 (1 - r_v)\,\mathrm{tr}\,\Sigma_v}$, within 4 standard errors of the
-blocks.
+blocks. The JEPA's adapters: ``jepa_tokens`` are the checkpoint's tokens
+(``FndCode.tokens``) and its ``time_r2`` is ``fnd_jepa.time_r2``'s; a half's
+code of ``jepa_halves`` does not move, to the bit, when the pixels outside
+the half change, and moves when those inside change.
 """
 
+import json
 import math
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
+import yaml
 
+from exp.lib import ckpt
 from exp.lib.synth_series import ou, white
+from exp.vision.compose import to_dict
 from exp.vision.fnd_guard import (
     PAIRS,
     ContentSet,
@@ -33,12 +42,22 @@ from exp.vision.fnd_guard import (
     fidelity_of,
     half_keep,
     half_rows,
+    jepa_halves,
+    jepa_tokens,
     noninferior,
     pixel_halves,
     time_r2,
     time_r2_threshold,
     tubelets,
 )
+from exp.vision.fnd_jepa import (
+    TOKEN_DIM,
+    FndCode,
+    build_fnd,
+    load_fnd,
+    time_r2 as jepa_time_r2,
+)
+from tests.vision.test_fnd_jepa import FRAMES, GRID, SIZE, TIMES, conf_of, stacks
 
 _F64 = torch.float64
 
@@ -210,3 +229,65 @@ class TestContent:
     def test_noninferiority_of_the_error(self, e, refs, ok):
         """$1 - E \\le 1.10 \\max(1 - E_{\\mathrm{ref}})$: 0.56 <= 0.55 fails."""
         assert noninferior(e, refs) == ok
+
+
+# -- the JEPA's adapters --------------------------------------------------------
+
+
+@pytest.fixture
+def checkpoint(tmp_path):
+    """A small JEPA's checkpoint (4 times x 4 x 4 positions), its weights
+    moved off their initial values."""
+    conf = conf_of(seed=4)
+    mods = build_fnd(conf, seed=4)
+    with torch.no_grad():
+        for p in mods.parameters():
+            p.add_(0.01 * torch.randn_like(p))
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.yaml").write_text(
+        yaml.safe_dump(to_dict(replace(conf, device="cpu")))
+    )
+    (run / "jepa.json").write_text(json.dumps({"token_dim": TOKEN_DIM, "tubelet": 2}))
+    path = ckpt.save_eval(run, program="fnd", group="iid", t=12.8, frame=128,
+                          modules=mods.modules())  # fmt: skip
+    return str(path)
+
+
+def _outside(half: str) -> torch.Tensor:
+    """The pixels ``(FRAMES, 3, SIZE, SIZE)`` outside ``half``."""
+    m = torch.ones(FRAMES, 3, SIZE, SIZE, dtype=torch.bool)
+    h = SIZE // 2
+    inside = {"left": (..., slice(0, h)), "right": (..., slice(h, None)),
+              "top": (..., slice(0, h), slice(None)), "bottom": (..., slice(h, None), slice(None)),
+              "early": (slice(0, FRAMES // 2),), "late": (slice(FRAMES // 2, None),)}  # fmt: skip
+    m[inside[half]] = False
+    return m
+
+
+class TestJepaCodes:
+    def test_the_tokens_and_their_time_r2(self, checkpoint):
+        x = stacks(6)
+        tok = jepa_tokens(checkpoint, "cpu")(x)
+        conf, _, mods = load_fnd(Path(checkpoint), "cpu")
+        flat = FndCode(mods, conf.model.head_count).tokens(x)
+        assert tok.shape == (6, TIMES, GRID * GRID, TOKEN_DIM)
+        assert torch.equal(tok.flatten(1, 2), flat)
+        assert time_r2(tok) == pytest.approx(
+            float(jepa_time_r2(flat, TIMES)), rel=1e-12
+        )
+
+    @pytest.mark.parametrize(
+        "half", ["left", "right", "top", "bottom", "early", "late"]
+    )
+    def test_a_half_sees_its_pixels_only(self, checkpoint, half):
+        fn = jepa_halves(checkpoint, "cpu")
+        x = stacks(3)
+        y = stacks(3, seed=9)
+        out = _outside(half)
+        changed_out = torch.where(out, y, x)
+        changed_in = torch.where(out, x, y)
+        code = fn(x, half)
+        assert code.shape == (3, TIMES * GRID * GRID // 2 * TOKEN_DIM)
+        assert torch.equal(fn(changed_out, half), code)
+        assert not torch.allclose(fn(changed_in, half), code)

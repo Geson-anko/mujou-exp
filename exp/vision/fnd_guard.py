@@ -47,13 +47,19 @@ PCA of ``GeomConf.pca_dim`` fit on both halves of the reference,
 ``function(arg, device)`` that returns the map ``(stacks, half) -> codes``),
 ``obs`` the observations of ``fnd_dyn``'s sets (once), ``content`` a code's
 readout (its whitened sequences of ``fnd_dyn encode``), ``time-r2`` the
-pixel tubelets' ``time_r2`` on the reference::
+pixel tubelets' ``time_r2`` on the reference, or with ``--places`` a code's
+tokens' (``function(arg, device)`` the map stacks -> tokens ``(B, T, P,
+d)``). The JEPA's checkpoints enter by ``jepa_tokens`` (its tokens $t$ of
+every position, ``fnd_jepa.FndCode.tokens``) and ``jepa_halves`` (a half's
+code: $\mathrm{vec}$ of the tokens $t = R h$ of the half's positions, the
+encoder seeing only them, ``half_keep``)::
 
     python -m exp.vision.fnd_guard now --config <v18c run> --sets runs/v18c-tlin \
         --out runs/fnd-dyn --code pca [--places init <mod:fn> <arg>]
     python -m exp.vision.fnd_guard obs --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn
     python -m exp.vision.fnd_guard content --out runs/fnd-dyn --code pca
-    python -m exp.vision.fnd_guard time-r2 --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn
+    python -m exp.vision.fnd_guard time-r2 --config <v18c run> --sets runs/v18c-tlin \
+        --out runs/fnd-dyn [--places init exp.vision.fnd_guard:jepa_tokens <ckpt>]
 
 **The content** (``content_sums``): a readout $g(w) = A w + c$ (ridge,
 $\alpha$ of ``ALPHA_SCALES`` the least level error on ``val``) from a
@@ -93,7 +99,10 @@ from exp.vision.dyn_eval import split_videos
 from exp.vision.eval import BATCH, PCA_SEED
 from exp.vision.fill_eval import FillConf
 from exp.vision.fnd_dyn import FndConf, encode_stacks, load_sets, stack_starts
+from exp.vision.fnd_jepa import EVAL_BATCH, FndCode, encode, load_fnd
 from exp.vision.geom_eval import GeomConf, _conf_of, _start, _write
+from exp.vision.jepa import JEPAModules
+from exp.vision.models import early_fusion
 from exp.vision.width_eval import WidthConf, sets_and_ref
 
 __all__ = [
@@ -105,6 +114,8 @@ __all__ = [
     "fidelity_of",
     "half_keep",
     "half_rows",
+    "jepa_halves",
+    "jepa_tokens",
     "main",
     "noninferior",
     "pixel_halves",
@@ -354,6 +365,46 @@ def _pixel_half_fn(ref: Tensor, d: int, seed: int, dev: torch.device) -> HalfFn:
     return lambda x, half: pca.encode(pixel_halves(x, half), *maps[half])
 
 
+def _jepa(arg: str, device: str) -> tuple[JEPAModules, int, tuple[int, int, int]]:
+    """The checkpoint ``arg``'s JEPA, its heads and its grid (times, rows,
+    columns)."""
+    conf, settings, mods = load_fnd(Path(arg), device)
+    t = conf.data.tours
+    g = t.size // conf.model.patch
+    return mods, conf.model.head_count, (t.frames // settings["tubelet"], g, g)
+
+
+def jepa_tokens(arg: str, device: str) -> Callable[[Tensor], Tensor]:
+    """The tokens $t$ ``(B, T, P, d)`` of the JEPA's checkpoint ``arg`` (all
+    positions seen; ``fnd_jepa.FndCode.tokens``, time-major)."""
+    mods, heads, (times, _, _) = _jepa(arg, device)
+    code = FndCode(mods, heads)
+    return lambda x: code.tokens(x).unflatten(1, (times, -1))
+
+
+def jepa_halves(arg: str, device: str) -> HalfFn:
+    r"""The half code of the JEPA's checkpoint ``arg``: the encoder sees the
+    half's positions only (``half_keep``) and the code is $\mathrm{vec}$ of
+    their tokens $t = R h$ ``(B, |half| d)``."""
+    mods, heads, grid = _jepa(arg, device)
+    dev = torch.device(device)
+    keeps = {
+        h: half_keep(h, grid).flatten().nonzero().squeeze(1).to(dev) for h in HALVES
+    }
+
+    @torch.no_grad()
+    def fn(x: Tensor, half: str) -> Tensor:
+        out = []
+        for c in x.split(EVAL_BATCH):
+            keep = keeps[half].expand(len(c), -1)
+            out.append(
+                mods.proj(encode(mods, early_fusion(c.to(dev)), heads, keep)).flatten(1)
+            )
+        return torch.cat(out)
+
+    return fn
+
+
 def _role_stacks(
     conf: Any, root: Path, names: Sequence[str]
 ) -> list[tuple[Callable[[int, int], Tensor], Tensor]]:
@@ -440,7 +491,7 @@ def _content_set(s: Any, y: Tensor, blocks: bool) -> ContentSet:
     return ContentSet(s.w, y.float(), s.bounds, b, int(b.max()) + 1 if len(b) else 0)
 
 
-def _factory(spec: str) -> Callable[[str, str], HalfFn]:
+def _factory(spec: str) -> Callable[[str, str], Any]:
     mod, _, name = spec.partition(":")
     return getattr(importlib.import_module(mod), name)
 
@@ -457,6 +508,7 @@ def main(argv: Sequence[str] | None = None) -> Path:
         q.add_argument("--device")
         if name == "now":
             q.add_argument("--code", choices=("pca",))
+        if name != "obs":
             q.add_argument(
                 "--places", nargs=3, metavar=("NAME", "MODULE:FUNCTION", "ARG")
             )
@@ -488,9 +540,14 @@ def main(argv: Sequence[str] | None = None) -> Path:
     if a.cmd == "time-r2":
         _, _, ref, _ = sets_and_ref(conf, a.sets, a.root, gconf, WidthConf(), FillConf(),
                                     None, None)  # fmt: skip
-        tok = torch.cat([tubelets(x.to(dev)).cpu() for x in ref.split(BATCH)])
-        target = a.out / "guard" / "time_r2_pixel.json"
-        _write(target, [{"part": "time_r2", "code": "pixel", "value": time_r2(tok),
+        name, tok_fn = "pixel", tubelets
+        if a.places:
+            name, spec, arg = a.places
+            tok_fn = _factory(spec)(arg, conf.device)
+        with torch.no_grad():
+            tok = torch.cat([tok_fn(x.to(dev)).cpu() for x in ref.split(BATCH)])
+        target = a.out / "guard" / f"time_r2_{name}.json"
+        _write(target, [{"part": "time_r2", "code": name, "value": time_r2(tok),
                          "n": len(tok)}], {})  # fmt: skip
         return target
     if a.code:

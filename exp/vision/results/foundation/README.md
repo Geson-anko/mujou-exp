@@ -34,7 +34,7 @@
 | `exp/lib/gru_dyn.py` | 系列の組（`seq_set`、反転は `SeqSet.reversed`）、予測器 `GRUPredictor`、学習 `fit_gru`、ブロックの和 `gru_sums`、窓の神託 `best_window` |
 | `exp/lib/synth_series.py` | 線形ガウスの状態空間モデル（`lgssm`・`lgssm_cov`・`lgssm_gamma`）と、カルマンフィルタの最良の誤差 `kalman_errors` |
 | `exp/vision/fnd_dyn.py` | 実データの系列の符号化、minGRU と 2 時点の線形の行、合成の確かめ、CLI |
-| `exp/vision/fnd_guard.py` | tubelet、`time_r2`、半分の視野、線形の内容、CLI |
+| `exp/vision/fnd_guard.py` | tubelet、`time_r2`、半分の視野、線形の内容、CLI。JEPA の checkpoint の口 `jepa_tokens`（トークン）と `jepa_halves`（半分の符号） |
 | `exp/vision/results/foundation/judge_fnd.py` | 層の数の選び方、対の区間と判定の言葉、確かめのまとめ |
 
 ### 予測器の形
@@ -123,7 +123,7 @@ uv run python -m exp.vision.results.foundation.judge_fnd --dir runs/fnd-dyn
 
 ### F0 の物差しの値（2026-11-27、snapshot `6dc8bf908fca`）
 
-物差しは `pca`・`mean8`・VAE の `v16`・`v17` と、$\sigma_{\mathrm{rot}}$ 用の `rot` である。学習前の JEPA の符号はまだ無い（並行の agent の `fnd_jepa.py` の口ができてから足す）。値を見た後の直しは入れていない。
+物差しは `pca`・`mean8`・VAE の `v16`・`v17` と、$\sigma_{\mathrm{rot}}$ 用の `rot` である。学習前の JEPA の符号 `init` は、あとから足した（下の「学習前の JEPA の符号」）。値を見た後の直しは入れていない。
 
 **minGRU は全ての物差しで 2 時点の線形と同じになった。** 5 つの符号 × 2 方向 × 2 層 × 3 seed の 60 本の全てで、検証の組の損失はエポック 0（2 時点の線形）で最小だった。損失は 1 エポック目で約 0.2 % 上がり、その後 10 エポックのあいだ下がらなかった（例: `pca` の未来の 1 層で 0.7911 → 0.7928 → 0.7935）。そのため seed のばらつきは 0、$\sigma_{\mathrm{rot}}$ も 0 になり、区間はブロックの揺れだけで決まる。1 層と 2 層の検証の損失は同じなので、規則（同点なら少ない方）で 1 層を選んだ。ただし `v17` の過去では丸めの誤差で 2 層の損失がわずかに小さく、2 層が選ばれた。値は 1 層と全ての桁で同じである。線形の 2 時点（下限、`lin`）の値も、下の表と全ての桁で同じだった。
 
@@ -139,6 +139,7 @@ uv run python -m exp.vision.results.foundation.judge_fnd --dir runs/fnd-dyn
 | `mean8` | −0.488 / −0.270 | −0.492 / −0.268 | 0.774 / 0.361 | 0.531 / 0.959 |
 | `v16` | −0.480 / −0.251 | −0.482 / −0.251 | 0.785 / 0.425 | 0.535 / 0.961 |
 | `v17` | −0.537 / −0.233 | −0.538 / −0.232 | 0.647 / 0.479 | 0.530 / 0.954 |
+| `init` | −0.498 / −0.255 | −0.502 / −0.253 | 0.738 / 0.420 | 0.533 / 0.954 |
 
 `pca` に対する対の比（$z = 2$、区間は $\pm 2\,\mathrm{SE}$。a は行の符号、b は `pca`）:
 
@@ -151,6 +152,8 @@ uv run python -m exp.vision.results.foundation.judge_fnd --dir runs/fnd-dyn
 | `v17` 対 `pca` | 未来 | −0.027 [−0.032, −0.021] | +0.041 [0.033, 0.049] | 分母で向きが割れた |
 | | 過去 | −0.025 [−0.029, −0.020] | +0.041 [0.032, 0.049] | 分母で向きが割れた |
 | `rot` 対 `pca` | 両方 | 0.000 | 0.000 | 区別できない |
+| `init` 対 `pca` | 未来 | +0.012 [0.004, 0.020] | +0.018 [0.009, 0.027] | b が良いと区別できた |
+| | 過去 | +0.012 [0.005, 0.019] | +0.019 [0.010, 0.028] | b が良いと区別できた |
 
 64 秒ずらしたブロック（記述）でも言葉は同じだった。例外は `mean8` の過去で、clim の区間が [0.0002, 0.0077] となり、0 を含まなかった。
 
@@ -160,26 +163,38 @@ uv run python -m exp.vision.results.foundation.judge_fnd --dir runs/fnd-dyn
 - 言葉が変わった対が 2 つある。`mean8` は dyn/copy で「b が良いと区別できた」（clim の区間 [0.001, 0.008]）、ここでは「区別できない」（[−0.000, 0.008]）。`v16` は dyn/copy の MLP で「区別できない」（+0.022 / +0.007）、ここでは「b が良いと区別できた」（+0.030 / +0.022）。どちらも clim の区間の端が 0 の近くにある対で、向きは変わっていない
 - 水準: F0 の clim は全ての符号で dyn/copy より 0.023〜0.032 低い（copy は 0.003〜0.006 低い）。系列の作り（重ならない stack、余白 63 step でカットの近くを除くこと）の違いによる見込みだが、確かめていない。比べは同じ系列の上で行うので、判定には効かない
 
-#### 今（半分の視野、`pca` だけ）
+#### 今（半分の視野、`pca` と `init`）
 
 Zurich での比 $R$（copy / clim）。区間は判定の規則に無いので、点の値だけを示す。
 
-| 切り口 | 向き | $R_{\mathrm{copy}}$ | $R_{\mathrm{clim}}$ |
+| 切り口 | 向き | `pca` $R_{\mathrm{copy}}$ / $R_{\mathrm{clim}}$ | `init` $R_{\mathrm{copy}}$ / $R_{\mathrm{clim}}$ |
 | -- | -- | -- | -- |
-| 今（空間） | 左 → 右 | 0.489 | 0.856 |
-| | 右 → 左 | 0.500 | 0.861 |
-| | 上 → 下 | 0.423 | 0.903 |
-| | 下 → 上 | 0.536 | 0.877 |
-| stack の中の未来 | 前半 → 後半 | 0.788 | 0.283 |
-| stack の中の過去 | 後半 → 前半 | 0.788 | 0.283 |
+| 今（空間） | 左 → 右 | 0.489 / 0.856 | 0.487 / 0.857 |
+| | 右 → 左 | 0.500 / 0.861 | 0.501 / 0.859 |
+| | 上 → 下 | 0.423 / 0.903 | 0.428 / 0.888 |
+| | 下 → 上 | 0.536 / 0.877 | 0.512 / 0.872 |
+| stack の中の未来 | 前半 → 後半 | 0.788 / 0.283 | 0.813 / 0.319 |
+| stack の中の過去 | 後半 → 前半 | 0.788 / 0.283 | 0.757 / 0.315 |
+
+`init` の半分の符号は、エンコーダにその半分の位置のトークンだけを見せ、そのトークン $t = R h$ を並べたもの（`fnd_guard.jepa_halves`）である。`pca` の前半と後半は同じ PCA を共有するので、未来と過去は同じ値になる。`init` は前半と後半で位置の埋め込みが違うので、両者は一致しない。
 
 `mean8`・`v16`・`v17` は該当なし。`v16`・`v17` は画像全体から符号を作る VAE で、格子の半分だけを入れる口が無い。`mean8` は stack の平均画像なので、時間の半分は定義できない。空間の半分は定義できるが、今の CLI（`--code pca` だけ）に無いので出していない。
 
+#### 学習前の JEPA の符号
+
+`init` は、学習の run `fnd-T0-lr1e-4-lam0.5-s0` の step 0 における $z \in \mathbb{R}^{4096}$ である（`fnd_dyn encode --places init exp.vision.fnd_jepa:z_fn <ckpt>`）。minGRU の 12 本（2 方向 × 2 層 × 3 seed）も、他の物差しと同じくエポック 0（2 時点の線形）で最小になった。検証の損失は 1 層と 2 層で同じなので、規則に従って 1 層を選んだ。`init` は未来と過去のどちらでも、2 つの分母がそろって `pca` より悪い（上の表）。64 秒ずらしたブロックでも結論は同じだった。
+
 #### ガード
 
-- time_r2: 画素の tubelet（参照の組の 5998 stack）で 0.817 だった。閾値は $\max$(学習前, 0.817) + 0.05 なので、0.867 以上になる。学習前の符号が出たら、学習した符号の値を見る前に確定する。物差し（`pca` などの stack ごとの符号）にはトークンが無いので、該当なし
-- 内容（ridge の読み出し。$E^{\mathrm{lin}}$ / 誤差 $U = 1 - E^{\mathrm{lin}}$ / $E^{d,\mathrm{lin}}$）: `pca` 0.776 / 0.224 / 0.289、`mean8` 0.764 / 0.236 / 0.214、`v16` 0.723 / 0.277 / 0.159、`v17` 0.743 / 0.257 / 0.257
-- 非劣性の基準: $U \le 1.10 \max(U_{\texttt{pca}}, U_{\text{学習前}})$ で、$U_{\texttt{pca}} = 0.2244$ なので、基準は 0.2468 以上になる。学習前の値が出たら確定する
+- time_r2（参照の組の 5998 stack）: 画素の tubelet では 0.8169、`init` のトークン（全ての位置を見せたターゲット側、`fnd_guard.jepa_tokens`）では 0.7704 だった。物差し（`pca` などの stack ごとの符号）にはトークンが無いので、該当なし
+- 内容（ridge の読み出し。$E^{\mathrm{lin}}$ / 誤差 $U = 1 - E^{\mathrm{lin}}$ / $E^{d,\mathrm{lin}}$）: `pca` 0.776 / 0.224 / 0.289、`mean8` 0.764 / 0.236 / 0.214、`v16` 0.723 / 0.277 / 0.159、`v17` 0.743 / 0.257 / 0.257、`init` 0.741 / 0.259 / 0.221
+- 崩壊（K1〜K3）: 物差しは学習しないので、該当なし
+
+**確定したガードの数（2026-11-27 23:10、学習した符号の値を見る前）**:
+
+- **time_r2 の閾値は 0.867**（$\max(0.7704, 0.8169) + 0.05 = 0.8669$）。学習した符号の time_r2 がこの値を超えたら、「時間に沿って一定のトークン」への崩壊とする
+- **$E^{\mathrm{lin}}$ の非劣性の基準は $U \le 0.2854$**（$1.10 \times \max(0.2244, 0.2595)$。$E^{\mathrm{lin}} \ge 0.7146$ と同じ）
+- 学習前は `fnd-T0-lr1e-4-lam0.5-s0` の step 0（`ckpt/00000.0.pt`）とする。腕によらず、seed 0 のエンコーダの初期値は同じである。seed 1 の長い run では学習前の初期値が異なるが、基準はこの 1 つに固定する
 - 崩壊（K1〜K3）: 物差しは学習しないので、該当なし
 
 #### 評価のジョブの作り方
@@ -189,7 +204,9 @@ NAS の `/nas/geson/mujou-exp/runs/fnd-f0-eval/scripts/` にある。`job.sh` �
 - `mkq1.sh`: 合成の確かめ 24 本（CPU）と、符号化・観測・半分の視野・time_r2（4060）
 - `mkq2.sh`: minGRU 60 本（4060・5070 Ti、空いていた 4090 2 枚）と、線形と内容 9 本（CPU）
 - 新しい符号を足すときは、`fnd_dyn encode --places` で符号を作り、`mkq2.sh` の符号の並びに足して投げる
-- 診断の `diag_window.py` も同じ場所にあり、出力は `logs/diag_window.log` にある
+- `init` の minGRU・線形・内容は、学習側の評価 worker（`/nas/geson/mujou-exp/runs/fnd-train/scripts/evworker.sh` と `evalcode.sh`、snapshot `631715b6187e`）が評価し、結果を `/nas/geson/mujou-exp/runs/fnd-train-eval/` に出した。評価のコードは `cfffd1a` と同じである
+- `init` の time_r2 と半分の視野は `mkinit.sh`（`sjob.sh` で snapshot `60f2d2725985` を固定、mini-00 の 5070 Ti）で評価した。出力は `fnd-f0-eval/guard/time_r2_init.json` と `now/init.json` にある。JEPA の checkpoint は `fnd_guard time-r2 --places NAME exp.vision.fnd_guard:jepa_tokens <ckpt>` と `fnd_guard now --places NAME exp.vision.fnd_guard:jepa_halves <ckpt>` で加えられる
+- 診断用の `diag_window.py` も同じ場所にあり、出力は `logs/diag_window.log` にある
 
 ## 再現性
 
