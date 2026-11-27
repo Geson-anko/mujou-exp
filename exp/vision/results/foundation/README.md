@@ -208,6 +208,31 @@ NAS の `/nas/geson/mujou-exp/runs/fnd-f0-eval/scripts/` にある。`job.sh` �
 - `init` の time_r2 と半分の視野は `mkinit.sh`（`sjob.sh` で snapshot `60f2d2725985` を固定、mini-00 の 5070 Ti）で評価した。出力は `fnd-f0-eval/guard/time_r2_init.json` と `now/init.json` にある。JEPA の checkpoint は `fnd_guard time-r2 --places NAME exp.vision.fnd_guard:jepa_tokens <ckpt>` と `fnd_guard now --places NAME exp.vision.fnd_guard:jepa_halves <ckpt>` で加えられる
 - 診断用の `diag_window.py` も同じ場所にあり、出力は `logs/diag_window.log` にある
 
+## F1〜F3: 学習の記録（2026-11-27〜28）
+
+学習の側の実装・試し・$s$ の上端は [train.md](train.md) に書いた。
+
+### 回す前に決めたこと
+
+- **短い run**: 腕（T0・S1・Sσ）ごとに lr $\{10^{-5}, 10^{-4}\}$ × λ $\{0.5, 0.8, 0.95\}$、6000 step、seed 0（計 18 本）
+- **長い run の設定の選び方**（`judge_train.py`）: 崩壊も発散もしていない設定のうち、step 6000 の検証の動画の補完の損失 `val_pred` が最小のもの。Zurich と minGRU の評価の組は使わない
+  - 崩壊は、検証の動画の stack の上で K1〜K3 と time_r2 の線を越えること。発散は、6000 step に届かないか、数が有限でないこと
+  - 線は、学習前の符号（step 0）と画素の物差しから、学習した値を見る前に確定した（`lines.json`）。K1 は `sigreg_heldin` ≥ 26.71、K2 は rank < 13.79、K3 は `token_r2` ≥ 0.5376、time_r2 は 0.8719 を超えること
+- **長い run の step 数は 45000**（全ての腕・seed で同じ。2026-11-27 23:20、どの長い run も始まる前で、学習した符号の評価の値を見る前に決めた）
+  - 速さ（4090 に 1 本、checkpoint なし、val と保存を含む）: T0 は 0.495 秒/step（短い run 4 本の実測）、S1 は 0.563 秒/step（短い run 2 本の実測）。Sσ は試しの 0.546 秒/step を、S1 にそろえて 0.565 秒/step と置いた
+  - 4090 は 1 本で使用率が 100% になり、同居させても合計の速さは上がらない（fleet-manager の `fnd-ops/placement.md`）。4060（3.4〜3.7 秒/step）と 5070 Ti（1.0〜1.14 秒/step）では、長い run 1 本に 12 時間以上かかる
+  - 長い run 6 本は分けられないので、4090 4 枚のうち 2 枚が 2 本ずつ持つ。最後に終わるのは、T0 の長い run の後に Sσ の長い run を回す列で、23:54 + N × (0.495 + 0.565) 秒になる
+  - 60000 step では 17:35 になり、14:00 を過ぎる。14:00 までに終わるのは N ≤ 47900 である。並行の評価が 4090 に乗ったり NAS が遅れたりすることに備えて約 6% の余裕をとり、N = 45000 とした（見込みの終わりは 13:09）
+  - checkpoint は step 0・2000・6000・10000・20000・30000・40000・45000 にあり、30000 も残る
+
+### 置き方
+
+- 4090: 短い run（T0 の 6 本、S1 の 6 本）と長い run 6 本を、1 枚に 1 本ずつ置く
+- 4060: Sσ の短い run 4 本（`--checkpoint-blocks`）。終わった後は評価に使う
+- 5070 Ti（mini-00）: Sσ の短い run 2 本（`--checkpoint-blocks`）。長い run は置かない（4090 を待つより遅く終わるため）
+- `--checkpoint-blocks` は勾配の計算の順序を変えるだけで、数式は同じである
+- 腕の短い run 6 本が終わると、`autolong2.sh` がその腕を判定し、長い run 2 本（seed 0・1）を 4090 のキューに積む
+
 ## 再現性
 
 - mujou: `5aa37738dd04`
