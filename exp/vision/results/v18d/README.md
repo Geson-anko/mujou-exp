@@ -178,6 +178,52 @@ H1F と同じ規則を、P と N の主の族で当てる。ただし副の 2 �
 
 全文は [memory/agents/codex/v18d-st-critique.md](../../../../memory/agents/codex/v18d-st-critique.md) にある。どう扱ったかは計画の「Codex さんの批判を受けた直し」に書いた。この README で変えたのは、ST-perm の引き方、今 N の copy の分母（平均で補正）と N の観測の予測、選択の検証の clip（動画の全体から、2 つの側に別々の閾値）、内容の非劣性を比べられないときの保留、副の仮説の Bonferroni、条件つきの次の段の発動を `pathway_gap` にしたこと、の 6 つである。
 
+## 学習の実装（2026-11-27、値を出す前）
+
+計画の「学習の実装」の段を実装した。時空間の補完の V18d の値は、まだ 1 つも出していない（下の GPU での試しは、時間とメモリを測るためだけの 60 step で、損失の値は読んでいない）。
+
+- **`jepa.py`**: `time_masks(k)`（$\lvert J \rvert = k/2$ の部分集合、`itertools.combinations` の順。$k = 1$ では空）、`st_masks`（前半 $B/2$ の clip を管、後半を時間の側にする。$k = 1$ では全てを管にし、V18c の `draw_masks` と同じ乱数の消費になる）、`sincos_1d`、`Predictor.st_positions`（$e_P(p) + \phi(u_i) + \psi(\ell)$）、`st_predict`（補完）と `st_terms`（損失と番号ごとの SIGReg）
+- **`iid.py`**: `Units.draw_clips(lags, k, perm)`。前の版の `draw_triplets` を $K$ 個の等間隔へ一般化して置き換えた。ST-perm では同じ動画・同じ $n$ のまま、番号ごとにその役の範囲から独立に引き直す。各 stack が終わるフレームの番号も返す
+- **`jepa_iid.py`**: `--st K`（既定 0 は V18c の計算のまま）、`--st-perm`、`--st-lags lo:hi`。`jepa.json` に `st`・`st_perm`・`st_lags`・`st_bands`・`time_masks`・`seeds.delta`・`seeds.perm` を書く。`train.jsonl` の行に `sigreg_times`・`pred_now`・`pred_time`・`pred_masks`（`time_masks` の行ごと）・`pred_bands`（刻みの 3 つの帯 8〜32・32〜128・128〜512）・`overlap`（2 つの stack がフレームを共有する clip の割合。ST-perm の監査）を足した。$z$ の統計（`z_var` など）は全ての stack で測る
+- **前の版のコードを外した**: `TimePredictor`・`knot_weights`・`time_errors`・`jepa_time_terms`・`TIME_ARMS`・`TIME_KNOTS`、`build_jepa` の `time_knots`、`jepa_iid` の `--time-arm`・`--time-weight`・`--time-lr`・`--time-lags`、`time_val` の時間の予測器の損失の行。`draw_lags` と `time_val` の崩壊の数の枠組み（`ValStacks`）は残した
+
+計画から実装で変えた点（どれも値を見る前）:
+
+1. $\phi$・$\psi$ を固定の buffer にせず、呼ぶたびに `sincos_1d` で計算する。$\ell$ は clip ごとに連続の値をとるので、表にできない。値は同じで、学習パラメータも buffer も増えない
+2. 引数の形を `draw_clips(b, k, gen_n)` から `draw_clips(lags, k, perm)` にした。刻みは `jepa_iid` が `draw_lags` で引く（`draw_triplets` と同じ分け方）
+3. checkpoint の時刻 $t$ は、V18c と同じ「step × clip の数 × 0.1 秒」にした。1 step に見る stack は 4 倍だが、step で揃えるので、同じ step の checkpoint が V18c と同じ名前になる
+4. $\lvert U \rvert$ が全ての clip で同じなので、`pred_now`・`pred_time` は clip ごとの平均の誤差から出す。行の `pred` は 2 つの側の平均にちょうど等しい
+
+### 理論のオラクル（テスト）
+
+| 計画の名前 | テスト | 結果 |
+| -- | -- | -- |
+| O1 族 | `test_jepa.py` の `TestTimeMasks`・`TestSTMasks`: 時間の側は 6 個で、各行が 2 つの時刻を隠し、各時刻は 3 行で隠れる。反転で閉じる。$F_8$ を 8×8 へ広げると各位置が 436 個のうち 218 個で隠れる。前半が管で、どの時刻でも同じ $F_8$ の行。後半は時刻を丸ごと隠す。どの clip も 256 のうち 128 を隠す。時間の側の 6 行が一様に引かれる | 通った |
+| O1' $K = 1$ | `TestSTLoss` で、`st_terms` の $K = 1$ の管が `jepa_terms` と損失・`tokens`・全ての勾配でビットまで一致。`test_jepa_iid.py` で、`--st 1` の 3 step の run が既定の run と `train.jsonl` と checkpoint でビットまで一致（乱数の消費の順も同じ） | 通った |
+| O8 位置の符号 | `TestPositions`: $\phi$ 単独で反転が sin の符号だけを変える（ビット）。$\ell$ のずらしが周波数ごとの回転（$10^{-12}$）。表が 3 つの和で、$u = (-1.5, -0.5, 0.5, 1.5)$ が反転で $-u$ になる。始点は予測器の入力に入らない（構成による） | 通った |
+| O9 漏れの無さ | 管の隠した位置の画素（全フレーム）と、丸ごと隠した時刻の画素を変えても、予測 $\hat t$ がビットまで変わらない | 通った |
+| O10 SIGReg | 時刻 2 の stack だけを変えると、他の番号の項は変わらない。4 つの時刻が同じ stack なら、各項が V18c の 1 項と一致（$10^{-10}$） | 通った |
+| O11 文脈の再利用 | float64 で、時間の側の見える stack を別のエンコーダの呼び出しで符号化し、clip ごとに手で組んだ損失と勾配に、`st_terms` が相対 $10^{-10}$ で一致 | 通った |
+| O12 サンプラー | `test_iid.py` の `TestClips`: 番号 $i$ の stack が $\tau + i n$ で終わり、同じ訓練の動画の中にあり、held-out に入らない。最初の stack が収まる単位の上で一様（カイ二乗）。$K = 1$ では `draw` と同じ stack。ST-perm は同じ動画で、番号ごとに役の範囲の上で一様、番号どうしが独立（相関 0.05 未満） | 通った |
+
+O2〜O7・O13（評価の側）と O4（分離できる場で予測器を学ばせる）は、評価の実装の段で書く。
+
+### GPU での試し
+
+std-01 の 4090（snapshot 516a72eb3d93、mujou 5aa37738dd04、学習率 1e-4、$\lambda$ 0.5、seed 0、60 step、warmup 20）。置き場所は `/nas/geson/mujou-exp/runs/v18d-st-trial/`。秒 / step は step 20〜60 の平均。
+
+| 腕 | 秒 / step | `max_mem`（GiB） | `overlap` |
+| -- | -- | -- | -- |
+| V18c（`--st 0`） | 0.115 | 4.82 | — |
+| ST（`--st 4`） | 0.403 | 15.23 | 0 |
+| ST-perm（`--st 4 --st-perm`） | 0.403 | 15.23 | 0.0008〜0.0023 |
+
+- 見込み（0.38〜0.48 秒、13〜16 GiB）の中に入った。22 GiB より小さいので `--checkpoint-blocks` は要らない
+- ST をもう一度 60 step 回し、step 20 以降の 12 秒間の GPU の使用率を 1 秒ごとに測ると 96〜100% だった。データの先読み（1 step 512 stack、1 スレッド）は詰まっていない。1 本目の使用率が 60% を超えるので、同じ GPU に 2 本目は置かない
+- 6000 step で約 40 分、60000 step で約 6.7 時間。短い run の 10 本（ST 9 本 + ST-perm 1 本）は、4 台の 4090 で 3 巡、約 2 時間と見込む
+- ST-perm でフレームを共有する clip は 0.1〜0.2% だった（ST では 0）
+- 損失の値は読んでいない（時間とメモリの確かめだけ）
+
 ## 置き換えた版の記録（2026-11-27）
 
 初めの登録（300327b）の版は、$(z_t, z_{t-\Delta})$ から $z_{t+\Delta}$ を当てる線形の時間の予測器（$\log n$ の節 8・32・128・512 の間を補間）の項 $L_T$ を V18c の損失に足す版だった（腕 T・S+T・S+T-perm）。その計画と回す前に決めたことは、git の履歴（300327b・416473b・9d511b0 の `plans/v18d.md` と、この README）にある。
