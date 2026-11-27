@@ -10,13 +10,15 @@ JEPA, as V18c's data are kept). Its whole 128 s blocks give the stacks of
 $u$ whose triples $(u - n, u, u + n)$ lie in the block for every lag of
 ``LAGS``.
 
-- **The time loss** (``time_loss_rel``): of the checkpoint's codes $z$ of the
-  video's stacks and its time predictor $f$, at each lag $n$ of ``LAGS``
-  $\hat L^{\mathrm{rel}}_T(n) = \sum_u \lVert f(z_u, z_{u-n}; n) -
-  z_{u+n}\rVert^2 / \sum_u \lVert z_{u+n} - \bar z \rVert^2$ over the
-  common centres ($\bar z$ the mean of the video's stacks: the predictor's
-  $R_{\mathrm{clim}}$), and ``time_val`` their trapezoid mean in $\log n$
-  (``log_mean``).
+- **The time loss** (``time_loss_rel``; of the replaced version's time
+  predictor, which the runs no longer have, so ``evaluate_run`` no longer
+  writes it; V18d's completion loss is ``plans/v18d.md``'s ``st_val``): of
+  the checkpoint's codes $z$ of the video's stacks and its time predictor
+  $f$, at each lag $n$ of ``LAGS`` $\hat L^{\mathrm{rel}}_T(n) = \sum_u
+  \lVert f(z_u, z_{u-n}; n) - z_{u+n}\rVert^2 / \sum_u \lVert z_{u+n} -
+  \bar z \rVert^2$ over the common centres ($\bar z$ the mean of the
+  video's stacks: the predictor's $R_{\mathrm{clim}}$), and ``time_val``
+  their trapezoid mean in $\log n$ (``log_mean``).
 - **The collapse numbers** (``ValStacks``): ``jepa_eval.CodeStats`` with
   the video's stacks in place of Zurich's: ``held`` ``STATS_COUNT`` stacks
   evenly over the even blocks (the val windows' role: ``rank``,
@@ -54,7 +56,6 @@ from exp.lib.video_io import U8Reader
 from exp.vision.dyn_eval import (
     DynConf,
     SetLayout,
-    encode_layout,
     layout_of,
     split_videos,
 )
@@ -270,13 +271,6 @@ def evaluate_run(
         row: dict[str, Any] = {"step": step, "t": head["t"], "code": "z"}
         row |= _stats_rows(mods, stats, vs, dev)
         row |= stats.pred(mods, settings["k"], settings.get("expand", 1))
-        if mods.tpred is not None:
-            t = conf.data.tours
-            z = encode_layout(lambda x: {"z": mods.mu(x)}, root, names, layout,
-                              dconf.block, t.frames, t.stride, dev)["z"].to(dev)  # fmt: skip
-            tp = mods.tpred
-            per = time_loss_rel(z, layout.centres.to(dev), lambda a, b, n: tp(a, b, n))
-            row |= {"time_val": log_mean(per), "time_val_lags": per}
         append_jsonl(out / "select.jsonl", [row])
     return out / "select.jsonl"
 

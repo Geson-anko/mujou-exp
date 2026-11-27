@@ -2,10 +2,9 @@
 ``test_eval`` (videos A, B, C of 20 frames, H held out; stacks of 2 frames of
 16 px, patch 4: the 4 x 4 grid of V18; patch 1: the 16 x 16 grid of V18b's
 patch 4 at 64 px, and of V18c's patch 8 at 64 px with patch 2). The defaults
-reproduce the values of V18's code, and of V18c's code before V18d (the
-arm ``none``). V18d's arms: their settings, rows and checkpoints, the time
-predictor's learning rate by Adam's first step, the arm T leaving the
-spatial predictor."""
+reproduce the values of V18's code. V18d's ``--st``: one time is V18c's run
+bit for bit (plans/v18d.md, O1'), and the rows and settings of 4 times and
+of ST-perm."""
 
 import json
 import math
@@ -19,19 +18,12 @@ import yaml
 from exp.lib import ckpt
 from exp.lib.randproj import gaussian_projection
 from exp.vision.compose import from_dict, to_dict
-from exp.vision.jepa import (
-    LATENT_DIM,
-    R_SEED,
-    TIME_KNOTS,
-    W_SEED,
-    build_jepa,
-    jepa_mup_lr,
-)
-from exp.vision.jepa_eval import build_run_jepa
+from exp.vision.jepa import LATENT_DIM, R_SEED, W_SEED, build_jepa, jepa_mup_lr
 from exp.vision.jepa_iid import (
     DELTA_SEED,
     PERM_SEED,
     RUNS,
+    ST_BANDS,
     V16_RUN,
     _optimizer,
     ckpt_steps,
@@ -298,166 +290,77 @@ class TestV18c:
             run(root, tmp_path, "r", "--steps", "1", "--proj", "frozen")
 
 
-# V18c's tiny run (V18C, 2 steps, batch 4) by the code before V18d
-V18C_ROWS = (
-    {
-        "loss": 3.874279499053955,
-        "pred": 3.1206271648406982,
-        "sigreg": 4.627932071685791,
-        "grad_norm": 17.91151237487793,
-        "mix_var": 0.09812088310718536,
-    },
-    {
-        "loss": 5.141622066497803,
-        "pred": 6.26303768157959,
-        "sigreg": 4.020206451416016,
-        "grad_norm": 21.556522369384766,
-        "mix_var": 0.0811987817287445,
-    },
-)
-V18C_WEIGHT_SUM = 3405.743044214485
-LAGS = ("--time-lags", "1:8")  # the tiny videos are of 20 frames
+def strip(out: Path) -> list[dict]:
+    return [{k: v for k, v in r.items() if k != "sec"} for r in rows(out)]
 
 
 class TestV18d:
-    """V18d's arms on V18c's grid of the tiny tours (lags 1 to 8)."""
+    """V18d's clips of the grid 8 x 8 (V18C's flags) on videos of 20 frames:
+    lags of 2..5 stacks fit 4 times (3 x 5 + 1 < 20)."""
 
-    def test_the_arm_none_is_v18cs_run(self, root, tmp_path):
-        base = ("--steps", "2", "--batch", "4", "--log-every", "1", *V18C)
-        out = run(root, tmp_path, "r", *base)
-        for got, want in zip(rows(out), V18C_ROWS, strict=True):
-            for k, v in want.items():
-                assert got[k] == pytest.approx(v, rel=1e-6), k
-            assert "time" not in got
-        w = torch.load(ckpt.eval_path(out, 0.8), weights_only=True)["modules"]
-        assert set(w) == {"encoder", "proj", "predictor", "mix"}
-        total = sum(float(v.double().sum()) for m in w.values() for v in m.values())
-        assert total == pytest.approx(V18C_WEIGHT_SUM, rel=1e-9)
-        settings = json.loads((out / "jepa.json").read_text())
-        assert settings["time_arm"] == "none" and settings["time_knots"] is None
-        assert settings["seeds"]["delta"] is None
+    ST = ("--st", "4", "--st-lags", "2:5")
 
-    @pytest.mark.parametrize(
-        ("arm", "weight"), [("T", None), ("ST", "0.25"), ("STperm", "1")]
-    )
-    def test_an_arm_records_its_settings_rows_and_tpred(
-        self, root, tmp_path, arm, weight
-    ):
-        extra = (
-            "--time-arm",
-            arm,
-            *(() if weight is None else ("--time-weight", weight)),
-        )
-        out = run(
-            root,
-            tmp_path,
-            "r",
-            "--steps",
-            "3",
-            "--batch",
-            "6",
-            "--log-every",
-            "3",
-            *V18C,
-            *LAGS,
-            *extra,
-        )
+    def test_one_time_is_v18cs_run_bit_for_bit(self, root, tmp_path):
+        base = ("--steps", "3", "--batch", "4", "--log-every", "1", *V18C)
+        a = run(root, tmp_path, "a", *base)
+        b = run(root, tmp_path, "b", *base, "--st", "1")
+        got = strip(b)
+        for r in got:  # in float64 of each clip's float32 mean
+            assert r.pop("pred_now") == pytest.approx(r["pred"], rel=1e-6)
+            assert r.pop("sigreg_times") == [r["sigreg"]]
+        assert got == strip(a)
+        for t in (0.0, 1.2):  # steps 0 and 3 of 4 clips
+            wa = torch.load(ckpt.eval_path(a, t), weights_only=True)["modules"]
+            wb = torch.load(ckpt.eval_path(b, t), weights_only=True)["modules"]
+            assert all(torch.equal(wa[m][k], wb[m][k]) for m in wa for k in wa[m])
+
+    def test_the_settings_and_rows_of_four_times(self, root, tmp_path):
+        out = run(root, tmp_path, "r", "--steps", "2", "--batch", "8", *V18C, *self.ST)
         settings = json.loads((out / "jepa.json").read_text())
-        assert settings["time_arm"] == arm and settings["time_lr"] == 1e-3
-        assert settings["time_weight"] == (None if weight is None else float(weight))
-        assert settings["time_lags"] == [1, 8]
-        assert settings["time_knots"] == list(TIME_KNOTS)
+        assert settings["st"] == 4 and settings["st_perm"] is False
+        assert settings["st_lags"] == [2, 5] and settings["st_bands"] == list(ST_BANDS)
+        assert settings["time_masks"] == [
+            [1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]
+        ]  # fmt: skip
         assert settings["seeds"]["delta"] == DELTA_SEED
-        assert settings["seeds"]["perm"] == (PERM_SEED if arm == "STperm" else None)
-        (row,) = rows(out)
-        keys = ["loss", "sigreg", "time", "grad_norm", "tpred_grad_norm", "mix_var"]
-        keys += [] if arm == "T" else ["pred"]
-        assert all(math.isfinite(row[k]) for k in keys)
-        assert ("pred" in row) == (arm != "T")
-        # lags 1..8 fall in the first band of the knots 8, 32, 128, 512
-        assert row["time_bands"][1:] == [None, None]
-        assert math.isfinite(row["time_bands"][0])
-        assert set(row["roles"]) == {"minus", "centre", "plus"}
-        assert row["roles"]["centre"]["var"][0] > 0
-        conf = from_dict(yaml.safe_load((out / "config.yaml").read_text()))
-        mods = build_run_jepa(conf, settings)
-        ckpt.load_eval(ckpt.eval_path(out, 1.8), mods.modules())
-        assert mods.tpred is not None
-        assert float(mods.tpred.bias.detach().abs().max()) > 0  # it learned
+        assert settings["seeds"]["perm"] is None
+        (r,) = rows(out)
+        for k in ("loss", "pred", "sigreg", "pred_now", "pred_time", "mix_var"):
+            assert math.isfinite(r[k]), k
+        # half the clips each side: L_ST is the mean of the two sides' errors
+        assert r["pred"] == pytest.approx((r["pred_now"] + r["pred_time"]) / 2)
+        assert len(r["sigreg_times"]) == 4
+        assert r["sigreg"] == pytest.approx(sum(r["sigreg_times"]) / 4)
+        assert len(r["pred_masks"]) == 6 and len(r["pred_bands"]) == 3
+        assert r["pred_bands"][1:] == [None, None]  # lags 2..5: the first band
+        assert r["overlap"] == 0.0  # 2 or more apart: no frame shared
 
-    def test_the_time_predictors_first_step_is_its_lr(self, root, tmp_path):
-        # Adam's first step moves a parameter of a non-zero gradient by the
-        # learning rate: time_lr times lr_at(0) = time_lr / warmup
+    def test_st_perm_records_its_seed_and_shares(self, root, tmp_path):
         out = run(
-            root,
-            tmp_path,
-            "r",
-            "--steps",
-            "1",
-            "--batch",
-            "6",
-            *V18C,
-            *LAGS,
-            "--time-arm",
-            "ST",
-            "--time-weight",
-            "1",
-            "--time-lr",
-            "2e-3",
-        )
-        w = torch.load(ckpt.eval_path(out, 0.6), weights_only=True)["modules"]
-        step = w["tpred"]["bias"].abs()
-        assert float(step.max()) == pytest.approx(2e-3 / 2, rel=1e-3)
-        assert float(step.max()) <= 2e-3 / 2
+            root, tmp_path, "r", "--steps", "2", "--batch", "8", *V18C, *self.ST,
+            "--st-perm", "--log-every", "1",
+        )  # fmt: skip
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["st_perm"] is True
+        assert settings["seeds"]["perm"] == PERM_SEED
+        assert all(0.0 <= r["overlap"] <= 1.0 for r in rows(out))
 
-    def test_the_arm_t_leaves_the_spatial_predictor(self, root, tmp_path):
-        out = run(
-            root,
-            tmp_path,
-            "r",
-            "--steps",
-            "2",
-            "--batch",
-            "4",
-            *V18C,
-            *LAGS,
-            "--time-arm",
-            "T",
-        )
-        a = torch.load(ckpt.eval_path(out, 0.0), weights_only=True)["modules"]
-        b = torch.load(ckpt.eval_path(out, 0.8), weights_only=True)["modules"]
-        assert all(torch.equal(a["predictor"][k], v) for k, v in b["predictor"].items())
-        assert any(not torch.equal(a["encoder"][k], v) for k, v in b["encoder"].items())
-
-    def test_the_tpred_group_is_apart_and_without_mup(self):
-        conf = replace(conf_of(), model=replace(conf_of().model, patch=2))
-        mods = build_jepa(
-            conf,
-            seed=0,
-            token_dim=16,
-            proj="fixed",
-            latent_dim=LATENT_DIM,
-            time_knots=TIME_KNOTS,
-        )
-        assert mods.tpred is not None
-        opt = _optimizer(mods, conf, 1e-4, 1e-3)
-        tp = {id(p) for p in mods.tpred.parameters()}
-        (group,) = (g for g in opt.param_groups if {id(p) for p in g["params"]} & tp)
-        assert {id(p) for p in group["params"]} == tp
-        assert group["peak"] == 1e-3 and group["mult"] == 1.0
-        assert all(g["peak"] == 1e-4 for g in opt.param_groups if g is not group)
+    def test_v18cs_settings_record_no_clips(self, root, tmp_path):
+        out = run(root, tmp_path, "r", "--steps", "1", "--batch", "4", *V18C)
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["st"] == 0 and settings["st_lags"] is None
+        assert settings["seeds"]["delta"] is None
+        assert "pred_now" not in rows(out)[0]
 
     @pytest.mark.parametrize(
-        "extra",
+        ("extra", "match"),
         [
-            ("--time-arm", "ST"),
-            ("--time-arm", "T", "--time-weight", "1"),
-            ("--time-weight", "1"),
-            ("--time-arm", "T", "--time-lags", "9:4"),
+            (("--st", "3"), "1 or even"),
+            (("--st-perm",), "st_perm"),
+            (("--st", "4", "--batch", "5"), "even"),
+            (("--st", "4", "--st-lags", "5:2"), "st_lags"),
         ],
     )
-    def test_a_weight_out_of_its_arm_or_bad_lags_are_refused(
-        self, root, tmp_path, extra
-    ):
-        with pytest.raises(ValueError, match="time_"):
+    def test_bad_clips_are_refused(self, root, tmp_path, extra, match):
+        with pytest.raises(ValueError, match=match):
             run(root, tmp_path, "r", "--steps", "1", *V18C, *extra)

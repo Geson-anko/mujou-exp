@@ -27,23 +27,24 @@ group per learning-rate multiplier of ``jepa_mup_lr`` (muP; all 1 in SP); the
 learning rate is ``iid.lr_at`` (linear over ``--warmup`` steps, then a cosine
 to 0 at ``--steps``).
 
-V18d (``--time-arm`` other than ``none``, the default being V18c's
-computation): a step draws ``--batch`` lags of ``iid.draw_lags`` on
-``--time-lags`` (from ``seed + DELTA_SEED``) and a triple of stacks at each
-(``iid.Units.draw_triplets``, the centres from ``seed + DRAW_SEED``; of
-``STperm`` the targets from ``seed + PERM_SEED``), and descends
-``jepa.jepa_time_terms`` of the arm (``--time-weight`` $w$ of ``ST`` and
-``STperm``): the masks, the directions and SIGReg are the centres'. The time
-predictor (``jepa.TimePredictor`` of ``TIME_KNOTS``, from 0) is in an
-AdamW group of its own, of the peak ``--time-lr`` and no muP multiplier;
-``grad_norm`` is of the other parameters, ``tpred_grad_norm`` its own. The
-rows add ``time`` ($L_T$), ``time_bands`` (the mean of $L_T$ of the lags
-between neighbouring knots, since the last row) and ``roles`` (the last
-step's audit of the codes, ``_role_audit``); the checkpoints add ``tpred``.
+V18d (``--st K``, the spatio-temporal completion; the default 0 is the
+computation above): a step draws ``--batch`` clips of $K$ stacks
+(``iid.Units.draw_clips``, the first stacks from ``seed + DRAW_SEED``) at
+lags of ``iid.draw_lags`` on ``--st-lags`` (from ``seed + DELTA_SEED``),
+with ``--st-perm`` each stack drawn again in its role's units (from ``seed +
+PERM_SEED``, ST-perm), their masks of ``jepa.st_masks`` (half tubes of
+$F_k$, half whole times hidden; from ``seed + MASK_SEED``), and descends
+``jepa.st_terms``. ``--st 1`` is V18c's step through V18d's code, bit for
+bit. The rows add ``sigreg_times`` (each time's term), ``pred_now`` (the
+tubes' error), and for $K > 1$ ``pred_time`` (the time side's),
+``pred_masks`` (of each row of ``jepa.time_masks``), ``pred_bands`` (the
+time side's of the lags in each band of ``ST_BANDS``, ``None`` of none) and
+``overlap`` (the share of clips two of whose stacks share a frame); the
+z statistics are of every stack.
 
 Time, as V16: a checkpoint after $s$ steps has seen ``frame`` $= s \cdot$
 ``batch`` stacks, $t$ = ``frame`` $\cdot$ ``time.frame`` (12.8 s a step at
-batch 128). The checkpoints are at the steps of ``ckpt_steps``.
+batch 128; of V18d's clips too, so a step's checkpoint has V18c's name). The checkpoints are at the steps of ``ckpt_steps``.
 
 ``<out>/``: ``config.yaml`` (the run's, ``device`` set), ``jepa.json`` (these
 settings and ``provenance.of_diagnosis``'s record of the code and the host),
@@ -65,7 +66,7 @@ allocated, GiB) and
         --out <run_dir>
     python -m exp.vision.jepa_iid --patch 8 --token-dim 16 --proj fixed \
         --sigreg-on mix --mask-ratio 0.5 --lam 0.8 --lr 3e-5 --steps 6000 \
-        --time-arm ST --time-weight 0.25 --out <run_dir>
+        --st 4 [--st-perm] --out <run_dir>
 """
 
 import argparse
@@ -96,8 +97,6 @@ from exp.vision.jepa import (
     PROJ_SEED,
     R_SEED,
     SIGREG_ON,
-    TIME_ARMS,
-    TIME_KNOTS,
     TOKEN_DIM,
     W_SEED,
     JEPAModules,
@@ -108,11 +107,13 @@ from exp.vision.jepa import (
     hidden_count,
     jepa_mup_lr,
     jepa_terms,
-    jepa_time_terms,
     mask_expansion,
     mask_family,
     rho_in,
     sigreg_points,
+    st_masks,
+    st_terms,
+    time_masks,
 )
 from exp.vision.schema import ModelConf, OptimConf, RunConf
 from exp.vision.schema.model import HEAD_DIM
@@ -126,8 +127,8 @@ __all__ = [
     "PERM_SEED",
     "RUNS",
     "SHORT_CKPT",
-    "TIME_LAGS",
-    "TIME_LR",
+    "ST_BANDS",
+    "ST_LAGS",
     "V16_RUN",
     "ckpt_steps",
     "main",
@@ -139,9 +140,9 @@ MASK_SEED = 29  # added to the seed: the masks
 DIRECTION_SEED = 31  # added to the seed: SIGReg's directions
 DIRECTIONS = 1024  # M
 DELTA_SEED = 89  # added to the seed: V18d's lags
-PERM_SEED = 59  # added to the seed: S+T-perm's targets
-TIME_LR = 1e-3  # the peak learning rate of V18d's time predictor
-TIME_LAGS = (8, 512)  # V18d's lags, in stacks (0.8 to 51.2 s)
+PERM_SEED = 59  # added to the seed: ST-perm's stacks
+ST_LAGS = (8, 512)  # V18d's lags, in stacks (0.8 to 51.2 s)
+ST_BANDS = (8, 32, 128, 512)  # the edges of the rows' bands of lags
 SHORT_CKPT = (0, 1000, 2000, 4000, 6000)  # steps of the checkpoints of a short run
 LONG_CKPT = (0, 2000, 6000, 10000, 20000, 30000, 40000, 50000, 60000)
 RUNS = Path(__file__).resolve().parents[2] / "runs"
@@ -171,44 +172,77 @@ def v16_config(runs: Path = RUNS) -> dict[str, Any]:
     return to_dict(conf)
 
 
-def _optimizer(
-    mods: JEPAModules, conf: RunConf, lr: float, time_lr: float = TIME_LR
-) -> torch.optim.AdamW:
-    """AdamW without weight decay, a group per learning-rate multiplier (of
-    the peak ``lr``), and V18d's ``tpred`` in a group of its own of the peak
-    ``time_lr`` (no multiplier). A group's ``peak`` is its peak learning
-    rate before the multiplier."""
+def _optimizer(mods: JEPAModules, conf: RunConf, lr: float) -> torch.optim.AdamW:
+    """AdamW without weight decay, a group per learning-rate multiplier."""
     mult = jepa_mup_lr(mods, conf.model.width) if conf.model.param == "mup" else {}
     by: dict[float, list[torch.nn.Parameter]] = {}
-    for p in _model_parameters(mods):
+    for p in mods.parameters():
         by.setdefault(mult.get(p, 1.0), []).append(p)
-    groups = [
-        {"params": ps, "lr": lr * m, "mult": m, "peak": lr} for m, ps in by.items()
-    ]
-    if mods.tpred is not None:
-        ps = list(mods.tpred.parameters())
-        groups.append({"params": ps, "lr": time_lr, "mult": 1.0, "peak": time_lr})
+    groups = [{"params": ps, "lr": lr * m, "mult": m} for m, ps in by.items()]
     return torch.optim.AdamW(groups, lr=lr, weight_decay=0.0)
 
 
-def _model_parameters(mods: JEPAModules) -> list[torch.nn.Parameter]:
-    """The learned parameters but the time predictor's (V18c's)."""
-    tpred = set() if mods.tpred is None else {id(p) for p in mods.tpred.parameters()}
-    return [p for p in mods.parameters() if id(p) not in tpred]
+class _SideMeans:
+    """V18d's means of a row (module docstring) since the last, on ``dev``,
+    of clips of ``k`` stacks (none for ``k`` = 0)."""
 
+    def __init__(self, k: int, dev: torch.device) -> None:
+        self._k = k
+        masks = len(time_masks(k)) if k else 0
+        self._sums = {
+            "sigreg_times": torch.zeros(k, dtype=torch.float64, device=dev),
+            "now": torch.zeros(2, dtype=torch.float64, device=dev),
+            "time": torch.zeros(2, dtype=torch.float64, device=dev),
+            "masks": torch.zeros(2, masks, dtype=torch.float64, device=dev),
+            "bands": torch.zeros(2, len(ST_BANDS) - 1, dtype=torch.float64, device=dev),
+            "overlap": torch.zeros(2, dtype=torch.float64, device=dev),
+        }
+        self._steps = 0
 
-def _set_lr(opt: torch.optim.Optimizer, step: int, *, warmup: int, steps: int) -> None:
-    """Each group's learning rate at ``step``: ``lr_at`` of its peak, times its
-    multiplier."""
-    for g in opt.param_groups:
-        g["lr"] = lr_at(step, lr=g["peak"], warmup=warmup, steps=steps) * g["mult"]
+    def add(
+        self, terms: dict[str, Tensor], kind: Tensor, n: Tensor, near: Tensor
+    ) -> None:
+        """A step's ``st_terms`` of the clips' ``kind`` ``(B,)``
+        (``st_masks``), lags ``n`` and ``near`` (sharing a frame) ``(B,)``."""
+        e = self._sums
+        err = terms["clip_err"].double()
+        e["sigreg_times"] += terms["sigreg_times"].double()
+        tube, timed = kind < 0, kind >= 0
+        e["now"] += torch.stack([err[tube].sum(), tube.sum().double()])
+        e["time"] += torch.stack([err[timed].sum(), timed.sum().double()])
+        one = torch.ones_like(err)
+        j = kind[timed]
+        e["masks"][0].index_add_(0, j, err[timed])
+        e["masks"][1].index_add_(0, j, one[timed])
+        edges = torch.tensor(ST_BANDS, device=n.device)
+        band = (torch.searchsorted(edges, n, right=True) - 1).clamp(0, len(edges) - 2)
+        e["bands"][0].index_add_(0, band[timed], err[timed])
+        e["bands"][1].index_add_(0, band[timed], one[timed])
+        e["overlap"] += torch.stack([near.double().sum(), one.sum()])
+        self._steps += 1
 
+    def pop(self) -> dict[str, Any]:
+        """The row's means (empty for ``k`` = 0), the sums cleared."""
+        if not self._k:
+            return {}
+        e = {name: v.tolist() for name, v in self._sums.items()}
 
-def _bands(n: Tensor, knots: Sequence[int]) -> Tensor:
-    """The band ``(B,)`` of each lag: $j$ for ``knots[j]`` <= n < ``knots[j +
-    1]``, the last band closed (and a lag outside the knots in its end's)."""
-    k = torch.tensor(knots, device=n.device)
-    return (torch.searchsorted(k, n, right=True) - 1).clamp(0, len(knots) - 2)
+        def mean(pair: list[float]) -> float | None:
+            return pair[0] / pair[1] if pair[1] else None
+
+        rec: dict[str, Any] = {
+            "sigreg_times": [v / self._steps for v in e["sigreg_times"]],
+            "pred_now": mean(e["now"]),
+        }
+        if self._k > 1:
+            rec["pred_time"] = mean(e["time"])
+            rec["pred_masks"] = [mean(list(p)) for p in zip(*e["masks"], strict=True)]
+            rec["pred_bands"] = [mean(list(p)) for p in zip(*e["bands"], strict=True)]
+            rec["overlap"] = mean(e["overlap"])
+        for v in self._sums.values():
+            v.zero_()
+        self._steps = 0
+        return rec
 
 
 def train(
@@ -228,27 +262,23 @@ def train(
     sigreg_on: str = "flat",
     checkpoint_blocks: bool = False,
     proj: str = "learned",
-    time_arm: str = "none",
-    time_weight: float | None = None,
-    time_lr: float = TIME_LR,
-    time_lags: tuple[int, int] = TIME_LAGS,
+    st: int = 0,
+    st_perm: bool = False,
+    st_lags: tuple[int, int] = ST_LAGS,
 ) -> None:
     """Learn ``build_jepa(conf, token_dim=token_dim, proj=proj)`` (with $W$
     of ``LATENT_DIM`` rows for ``sigreg_on`` ``"mix"``) as the module
-    docstring says, into ``out``; with a ``time_arm`` other than ``"none"``,
-    V18d's arm (``jepa_time_terms``; ``time_weight`` $w$ of ``"ST"`` and
-    ``"STperm"``) on ``batch`` triples a step, at lags of ``draw_lags`` on
-    ``time_lags`` (from ``seed + DELTA_SEED``), the time predictor learned at
-    the peak ``time_lr``.
+    docstring says, into ``out``; with ``st`` $K$ > 0 by V18d's clips of
+    $K$ stacks at lags on ``st_lags`` (``st_perm``: ST-perm's).
 
     Raises:
         ValueError: ``mask_ratio`` hides no whole number of the coarse grid's
             positions in ``[1, G^2 - 1]`` (``hidden_count``), the grid is no
             whole multiple of the coarse one (``mask_expansion``), ``lam`` is
-            not in ``[0, 1]``, ``sigreg_on`` not of ``SIGREG_ON``, ``proj``
-            not of ``PROJ_KINDS`` or ``time_arm`` not of ``TIME_ARMS``,
-            ``time_weight`` is missing for ``"ST"`` or ``"STperm"`` or given
-            for another arm, or ``time_lags`` is not ``1 <= lo <= hi``.
+            not in ``[0, 1]``, ``sigreg_on`` not of ``SIGREG_ON`` or ``proj``
+            not of ``PROJ_KINDS``, ``st`` is neither 0, 1 nor even, ``st_perm``
+            is without ``st`` > 1, the batch is odd for ``st`` > 1, or
+            ``st_lags`` is not ``1 <= lo <= hi``.
         FloatingPointError: A mean of ``train.jsonl`` is not finite.
     """
     if not 0.0 <= lam <= 1.0:
@@ -257,17 +287,15 @@ def train(
         raise ValueError(f"sigreg_on is one of {SIGREG_ON}, not {sigreg_on!r}")
     if proj not in PROJ_KINDS:
         raise ValueError(f"proj is one of {PROJ_KINDS}, not {proj!r}")
-    if time_arm not in TIME_ARMS:
-        raise ValueError(f"time_arm is one of {TIME_ARMS}, not {time_arm!r}")
-    if (time_weight is None) != (time_arm in ("none", "T")):
-        raise ValueError(
-            f"time_weight is of the arms ST and STperm only, not {time_arm!r}"
-        )
-    lo, hi = time_lags
+    if st:
+        time_masks(st)  # raises for an odd st > 1
+    if st_perm and st < 2:
+        raise ValueError("st_perm is of clips of st > 1 stacks")
+    if st > 1 and batch % 2:
+        raise ValueError(f"the clips of two sides are even, not {batch}")
+    lo, hi = st_lags
     if not 1 <= lo <= hi:
-        raise ValueError(f"time_lags must be 1 <= lo <= hi, not {time_lags}")
-    timed = time_arm != "none"
-    knots = TIME_KNOTS if timed else None
+        raise ValueError(f"st_lags must be 1 <= lo <= hi, not {st_lags}")
     dev = torch.device(conf.device)
     grid = conf.data.tours.size // conf.model.patch
     s = mask_expansion(grid)
@@ -279,6 +307,8 @@ def train(
     d = dims[sigreg_on]  # D_S
     stamps = ckpt_steps(steps)
     seed = conf.seed
+    rows = time_masks(st).tolist() if st else []
+    hidden_times = [[i + 1 for i, h in enumerate(r) if h] for r in rows]  # from 1
     settings: dict[str, Any] = {
         "mask_ratio": mask_ratio,
         "k": k,
@@ -302,11 +332,11 @@ def train(
             "blocks": PRED_BLOCKS,
             "heads": PRED_WIDTH // HEAD_DIM,
         },
-        "time_arm": time_arm,
-        "time_weight": time_weight,
-        "time_lr": time_lr if timed else None,
-        "time_lags": list(time_lags) if timed else None,
-        "time_knots": None if knots is None else list(knots),
+        "st": st,
+        "st_perm": st_perm,
+        "st_lags": list(st_lags) if st else None,
+        "st_bands": list(ST_BANDS) if st > 1 else None,
+        "time_masks": hidden_times if st else None,
         "lr": lr,
         "steps": steps,
         "batch": batch,
@@ -321,8 +351,8 @@ def train(
             "draw": seed + DRAW_SEED,
             "mask": seed + MASK_SEED,
             "direction": seed + DIRECTION_SEED,
-            "delta": seed + DELTA_SEED if timed else None,
-            "perm": seed + PERM_SEED if time_arm == "STperm" else None,
+            "delta": seed + DELTA_SEED if st else None,
+            "perm": seed + PERM_SEED if st_perm else None,
         },
         "optimizer": "adamw(betas=(0.9, 0.999), eps=1e-8, weight_decay=0)",
         "determinism": configure_determinism(conf.device),
@@ -340,25 +370,28 @@ def train(
         checkpoint_blocks=checkpoint_blocks,
         proj=proj,
         latent_dim=latent,
-        time_knots=knots,
     )
-    opt = _optimizer(mods, conf, lr, time_lr)
-    params = _model_parameters(mods)
+    opt = _optimizer(mods, conf, lr)
+    params = mods.parameters()
     units = Units(conf, root, "all", seed=seed + DRAW_SEED)
     settings["units"] = units.count
     (out / "jepa.json").write_text(json.dumps(settings, indent=1))
     mask_gen = torch.Generator().manual_seed(seed + MASK_SEED)
     dir_gen = torch.Generator(device=dev).manual_seed(seed + DIRECTION_SEED)
     delta_gen = torch.Generator().manual_seed(seed + DELTA_SEED)
-    perm_gen = torch.Generator().manual_seed(seed + PERM_SEED)
+    perm_gen = torch.Generator().manual_seed(seed + PERM_SEED) if st_perm else None
+    span = (conf.data.tours.frames - 1) * conf.data.tours.stride
 
-    def draw() -> tuple[Tensor, Tensor | None]:
-        """The next batch: ``batch`` stacks, or of a time arm triples and
-        their lags."""
-        if not timed:
-            return units.draw(batch), None
+    def draw() -> tuple[Tensor, Tensor | None, Tensor | None]:
+        """The next batch: ``batch`` stacks, or V18d's clips, their lags and
+        the shares of frames (``overlap``) of each."""
+        if not st:
+            return units.draw(batch), None, None
         n = draw_lags(batch, lo, hi, delta_gen)
-        return units.draw_triplets(n, perm_gen if time_arm == "STperm" else None), n
+        x, ends = units.draw_clips(n, st, perm_gen)
+        gap = (ends[:, :, None] - ends[:, None, :]).abs()  # (B, K, K)
+        near = (gap <= span) & ~torch.eye(st, dtype=torch.bool)
+        return x, n, near.flatten(1).any(1)
 
     def save(step: int) -> None:
         frame = step * batch
@@ -371,83 +404,52 @@ def train(
             modules=mods.modules(),
         )
 
-    terms_keys = ("loss", "sigreg") if time_arm == "T" else ("loss", "pred", "sigreg")
-    terms_keys += ("time",) if timed else ()
-    keys = (*terms_keys, "grad_norm")
-    keys += ("tpred_grad_norm",) if timed else ()
-    keys += ("z_var", "rho_in", "zbar_var")
+    keys = ("loss", "pred", "sigreg", "grad_norm", "z_var", "rho_in", "zbar_var")
     keys += ("mix_var",) if mods.mix is not None else ()
     acc = torch.zeros(len(keys), dtype=torch.float64, device=dev)
-    bands = len(TIME_KNOTS) - 1
-    band_sum = torch.zeros(bands, dtype=torch.float64, device=dev)
-    band_count = torch.zeros(bands, dtype=torch.float64, device=dev)
-    start, n_acc = time.monotonic(), 0
+    side = _SideMeans(st, dev)
+    start, n = time.monotonic(), 0
     log = (out / "train.jsonl").open("w")
     with ThreadPoolExecutor(1) as pool:
         nxt = pool.submit(draw)
         for step in range(steps):
             if step in stamps:
                 save(step)
-            x, n = nxt.result()
+            x, lags, near = nxt.result()
             x = x.to(dev, non_blocking=True)
             nxt = pool.submit(draw)
-            mask = expand_masks(draw_masks(family, batch, mask_gen), s)
+            kind = None
+            if st:
+                mask, kind = st_masks(family, batch, st, s, mask_gen)
+            else:
+                mask = expand_masks(draw_masks(family, batch, mask_gen), s)
             dirs = directions(directions_count, d, dir_gen)
-            _set_lr(opt, step, warmup=warmup, steps=steps)
-            if n is None:
+            for g in opt.param_groups:
+                g["lr"] = lr_at(step, lr=lr, warmup=warmup, steps=steps) * g["mult"]
+            if lags is None or near is None or kind is None:
                 terms = jepa_terms(mods, x, mask, dirs, lam, sigreg_on)
             else:
-                n = n.to(dev)
-                terms = jepa_time_terms(
-                    mods,
-                    x,
-                    n,
-                    mask,
-                    dirs,
-                    lam,
-                    sigreg_on,
-                    arm=time_arm,
-                    weight=0.0 if time_weight is None else time_weight,
-                )
+                terms = st_terms(mods, x, lags.to(dev), mask, dirs, lam, sigreg_on)
+                side.add(terms, kind, lags.to(dev), near.to(dev))
             opt.zero_grad(set_to_none=True)
             terms["loss"].backward()
             norm = torch.nn.utils.clip_grad_norm_(params, math.inf)
-            tokens = terms["tokens"]
-            row = [terms[k].detach() for k in terms_keys]
-            row += [norm.detach()]
-            if mods.tpred is not None:
-                tp = list(mods.tpred.parameters())
-                row += [torch.nn.utils.clip_grad_norm_(tp, math.inf).detach()]
             opt.step()
-            row += [tokens.flatten(1).var(0).mean(), rho_in(tokens)]
+            tokens = terms["tokens"]
+            row = [terms[k].detach() for k in ("loss", "pred", "sigreg")]
+            row += [norm.detach(), tokens.flatten(1).var(0).mean(), rho_in(tokens)]
             row += [sigreg_points(tokens, "mean").var(0).mean()]
             if mods.mix is not None:
                 with torch.no_grad():
                     row += [mods.mix(tokens.flatten(1)).var(0).mean()]
             acc += torch.stack([r.double() for r in row])
-            band = None
-            if n is not None:
-                band = _bands(n, TIME_KNOTS)
-                band_sum.index_add_(0, band, terms["time_err"].double())
-                band_count.index_add_(0, band, torch.ones_like(band_sum[band]))
-            n_acc += 1
+            n += 1
             if (step + 1) % log_every == 0 or step + 1 == steps:
-                means = (acc / n_acc).tolist()
+                means = (acc / n).tolist()
                 if not all(map(math.isfinite, means)):
                     raise FloatingPointError(f"non-finite loss at step {step}")
-                rec: dict[str, Any] = {
-                    "step": step + 1,
-                    **dict(zip(keys, means, strict=True)),
-                }
-                if band is not None:
-                    counts = band_count.tolist()
-                    sums = band_sum.tolist()
-                    rec["time_bands"] = [
-                        a / c if c else None for a, c in zip(sums, counts, strict=True)
-                    ]
-                    rec["roles"] = _role_audit(terms["codes"], band, bands)
-                    band_sum.zero_()
-                    band_count.zero_()
+                rec = {"step": step + 1, **dict(zip(keys, means, strict=True))}
+                rec |= side.pop()
                 rec |= {
                     "lr": lr_at(step, lr=lr, warmup=warmup, steps=steps),
                     "sec": time.monotonic() - start,
@@ -457,31 +459,9 @@ def train(
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
                 acc.zero_()
-                n_acc = 0
+                n = 0
     save(steps)
     log.close()
-
-
-def _role_audit(codes: Tensor, band: Tensor, bands: int) -> dict[str, Any]:
-    """Of each role ($z_-$, $z_0$, $z_+$) of the step's ``codes`` ``(B, 3,
-    D)`` and each band of ``band`` ``(B,)``: ``mean_sq``, the mean over the
-    coordinates of the square of their mean, and ``var``, the mean of their
-    variance (``None`` of a band of fewer than 2 triples; plans/v18d.md,
-    「役割と帯の監査」)."""
-    audit: dict[str, Any] = {}
-    for r, name in enumerate(("minus", "centre", "plus")):
-        mean_sq: list[float | None] = []
-        var: list[float | None] = []
-        for j in range(bands):
-            z = codes[band == j, r].double()  # (B_j, D)
-            if len(z) < 2:
-                mean_sq.append(None)
-                var.append(None)
-                continue
-            mean_sq.append(float(z.mean(0).square().mean()))
-            var.append(float(z.var(0).mean()))
-        audit[name] = {"mean_sq": mean_sq, "var": var}
-    return audit
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -510,18 +490,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="compute the encoder's blocks again in the backward (less memory)",
     )
     ap.add_argument(
-        "--time-arm",
-        choices=TIME_ARMS,
-        default="none",
-        help="V18d's arm (none: V18c's loss)",
+        "--st", type=int, default=0, help="V18d: K stacks a clip (0: V18c's step)"
     )
-    ap.add_argument("--time-weight", type=float, help="w of the arms ST and STperm")
-    ap.add_argument("--time-lr", type=float, default=TIME_LR, help="tpred's peak lr")
+    ap.add_argument("--st-perm", action="store_true", help="V18d's ST-perm")
     ap.add_argument(
-        "--time-lags",
+        "--st-lags",
         type=_lags,
-        default=TIME_LAGS,
-        help="lo:hi, the lags in stacks (log-uniform)",
+        default=ST_LAGS,
+        help="lo:hi, V18d's lags in stacks (log-uniform)",
     )
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--seed", type=int, help="instead of the config's")
@@ -553,10 +529,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         sigreg_on=args.sigreg_on,
         checkpoint_blocks=args.checkpoint_blocks,
         proj=args.proj,
-        time_arm=args.time_arm,
-        time_weight=args.time_weight,
-        time_lr=args.time_lr,
-        time_lags=args.time_lags,
+        st=args.st,
+        st_perm=args.st_perm,
+        st_lags=args.st_lags,
     )
 
 

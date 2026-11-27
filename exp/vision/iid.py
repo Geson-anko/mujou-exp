@@ -82,7 +82,7 @@ DRAW_SEED = 17  # added to the seed: the units drawn
 
 
 def draw_lags(b: int, lo: int, hi: int, gen: torch.Generator) -> Tensor:
-    r"""``b`` lags ``(b,)`` int64 of V18d's triples (plans/v18d.md): $\log n$
+    r"""``b`` lags ``(b,)`` int64 of V18d's clips (plans/v18d.md): $\log n$
     uniform on $[\log lo, \log hi]$, $n$ rounded to the nearest whole
     number, so $P(n = k)$ is the uniform's mass of $[k - 1/2, k + 1/2]$
     clipped to $[lo, hi]$."""
@@ -93,7 +93,7 @@ def draw_lags(b: int, lo: int, hi: int, gen: torch.Generator) -> Tensor:
 class Units:
     """Draws of the stacks of stream 0 of the run ``conf`` at its units of
     ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU; of
-    ``"all"`` also V18d's triples (``draw_triplets``).
+    ``"all"`` also V18d's clips (``draw_clips``).
 
     Raises:
         ValueError: ``data`` is not of ``DATA``.
@@ -133,49 +133,57 @@ class Units:
                 out.append(x[0])
         return torch.stack(out)
 
-    def draw_triplets(
-        self, lags: Tensor, perm: torch.Generator | None = None
-    ) -> Tensor:
-        r"""V18d's triples ``(B, 3, n, 3, S, S)`` u8 at the lags ``lags``
-        ``(B,)`` (``draw_lags``): the stacks ending at the units $u - n$,
-        $u$, $u + n$, the centre $u$ drawn uniformly (from the same generator
-        as ``draw``) from the units whose three stacks' frames are all in one
-        training video (plans/v18d.md, 「三つ組の引き方」). With ``perm``
-        (S+T-perm's) the last is instead the stack ending at a unit drawn
-        uniformly by ``perm`` from the centre's video's units whose stack is
-        whole, whatever the centre's.
+    def draw_clips(
+        self, lags: Tensor, k: int, perm: torch.Generator | None = None
+    ) -> tuple[Tensor, Tensor]:
+        r"""V18d's clips ``(B, k, n, 3, S, S)`` u8 at the lags ``lags``
+        ``(B,)`` (``draw_lags``): the stacks ending at the units $\tau +
+        i n$ ($i < k$), the first $\tau$ drawn uniformly (from the same
+        generator as ``draw``) from the units whose ``k`` stacks' frames are
+        all in one training video (plans/v18d.md, 「刻みの引き方」), and the
+        frames of their videos the stacks end at ``(B, k)``. With ``perm``
+        (ST-perm's) each stack $i$ is instead drawn uniformly by ``perm``,
+        independently, from the units its role takes in the same video at
+        the same lag (those of $\tau + i n$ for every $\tau$ that fits), so
+        each time's law is ST's and only their joint placement is lost. For
+        ``k`` = 1 and a stack of more than one frame, ``draw``'s stacks.
 
         Raises:
             ValueError: The units are not ``"all"``'s, or ``data.tours.advance``
-                is not 1 (a unit is not a frame), or a lag fits in no video.
+                is not 1 (a unit is not a frame), or a clip fits in no video.
         """
         if not self._lengths or self._advance != 1:
-            raise ValueError("triples are of the units 'all' of advance 1")
-        longest = max(self._lengths)
-        if int(lags.max()) * 2 + self._span >= longest:
-            raise ValueError(f"a lag of {int(lags.max())} fits in no video")
+            raise ValueError("clips are of the units 'all' of advance 1")
+        reach = (k - 1) * int(lags.max())
+        if reach + self._span >= max(self._lengths):
+            raise ValueError(f"a clip of {k} stacks {int(lags.max())} apart "
+                             "fits in no video")  # fmt: skip
         firsts = torch.tensor([0, *self._lengths]).cumsum(0)  # (videos + 1,)
         out: list[Tensor] = []
+        ends: list[list[int]] = []
         for n in lags.tolist():
             while True:
                 u = int(torch.randint(self.count, (1,), generator=self._gen))
                 v = int(torch.searchsorted(firsts, torch.tensor(u), right=True)) - 1
                 local, length = u - int(firsts[v]), self._lengths[v]
-                if local - n - self._span >= 0 and local + n < length:
+                if local - self._span >= 0 and local + (k - 1) * n < length:
                     break
-            ends = [u - n, u, u + n]
+            at = [local + i * n for i in range(k)]
             if perm is not None:
-                whole = length - self._span  # the units of v with a whole stack
-                k = self._span + int(torch.randint(whole, (1,), generator=perm))
-                ends[2] = int(firsts[v]) + k
-            out.append(torch.stack([self._stack(e) for e in ends]))
-        return torch.stack(out)
+                fit = length - (k - 1) * n - self._span  # the firsts that fit
+                at = [
+                    self._span + i * n + int(torch.randint(fit, (1,), generator=perm))
+                    for i in range(k)
+                ]
+            ends.append(at)
+            out.append(torch.stack([self._stack(int(firsts[v]) + e) for e in at]))
+        return torch.stack(out), torch.tensor(ends)
 
     def _stack(self, unit: int) -> Tensor:
         """The stack ``(n, 3, S, S)`` ending at the unit ``unit`` (whole)."""
         self._stream.load_state_dict({"k": unit})
         x, ready, _ = self._stream.next()
-        assert ready[0]  # draw_triplets kept the stacks within their video
+        assert ready[0]  # draw_clips kept the stacks within their video
         return x[0]
 
 

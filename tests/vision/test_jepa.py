@@ -7,11 +7,12 @@ forward, and muP's roles against the VAE's. V18c: the evaluation's masks Q, H
 and R in the family and its spread to patch 8, the fixed maps R and W (their
 seeds, that they are buffers, the code W vec(t)), the shapes of patch 8, the
 gradients at the target side through R and W, and SIGReg's values of V18c's
-derivation. V18d (plans/v18d.md): the time predictor's hats, its copy and
-velocity, its optimum against the least squares of its form, the OU oracle
-at the knots, the flip and the rotation; the time terms at w = 0 against
-V18c's bit for bit, the arms' losses, SIGReg of the centres only and the
-gradient through all three codes."""
+derivation. V18d (``plans/v18d.md``, 「実装のテスト」): the time side's masks
+and the clips' draw (O1: counts, each cell hidden half the time, closed
+under time reversal), V18c's step bit for bit at one time (O1'), the
+positions' reflection and shift (O8), the hidden pixels' blindness (O9),
+SIGReg's terms of each time (O10) and the context reused from the target
+side against a second call of the encoder, by hand (O11)."""
 
 import itertools
 import math
@@ -31,14 +32,13 @@ from exp.vision.jepa import (
     LATENT_DIM,
     PRED_WIDTH,
     R_SEED,
-    TIME_KNOTS,
+    ST_LAG_BASE,
     TOKEN_DIM,
     W_SEED,
     FixedProj,
     JEPAModules,
     Mix,
     Predictor,
-    TimePredictor,
     build_jepa,
     directions,
     draw_masks,
@@ -47,18 +47,19 @@ from exp.vision.jepa import (
     jepa_mup_lr,
     jepa_mup_roles,
     jepa_terms,
-    jepa_time_terms,
-    knot_weights,
     mask_expansion,
     mask_family,
     mask_index,
     predict,
     rho_in,
     sigreg_points,
+    sincos_1d,
+    st_masks,
+    st_predict,
+    st_terms,
     take,
-    time_errors,
+    time_masks,
 )
-from exp.vision.jepa_iid import TIME_LR
 from exp.vision.models import PatchEmbed, build_vae, early_fusion, mup_lr
 from exp.vision.schema import DataConf, ModelConf, OptimConf, RunConf, ToursConf
 
@@ -1051,357 +1052,245 @@ class TestSIGRegOfV18c:
         assert float(v.std() / v.mean()) == pytest.approx(want, abs=0.01)
 
 
-# -- V18d: the time predictor and the time terms (plans/v18d.md) ----------------
+# -- V18d: the spatio-temporal completion ---------------------------------------
+
+K4 = 4  # V18d's times a clip
 
 
-def knot_features(z0: Tensor, zm: Tensor, n: Tensor) -> Tensor:
-    """The features ``(B, J (2D + 1))`` of the knot form: $h_j(\\log n)$ times
-    $[z_0, z_-, 1]$, knot by knot."""
-    h = knot_weights(n, TIME_KNOTS).to(z0)  # (B, J)
-    u = torch.cat([z0, zm, torch.ones(len(z0), 1, dtype=z0.dtype)], 1)
-    return (h[:, :, None] * u[:, None]).flatten(1)
+def clips(b: int, k: int = K4, seed: int = 0) -> Tensor:
+    """``b`` clips of ``k`` random stacks of 2 frames of 16 px, u8."""
+    g = torch.Generator().manual_seed(seed)
+    shape = (b, k, 2, 3, 16, 16)
+    return torch.randint(256, shape, generator=g, dtype=torch.uint8)
 
 
-def knot_ls(z0: Tensor, zm: Tensor, zp: Tensor, n: Tensor) -> TimePredictor:
-    """The least squares of the knot form (closed form) as a predictor."""
-    d, j = z0.shape[1], len(TIME_KNOTS)
-    theta = torch.linalg.lstsq(knot_features(z0, zm, n), zp).solution  # (J(2D+1), D)
-    theta = theta.T.reshape(d, j, 2 * d + 1).transpose(0, 1)  # (J, D, 2D + 1)
-    tp = TimePredictor(d).double()
-    with torch.no_grad():
-        tp.cur.copy_(theta[:, :, :d])
-        tp.prev.copy_(theta[:, :, d : 2 * d])
-        tp.bias.copy_(theta[:, :, -1])
-    return tp
+def st_draw(b: int, k: int = K4, seed: int = 0) -> tuple[Tensor, Tensor]:
+    """``st_masks`` of V18c's F_8 on the 8 x 8 grid (patch 2 at 16 px)."""
+    gen = torch.Generator().manual_seed(seed)
+    return st_masks(mask_family(8, GRID), b, k, 2, gen)
 
 
-def ou_triples(
-    n: Tensor, r: float, gen: torch.Generator
-) -> tuple[Tensor, Tensor, Tensor]:
-    """Triples ``(B, 1)`` of the stationary OU of unit variance, $\\Gamma(n) =
-    r^n$: given $z_0$, $z_\\pm$ are independent (Markov, reversible)."""
-    rn = torch.tensor(r, dtype=torch.float64) ** n.double()[:, None]  # (B, 1)
-    z0 = torch.randn(len(n), 1, generator=gen, dtype=torch.float64)
-    e = torch.randn(len(n), 2, generator=gen, dtype=torch.float64)
-    zm = rn * z0 + (1 - rn**2).sqrt() * e[:, :1]
-    zp = rn * z0 + (1 - rn**2).sqrt() * e[:, 1:]
-    return z0, zm, zp
+class TestTimeMasks:
+    def test_k4_hides_two_times_six_ways_each_time_three_times(self):
+        rows = time_masks(K4)
+        assert rows.shape == (6, K4)
+        assert (rows.sum(1) == 2).all() and (rows.sum(0) == 3).all()
+        got = {tuple(r.nonzero()[:, 0].tolist()) for r in rows}
+        assert got == set(itertools.combinations(range(K4), 2))
 
-
-def ou_error(tp: TimePredictor, n: int, r: float) -> float:
-    """The population error of ``tp`` (D = 1) on the OU at lag ``n``:
-    $E(z_+ - a z_0 - c z_- - b)^2$ by the covariances."""
-    h = knot_weights(torch.tensor([n]), TIME_KNOTS)[0]
-    a = float((h * tp.cur[:, 0, 0].detach()).sum())
-    c = float((h * tp.prev[:, 0, 0].detach()).sum())
-    b = float((h * tp.bias[:, 0].detach()).sum())
-    g1, g2 = r**n, r ** (2 * n)
-    return 1 + a * a + c * c + b * b + 2 * a * c * g1 - 2 * a * g1 - 2 * c * g2
-
-
-class TestTimePredictor:
-    def test_the_hats_are_one_at_their_knot_and_linear_in_log_n_between(self):
-        n = torch.tensor([8, 32, 128, 512])
-        assert torch.equal(knot_weights(n, TIME_KNOTS), torch.eye(4).double())
-        f = torch.linspace(0, 1, 11, dtype=torch.float64)
-        for j in range(3):
-            between = (8 * 4.0 ** (j + f)).round()  # whole lags, near 8 4^(j + f)
-            h = knot_weights(between.long(), TIME_KNOTS)
-            frac = (between.log() - math.log(TIME_KNOTS[j])) / math.log(4)
-            assert torch.allclose(h[:, j], 1 - frac, atol=1e-12)
-            assert torch.allclose(h[:, j + 1], frac, atol=1e-12)
-            assert torch.allclose(h.sum(1), torch.ones(11, dtype=torch.float64))
-
-    def test_a_lag_outside_the_knots_takes_its_ends(self):
-        h = knot_weights(torch.tensor([1, 4, 1000]), TIME_KNOTS)
-        want = torch.tensor([[1, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1]])
-        assert torch.equal(h, want.double())
-
-    def test_it_starts_at_the_means_prediction_and_holds_copy_and_velocity(self):
-        g = torch.Generator().manual_seed(0)
-        z0, zm = torch.randn(2, 6, 5, generator=g, dtype=torch.float64)
-        n = torch.tensor([8, 11, 45, 128, 300, 512])
-        tp = TimePredictor(5).double()
-        assert torch.equal(tp(z0, zm, n), torch.zeros(6, 5, dtype=torch.float64))
-        eye = torch.eye(5, dtype=torch.float64)
-        with torch.no_grad():
-            tp.cur.copy_(eye.expand(4, 5, 5))
-        assert torch.allclose(tp(z0, zm, n), z0, atol=1e-12)  # copy
-        with torch.no_grad():
-            tp.cur.copy_(2 * eye.expand(4, 5, 5))
-            tp.prev.copy_(-eye.expand(4, 5, 5))
-        assert torch.allclose(tp(z0, zm, n), 2 * z0 - zm, atol=1e-12)  # velocity
-
-    def test_the_least_squares_of_its_form_is_its_optimum(self):
-        # the closed form: L_T at it is the residual, and its gradient is 0
-        g = torch.Generator().manual_seed(1)
-        b, d = 4000, 3
-        z0, zm, e = torch.randn(3, b, d, generator=g, dtype=torch.float64)
-        n = (8 * 64 ** torch.rand(b, generator=g, dtype=torch.float64)).round().long()
-        zp = 0.6 * z0 - 0.3 * zm.roll(1, 1) + 0.5 * e + 0.2
-        tp = knot_ls(z0, zm, zp, n)
-        loss = time_errors(tp, z0, zm, zp, n).mean()
-        feats = knot_features(z0, zm, n)
-        res = zp - feats @ torch.linalg.lstsq(feats, zp).solution
-        assert float(loss.detach()) == pytest.approx(
-            float(res.square().mean()), rel=1e-10
-        )
-        loss.backward()
-        for p in tp.parameters():
-            assert p.grad is not None and float(p.grad.abs().max()) < 1e-10
-
-    def test_on_the_ou_at_the_knots_it_meets_the_oracle(self):
-        # the best of two inputs is that of one (Markov): 1 - r^(2n) at each knot
-        g = torch.Generator().manual_seed(2)
-        r, per = math.exp(-1 / 200), 20_000
-        n = torch.tensor(TIME_KNOTS).repeat_interleave(per)
-        z0, zm, zp = ou_triples(n, r, g)
-        tp = knot_ls(z0, zm, zp, n)
-        err = time_errors(tp, z0, zm, zp, n).detach()
-        for j, k in enumerate(TIME_KNOTS):
-            e = err[j * per : (j + 1) * per]
-            se = float(e.std()) / math.sqrt(per)
-            assert float(e.mean()) == pytest.approx(1 - r ** (2 * k), abs=4 * se)
-            assert float(tp.cur[j, 0, 0]) == pytest.approx(r**k, abs=0.02)
-            assert abs(float(tp.prev[j, 0, 0])) < 0.02
-
-    @pytest.mark.slow
-    def test_adam_from_0_at_the_time_lr_reaches_the_least_squares(self):
-        # the run's predictor (0 start, Adam at TIME_LR) on fixed OU codes:
-        # within 1 % of the closed form in 3000 steps (plans/v18d.md, the two
-        # time scales)
-        g = torch.Generator().manual_seed(7)
-        r, b = math.exp(-1 / 200), 20_000
-        n = (8 * 64 ** torch.rand(b, generator=g, dtype=torch.float64)).round().long()
-        z0, zm, zp = ou_triples(n, r, g)
-        best = float(time_errors(knot_ls(z0, zm, zp, n), z0, zm, zp, n).mean())
-        tp = TimePredictor(1).double()
-        opt = torch.optim.Adam(tp.parameters(), lr=TIME_LR)
-        for _ in range(3000):
-            opt.zero_grad()
-            time_errors(tp, z0, zm, zp, n).mean().backward()
-            opt.step()
-        got = float(time_errors(tp, z0, zm, zp, n).mean())
-        assert best <= got < 1.01 * best
-
-    def test_between_the_knots_it_is_its_knot_form_and_above_the_oracle(self):
-        # the lags of the run (log-uniform): at 16, 64, 256 the error of the fit
-        # is its population value by the covariances, at least 1 - r^(2n)
-        g = torch.Generator().manual_seed(3)
-        r, b = math.exp(-1 / 200), 200_000
-        n = (8 * 64 ** torch.rand(b, generator=g, dtype=torch.float64)).round().long()
-        tp = knot_ls(*ou_triples(n, r, g), n)
-        for k in (16, 64, 256):
-            m = 20_000
-            lag = torch.full((m,), k)
-            e = time_errors(tp, *ou_triples(lag, r, g), lag).detach()
-            want = ou_error(tp, k, r)
-            se = float(e.std()) / math.sqrt(m)
-            assert float(e.mean()) == pytest.approx(want, abs=4 * se)
-            assert want >= 1 - r ** (2 * k) - 1e-12
-
-    def test_the_flip_is_predicted_exactly_by_the_past(self):
-        # z_u = (-1)^u g: z_{u+n} = z_{u-n} at every n, C = I and the error 0
-        g = torch.Generator().manual_seed(4)
-        b, d = 500, 2
-        n = (8 * 64 ** torch.rand(b, generator=g, dtype=torch.float64)).round().long()
-        u = torch.randint(10_000, (b,), generator=g)
-        v = torch.randn(b, d, generator=g, dtype=torch.float64)
-
-        def at(t: Tensor) -> Tensor:
-            return (-1.0) ** (t % 2).double()[:, None] * v
-
-        z0, zm, zp = at(u), at(u - n), at(u + n)
-        tp = knot_ls(z0, zm, zp, n)
-        assert float(time_errors(tp, z0, zm, zp, n).mean()) < 1e-20
-
-    def test_a_rotation_beats_the_knot_form_but_not_the_lag_by_lag_one(self):
-        # period 12.34 s: z_{u+n} = R(theta n) z_u exactly, the knot form not
-        g = torch.Generator().manual_seed(5)
-        b = 4000
-        n = (8 * 64 ** torch.rand(b, generator=g, dtype=torch.float64)).round().long()
-        theta = 2 * math.pi / 123.4
-        phase = 2 * math.pi * torch.rand(b, generator=g, dtype=torch.float64)
-
-        def at(t: Tensor) -> Tensor:
-            a = phase + theta * t.double()
-            return torch.stack([a.cos(), a.sin()], 1) * math.sqrt(2)
-
-        z0, zm, zp = at(torch.zeros(b)), at(-n), at(n)
-        knot = float(time_errors(knot_ls(z0, zm, zp, n), z0, zm, zp, n).mean())
-        assert knot > 0.05  # of a mean square of 1
-        a = theta * n.double()
-        rot = torch.stack(
-            [torch.stack([a.cos(), -a.sin()], 1), torch.stack([a.sin(), a.cos()], 1)], 1
-        )  # (B, 2, 2)
-        exact = (rot @ z0[:, :, None])[:, :, 0]
-        assert float((exact - zp).abs().max()) < 1e-12  # lag by lag: 0
-
-    def test_the_gradient_reaches_all_three_codes(self):
-        g = torch.Generator().manual_seed(6)
-        b, d = 5, 3
-        tp = TimePredictor(d).double()
-        with torch.no_grad():
-            for p in tp.parameters():
-                p.copy_(torch.randn(p.shape, generator=g, dtype=torch.float64))
-        z = torch.randn(3, b, d, generator=g, dtype=torch.float64, requires_grad=True)
-        n = torch.tensor([8, 13, 40, 200, 512])
-
-        def loss(z: Tensor) -> Tensor:
-            return time_errors(tp, z[0], z[1], z[2], n).mean()
-
-        (grad,) = torch.autograd.grad(loss(z), z)
-        eps = 1e-6
-        fd = torch.zeros_like(z)
-        with torch.no_grad():
-            for idx in itertools.product(range(3), range(b), range(d)):
-                e = torch.zeros_like(z)
-                e[idx] = eps
-                fd[idx] = (loss(z + e) - loss(z - e)) / (2 * eps)
-        assert torch.allclose(grad, fd, rtol=1e-6, atol=1e-9)
-        assert all(float(grad[i].abs().sum()) > 0 for i in range(3))
-
-
-def timed_jepa(seed: int = 0) -> JEPAModules:
-    """A small V18c-like JEPA (fixed R, W of 64 rows) with V18d's tpred, its
-    weights drawn (not 0) so that L_T and its gradient are not trivial."""
-    mods = build_jepa(
-        conf_of(width=64, patch=2),
-        seed=seed,
-        token_dim=4,
-        proj="fixed",
-        latent_dim=64,
-        time_knots=TIME_KNOTS,
-    )
-    assert mods.tpred is not None
-    g = torch.Generator().manual_seed(seed + 100)
-    with torch.no_grad():
-        for p in mods.tpred.parameters():
-            p.copy_(0.1 * torch.randn(p.shape, generator=g))
-    return mods
-
-
-def triples(b: int, seed: int = 0) -> Tensor:
-    return torch.stack([stacks(b, seed + i) for i in range(3)], 1)  # (B, 3, ...)
-
-
-class TestTimeTerms:
-    LAM = 0.4
-    LAGS = torch.tensor([8, 20, 100, 512])
-
-    def inputs(self) -> tuple[Tensor, Tensor, Tensor]:
-        mask = expand_masks(masks(4, 8), 2)
-        dirs = directions(32, 64, torch.Generator().manual_seed(2))
-        return triples(4), mask, dirs
-
-    def grads(self, mods: JEPAModules, loss: Tensor) -> dict[str, Tensor | None]:
-        for p in mods.parameters():
-            p.grad = None
-        loss.backward()
-        return {
-            f"{m}.{k}": p.grad
-            for m, module in mods.modules().items()
-            for k, p in module.named_parameters()
+    def test_closed_under_time_reversal(self):
+        rows = time_masks(K4)
+        assert {tuple(r.tolist()) for r in rows.flip(1)} == {
+            tuple(r.tolist()) for r in rows
         }
 
-    def test_at_weight_0_the_loss_and_gradients_are_v18cs_bit_for_bit(self):
-        mods = timed_jepa()
-        x, mask, dirs = self.inputs()
-        v18c = jepa_terms(mods, x[:, 1], mask, dirs, self.LAM, "mix")
-        want = self.grads(mods, v18c["loss"])
-        got_terms = jepa_time_terms(
-            mods, x, self.LAGS, mask, dirs, self.LAM, "mix", arm="ST", weight=0.0
+    def test_one_time_has_none_and_odd_times_are_refused(self):
+        assert time_masks(1).shape == (0, 1)
+        for k in (0, 3, 5):
+            with pytest.raises(ValueError, match="1 or even"):
+                time_masks(k)
+
+
+class TestSTMasks:
+    def test_one_time_is_v18cs_draw(self):
+        mask, kind = st_draw(32, k=1, seed=5)
+        want = expand_masks(masks(32, 8, seed=5), 2)
+        assert mask.shape == (32, 1, 64)
+        assert torch.equal(mask[:, 0], want) and (kind == -1).all()
+
+    def test_half_tubes_of_f8_at_every_time_half_whole_times(self):
+        mask, kind = st_draw(64)
+        assert mask.shape == (64, K4, 64)
+        assert (kind[:32] == -1).all() and (kind[32:] >= 0).all()
+        fine = {tuple(r.tolist()) for r in expand_masks(mask_family(8, GRID), 2)}
+        tube = mask[:32]
+        assert (tube == tube[:, :1]).all()  # the same at every time
+        assert all(tuple(r.tolist()) in fine for r in tube[:, 0])
+        timed = mask[32:]
+        assert torch.equal(
+            timed, time_masks(K4)[kind[32:]][:, :, None].expand_as(timed)
         )
-        assert float(got_terms["time"]) > 0
-        assert torch.equal(got_terms["loss"], v18c["loss"].detach())
-        got = self.grads(mods, got_terms["loss"])
-        for k, w in want.items():
-            if k.startswith("tpred."):
-                assert w is None
-                continue
-            g = got[k]
-            assert w is not None and g is not None and torch.equal(g, w), k
+        assert (mask.flatten(1).sum(1) == 128).all()  # half of 256, every clip
 
-    def test_st_is_v18cs_loss_plus_1_minus_lam_w_lt(self):
-        mods = timed_jepa()
-        x, mask, dirs = self.inputs()
-        with torch.no_grad():
-            v18c = jepa_terms(mods, x[:, 1], mask, dirs, self.LAM, "mix")
-            got = jepa_time_terms(
-                mods, x, self.LAGS, mask, dirs, self.LAM, "mix", arm="ST", weight=0.25
-            )
-        want = v18c["loss"] + (1 - self.LAM) * 0.25 * got["time"]
-        assert torch.equal(got["loss"], want)
-        assert torch.equal(got["pred"], v18c["pred"])
+    def test_each_cell_is_hidden_half_the_time(self):
+        # exact: each fine position of F_8 is hidden by 218 of its 436 masks,
+        # each time by 3 of the 6 rows; each side is half the clips
+        fam = expand_masks(mask_family(8, GRID), 2).double()
+        assert len(fam) == 436 and (fam.sum(0) == 218).all()
+        assert (time_masks(K4).double().mean(0) == 0.5).all()
 
-    def test_t_is_1_minus_lam_lt_plus_lam_s_and_leaves_the_predictor(self):
-        mods = timed_jepa()
-        x, mask, dirs = self.inputs()
-        got = jepa_time_terms(mods, x, self.LAGS, mask, dirs, self.LAM, "mix", arm="T")
-        assert "pred" not in got
-        want = (1 - self.LAM) * got["time"] + self.LAM * got["sigreg"]
-        assert float(got["loss"]) == pytest.approx(float(want), rel=1e-6)
-        grads = self.grads(mods, got["loss"])
-        assert all(v is None for k, v in grads.items() if k.startswith("predictor."))
-        assert all(v is not None for k, v in grads.items() if k.startswith("tpred."))
+    def test_the_time_rows_are_drawn_uniformly(self):
+        _, kind = st_draw(60_000, seed=1)
+        counts = torch.bincount(kind[30_000:], minlength=6).double()
+        sd = math.sqrt(30_000 * (1 / 6) * (5 / 6))
+        assert ((counts - 5000).abs() < 5 * sd).all()
 
-    def test_lt_is_the_mean_square_of_the_codes_prediction(self):
-        mods = timed_jepa()
-        x, mask, dirs = self.inputs()
-        assert mods.tpred is not None
-        with torch.no_grad():
-            got = jepa_time_terms(
-                mods, x, self.LAGS, mask, dirs, self.LAM, "mix", arm="ST", weight=1.0
-            )
-            zm, z0, zp = (mods.mu(x[:, i]).double() for i in range(3))
-            pred = mods.tpred.double()(z0, zm, self.LAGS)
-        assert float(got["time"]) == pytest.approx(
-            float((pred - zp).square().mean()), rel=1e-5
+    def test_an_odd_batch_of_two_sides_is_refused(self):
+        with pytest.raises(ValueError, match="even"):
+            st_draw(5)
+
+
+class TestPositions:
+    def test_reflection_flips_the_sines_only(self):
+        x = torch.linspace(-3, 3, 13, dtype=torch.float64)
+        a, b = sincos_1d(x, 256), sincos_1d(-x, 256)
+        assert torch.equal(b[:, 128:], a[:, 128:])
+        torch.testing.assert_close(b[:, :128], -a[:, :128], rtol=0, atol=0)
+
+    def test_a_shift_rotates_each_frequency(self):
+        x = torch.linspace(0, 6, 7, dtype=torch.float64)
+        a, shift = sincos_1d(x, 256), 0.7
+        omega = 1.0 / 10000 ** (torch.arange(128, dtype=torch.float64) / 128)
+        c, s_ = (shift * omega).cos(), (shift * omega).sin()
+        sin, cos = a[:, :128], a[:, 128:]
+        want = torch.cat([sin * c + cos * s_, cos * c - sin * s_], 1)
+        torch.testing.assert_close(sincos_1d(x + shift, 256), want, rtol=0, atol=1e-12)
+
+    def test_the_table_is_the_sum_of_the_three(self):
+        pred = Predictor(width_in=8, grid=8, out_dim=4)
+        ell = torch.tensor([0.0, 2.5, 6.0])
+        table = pred.st_positions(K4, ell)
+        assert table.shape == (3, K4 * 64, PRED_WIDTH)
+        u = torch.tensor([-1.5, -0.5, 0.5, 1.5], dtype=torch.float64)
+        for b in range(3):
+            for i in range(K4):
+                want = pred.pos + sincos_1d(u[i], PRED_WIDTH).float()
+                want = want + sincos_1d(ell[b], PRED_WIDTH).float()
+                torch.testing.assert_close(table[b, i * 64 : (i + 1) * 64], want)
+        assert torch.equal(u.flip(0), -u)  # time reversal: u_i -> -u_i
+
+
+def st_by_hand(mods: JEPAModules, x: Tensor, n: Tensor, mask: Tensor) -> Tensor:
+    """The squared errors ``(B, m, d)`` of the completion, a clip at a time:
+    every visible stack by its own encoder call on its visible positions
+    (all of them for a whole one), the clip's positions of ``n``."""
+    b, k, t = mask.shape
+    images = early_fusion(x.flatten(0, 1)).unflatten(0, (b, k))
+    tokens = mods.proj(mods.encoder(images.flatten(0, 1))).unflatten(0, (b, k))
+    out = []
+    for c in range(b):
+        ctx, keep = [], []
+        for i in range(k):
+            vis = (~mask[c, i]).nonzero()[:, 0]
+            if len(vis):
+                ctx.append(mods.encoder(images[c, i : i + 1], vis[None])[0])
+                keep.append(i * t + vis)
+        hide = mask[c].flatten().nonzero()[:, 0]
+        ell = (n[c : c + 1].double() / ST_LAG_BASE).log2() if k > 1 else None
+        t_hat = mods.predictor(
+            torch.cat(ctx)[None], torch.cat(keep)[None], hide[None], ell, k
+        )[0]
+        out.append((t_hat - tokens[c].flatten(0, 1)[hide]).square())
+    return torch.stack(out)
+
+
+def grads(mods: JEPAModules) -> dict[str, Tensor]:
+    return {
+        f"{name}.{k}": p.grad.clone()
+        for name, m in mods.modules().items()
+        for k, p in m.named_parameters()
+        if p.grad is not None
+    }
+
+
+class TestSTLoss:
+    B = 4
+    N = torch.tensor([8, 20, 64, 512])
+
+    def jepa(self, double: bool = True) -> JEPAModules:
+        mods = v18c_jepa(conf_of(width=64, patch=2))
+        if double:
+            for m in mods.modules().values():
+                m.double()
+        return mods
+
+    def test_one_time_of_tubes_is_v18cs_step_bit_for_bit(self):
+        x = stacks(self.B)
+        mask = expand_masks(masks(self.B, 8), 2)
+        dirs = directions(32, LATENT_DIM, torch.Generator().manual_seed(2))
+        mods = self.jepa(double=False)
+        want = jepa_terms(mods, x, mask, dirs, 0.8, "mix")
+        want["loss"].backward()
+        g_want = grads(mods)
+        mods = self.jepa(double=False)
+        got = st_terms(mods, x[:, None], self.N, mask[:, None], dirs, 0.8, "mix")
+        got["loss"].backward()
+        for key in ("loss", "pred", "sigreg"):
+            assert torch.equal(got[key], want[key]), key
+        assert torch.equal(got["tokens"], want["tokens"])
+        g_got = grads(mods)
+        assert g_got.keys() == g_want.keys()
+        assert all(torch.equal(g_got[k], g_want[k]) for k in g_want)
+
+    def test_the_loss_and_gradients_by_hand_with_a_second_encoder_call(self):
+        x = clips(self.B).double() / 255
+        mask, _ = st_draw(self.B, seed=3)  # 2 tubes, 2 of whole times
+        dirs = directions(32, LATENT_DIM, torch.Generator().manual_seed(2)).double()
+        lam = 0.6
+        mods = self.jepa()
+        got = st_terms(mods, x, self.N, mask, dirs, lam, "mix")
+        got["loss"].backward()
+        g_got = grads(mods)
+        mods = self.jepa()
+        err = st_by_hand(mods, x, self.N, mask)
+        t = mods.proj(mods.encoder(early_fusion(x.flatten(0, 1)))).unflatten(0, (4, 4))
+        assert isinstance(mods.mix, Mix)
+        s = torch.stack(
+            [
+                sigreg(z, z[:0], dirs)
+                for z in (mods.mix(t[:, i].flatten(1)) for i in range(4))
+            ]
+        ).mean()
+        loss = (1 - lam) * err.mean() + lam * s
+        loss.backward()
+        assert float(got["pred"].detach()) == pytest.approx(
+            float(err.detach().mean()), rel=1e-10
         )
-        assert torch.allclose(got["codes"][:, 1].double(), z0, atol=1e-5)
+        assert float(got["sigreg"].detach()) == pytest.approx(
+            float(s.detach()), rel=1e-10
+        )
+        assert float(got["loss"].detach()) == pytest.approx(
+            float(loss.detach()), rel=1e-10
+        )
+        torch.testing.assert_close(got["clip_err"], err.detach().mean((1, 2)))
+        g_want = grads(mods)
+        assert g_got.keys() == g_want.keys()
+        for k in g_want:
+            torch.testing.assert_close(g_got[k], g_want[k], rtol=1e-10, atol=1e-14)
 
-    def test_sigreg_is_of_the_centres_only(self):
-        mods = timed_jepa()
-        x, mask, dirs = self.inputs()
+    def test_the_hidden_pixels_do_not_reach_the_predictions(self):
+        x = clips(self.B)
+        mask, _ = st_draw(self.B, seed=3)
+        # the pixels of every hidden patch (2 x 2 px at patch 2), all frames
+        pix = mask.reshape(self.B, K4, 8, 8).repeat_interleave(2, 2)
+        pix = pix.repeat_interleave(2, 3)[:, :, None, None]  # (B, K, 1, 1, 16, 16)
+        other = clips(self.B, seed=9)
+        y = torch.where(pix, other, x)
+        assert not torch.equal(x, y)
+        mods = self.jepa(double=False)
+        with torch.no_grad():
+            a, hide_a, _ = st_predict(mods, x, self.N, mask)
+            b, hide_b, _ = st_predict(mods, y, self.N, mask)
+        assert torch.equal(hide_a, hide_b)
+        assert torch.equal(a, b)
+
+    def test_sigreg_is_the_mean_of_each_times_term(self):
+        x = clips(self.B, seed=1)
+        mask, _ = st_draw(self.B, seed=3)
+        dirs = directions(32, LATENT_DIM, torch.Generator().manual_seed(2)).double()
+        mods = self.jepa()
         y = x.clone()
-        y[:, 0], y[:, 2] = triples(4, seed=9)[:, 0], triples(4, seed=9)[:, 2]
+        y[:, 2] = clips(self.B, seed=7)[:, 2]  # time 2 alone changes
         with torch.no_grad():
-            a = jepa_time_terms(mods, x, self.LAGS, mask, dirs, 0.4, "mix", arm="T")
-            b = jepa_time_terms(mods, y, self.LAGS, mask, dirs, 0.4, "mix", arm="T")
-        assert torch.equal(a["sigreg"], b["sigreg"])
-        assert not torch.equal(a["time"], b["time"])
-
-    def test_the_encoders_gradient_comes_through_all_three_codes(self):
-        # L_T's gradient is the sum of its three roles': each role's alone (the
-        # others detached) is part of it and not all of it
-        mods = timed_jepa()
-        x, _, _ = self.inputs()
-        tp = mods.tpred
-        assert tp is not None
-
-        def lt(live: set[int]) -> Tensor:
-            z = [mods.mu(x[:, i]) for i in range(3)]
-            z = [zi if i in live else zi.detach() for i, zi in enumerate(z)]
-            return time_errors(tp, z[1], z[0], z[2], self.LAGS).mean()
-
-        enc = list(mods.encoder.parameters())
-        x_, mask, dirs = self.inputs()
-        terms = jepa_time_terms(mods, x_, self.LAGS, mask, dirs, 0.0, "mix", arm="T")
-        full = torch.autograd.grad(terms["loss"], enc)
-        parts = [torch.autograd.grad(lt({i}), enc) for i in range(3)]
-        for f, a, b, c in zip(full, *parts, strict=True):
-            assert torch.allclose(f, a + b + c, rtol=1e-4, atol=1e-7)
-        for p in parts:
-            assert any(float(t.abs().sum()) > 0 for t in p)
-
-    def test_an_unknown_arm_or_no_tpred_is_refused(self):
-        x, mask, dirs = self.inputs()
-        with pytest.raises(ValueError, match="time arms"):
-            jepa_time_terms(
-                timed_jepa(), x, self.LAGS, mask, dirs, 0.4, "mix", arm="none"
-            )
-        plain = build_jepa(
-            conf_of(width=64, patch=2), seed=0, token_dim=4, proj="fixed", latent_dim=64
+            a = st_terms(mods, x.double() / 255, self.N, mask, dirs, 0.5, "mix")
+            b = st_terms(mods, y.double() / 255, self.N, mask, dirs, 0.5, "mix")
+            same = x[:, :1].expand(-1, K4, -1, -1, -1, -1).double() / 255
+            c = st_terms(mods, same, self.N, mask, dirs, 0.5, "mix")
+            one = jepa_terms(mods, same[:, 0], mask[:, 0], dirs, 0.5, "mix")
+        sa, sb = a["sigreg_times"], b["sigreg_times"]
+        torch.testing.assert_close(sa[[0, 1, 3]], sb[[0, 1, 3]], rtol=1e-12, atol=0)
+        assert abs(float(sa[2] - sb[2])) > 1e-6
+        assert float(a["sigreg"]) == pytest.approx(float(sa.mean()), rel=1e-12)
+        torch.testing.assert_close(
+            c["sigreg_times"], one["sigreg"].expand(K4), rtol=1e-10, atol=0
         )
-        with pytest.raises(ValueError, match="tpred"):
-            jepa_time_terms(plain, x, self.LAGS, mask, dirs, 0.4, "mix", arm="T")

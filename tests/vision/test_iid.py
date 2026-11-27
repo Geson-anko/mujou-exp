@@ -2,8 +2,8 @@
 learning rate's schedule by hand, the units drawn, and a tiny run read by
 ``stream_eval`` (tiny synthetic Walking Tours of ``test_eval``: videos A, B,
 C of 20 frames, H held out; stacks of 2 frames of 16 px). V18d's lags
-against their log-uniform law, and its triples on videos whose frames carry
-their video and their number."""
+against their log-uniform law, and its clips on videos whose frames carry
+their video and their number (plans/v18d.md, O12)."""
 
 import json
 import math
@@ -192,33 +192,36 @@ def frames_of(x: Tensor) -> tuple[Tensor, Tensor]:
     return x[..., 0, 0, 0].long(), x[..., 1, 0, 0].long()
 
 
-class TestTriplets:
-    def test_the_three_stacks_are_u_minus_n_u_u_plus_n_of_one_video(self, numbered):
+class TestClips:
+    K = 4
+
+    def test_the_k_stacks_are_n_apart_in_one_video(self, numbered):
         units = Units(conf_of(), numbered, "all", seed=0)
-        n = draw_lags(3000, 1, 19, torch.Generator().manual_seed(1))
-        x = units.draw_triplets(n)
-        assert x.shape == (3000, 3, N, 3, SIZE, SIZE)
-        video, frame = frames_of(x)  # (B, 3, N)
-        assert (video == video[:, :1, :1]).all()  # one video a triple
+        n = draw_lags(3000, 1, 9, torch.Generator().manual_seed(1))
+        x, ends = units.draw_clips(n, self.K)
+        assert x.shape == (3000, self.K, N, 3, SIZE, SIZE)
+        video, frame = frames_of(x)  # (B, K, N)
+        assert (video == video[:, :1, :1]).all()  # one video a clip
         assert not (video == CODES["H"]).any()  # never the held-out
-        ends = frame[:, :, -1]  # (B, 3): the last frames
-        assert torch.equal(ends[:, 0], ends[:, 1] - n)
-        assert torch.equal(ends[:, 2], ends[:, 1] + n)
-        assert torch.equal(frame[:, :, 0], ends - (N - 1))  # whole, oldest first
+        last = frame[:, :, -1]  # (B, K): the last frames
+        assert torch.equal(last, ends)
+        steps = torch.arange(self.K)[None] * n[:, None]
+        assert torch.equal(last, last[:, :1] + steps)  # tau + i n
+        assert torch.equal(frame[:, :, 0], last - (N - 1))  # whole, oldest first
         assert int(frame.min()) >= 0
         length = {CODES[v]: m for v, m in LENGTHS.items()}
-        assert all(int(e) < length[int(v)] for e, v in zip(ends[:, 2], video[:, 0, 0]))
+        assert all(int(e) < length[int(v)] for e, v in zip(last[:, -1], video[:, 0, 0]))
 
-    def test_the_centre_is_uniform_on_the_units_that_fit(self, numbered):
-        # at n = 7: the centres of video v are its frames 8..L_v - 8, all alike
+    def test_the_first_is_uniform_on_the_units_that_fit(self, numbered):
+        # at n = 5: the first stacks of video v end at its frames 1..L_v - 16
         units = Units(conf_of(), numbered, "all", seed=2)
-        n = torch.full((6000,), 7)
-        video, frame = frames_of(units.draw_triplets(n)[:, 1])
+        x, _ = units.draw_clips(torch.full((6000,), 5), self.K)
+        video, frame = frames_of(x[:, 0])
         fit = [
             (c, j)
             for v, c in CODES.items()
             if v != "H"
-            for j in range(7 + N - 1, LENGTHS[v] - 7)
+            for j in range(N - 1, LENGTHS[v] - 3 * 5)
         ]
         index = {u: i for i, u in enumerate(fit)}
         got = torch.tensor(
@@ -227,28 +230,38 @@ class TestTriplets:
         counts = torch.bincount(got, minlength=len(fit))
         assert under_chi2(counts, torch.full((len(fit),), 1 / len(fit)))
 
-    def test_perm_draws_the_target_from_the_centres_video_whatever_its_time(
-        self, numbered
-    ):
-        units = Units(conf_of(), numbered, "all", seed=3)
-        n = torch.full((8000,), 5)
-        x = units.draw_triplets(n, torch.Generator().manual_seed(4))
-        video, frame = frames_of(x)
-        assert (video == video[:, :1, :1]).all()
-        ends = frame[:, :, -1]
-        assert torch.equal(ends[:, 0], ends[:, 1] - n)  # the inputs as S+T's
-        assert torch.equal(frame[:, 2, 0], ends[:, 2] - (N - 1))  # whole
-        c = video[:, 0, 0] == CODES["C"]
-        early = c & (ends[:, 1] < 45)
-        for part in (early, c & ~early):  # the same law, early or late centres
-            whole = LENGTHS["C"] - (N - 1)
-            counts = torch.bincount(ends[part, 2] - (N - 1), minlength=whole)
-            assert under_chi2(counts, torch.full((whole,), 1 / whole))
+    def test_one_stack_a_clip_is_draws(self, numbered):
+        a = Units(conf_of(), numbered, "all", seed=6)
+        b = Units(conf_of(), numbered, "all", seed=6)
+        x, _ = a.draw_clips(torch.full((500,), 37), 1)
+        assert torch.equal(x[:, 0], b.draw(500))
 
-    def test_a_lag_of_no_video_or_the_span_units_are_refused(self, numbered):
+    def test_perm_draws_each_role_alone_from_its_units(self, numbered):
+        # video C (90 frames) at n = 5: role i ends uniformly at 1 + 5i ..
+        # 74 + 5i, whatever the others (ST's law of each role)
+        units = Units(conf_of(), numbered, "all", seed=3)
+        n = torch.full((20_000,), 5)
+        x, ends = units.draw_clips(n, self.K, torch.Generator().manual_seed(4))
+        video, frame = frames_of(x)
+        assert (video == video[:, :1, :1]).all()  # the video's
+        assert torch.equal(frame[:, :, -1], ends)
+        assert torch.equal(frame[:, :, 0], ends - (N - 1))  # whole
+        c = video[:, 0, 0] == CODES["C"]
+        fit = LENGTHS["C"] - 3 * 5 - (N - 1)
+        for i in range(self.K):
+            role = ends[c, i] - (N - 1) - 5 * i
+            assert int(role.min()) >= 0 and int(role.max()) < fit
+            counts = torch.bincount(role, minlength=fit)
+            assert under_chi2(counts, torch.full((fit,), 1 / fit))
+        gap = (ends[c, 1] - ends[c, 0]).double()
+        assert float(gap.std()) > 10  # not n apart: independent
+        r = torch.corrcoef(ends[c][:, [0, 3]].double().T)[0, 1]
+        assert abs(float(r)) < 0.05
+
+    def test_a_clip_of_no_video_or_the_span_units_are_refused(self, numbered):
         units = Units(conf_of(), numbered, "all", seed=0)
         with pytest.raises(ValueError, match="fits in no video"):
-            units.draw_triplets(torch.tensor([45]))
+            units.draw_clips(torch.tensor([30]), self.K)
         span = Units(conf_of(), numbered, "span", seed=0)
         with pytest.raises(ValueError, match="'all'"):
-            span.draw_triplets(torch.tensor([2]))
+            span.draw_clips(torch.tensor([2]), self.K)

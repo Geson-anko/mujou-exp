@@ -1,6 +1,7 @@
-r"""The JEPA of V18, V18b and V18c (``plans/jepa.md``, 「V18」「V18b」「V18c」):
-the masks, the modules and the loss, in LeJEPA's form (one encoder, no EMA
-target, no stop-gradient).
+r"""The JEPA of V18, V18b and V18c (``plans/jepa.md``, 「V18」「V18b」「V18c」)
+and V18d's spatio-temporal completion (``plans/v18d.md``): the masks, the
+modules and the loss, in LeJEPA's form (one encoder, no EMA target, no
+stop-gradient).
 
 The encoder is the ViT of ``build_vae`` (the same steps and seed, so its
 blocks start as the VAE's) without the head: a stack enters by
@@ -51,6 +52,14 @@ $\bar z = \frac1T \sum_p z_p$ ``(B, d)`` (``"mean"``, V18b's arm M) or $W
 \mathrm{vec}(z)$ ``(B, LATENT_DIM)`` (``"mix"``, V18c's; ``sigreg_points``).
 The gradient reaches the target $z$ too, through $R$ and $W$ for V18c's.
 
+V18d (``st_terms``): a clip is $K$ stacks of one video $n$ stacks apart,
+its grid $\Omega$ the $K T$ tokens. A mask (``st_masks``) is a tube, a mask
+of $F_k$ hidden at every time, or hides $K / 2$ whole times
+(``time_masks``); either hides half of $\Omega$. The encoder stays a
+function of one stack; only the predictor, of the positions $e_P(p) +
+\phi(u_i) + \psi(\ell)$ (``Predictor.st_positions``), sees across times.
+SIGReg is the mean of its terms of each time's $B$ points.
+
 muP (``jepa_mup_roles``, ``jepa_mup_lr``): the encoder's roles are the
 VAE's; a learned $P$ and ``embed`` map the encoder's width to a fixed size
 (output, $k_w^{-1}$ with $k_w$ = width / ``BASE_WIDTH``); the predictor's
@@ -58,6 +67,7 @@ blocks and ``out`` are of the fixed width 256 ($k$ = 1). $R$ and $W$ have no
 role (no parameters).
 """
 
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -93,14 +103,12 @@ __all__ = [
     "R_SEED",
     "W_SEED",
     "SIGREG_ON",
-    "TIME_ARMS",
-    "TIME_KNOTS",
+    "ST_LAG_BASE",
     "TOKEN_DIM",
     "FixedProj",
     "JEPAModules",
     "Mix",
     "Predictor",
-    "TimePredictor",
     "TokenEncoder",
     "build_jepa",
     "directions",
@@ -110,16 +118,18 @@ __all__ = [
     "jepa_mup_lr",
     "jepa_mup_roles",
     "jepa_terms",
-    "jepa_time_terms",
-    "knot_weights",
     "mask_expansion",
     "mask_family",
     "mask_index",
     "predict",
     "rho_in",
     "sigreg_points",
+    "sincos_1d",
+    "st_masks",
+    "st_predict",
+    "st_terms",
     "take",
-    "time_errors",
+    "time_masks",
 ]
 
 TOKEN_DIM = 64  # d: the code of a token (V18's; V18b's arm F takes 4)
@@ -132,8 +142,7 @@ W_SEED = 61  # W's own seed, of jepa_eval's z_w too (plans/jepa.md, V18c)
 PRED_WIDTH, PRED_BLOCKS = 256, 4  # the predictor's width and blocks
 PROJ_SEED = 21  # added to the seed: the projection's initial weights
 PREDICTOR_SEED = 23  # added to the seed: the predictor's initial weights
-TIME_ARMS = ("none", "T", "ST", "STperm")  # V18d's arms (plans/v18d.md); none: V18c
-TIME_KNOTS = (8, 32, 128, 512)  # V18d's knots of the time predictor, in stacks
+ST_LAG_BASE = 8  # V18d: the scale's position is log2(n / ST_LAG_BASE)
 
 
 # -- masks ----------------------------------------------------------------------
@@ -224,6 +233,56 @@ def mask_index(mask: Tensor) -> tuple[Tensor, Tensor]:
     return keep, hide
 
 
+def time_masks(k: int) -> Tensor:
+    r"""V18d's time side (plans/v18d.md, 「マスクの族」): every $J \subset \{1,
+    \dots, k\}$ of $\lvert J \rvert = k / 2$, bool ``(C(k, k/2), k)`` (True
+    the hidden times), in the order of ``itertools.combinations``; empty ``(0,
+    1)`` for ``k`` = 1 (V18c's: no time side).
+
+    Raises:
+        ValueError: ``k`` is neither 1 nor a positive even number.
+    """
+    if k != 1 and (k < 2 or k % 2):
+        raise ValueError(f"the clips' times are 1 or even, not {k}")
+    if k == 1:
+        return torch.zeros(0, 1, dtype=torch.bool)
+    rows = [
+        [i in j for i in range(k)] for j in itertools.combinations(range(k), k // 2)
+    ]
+    return torch.tensor(rows)
+
+
+def st_masks(
+    family: Tensor, b: int, k: int, s: int, gen: torch.Generator
+) -> tuple[Tensor, Tensor]:
+    r"""The masks of ``b`` clips of ``k`` times (plans/v18d.md, 「側の選び方」),
+    bool ``(b, k, T)`` on the fine grid ($T = s^2$ ``family.shape[1]``), and
+    each clip's ``kind`` ``(b,)``: -1 for a tube, else its row of
+    ``time_masks(k)``. The first ``b / 2`` clips (all ``b`` for ``k`` = 1)
+    are tubes: a mask of ``draw_masks(family, ., gen)`` spread by
+    ``expand_masks`` and hidden at every time; the others hide whole times,
+    a row of ``time_masks(k)`` drawn uniformly by ``gen`` (after the tubes).
+    For ``k`` = 1 the draw and the masks are V18c's.
+
+    Raises:
+        ValueError: ``k`` is not of ``time_masks``, or ``k`` > 1 and ``b`` is
+            odd.
+    """
+    times = time_masks(k).to(family.device)
+    if k > 1 and b % 2:
+        raise ValueError(f"the clips of two sides are even, not {b}")
+    tubes = b if k == 1 else b // 2
+    tube = expand_masks(draw_masks(family, tubes, gen), s)  # (b_t, T)
+    count = tube.shape[1]
+    out = [tube[:, None].expand(-1, k, -1)]
+    kind = [torch.full((tubes,), -1, dtype=torch.long)]
+    if b > tubes:
+        j = torch.randint(len(times), (b - tubes,), generator=gen)
+        out.append(times[j.to(family.device)][:, :, None].expand(-1, -1, count))
+        kind.append(j)
+    return torch.cat(out), torch.cat(kind).to(family.device)
+
+
 def take(tokens: Tensor, idx: Tensor) -> Tensor:
     """The tokens ``(B, T, w)`` at the positions ``idx`` ``(B, m)``: ``(B, m,
     w)``."""
@@ -264,6 +323,18 @@ class TokenEncoder(nn.Module):
         return norm(x)
 
 
+def sincos_1d(x: Tensor, dim: int) -> Tensor:
+    r"""The fixed position of the reals ``x`` ``(...,)``, float64 ``(...,
+    dim)``: $\sin$ then $\cos$ of $x \omega_j$, $\omega_j = 10000^{-j /
+    (dim / 2)}$ ($j < dim / 2$; ``sincos_2d``'s frequencies of one axis
+    spread over the whole width). $x \mapsto -x$ flips the sines only, and
+    $x \mapsto x + a$ rotates each pair $(\sin, \cos)$ by $a \omega_j$."""
+    half = dim // 2
+    omega = 1.0 / 10000 ** (torch.arange(half, dtype=torch.float64) / half)
+    a = x.double()[..., None] * omega.to(x.device)
+    return torch.cat([a.sin(), a.cos()], -1)
+
+
 class Predictor(nn.Module):
     """The predictor (module docstring): ``embed`` (width ``width_in`` to
     ``dim``), ``mask_token``, the fixed positions ``sincos_2d((grid, grid),
@@ -289,16 +360,43 @@ class Predictor(nn.Module):
         self.pos: Tensor
 
     @override
-    def forward(self, context: Tensor, keep: Tensor, hide: Tensor) -> Tensor:
+    def forward(
+        self,
+        context: Tensor,
+        keep: Tensor,
+        hide: Tensor,
+        ell: Tensor | None = None,
+        times: int = 1,
+    ) -> Tensor:
         """$\\hat z$ ``(B, k, out_dim)`` at the positions ``hide`` ``(B, k)``
         from the context side's tokens ``context`` ``(B, V, width_in)`` at
-        ``keep`` ``(B, V)``."""
-        c = self.embed(context) + self.pos[keep]  # (B, V, dim)
-        m = self.mask_token + self.pos[hide]  # (B, k, dim)
+        ``keep`` ``(B, V)``. Without ``ell`` the positions are those of one
+        stack (V18c's); with V18d's scales ``ell`` ``(B,)`` a position $i T +
+        p$ of the clip's ``times`` stacks is $e(i, p) = e_P(p) + \\phi(u_i) +
+        \\psi(\\ell)$ (``st_positions``)."""
+        if ell is None:
+            pos_c, pos_m = self.pos[keep], self.pos[hide]
+        else:
+            table = self.st_positions(times, ell)  # (B, times T, dim)
+            pos_c, pos_m = take(table, keep), take(table, hide)
+        c = self.embed(context) + pos_c  # (B, V, dim)
+        m = self.mask_token + pos_m  # (B, k, dim)
         x = torch.cat([c, m], 1)
         for block in self.blocks:
             x = block(x)
         return self.out(self.norm(x[:, keep.shape[1] :]))
+
+    def st_positions(self, times: int, ell: Tensor) -> Tensor:
+        r"""V18d's positions ``(B, times T, dim)`` (plans/v18d.md, 「位置の符号」)
+        of the clips of the scales ``ell`` ``(B,)``: $e_P(p) + \phi(u_i) +
+        \psi(\ell)$ at $i T + p$, $e_P$ the stack's ``pos``, $\phi$ and
+        $\psi$ ``sincos_1d`` of the time $u_i = i - (\mathrm{times} - 1)/2$
+        (from 0) and of $\ell$; fixed, no parameter."""
+        u = torch.arange(times, dtype=torch.float64) - (times - 1) / 2
+        phi = sincos_1d(u, self.pos.shape[1]).to(self.pos)  # (times, dim)
+        psi = sincos_1d(ell.double(), self.pos.shape[1]).to(self.pos)  # (B, dim)
+        table = self.pos[None, None] + phi[None, :, None] + psi[:, None, None]
+        return table.flatten(1, 2)
 
 
 class FixedProj(nn.Module):
@@ -330,49 +428,6 @@ class Mix(nn.Module):
         return v @ self.weight.T
 
 
-def knot_weights(n: Tensor, knots: Sequence[int]) -> Tensor:
-    r"""The hat functions $h_j(\log n)$ ``(B, J)`` (float64) of the lags ``n``
-    ``(B,)`` on the knots ``knots`` (increasing, ``J`` of them): piecewise
-    linear in $\log n$, 1 at their knot and 0 at the others, so $\sum_j h_j =
-    1$; a lag outside the knots takes its nearest end's (plans/v18d.md)."""
-    k = torch.tensor(knots, dtype=torch.float64, device=n.device).log()  # (J,)
-    x = n.double().log().clamp(k[0], k[-1])  # (B,)
-    i = (torch.searchsorted(k, x, right=True) - 1).clamp(0, len(knots) - 2)
-    frac = (x - k[i]) / (k[i + 1] - k[i])  # (B,) in [0, 1]
-    h = torch.zeros(len(n), len(knots), dtype=torch.float64, device=n.device)
-    h.scatter_(1, i[:, None], (1 - frac)[:, None])
-    h.scatter_add_(1, (i + 1)[:, None], frac[:, None])
-    return h
-
-
-class TimePredictor(nn.Module):
-    r"""V18d's time predictor (plans/v18d.md, 「時間の項」): a linear map of
-    the two codes that depends smoothly on the lag,
-
-    $$f(z_0, z_-; n) = \sum_j h_j(\log n)\,(A_j z_0 + C_j z_- + c_j),$$
-
-    $h_j$ of ``knot_weights`` on ``knots``; ``cur`` $A$ ``(J, D, D)``,
-    ``prev`` $C$ ``(J, D, D)`` and ``bias`` $c$ ``(J, D)`` start at 0 (the
-    mean's prediction)."""
-
-    def __init__(self, dim: int, knots: Sequence[int] = TIME_KNOTS) -> None:
-        super().__init__()
-        j = len(knots)
-        self.knots = tuple(knots)
-        self.cur = nn.Parameter(torch.zeros(j, dim, dim))
-        self.prev = nn.Parameter(torch.zeros(j, dim, dim))
-        self.bias = nn.Parameter(torch.zeros(j, dim))
-
-    @override
-    def forward(self, z0: Tensor, zm: Tensor, n: Tensor) -> Tensor:
-        r"""$\hat z_+$ ``(B, D)`` of $z_0$ ``z0`` and $z_-$ ``zm`` ``(B, D)``
-        at the lags ``n`` ``(B,)``."""
-        h = knot_weights(n, self.knots).to(z0)  # (B, J)
-        per = torch.einsum("bk,jdk->bjd", z0, self.cur)
-        per = per + torch.einsum("bk,jdk->bjd", zm, self.prev) + self.bias
-        return (h[:, :, None] * per).sum(1)  # (B, D)
-
-
 def _trunc_normal_(w: Tensor, std: float) -> None:
     nn.init.trunc_normal_(w, std=std, a=-2 * std, b=2 * std)
 
@@ -396,36 +451,23 @@ def _init_predictor(p: Predictor) -> None:
 class JEPAModules:
     """The JEPA: ``encoder`` (images to tokens ``(B, T, w)``, with ``keep``
     the visible ones), ``proj`` (a token to $z_p$: a learned ``Linear`` or
-    the fixed ``FixedProj``), ``predictor`` (``Predictor``'s call), of
-    V18c's ``mix`` (``Mix``, the flat tokens to the code) and of V18d's
-    ``tpred`` (``TimePredictor`` of the codes)."""
+    the fixed ``FixedProj``), ``predictor`` (``Predictor``'s call) and, of
+    V18c's, ``mix`` (``Mix``, the flat tokens to the code)."""
 
     encoder: nn.Module
     proj: nn.Module
     predictor: nn.Module
     mix: nn.Module | None = None
-    tpred: TimePredictor | None = None
 
     def modules(self) -> dict[str, nn.Module]:
-        """The modules by the names of the checkpoints (``mix`` and ``tpred``
-        if any)."""
+        """The modules by the names of the checkpoints (``mix`` if any)."""
         mods = {"encoder": self.encoder, "proj": self.proj, "predictor": self.predictor}
-        if self.mix is not None:
-            mods["mix"] = self.mix
-        if self.tpred is not None:
-            mods["tpred"] = self.tpred
-        return mods
+        return mods if self.mix is None else mods | {"mix": self.mix}
 
     def parameters(self) -> list[nn.Parameter]:
         r"""The learned parameters, the encoder's first ($R$ and $W$ are
         buffers, not of them)."""
         return [p for m in self.modules().values() for p in m.parameters()]
-
-    def code_of(self, tokens: Tensor) -> Tensor:
-        r"""The code ``(B, D)`` of the tokens ``(B, T, d)``: the flat $z$,
-        or with ``mix`` $W \mathrm{vec}(z)$ (``mu``'s)."""
-        flat = tokens.flatten(1)
-        return flat if self.mix is None else self.mix(flat)
 
     def tokens(self, stacks: Tensor) -> Tensor:
         """$z_p$ ``(B, T, d)`` of the stacks ``(B, n, 3, H, W)`` (u8, or floats
@@ -435,7 +477,8 @@ class JEPAModules:
     def mu(self, stacks: Tensor) -> Tensor:
         r"""The code of the stacks (the evaluations'): the flat $z$ ``(B, T
         d)``, or with ``mix`` $W \mathrm{vec}(z)$ ``(B, D)``."""
-        return self.code_of(self.tokens(stacks))
+        flat = self.tokens(stacks).flatten(1)
+        return flat if self.mix is None else self.mix(flat)
 
 
 def build_jepa(
@@ -446,7 +489,6 @@ def build_jepa(
     checkpoint_blocks: bool = False,
     proj: str = "learned",
     latent_dim: int | None = None,
-    time_knots: Sequence[int] | None = None,
 ) -> JEPAModules:
     r"""The JEPA of ``conf.model`` (a ViT) on ``conf.device``, $d$ =
     ``token_dim``: the encoder of ``build_vae(conf, seed=seed)`` (muP's
@@ -455,9 +497,7 @@ def build_jepa(
     drawn from ``seed + PROJ_SEED``, ``"fixed"`` the $R$ of ``R_SEED``
     (module docstring, whatever ``seed``); the predictor drawn from ``seed +
     PREDICTOR_SEED`` (on the CPU, the global RNG left as it was); with
-    ``latent_dim`` $D$, ``mix`` $W$ ``(D, T d)`` of ``W_SEED``; with
-    ``time_knots`` V18d's ``tpred`` of the code (``TimePredictor``, all 0,
-    no draw; $D$, or $T d$ without ``mix``). In muP the
+    ``latent_dim`` $D$, ``mix`` $W$ ``(D, T d)`` of ``W_SEED``. In muP the
     output matrices of a learned $P$ and ``embed`` are drawn of LeCun's std
     times $k_w^{-1/2}$. The encoder depends on neither ``token_dim`` nor
     ``proj``, nor the predictor on ``proj``.
@@ -499,11 +539,7 @@ def build_jepa(
     if latent_dim is not None:
         w = gaussian_projection(latent_dim, grid * grid * token_dim, W_SEED)
         mix = Mix(w).to(dev)
-    tpred = None
-    if time_knots is not None:
-        dim = grid * grid * token_dim if latent_dim is None else latent_dim
-        tpred = TimePredictor(dim, time_knots).to(dev)
-    return JEPAModules(encoder, projection.to(dev), predictor.to(dev), mix, tpred)
+    return JEPAModules(encoder, projection.to(dev), predictor.to(dev), mix)
 
 
 # -- muP ------------------------------------------------------------------------
@@ -629,73 +665,78 @@ def jepa_terms(
     }
 
 
-def time_errors(
-    tpred: nn.Module, z0: Tensor, zm: Tensor, zp: Tensor, n: Tensor
-) -> Tensor:
-    r"""$\frac1D \lVert f(z_0, z_-; n) - z_+ \rVert^2$ ``(B,)`` of each
-    triple of codes ``z0``, ``zm``, ``zp`` ``(B, D)`` at the lags ``n``
-    ``(B,)``: $L_T$ is their mean (plans/v18d.md)."""
-    return (tpred(z0, zm, n) - zp).square().mean(1)
+def st_predict(
+    mods: JEPAModules, x: Tensor, n: Tensor, mask: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    r"""V18d's completion (plans/v18d.md, 「目的の式」) of the clips ``x`` u8
+    ``(B, K, N, 3, H, W)`` of ``K`` stacks $n$ = ``n`` ``(B,)`` apart under
+    ``mask`` ``(B, K, T)`` (``st_masks``; each clip hiding the same count
+    $m$): $\hat t$ ``(B, m, d)`` at the hidden positions ``(B, m)`` of the
+    grid $\Omega$ ($i T + p$, increasing), and the target side's tokens $t$
+    ``(B K, T, d)``.
+
+    The target side runs every stack once: $h$ ``(B K, T, w)``, $t = P h$.
+    The context of a stack is $h$ itself when it is wholly visible (the same
+    function of the same weights as a second call), none when wholly hidden,
+    and else the encoder's run on its visible positions only. The predictor
+    takes a clip's visible tokens and its hidden positions over $\Omega$, of
+    V18d's positions of $\ell = \log_2(n / $ ``ST_LAG_BASE``$)$ (V18c's for
+    $K$ = 1)."""
+    b, k, count = mask.shape
+    images = early_fusion(x.flatten(0, 1))  # (B K, 3N, H, W)
+    h = mods.encoder(images)  # (B K, T, w)
+    tokens = mods.proj(h)  # (B K, T, d)
+    flat = mask.flatten(0, 1)  # (B K, T)
+    hidden = flat.sum(1)
+    part = ((hidden > 0) & (hidden < count)).nonzero()[:, 0]
+    ctx = h
+    if len(part):
+        keep_p, _ = mask_index(flat[part])
+        seen = mods.encoder(images[part], keep_p)  # (P, V_i, w)
+        ctx = h.index_put((part[:, None], keep_p), seen)
+    keep, hide = mask_index(mask.flatten(1))  # (B, K T - m), (B, m)
+    context = take(ctx.unflatten(0, (b, k)).flatten(1, 2), keep)
+    ell = None if k == 1 else (n.double() / ST_LAG_BASE).log2()
+    return mods.predictor(context, keep, hide, ell, k), hide, tokens
 
 
-def jepa_time_terms(
+def st_terms(
     mods: JEPAModules,
     x: Tensor,
     n: Tensor,
     mask: Tensor,
     dirs: Tensor,
     lam: float,
-    sigreg_on: str,
-    *,
-    arm: str,
-    weight: float = 1.0,
+    sigreg_on: str = "flat",
 ) -> dict[str, Tensor]:
-    r"""V18d's loss (plans/v18d.md, 「腕と損失」) of the triples ``x`` u8 ``(B,
-    3, N, 3, H, W)`` ($x_{u-n}$, $x_u$, $x_{u+n}$; of ``"STperm"`` the last
-    any stack of the video) at the lags ``n`` ``(B,)``: the centres' terms
-    of ``jepa_terms`` (their ``mask`` ``(B, T)``, SIGReg along ``dirs``),
-    the codes $z$ (``JEPAModules.code_of``) of the three, the other two by a
-    second call of the encoder, and $L_T$ (``time``, of ``time_errors`` by
-    ``mods.tpred``), the gradient reaching all three:
-
-    - ``"T"``: $(1 - \lambda) L_T + \lambda S$ (no ``pred``: the spatial
-      predictor is not run);
-    - ``"ST"``, ``"STperm"``: ``jepa_terms``'s $(1 - \lambda)
-      L_{\mathrm{pred}} + \lambda S$ plus $(1 - \lambda) w L_T$, $w$ =
-      ``weight``, added last (at $w$ = 0 V18c's loss and gradients bit for
-      bit).
-
-    Also ``time_err`` ``(B,)`` (``time_errors``), the centres' ``tokens``
-    ``(B, T, d)`` and the ``codes`` ``(B, 3, D)``, detached.
-
-    Raises:
-        ValueError: ``arm`` is not a time arm of ``TIME_ARMS``, or ``mods``
-            has no ``tpred``.
-    """
-    if arm not in TIME_ARMS[1:]:
-        raise ValueError(f"the time arms are {TIME_ARMS[1:]}, not {arm!r}")
-    if mods.tpred is None:
-        raise ValueError("the time arms need the JEPA's tpred (build_jepa)")
-    b = len(x)
-    images = early_fusion(x[:, 1])
-    tokens = mods.proj(mods.encoder(images))  # (B, T, d), the centres
-    points = sigreg_points(tokens, sigreg_on, mods.mix)  # (B, D_S)
-    s = sigreg(points, points[:0], dirs)
-    z0 = points if sigreg_on == "mix" else mods.code_of(tokens)  # (B, D)
-    side = mods.code_of(mods.tokens(x[:, ::2].flatten(0, 1)))  # (2B, D)
-    zm, zp = side.unflatten(0, (b, 2)).unbind(1)
-    err = time_errors(mods.tpred, z0, zm, zp, n)
-    time = err.mean()
-    out = {"time": time, "sigreg": s}
-    if arm == "T":
-        out["loss"] = (1 - lam) * time + lam * s
-    else:
-        z_hat, hide = predict(mods, images, mask)
-        pred = (z_hat - take(tokens, hide)).square().mean()
-        out["pred"] = pred
-        out["loss"] = (1 - lam) * pred + lam * s + (1 - lam) * weight * time
-    codes = torch.stack([zm, z0, zp], 1).detach()
-    return out | {"time_err": err.detach(), "tokens": tokens.detach(), "codes": codes}
+    r"""V18d's loss $L = (1 - \lambda) L_{\mathrm{ST}} + \lambda S$
+    (plans/v18d.md, 「損失」「SIGReg」) of ``st_predict``'s clips: ``pred``
+    $L_{\mathrm{ST}}$ is the mean squared error of $\hat t$ over the hidden
+    tokens and their coordinates; ``sigreg`` $S = \frac1K \sum_i$ SIGReg of
+    the $B$ points of time $i$ (``sigreg_points`` of ``sigreg_on``, the same
+    ``dirs``), its terms in ``sigreg_times`` ``(K,)``. Also ``clip_err``
+    ``(B,)``, each clip's mean squared error, and the target side's
+    ``tokens`` ``(B K, T, d)``, detached. For $K$ = 1 and tubes, V18c's
+    ``jepa_terms`` bit for bit."""
+    b, k = mask.shape[:2]
+    z_hat, hide, tokens = st_predict(mods, x, n, mask)
+    per = tokens.unflatten(0, (b, k))  # (B, K, T, d)
+    err = (z_hat - take(per.flatten(1, 2), hide)).square()
+    pred = err.mean()
+    terms = []
+    for i in range(k):
+        z = sigreg_points(per[:, i], sigreg_on, mods.mix)  # (B, D_S)
+        terms.append(sigreg(z, z[:0], dirs))
+    each = torch.stack(terms)
+    s = each.mean()
+    return {
+        "loss": (1 - lam) * pred + lam * s,
+        "pred": pred,
+        "sigreg": s,
+        "sigreg_times": each.detach(),
+        "clip_err": err.detach().mean((1, 2)),
+        "tokens": tokens.detach(),
+    }
 
 
 def rho_in(tokens: Tensor) -> Tensor:
