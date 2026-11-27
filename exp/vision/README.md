@@ -4,6 +4,8 @@
 
 V18d（時間に並んだ 4 つの stack の今・未来・過去を 1 つの予測器で補完する、時空間の補完の JEPA）の計画は [plans/v18d.md](plans/v18d.md)、回す前に決めたことと結果は [results/v18d/README.md](results/v18d/README.md) にある。
 
+1 つの stack の中の時空間の補完から組み直す基礎（問い・原理・評価・段の順序 F0〜F3）は [plans/foundation.md](plans/foundation.md) に書き、図で読める 1 枚のページ [foundation.html](foundation.html)（ブラウザで開く）にまとめた。
+
 ## 実行方法
 
 ```bash
