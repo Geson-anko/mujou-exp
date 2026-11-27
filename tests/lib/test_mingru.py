@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from exp.lib.mingru import MinGRU, MinGRUTrace, ResidualMinGRU
+from exp.lib.mingru import MinGRU, MinGRUStack, MinGRUTrace, ResidualMinGRU
 
 
 def _bptt(cell: MinGRU, xs: torch.Tensor, deltas: torch.Tensor) -> list[torch.Tensor]:
@@ -162,3 +162,30 @@ class TestScan:
         g_want = torch.autograd.grad((want * weight).sum(), [xs, s0, *params])
         for a, b in zip(g_got, g_want, strict=True):
             torch.testing.assert_close(a, b, rtol=0, atol=1e-12)
+
+
+class TestMinGRUStack:
+    @pytest.mark.parametrize("layers", [1, 2, 3])
+    def test_the_scan_is_the_cells_step_by_step(self, layers):
+        """The stack's scan is its cells run step after step from 0: the
+        minGRU's state, then each residual layer on the one below
+        (``exp/video/dyn``'s ``DynamicsStack`` read at its top)."""
+        torch.manual_seed(2)
+        stack = MinGRUStack(3, 5, layers)
+        x = torch.randn(2, 7, 3)
+        s = torch.zeros(2, 5)
+        hs = [torch.zeros(2, 5) for _ in range(layers - 1)]
+        want = []
+        for t in range(7):
+            s = stack.first(x[:, t], s)
+            y = s
+            for i, layer in enumerate(stack.rest):
+                y_next = layer(y, hs[i])
+                hs[i] = y_next - y
+                y = y_next
+            want.append(y)
+        torch.testing.assert_close(stack.scan(x), torch.stack(want, 1))
+
+    def test_no_layer_is_an_error(self):
+        with pytest.raises(ValueError, match="at least 1 layer"):
+            MinGRUStack(3, 5, 0)

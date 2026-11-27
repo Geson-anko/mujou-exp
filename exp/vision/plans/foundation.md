@@ -97,3 +97,5 @@ F3 の後に、元の計画の流れ（ストリーム、時間相関の SIGReg�
 - minGRU の大きさ（層の数・幅）と学習の規則（早期終了、seed の数）
 - `time_r2` と $E^{\mathrm{lin}}$ の非劣性の余裕
 - $s$ の範囲の上端（128）が動画の長さと読み出しの速さで実際に回るか
+
+追記（2026-11-27）: minGRU の大きさと学習の規則、`time_r2` の閾値の式と $E^{\mathrm{lin}}$ の非劣性の余裕は決めた。中身は [results/foundation/README.md](../results/foundation/README.md) の F0 の節にある。$s$ の上端は F1〜F3 の学習の側で決める。

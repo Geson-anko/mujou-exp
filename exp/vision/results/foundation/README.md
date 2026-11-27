@@ -1,0 +1,111 @@
+# 基礎（F0〜F3）の回す前に決めたこと・実装・結果
+
+計画は [plans/foundation.md](../../plans/foundation.md)（問い・原理・評価・段の順序）。比べる相手は他の手法（`pca`・`mean8`・VAE の `v16`・`v17`・学習前）だけで、以前の JEPA（V18〜V18d）の結果とは比べない。
+
+## F0: 評価の土台（回す前に決めたこと、2026-11-27）
+
+物差しの符号の dyn の値は、まだ 1 つも読んでいない。例外は、下の「値を見た後の直し」に書いたものだけである。
+
+### 未来と過去: minGRU のダイナミクスモデル（主）
+
+- **入力**: 符号の系列は、重ならない stack（$s = 1$、0.8 秒おき）で作る。各符号を、参照の組で白色化した PCA64 の座標 $w$ にする（dyn/copy と同じ `midpoint.Whitener`）
+- **組**: dyn/copy と同じ分け方にする（Zurich 以外の動画を seed 4101 の置換で、記録 1 本・検証 1 本・訓練に分ける）。評価は Zurich で行い、カットをまたぐ中心は除く。ブロックは 128 秒（160 step）で、Zurich では 64 秒ずらしたブロックも並べる
+- **モデル**: 状態を持つ minGRU（`exp/video/dyn` と同じ系統）。1 層と 2 層の 2 通りで、幅は 256。刻み $\Delta \in \{0.8, 1.6, 3.2, 6.4, 12.8, 25.6\}$ 秒ごとの線形の頭を、共有の minGRU の上に並べ、直接当てる（巻き戻さない）
+- **学習**: AdamW（lr $10^{-3}$、wd $10^{-2}$）、長さ 64 の窓（はじめの 8 step は損失に入れない burn-in）、検証の動画の損失で早期終了（patience 10 エポック）、seed は 6001・6002・6003
+- **層の数の選び方**: 主に出すのは、検証の組の損失が小さい方（seed の平均、同点なら少ない方）である。Zurich では選ばない。両方を記録に残す
+- **過去**: 時間を反転した系列で、同じものを別に学ぶ
+- **比と主の数**: 比は、copy の誤差で割った $R_{\mathrm{copy}}$ と、平均の予測の誤差で割った $R_{\mathrm{clim}}$ の 2 つ。主の数は、0.8〜25.6 秒の $\log R$ の平均（`dynpred.mean_log`）と、その seed のばらつき
+- **判定の言葉**: dyn/copy と同じ。2 つの分母の区間が同じ向きに良いときだけ「良い」と書く（`judge_dyn.words`）。区間の $\sigma_{ab}$ には、次の 2 つのうち大きい方を使う。`rot`（`pca` の白色化した符号に乱数の直交行列を掛けたもの）対 `pca` の seed の揺れと、対の seed の揺れである
+- **下限**: 線形の 2 時点（dyn/copy の `fit_linear`）を両方向に並べる
+
+### 今とガード
+
+- **今（stack の中の補完）**: 格子を空間の軸で半分に切り、一方の半分の符号から他方を ridge で当てる（左右・上下の 4 つの向き）。時間の軸で切った前半 → 後半と後半 → 前半は、stack の中の未来・過去として並べる（記述）。分母は、copy（両半分の平均を引いたもの）と平均の 2 つ
+- **time_r2**: トークンの分散のうち、時間に沿った平均で説明できる割合。閾値は $\max$(学習前の符号, 画素の tubelet) + 0.05
+- **内容**: 符号から観測（stack の最後のフレームを 32×32 に平均したもの）を ridge で読み出す $E^{\mathrm{lin}}$ と、その変化の版 $E^{d,\mathrm{lin}}$ を使う。$\alpha$ は検証の組で選び、MLP は使わない
+- **非劣性**: 計画の「$E^{\mathrm{lin}}$(学習した符号) $\le 1.10 \times \max(E^{\mathrm{lin}}(\texttt{pca}), E^{\mathrm{lin}}(\text{学習前}))$」は、誤差 $U = 1 - E$ についての式として読む。つまり $U \le 1.10 \max(U_{\texttt{pca}}, U_{\text{学習前}})$ である。$E$ は高いほど良い量なので、そのまま上からの抑えとして読むと、ガードにならない
+- **閾値の確定**: time_r2 の閾値と非劣性の基準値は、学習した符号の値を見る前に、学習前と物差しの値から数を確定し、ここに書く（学習前の JEPA の符号が出たとき）
+
+## 実装（2026-11-27）
+
+| ファイル | 中身 |
+| -- | -- |
+| `exp/lib/mingru.py` | `MinGRUStack`（minGRU のあとに残差の minGRU を重ね、0 の状態から系列を読む。`exp/video/dyn` の `DynamicsStack` を頂上で読むものと同じ） |
+| `exp/lib/gru_dyn.py` | 系列の組（`seq_set`、反転は `SeqSet.reversed`）、予測器 `GRUPredictor`、学習 `fit_gru`、ブロックの和 `gru_sums`、窓の神託 `best_window` |
+| `exp/lib/synth_series.py` | 線形ガウスの状態空間モデル（`lgssm`・`lgssm_cov`・`lgssm_gamma`）と、カルマンフィルタの最良の誤差 `kalman_errors` |
+| `exp/vision/fnd_dyn.py` | 実データの系列の符号化、minGRU と 2 時点の線形の行、合成の確かめ、CLI |
+| `exp/vision/fnd_guard.py` | tubelet、`time_r2`、半分の視野、線形の内容、CLI |
+| `exp/vision/results/foundation/judge_fnd.py` | 層の数の選び方、対の区間と判定の言葉、確かめのまとめ |
+
+### 予測器の形
+
+刻みごとに $\hat w_{t+\Delta} = M_\Delta [w_t; w_{t-\Delta}] + c_\Delta + A_\Delta y_t + b_\Delta$ とする。$y_t$ は minGRU の頂上である。$(M_\Delta, c_\Delta)$ は dyn/copy の 2 時点の線形（訓練の組で ridge、検証の組で $\alpha$）から始め、頭 $(A_\Delta, b_\Delta)$ は 0 から始める。全てを学習する。エポック 0 は線形そのものなので、族は下限を含み、早期終了は、検証の組で線形より悪い所では止まらない。1 エポックは訓練の系列を 1 回通すことで、窓を `window - burn` ずつずらして並べる（各時刻を 1 回ずつ採点する）。並べ始めの位置は、エポックごとに seed の生成器で一様に引く。
+
+### CLI と物差しの符号の読み方
+
+符号は `fnd_dyn encode` で、動画の stack から作る。物差しは `--code pca|mean8`（`jepa_eval.PCACode`。seed は V18c の設定の seed + `PCA_SEED`）と `--vae <名前> <ckpt>`（VAE の $\mu$）で指定する。JEPA の符号は `--places <名前> <module:function> <arg>` で渡す。`function(arg, device)` は、u8 の stack `(B, n, 3, S, S)` から符号 `(B, D)`（新しい JEPA では stack ごとの $z \in \mathbb{R}^{4096}$）への関数を返す。設定（stack の形と参照の組）は V18c の run の設定から読み、Zurich のカットは `runs/v18c-tlin` から読む。
+
+```bash
+python -m exp.vision.fnd_dyn encode --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn --code pca
+python -m exp.vision.fnd_dyn encode ... --vae v16 <ckpt>
+python -m exp.vision.fnd_dyn encode ... --places init <module:function> <arg>
+python -m exp.vision.fnd_dyn rot --out runs/fnd-dyn                      # σ_rot 用
+python -m exp.vision.fnd_dyn gru --out runs/fnd-dyn --code pca --layers 1 --dir future --seed 6001 --device cuda
+python -m exp.vision.fnd_dyn lin --out runs/fnd-dyn --code pca
+python -m exp.vision.fnd_dyn check --out runs/fnd-dyn/checks --name kalman --layers 1 --device cuda
+python -m exp.vision.fnd_guard now --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn --code pca
+python -m exp.vision.fnd_guard obs --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn
+python -m exp.vision.fnd_guard content --out runs/fnd-dyn --code pca
+python -m exp.vision.fnd_guard time-r2 --config <v18c run> --sets runs/v18c-tlin --out runs/fnd-dyn
+uv run python -m exp.vision.results.foundation.judge_fnd --dir runs/fnd-dyn
+```
+
+### テストのオラクル
+
+- **系列の組**: 中心の余白を数えて照合した。反転は 2 回で元に戻り、反転した組の $t + \Delta$ は元の $t - \Delta$ になる。中心の予測は窓の中の符号だけの関数で、窓の外を変えてもビットで変わらない。分母は手計算と照合した。学習前の予測は、2 時点の線形（`fit_linear` の予測）に一致する
+- **窓の神託** `best_window`: 白い雑音では $k$、スカラーの AR(1) では $1 - r^{2\Delta}$ に一致する。窓 2・刻み 1 では `dynpred.best_linear` に、長い窓ではカルマンフィルタの誤差に一致する
+- **状態空間モデル**: 共分散は Lyapunov の式を $10^{-12}$ で満たし、標本の積は $\Gamma(\ell)$ にバッチ平均の 5 SE で合う。完全に観測した AR(1) のカルマンの誤差は、$\mathrm{tr}(\Sigma - F^\Delta \Sigma F^{\Delta\top})$ に $10^{-10}$ で一致する
+- **合成の確かめ**（`fnd_dyn check`、テストでは小さい版を slow で回す）。下限は $\hat E_\Delta \ge E^*_\Delta - z\,\mathrm{SE}$、上限は $\hat E_\Delta \le E^*_\Delta (1 + p/(nk)) + z\,\mathrm{SE}$ である（$p$ は予測器のパラメータの数、$nk$ は採点した値の数で、正しいモデルの最小二乗の漸近の超過）。$z = 4$
+  - (a) `ou`: 多次元の AR(1)。$E^*$ は閉じた式の最良の線形予測
+  - (b) `kalman`: 単位分散の AR(1) の状態（$\phi$ は 0.9〜0.99）を乱数の直交行列で混ぜ、分散 1 の雑音を足して観測する。確かめる条件は 3 つある。窓の最良がカルマンの最良と区別できないこと、上下の限界に入ること、2 つの神託の差が許容を超える刻み（1 つ以上）で、2 時点の線形の最良より良いことである。学習しない予測器（2 時点の線形だけ）は落ちる（陰性の対照）
+  - (c) `reverse`: 対称な $F$（$\Gamma(\ell) = \Gamma(\ell)^\top$）を部分観測した、時間反転に対称な過程。未来と過去を別に学び、両方が限界に入り、誤差の差が、対にしたブロックの $z$ SE と超過の和に収まる
+  - (d) `iid`: 白い雑音。$R_{\mathrm{clim}} \approx 1$、$R_{\mathrm{copy}} \approx 1/2$
+- **今とガード**: tubelet の画素と位置を、フレーム番号と列を値にした stack で照合した。半分が保つ画素は、その半分の画素と同じ多重集合になる。`time_r2` は、時間に沿って一定のトークン（時刻ごとのずれも含む）で 1、時間に独立なトークンで $1/T$ になる。AR(1) の場の前半 → 後半は、白色化した座標での Schur 補元の閉じた式に、ブロックの 4 SE で合う。一方の半分に定数を足しても、和は動かない。観測の一部 $u$ を持つ符号では $E^{\mathrm{lin}} = \mathrm{tr}\,\Sigma_u / \mathrm{tr}\,\Sigma_y$ になり、$E^{d,\mathrm{lin}}$ は AR(1) の閉じた式に合う
+- **判定**: 検証の損失が最小の層の数を選び、同点なら少ない方を選ぶ。分子が半分の符号は、両方の分母で $\psi = \log \tfrac12$ になり、「a の予測が b より良いと区別できた」になる。分母を逆向きに動かすと、「分母で向きが割れた」になる
+
+## 値を見た後の直し（2026-11-27）
+
+`pca` の試しの run（検証の組の損失だけを読んだ。Zurich の値は判定に使わない）と、合成の確かめの試しを見た後に入れた直しである。どれも、族が神託の最良を含むか、早期終了の刻みが過学習より細かいか、という理論で根拠づけた。
+
+1. **2 時点の線形を足した。** minGRU の頂上は、入力の、ゲートつきの移動平均である。線形の頭だけでは、0.8 秒で `pca` の 1 時点の線形より悪いままだった（検証の組の損失は 0.808、2 時点の線形は 0.791）。2 時点の線形から始め、頭を 0 から始めれば、族は下限を含む
+2. **`kalman` の過程を、減衰する回転から、混ぜた AR(1) の状態にした。** minGRU の状態は、入力の、正の実数の減衰の指数の和である（ゲートが一定なら $s_t = (1-u) s_{t-1} + u \tilde s_t$）。回転のカルマンフィルタの減衰は振動するので、この族の外にある。そのため 0.8 秒で、神託より 4 % 上に残った。AR(1) の状態を直交行列で混ぜて雑音を足した過程では、各状態のフィルタは減衰 $\phi_i (1 - K_i) \in (0, 1)$ の移動平均で、minGRU の単位そのものである。だから最良が族に入り、神託との差は学習の差として読める。$\phi$ の範囲（0.9〜0.99）は、2 時点の線形と最良の差が許容（$p/(nk)$ と $z$ SE）より十分に大きくなるように、神託の値だけで選んだ（0.8 秒で 8 %）
+3. **2 時点の線形も学習するようにした。** 線形を固定すると、最良が $w_{t-\Delta}$ に 2 時点の線形と違う重みを置く場合に、族の外に出る。minGRU の状態は指数の和なので、遅れ $w_{t-\Delta}$ を作れない。そこで、2 時点の線形から始めて、一緒に学ぶ
+4. **1 エポックを、訓練の系列を 1 回通すことにした。** 途中で一度、1 エポックを「全ての窓の始点を 1 回ずつ」にした（窓は 64、burn-in は 8 なので、各時刻を 56 回採点する。つまり 56 回通すことになる）。その前の形（ずらし幅 `window - burn`、位相は 0 に固定）では、線形が固定だったこともあり、合成の確かめが学ぶ前に止まったためである。しかし 56 回通す形では、早期終了の刻みが過学習より粗くなった。検証の損失は最初の確かめ（1 エポック目）で最小になり、2 層の minGRU は `kalman` の上限を超えた（0.8 秒で神託より 2.6 % 上、上限は 2.45 %）。1 回通す形（位相はエポックごとに乱数）に戻すと、`kalman` は 1 層で 22 エポック目、2 層で 11 エポック目に最小になり、上限の内に入った
+## 結果
+
+### F0 の合成の確かめ（2026-11-27、snapshot `9c6917743105`）
+
+決めた設定（$k = 64$、幅 256、窓 64、AdamW lr $10^{-3}$・wd $10^{-2}$、patience 10、seed 6001）で、1 層と 2 層の両方を回した。系列は訓練 200000・検証 20000・試し 100000 step、SE は 500 step のブロックのバッチ平均、$z = 4$。**8 つ全てが通った。** テストの小さい版（$k = 3$、幅 16）の slow の 5 本も通った。
+
+| 確かめ | 層 | 最良のエポック | 誤差 / 神託 − 1（0.8〜25.6 秒） | 上限 / 神託 − 1 | ほか |
+| -- | -- | -- | -- | -- | -- |
+| `ou` | 1 | 0 | 0.001〜0.0006 | 0.016 | $R_{\mathrm{clim}}$ 0.84 → 1.00 |
+| `ou` | 2 | 0 | 0.001〜0.0006 | 0.027 | |
+| `kalman` | 1 | 22 | 0.009〜0.008 | 0.016〜0.019 | 2 時点の線形の最良（91.1）より良い（85.0）。0.8〜12.8 秒の 5 刻みで差が許容を超え、その全てで良い |
+| `kalman` | 2 | 11 | 0.015〜0.009 | 0.027〜0.029 | 同上 |
+| `reverse` | 1 | 3（未来）・3（過去） | 0.003〜0.002 | 0.017 | 未来と過去の差は 0.03 以下（許容 2.0〜2.5） |
+| `reverse` | 2 | 3・3 | 0.003〜0.002 | 0.027 | 差は 0.04 以下（許容 3.5〜4.1） |
+| `iid` | 1 | 0 | 0.0005 | 0.016 | $R_{\mathrm{clim}} = 1.00$、$R_{\mathrm{copy}} = 0.50$ |
+| `iid` | 2 | 0 | 0.0005 | 0.027 | 同上 |
+
+下限（神託 − $z$ SE）は全ての行で −0.002〜−0.004 で、どの誤差もその上にある。窓 64 の最良とカルマンフィルタの最良の差は、`kalman` で $10^{-8}$ 未満だった。`ou`・`iid` は、最良が線形そのもの（エポック 0）で、学習しても検証の組で良くならなかった。理論どおりである。
+
+### 記述: `pca` の検証の組での minGRU
+
+上の直しの後、`pca` の未来では、1 層・2 層とも検証の組の損失がエポック 0（2 時点の線形、0.7911）で最小になり、学習で良くならなかった（10 エポック後に 0.7935・0.7937）。だから今の学習の規則では、`pca` の minGRU の値は 2 時点の線形と同じになる。符号の比べは同じ規則で行うので、判定の形は変わらない。Zurich の値はまだ読んでいない。
+
+## 再現性
+
+- mujou: `5aa37738dd04`
+- コードの snapshot: 合成の確かめは `9c6917743105`（作業ツリー、`just fleet push`）。直しの前の版（`6247c7725943`）の出力は `old/` に残した
+- 出力: `/nas/geson/mujou-exp/runs/fnd-f0/`（合成の確かめ。job と worker のスクリプトは `scripts/`）。`pca` の試しの run は `/nas/geson/mujou-exp/runs/fnd-f0-smoke/`（判定に使わない）

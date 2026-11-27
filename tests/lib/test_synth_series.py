@@ -11,7 +11,11 @@ orthogonality of $\cos j\theta$, exact) and their phases of huge $j$ against
 exact integer arithmetic. A rotation's triples have $G = \sin^2(\omega
 n/2)$ to $10^{-12}$; a chained rotation is each block's own rotation; the
 OU integral's mean squared increments against the closed form $D(n)$
-within 4.5 standard errors over columns.
+within 4.5 standard errors over columns. The state-space model's covariance
+solves its Lyapunov equation to $10^{-12}$, its samples' products meet
+$\Gamma(\ell)$ within 5 standard errors of batch means, and the Kalman
+filter of a fully observed AR(1) is $\mathrm{tr}(\Sigma - F^\Delta \Sigma
+F^{\Delta\top})$ to $10^{-10}$.
 """
 
 import math
@@ -29,7 +33,11 @@ from exp.lib.synth_series import (
     complex_ou,
     complex_ou_gamma,
     gauss_kernel,
+    kalman_errors,
     kernel_acf,
+    lgssm,
+    lgssm_cov,
+    lgssm_gamma,
     ou,
     ou_integral,
     ou_integral_d,
@@ -220,3 +228,67 @@ class TestDynProcesses:
         x = torch.arange(6, dtype=torch.float64)[:, None]
         torch.testing.assert_close(box_mean(x, 3)[:, 0],
                                    torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64))  # fmt: skip
+
+
+class TestStateSpace:
+    """The state-space model: its covariance solves the Lyapunov equation,
+    its samples follow ``lgssm_gamma``, and the Kalman filter's error of a
+    fully observed AR(1) is the closed form."""
+
+    @staticmethod
+    def _model():
+        f = torch.tensor(
+            [[0.7, 0.2, 0.0], [-0.1, 0.5, 0.3], [0.0, 0.2, 0.6]], dtype=torch.float64
+        )
+        q = torch.tensor(
+            [[1.0, 0.3, 0.0], [0.3, 1.0, 0.0], [0.0, 0.0, 0.5]], dtype=torch.float64
+        )
+        h = torch.tensor([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float64)
+        r = 0.4 * torch.eye(2, dtype=torch.float64)
+        return f, q, h, r
+
+    def test_the_covariance_is_stationary(self):
+        f, q, _, _ = self._model()
+        s = lgssm_cov(f, q)
+        torch.testing.assert_close(f @ s @ f.T + q, s, rtol=0, atol=1e-12)
+
+    @pytest.mark.parametrize("lag", [0, 1, 3])
+    def test_samples_follow_the_autocovariance(self, lag):
+        """$\\overline{w_{t+\\ell} w_t^\\top}$ of a long series against
+        $\\Gamma(\\ell)$, within 5 standard errors of batch means (blocks
+        of 1000 steps, far beyond the memory $0.8^{1000}$)."""
+        f, q, h, r = self._model()
+        w = lgssm(200_000, f, q, h, r, torch.Generator().manual_seed(3))
+        prod = (w[lag:, :, None] * w[: len(w) - lag, None, :])[:199_000]
+        per = prod.reshape(199, 1000, 2, 2).mean(1)
+        se = per.std(0) / math.sqrt(199)
+        assert ((per.mean(0) - lgssm_gamma(lag, f, q, h, r)).abs() <= 5 * se).all()
+
+    def test_negative_lags_transpose(self):
+        f, q, h, r = self._model()
+        torch.testing.assert_close(
+            lgssm_gamma(-2, f, q, h, r), lgssm_gamma(2, f, q, h, r).T
+        )
+
+    def test_kalman_of_a_fully_observed_ar1(self):
+        """$H = I$, $R = 0$: the state is seen, so $E_\\Delta =
+        \\mathrm{tr}(\\Sigma - F^\\Delta \\Sigma F^{\\Delta\\top})$."""
+        f, q, _, _ = self._model()
+        eye = torch.eye(3, dtype=torch.float64)
+        s = lgssm_cov(f, q)
+        want = []
+        for lag in (1, 2, 5):
+            fd = torch.linalg.matrix_power(f, lag)
+            want.append(float((s - fd @ s @ fd.T).trace()))
+        got = kalman_errors(f, q, eye, 0 * eye, (1, 2, 5))
+        torch.testing.assert_close(
+            got, torch.tensor(want, dtype=torch.float64), rtol=1e-10, atol=0
+        )
+
+    def test_noise_raises_the_error_by_at_least_its_own(self):
+        """Seen through noise $R$, the error is at least the noiseless one
+        plus $\\mathrm{tr}\\,R$ (the noise of the target is unpredictable)."""
+        f, q, h, r = self._model()
+        noisy = kalman_errors(f, q, h, r, (1, 4))
+        clean = kalman_errors(f, q, h, 0 * r, (1, 4))
+        assert (noisy >= clean + r.trace() - 1e-12).all()

@@ -57,6 +57,20 @@ processes of known autocovariance $\Gamma(\ell) = E[x_{t+\ell} x_t^\top]$
   \sum_{i=0}^{W-1} x_{t-i}$; of an AR(1) of coefficient $r$, $\gamma_y(\ell)
   = \frac1{W^2} \sum_{i,j=0}^{W-1} r^{\lvert \ell + i - j \rvert}$ exactly
   (``box_ar1_acf``, a finite sum)
+
+The minGRU's checks (``exp.lib.gru_dyn``; ``exp/vision/plans/foundation.md``,
+F0) add the linear Gaussian state-space model (``lgssm``): $x_{t+1} = F x_t
++ \eta_t$, $\eta \sim N(0, Q)$, from its stationary law $N(0, \Sigma)$,
+$\Sigma = F \Sigma F^\top + Q$ (``lgssm_cov``), observed as $w_t = H x_t
++ \nu_t$, $\nu \sim N(0, R)$: $\Gamma(\ell) = H F^\ell \Sigma H^\top$
+($+ R$ at $\ell = 0$; ``lgssm_gamma``). Of a Gaussian process the least
+error of any predictor of $w_{t+\Delta}$ from the whole past $w_{\le t}$
+is the stationary Kalman filter's (``kalman_errors``): with $P$ the
+filtered covariance (the fixed point of $P^- = F P F^\top + Q$, $P = P^- -
+P^- H^\top (H P^- H^\top + R)^{-1} H P^-$), $E_\Delta = \mathrm{tr}(H
+P_\Delta H^\top + R)$, $P_\Delta = F^\Delta P F^{\Delta\top} +
+\sum_{j < \Delta} F^j Q F^{j\top}$. Fully observed ($H = I$, $R = 0$) it
+is the AR(1)'s $\mathrm{tr}(\Sigma - F^\Delta \Sigma F^{\Delta\top})$.
 """
 
 import math
@@ -73,7 +87,11 @@ __all__ = [
     "complex_ou",
     "complex_ou_gamma",
     "gauss_kernel",
+    "kalman_errors",
     "kernel_acf",
+    "lgssm",
+    "lgssm_cov",
+    "lgssm_gamma",
     "ou",
     "ou_integral",
     "ou_integral_d",
@@ -322,3 +340,95 @@ def box_ar1_acf(r: float, width: int, lags: Tensor) -> Tensor:
     for i, lag in enumerate(lags.tolist()):
         out[i] = (count * r ** (lag + m).abs()).sum() / width**2
     return out
+
+
+def lgssm_cov(f: Tensor, q: Tensor) -> Tensor:
+    r"""The stationary covariance $\Sigma = \sum_{j \ge 0} F^j Q F^{j\top}$
+    ``(m, m)`` of $x_{t+1} = F x_t + \eta_t$ (``f``, ``q`` ``(m, m)``; the
+    spectral radius of $F$ below 1), by doubling: $\Sigma_{i+1} = \Sigma_i
+    + A_i \Sigma_i A_i^\top$, $A_{i+1} = A_i^2$ from $\Sigma_0 = Q$, $A_0 =
+    F$ ($\Sigma_i$ the sum of the first $2^i$ terms), until $A_i$ vanishes.
+
+    Raises:
+        ValueError: $A_i$ does not vanish in 64 doublings.
+    """
+    s, a = q.double().clone(), f.double().clone()
+    for _ in range(64):
+        s = s + a @ s @ a.T
+        a = a @ a
+        if float(a.abs().max()) < 1e-300**0.5:
+            return (s + s.T) / 2
+    raise ValueError("F's powers do not vanish: its spectral radius is not below 1")
+
+
+def lgssm(
+    n: int, f: Tensor, q: Tensor, h: Tensor, r: Tensor, gen: torch.Generator
+) -> Tensor:
+    r"""``(n, k)`` observations $w_t = H x_t + \nu_t$ of the state-space
+    model (module docstring; ``h`` ``(k, m)``, ``r`` ``(k, k)``), $x_0$
+    drawn from $N(0, \Sigma)$, then $\eta_t$, then $\nu_t$, by ``gen``."""
+    f, q, h, r = f.double(), q.double(), h.double(), r.double()
+    m, k = f.shape[0], h.shape[0]
+    x0 = torch.linalg.cholesky(lgssm_cov(f, q)) @ white(1, m, gen)[0]
+    eta = white(n, m, gen) @ _root(q).T
+    nu = white(n, k, gen) @ _root(r).T
+    x = torch.empty(n, m, dtype=_F64)
+    x[0] = x0
+    for t in range(1, n):
+        x[t] = f @ x[t - 1] + eta[t]
+    return x @ h.T + nu
+
+
+def _root(c: Tensor) -> Tensor:
+    """A square root $L$ of the PSD ``c`` ($L L^\top = c$; 0 allowed)."""
+    vals, vecs = torch.linalg.eigh((c + c.T) / 2)
+    return vecs * vals.clamp(min=0).sqrt()
+
+
+def lgssm_gamma(lag: int, f: Tensor, q: Tensor, h: Tensor, r: Tensor) -> Tensor:
+    r"""$\Gamma(\ell) = E[w_{t+\ell} w_t^\top]$ ``(k, k)`` of the model
+    (module docstring); $\Gamma(-\ell) = \Gamma(\ell)^\top$."""
+    f, h = f.double(), h.double()
+    sigma = lgssm_cov(f, q)
+    g = h @ torch.linalg.matrix_power(f, abs(lag)) @ sigma @ h.T
+    if lag == 0:
+        return g + r.double()
+    return g if lag > 0 else g.T
+
+
+def kalman_errors(
+    f: Tensor, q: Tensor, h: Tensor, r: Tensor, lags: tuple[int, ...],
+    iters: int = 100000, tol: float = 1e-14,
+) -> Tensor:  # fmt: skip
+    r"""The least errors $E_\Delta$ ``(L,)`` float64 of $w_{t+\Delta}$
+    from the whole past at each of ``lags`` (module docstring): the Riccati
+    recursion iterated from $P = \Sigma$ until $P$ moves less than ``tol``
+    times the largest entry of $\Sigma$, at most ``iters`` times.
+
+    Raises:
+        ValueError: The recursion has not converged.
+    """
+    f, q, h, r = f.double(), q.double(), h.double(), r.double()
+    p = lgssm_cov(f, q)
+    scale = float(p.abs().max())
+    for _ in range(iters):
+        prior = f @ p @ f.T + q
+        gain = prior @ h.T @ torch.linalg.pinv(h @ prior @ h.T + r)
+        new = prior - gain @ h @ prior
+        new = (new + new.T) / 2
+        moved = float((new - p).abs().max())
+        p = new
+        if moved <= tol * scale:
+            break
+    else:
+        raise ValueError(f"the Riccati recursion did not converge in {iters} steps")
+    out = []
+    for lag in lags:
+        fd = torch.linalg.matrix_power(f, lag)
+        pd = fd @ p @ fd.T
+        fj = torch.eye(f.shape[0], dtype=_F64)
+        for _ in range(lag):
+            pd = pd + fj @ q @ fj.T
+            fj = f @ fj
+        out.append(float((h @ pd @ h.T + r).trace()))
+    return torch.tensor(out, dtype=_F64)
