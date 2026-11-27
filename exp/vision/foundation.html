@@ -204,6 +204,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 .dg text.xs { font-size: 12px; }
 .dg circle.st { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
 .math { font-family: "Times New Roman", serif; font-size: 1.12em; }
+.dg .blk { fill: none; stroke: var(--ink); stroke-width: 1; }
 </style>
 <svg class="defs" width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
@@ -231,7 +232,9 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <dt>成功の最低線</dt>
     <dd>未来と過去の予測しやすさで、画素の PCA（<code>pca</code>）を超えること。そのうえで、それがずるでないことをガードで示すこと。</dd>
     <dt>進め方</dt>
-    <dd>まず評価の土台（F0）を作って確かめます。次に、箱の形（F1）、stack の中の時間の補完（F2）、時間の尺度（F3）の順に、1 段に 1 つずつ変えます。<code>pca</code> を超えたかどうかは F3 で判定します。</dd>
+    <dd>まず評価の土台（F0）を作って確かめます。次に、V-JEPA の multi-block を tubelet の箱にかけた形（F1）、ブロックの時間の長さも引く形（F2）、時間の尺度（F3）の順に、1 段に 1 つずつ変えます。<code>pca</code> と VAE を超えたかどうかは F3 で判定します。</dd>
+    <dt>比べる相手</dt>
+    <dd>比べる相手は、他の手法（<code>pca</code>・VAE の <code>v16</code>・<code>v17</code>・<code>mean8</code> などの物差し）だけです。以前の JEPA（V18〜V18d）の結果とは比べません。</dd>
   </dl>
 </section>
 
@@ -278,7 +281,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <section id="principle">
   <div class="sec-head"><div class="eyebrow">3</div><h2>原理（学習）</h2></div>
   <div class="prose">
-    <p>Fable さんの提案を土台にします。V18c から変えるのは、<b>トークンの箱の形だけ</b>です。箱の空間の大きさは提案の 16×16 ではなく、ユーザーの指摘で 8×8 にしました。空間の細かさを V18c と揃え、比べに交絡が入らないようにするためです。</p>
+    <p>Fable さんの提案を土台にします。V18c から変えるのは、<b>トークンの箱の形だけ</b>です。箱の空間の大きさは提案の 16×16 ではなく、ユーザーの指摘で 8×8 にしました。64×64 のフレームには 8×8 がちょうどよいためです。</p>
   </div>
   <dl class="gloss">
     <dt>stack</dt>
@@ -286,13 +289,13 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <dt>トークン</dt>
     <dd>続く 2 枚 × 8×8 画素の tubelet です。格子は Ω = T × P（時刻 4 × 空間 8×8 = 256 個）です。V18c は 8 枚 × 8×8 画素の箱で、格子は時刻 1 × 空間 8×8 でした。<b>空間の細かさ（パッチ 8）は V18c と同じで、違いは stack の時間を 4 つに分けたことだけです。</b>64×64 のフレームならパッチは 8×8 がちょうどよい、というのがユーザーの指摘です（2026-11-27）。early fusion は「時刻が 1 点の特別な場合」として含まれます。</dd>
     <dt>トークンの次元</dt>
-    <dd><var>d</var> = 4 です。平らにした列は 256 × 4 = 1024 次元で、固定の <var>W</var>（1024 × 1024、正方）・符号の次元・SIGReg の条件は V18c と同じです。<var>d</var> = 16 のままだと、列は 4096 次元になります。すると <var>W</var> の零空間の 3072 次元は SIGReg に縛られず、時間に沿って一定のトークンを罰なしで作れてしまいます（Fable さんの提案の 4 節）。<var>d</var> が変わるので、K3 などの自明な解の閾値は F1 の前に導き直します。</dd>
+    <dd><var>d</var> = 16 で、V18c と同じです。平らにした列は 256 × 16 = 4096 次元です。固定の <var>W</var> を 4096 × 4096 の正方行列にし、<var>z</var> = <var>W</var> vec(<var>t</var>) ∈ ℝ<sup>4096</sup> とします。本家の I-JEPA・V-JEPA は、的をエンコーダの幅のままにします。ただし本家は、EMA と stop-gradient で崩壊を防いでいます。ここでは EMA を使わず、SIGReg だけで崩壊を防ぎます。この形では、トークンの次元 <var>q</var> が、K3（全てのトークンが同じ符号）に対する罰 0.241 <var>N</var> (1/<var>q</var> − 1/<var>D</var>) を決めます（<var>N</var> = 128）。幅のまま（<var>q</var> = 1024）では罰が約 0.03 で、K3 を防げません。<var>d</var> = 16・<var>D</var> = 4096 では罰が 1.92 で、V18c（1.90）と同じ強さで K3 を排除します。「時間に沿って一定のトークン」に対する罰は約 0.02 と弱く、学習の側では防げません。そのため、ガードの <code>time_r2</code> で必ず確かめます。</dd>
     <dt>計算量</dt>
     <dd>トークンは V18c の 4 倍です。1 step は 3〜4 倍かかり、長い run 1 本は 6〜8 時間と見込みます。これは推測で、F1 の試しで測ります。</dd>
     <dt>エンコーダ</dt>
     <dd>V18c と同じ ViT です。時刻も位置もまたいで attention をかけ、<b>再帰はありません</b>。見えるトークンだけを通します。</dd>
     <dt>符号</dt>
-    <dd><var>z</var> = <var>W</var> vec(<var>t</var>(Ω)) ∈ ℝ<sup>1024</sup> で、stack ごとに 1 つです。固定の <var>R</var>・<var>W</var> は V18c と同じです。</dd>
+    <dd><var>z</var> = <var>W</var> vec(<var>t</var>(Ω)) ∈ ℝ<sup>4096</sup> で、stack ごとに 1 つです。<var>t</var> = <var>R</var> <var>h</var> で、固定の <var>R</var> は V18c と同じ 16 × 1024 です。</dd>
   </dl>
 
   <figure>
@@ -354,137 +357,808 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   <div class="prose">
     <p>V18c の式で空間の格子 P だった所を、時空間の格子 Ω に読み替えただけです。stop-gradient も EMA もありません。</p>
     <h3>マスクの族</h3>
-    <p>隠し方は 2 種類あり、各 step で半分ずつ使います。1 つは<b>管</b>で、V18c と同じ空間の族を 4 つの時刻すべてにかけます。この空間の族は粗い 4×4 の族 F<sub>8</sub> を 8×8 に広げたものです。これが<b>今</b>の補完です。もう 1 つは 4 つの時刻のうち 2 つを丸ごと隠す 6 通りです。{3,4} が<b>未来</b>、{1,2} が<b>過去</b>、{2,3} が間、{1,4} が外向き、{1,3}・{2,4} が補間です。どのトークンも隠れる確率は 1/2 です。隠す数は常に半分の 128 個です。この族は時間を反転しても同じ族になります。</p>
+    <p>ユーザーの指摘（2026-11-27: JEPA は multi-block のはず）に従い、V-JEPA の multi-block を時空間の格子に広げます。</p>
+    <ul>
+      <li>空間の側は、V-JEPA の公開設定のままです。トークンの解像度（8×8）の上で、短距離か長距離のどちらかを引きます。短距離は面積 15% のブロック 8 個、長距離は面積 70% のブロック 2 個です。縦横比は 0.75〜1.5 です。</li>
+      <li>時間の側で足すのは 1 つだけです。ブロックごとに、時間の長さを {1,2,3,4} から均等に引き、置く位置も均等に引きます。この分布は、時間を反転しても、平行移動しても変わりません。</li>
+      <li>隠すのはブロックの和集合 <var>U</var> で、文脈は残りの <var>V</var> = Ω \ <var>U</var> です。<var>V</var> が空なら引き直します。隠す数は、本家と同じく固定しません。これは 2026-11-23 の「ちょうど <var>k</var> 個」を置き換えるものです。損失は、隠したトークンの数で割ります。</li>
+      <li>特別な場合として、全てのブロックが全時間なら V-JEPA になり、時刻が 1 つなら I-JEPA の multi-block になります。全時間のブロックは、<b>今</b>（空間）の補完にあたります。長距離のブロックが時間の一部を覆うと、<b>未来</b>・<b>過去</b>・間の補完になります。今・過去・未来を別々に読むのは評価の側で、決まったマスクを使います。学習の族は、今・過去・未来に分けません。</li>
+    </ul>
   </div>
   <figure>
-    <div class="chart"><svg class="dg fit" viewBox="0 0 520 502" role="img" aria-label="マスクの族: 管と、時刻を 2 つ隠す 6 通り"><text x="8" y="22" class="small">時刻</text>
-<text x="190.0" y="22" class="small strong" text-anchor="middle">1</text>
-<text x="252.0" y="22" class="small strong" text-anchor="middle">2</text>
-<text x="314.0" y="22" class="small strong" text-anchor="middle">3</text>
-<text x="376.0" y="22" class="small strong" text-anchor="middle">4</text>
-<rect class="band" x="2" y="34" width="514" height="64" rx="4"/>
-<text x="420" y="56" class="xs">各 step の</text>
-<text x="420" y="72" class="xs">半分</text>
-<text x="8" y="64" class="strong t1">管 = 今</text>
-<text x="8" y="82" class="xs mono">空間の族を全時刻に</text>
-<text x="420" y="124" class="xs">各 step の</text>
-<text x="420" y="140" class="xs">残りの半分</text>
-<text x="420" y="156" class="xs">（6 通り）</text>
-<rect class="vis" x="168" y="44" width="44" height="44"/>
-<rect class="h1" x="168" y="44" width="11" height="11"/>
-<rect class="h1" x="179" y="44" width="11" height="11"/>
-<rect class="h1" x="168" y="55" width="11" height="11"/>
-<rect class="h1" x="179" y="55" width="11" height="11"/>
-<rect class="h1" x="190" y="66" width="11" height="11"/>
-<rect class="h1" x="201" y="66" width="11" height="11"/>
-<rect class="h1" x="190" y="77" width="11" height="11"/>
-<rect class="h1" x="201" y="77" width="11" height="11"/>
-<path class="gl" d="M173.5 44V88M168 49.5H212M179 44V88M168 55H212M184.5 44V88M168 60.5H212M190 44V88M168 66H212M195.5 44V88M168 71.5H212M201 44V88M168 77H212M206.5 44V88M168 82.5H212"/>
-<rect class="vis" x="230" y="44" width="44" height="44"/>
-<rect class="h1" x="230" y="44" width="11" height="11"/>
-<rect class="h1" x="241" y="44" width="11" height="11"/>
-<rect class="h1" x="230" y="55" width="11" height="11"/>
-<rect class="h1" x="241" y="55" width="11" height="11"/>
-<rect class="h1" x="252" y="66" width="11" height="11"/>
-<rect class="h1" x="263" y="66" width="11" height="11"/>
-<rect class="h1" x="252" y="77" width="11" height="11"/>
-<rect class="h1" x="263" y="77" width="11" height="11"/>
-<path class="gl" d="M235.5 44V88M230 49.5H274M241 44V88M230 55H274M246.5 44V88M230 60.5H274M252 44V88M230 66H274M257.5 44V88M230 71.5H274M263 44V88M230 77H274M268.5 44V88M230 82.5H274"/>
-<rect class="vis" x="292" y="44" width="44" height="44"/>
-<rect class="h1" x="292" y="44" width="11" height="11"/>
-<rect class="h1" x="303" y="44" width="11" height="11"/>
-<rect class="h1" x="292" y="55" width="11" height="11"/>
-<rect class="h1" x="303" y="55" width="11" height="11"/>
-<rect class="h1" x="314" y="66" width="11" height="11"/>
-<rect class="h1" x="325" y="66" width="11" height="11"/>
-<rect class="h1" x="314" y="77" width="11" height="11"/>
-<rect class="h1" x="325" y="77" width="11" height="11"/>
-<path class="gl" d="M297.5 44V88M292 49.5H336M303 44V88M292 55H336M308.5 44V88M292 60.5H336M314 44V88M292 66H336M319.5 44V88M292 71.5H336M325 44V88M292 77H336M330.5 44V88M292 82.5H336"/>
-<rect class="vis" x="354" y="44" width="44" height="44"/>
-<rect class="h1" x="354" y="44" width="11" height="11"/>
-<rect class="h1" x="365" y="44" width="11" height="11"/>
-<rect class="h1" x="354" y="55" width="11" height="11"/>
-<rect class="h1" x="365" y="55" width="11" height="11"/>
-<rect class="h1" x="376" y="66" width="11" height="11"/>
-<rect class="h1" x="387" y="66" width="11" height="11"/>
-<rect class="h1" x="376" y="77" width="11" height="11"/>
-<rect class="h1" x="387" y="77" width="11" height="11"/>
-<path class="gl" d="M359.5 44V88M354 49.5H398M365 44V88M354 55H398M370.5 44V88M354 60.5H398M376 44V88M354 66H398M381.5 44V88M354 71.5H398M387 44V88M354 77H398M392.5 44V88M354 82.5H398"/>
-<text x="8" y="122" class="strong t2">未来</text>
-<text x="8" y="140" class="xs mono">{3,4}</text>
-<rect class="vis" x="168" y="102" width="44" height="44"/>
-<path class="gl" d="M173.5 102V146M168 107.5H212M179 102V146M168 113H212M184.5 102V146M168 118.5H212M190 102V146M168 124H212M195.5 102V146M168 129.5H212M201 102V146M168 135H212M206.5 102V146M168 140.5H212"/>
-<rect class="vis" x="230" y="102" width="44" height="44"/>
-<path class="gl" d="M235.5 102V146M230 107.5H274M241 102V146M230 113H274M246.5 102V146M230 118.5H274M252 102V146M230 124H274M257.5 102V146M230 129.5H274M263 102V146M230 135H274M268.5 102V146M230 140.5H274"/>
-<rect class="vis" x="292" y="102" width="44" height="44"/>
-<rect class="h2" x="292" y="102" width="44" height="44"/>
-<path class="gl" d="M297.5 102V146M292 107.5H336M303 102V146M292 113H336M308.5 102V146M292 118.5H336M314 102V146M292 124H336M319.5 102V146M292 129.5H336M325 102V146M292 135H336M330.5 102V146M292 140.5H336"/>
-<rect class="vis" x="354" y="102" width="44" height="44"/>
-<rect class="h2" x="354" y="102" width="44" height="44"/>
-<path class="gl" d="M359.5 102V146M354 107.5H398M365 102V146M354 113H398M370.5 102V146M354 118.5H398M376 102V146M354 124H398M381.5 102V146M354 129.5H398M387 102V146M354 135H398M392.5 102V146M354 140.5H398"/>
-<text x="8" y="180" class="strong t3">過去</text>
-<text x="8" y="198" class="xs mono">{1,2}</text>
-<rect class="vis" x="168" y="160" width="44" height="44"/>
-<rect class="h3" x="168" y="160" width="44" height="44"/>
-<path class="gl" d="M173.5 160V204M168 165.5H212M179 160V204M168 171H212M184.5 160V204M168 176.5H212M190 160V204M168 182H212M195.5 160V204M168 187.5H212M201 160V204M168 193H212M206.5 160V204M168 198.5H212"/>
-<rect class="vis" x="230" y="160" width="44" height="44"/>
-<rect class="h3" x="230" y="160" width="44" height="44"/>
-<path class="gl" d="M235.5 160V204M230 165.5H274M241 160V204M230 171H274M246.5 160V204M230 176.5H274M252 160V204M230 182H274M257.5 160V204M230 187.5H274M263 160V204M230 193H274M268.5 160V204M230 198.5H274"/>
-<rect class="vis" x="292" y="160" width="44" height="44"/>
-<path class="gl" d="M297.5 160V204M292 165.5H336M303 160V204M292 171H336M308.5 160V204M292 176.5H336M314 160V204M292 182H336M319.5 160V204M292 187.5H336M325 160V204M292 193H336M330.5 160V204M292 198.5H336"/>
-<rect class="vis" x="354" y="160" width="44" height="44"/>
-<path class="gl" d="M359.5 160V204M354 165.5H398M365 160V204M354 171H398M370.5 160V204M354 176.5H398M376 160V204M354 182H398M381.5 160V204M354 187.5H398M387 160V204M354 193H398M392.5 160V204M354 198.5H398"/>
-<text x="8" y="238" class="strong ">間</text>
-<text x="8" y="256" class="xs mono">{2,3}</text>
-<rect class="vis" x="168" y="218" width="44" height="44"/>
-<path class="gl" d="M173.5 218V262M168 223.5H212M179 218V262M168 229H212M184.5 218V262M168 234.5H212M190 218V262M168 240H212M195.5 218V262M168 245.5H212M201 218V262M168 251H212M206.5 218V262M168 256.5H212"/>
-<rect class="vis" x="230" y="218" width="44" height="44"/>
-<rect class="h4" x="230" y="218" width="44" height="44"/>
-<path class="gl" d="M235.5 218V262M230 223.5H274M241 218V262M230 229H274M246.5 218V262M230 234.5H274M252 218V262M230 240H274M257.5 218V262M230 245.5H274M263 218V262M230 251H274M268.5 218V262M230 256.5H274"/>
-<rect class="vis" x="292" y="218" width="44" height="44"/>
-<rect class="h4" x="292" y="218" width="44" height="44"/>
-<path class="gl" d="M297.5 218V262M292 223.5H336M303 218V262M292 229H336M308.5 218V262M292 234.5H336M314 218V262M292 240H336M319.5 218V262M292 245.5H336M325 218V262M292 251H336M330.5 218V262M292 256.5H336"/>
-<rect class="vis" x="354" y="218" width="44" height="44"/>
-<path class="gl" d="M359.5 218V262M354 223.5H398M365 218V262M354 229H398M370.5 218V262M354 234.5H398M376 218V262M354 240H398M381.5 218V262M354 245.5H398M387 218V262M354 251H398M392.5 218V262M354 256.5H398"/>
-<text x="8" y="296" class="strong ">外向き</text>
-<text x="8" y="314" class="xs mono">{1,4}</text>
-<rect class="vis" x="168" y="276" width="44" height="44"/>
-<rect class="h4" x="168" y="276" width="44" height="44"/>
-<path class="gl" d="M173.5 276V320M168 281.5H212M179 276V320M168 287H212M184.5 276V320M168 292.5H212M190 276V320M168 298H212M195.5 276V320M168 303.5H212M201 276V320M168 309H212M206.5 276V320M168 314.5H212"/>
-<rect class="vis" x="230" y="276" width="44" height="44"/>
-<path class="gl" d="M235.5 276V320M230 281.5H274M241 276V320M230 287H274M246.5 276V320M230 292.5H274M252 276V320M230 298H274M257.5 276V320M230 303.5H274M263 276V320M230 309H274M268.5 276V320M230 314.5H274"/>
-<rect class="vis" x="292" y="276" width="44" height="44"/>
-<path class="gl" d="M297.5 276V320M292 281.5H336M303 276V320M292 287H336M308.5 276V320M292 292.5H336M314 276V320M292 298H336M319.5 276V320M292 303.5H336M325 276V320M292 309H336M330.5 276V320M292 314.5H336"/>
-<rect class="vis" x="354" y="276" width="44" height="44"/>
-<rect class="h4" x="354" y="276" width="44" height="44"/>
-<path class="gl" d="M359.5 276V320M354 281.5H398M365 276V320M354 287H398M370.5 276V320M354 292.5H398M376 276V320M354 298H398M381.5 276V320M354 303.5H398M387 276V320M354 309H398M392.5 276V320M354 314.5H398"/>
-<text x="8" y="354" class="strong ">補間</text>
-<text x="8" y="372" class="xs mono">{1,3}</text>
-<rect class="vis" x="168" y="334" width="44" height="44"/>
-<rect class="hn" x="168" y="334" width="44" height="44"/>
-<path class="gl" d="M173.5 334V378M168 339.5H212M179 334V378M168 345H212M184.5 334V378M168 350.5H212M190 334V378M168 356H212M195.5 334V378M168 361.5H212M201 334V378M168 367H212M206.5 334V378M168 372.5H212"/>
-<rect class="vis" x="230" y="334" width="44" height="44"/>
-<path class="gl" d="M235.5 334V378M230 339.5H274M241 334V378M230 345H274M246.5 334V378M230 350.5H274M252 334V378M230 356H274M257.5 334V378M230 361.5H274M263 334V378M230 367H274M268.5 334V378M230 372.5H274"/>
-<rect class="vis" x="292" y="334" width="44" height="44"/>
-<rect class="hn" x="292" y="334" width="44" height="44"/>
-<path class="gl" d="M297.5 334V378M292 339.5H336M303 334V378M292 345H336M308.5 334V378M292 350.5H336M314 334V378M292 356H336M319.5 334V378M292 361.5H336M325 334V378M292 367H336M330.5 334V378M292 372.5H336"/>
-<rect class="vis" x="354" y="334" width="44" height="44"/>
-<path class="gl" d="M359.5 334V378M354 339.5H398M365 334V378M354 345H398M370.5 334V378M354 350.5H398M376 334V378M354 356H398M381.5 334V378M354 361.5H398M387 334V378M354 367H398M392.5 334V378M354 372.5H398"/>
-<text x="8" y="412" class="strong ">補間</text>
-<text x="8" y="430" class="xs mono">{2,4}</text>
-<rect class="vis" x="168" y="392" width="44" height="44"/>
-<path class="gl" d="M173.5 392V436M168 397.5H212M179 392V436M168 403H212M184.5 392V436M168 408.5H212M190 392V436M168 414H212M195.5 392V436M168 419.5H212M201 392V436M168 425H212M206.5 392V436M168 430.5H212"/>
-<rect class="vis" x="230" y="392" width="44" height="44"/>
-<rect class="hn" x="230" y="392" width="44" height="44"/>
-<path class="gl" d="M235.5 392V436M230 397.5H274M241 392V436M230 403H274M246.5 392V436M230 408.5H274M252 392V436M230 414H274M257.5 392V436M230 419.5H274M263 392V436M230 425H274M268.5 392V436M230 430.5H274"/>
-<rect class="vis" x="292" y="392" width="44" height="44"/>
-<path class="gl" d="M297.5 392V436M292 397.5H336M303 392V436M292 403H336M308.5 392V436M292 408.5H336M314 392V436M292 414H336M319.5 392V436M292 419.5H336M325 392V436M292 425H336M330.5 392V436M292 430.5H336"/>
-<rect class="vis" x="354" y="392" width="44" height="44"/>
-<rect class="hn" x="354" y="392" width="44" height="44"/>
-<path class="gl" d="M359.5 392V436M354 397.5H398M365 392V436M354 403H398M370.5 392V436M354 408.5H398M376 392V436M354 414H398M381.5 392V436M354 419.5H398M387 392V436M354 425H398M392.5 392V436M354 430.5H398"/>
-<text x="8" y="474" class="xs">色のついたマス = 隠すトークン。どの行も 256 個のうち 128 個を隠す</text>
-<text x="8" y="492" class="xs">管の空間の隠し方は模式（実際は粗い 4×4 の族 F8 を 8×8 に広げて引く）</text></svg></div>
-    <figcaption><b>図 2　マスクの族。</b> 1 行が 1 つの隠し方で、4 つの箱が時刻 1〜4、1 つの箱の 8×8 のマスが空間の位置です。色のついたマスを隠し、残りの見えるトークンから隠したトークンを当てます。管（1 行目）は同じ空間の位置を全ての時刻で隠します。残りの 6 行は時刻を 2 つ丸ごと隠します。どの行も、隠す数は 256 個のうち 128 個です。</figcaption>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 532" role="img" aria-label="マスクの族: 時空間の multi-block の引きの例"><text x="8" y="24" class="small">時刻</text>
+<text x="202" y="24" class="small strong" text-anchor="middle">1</text>
+<text x="286" y="24" class="small strong" text-anchor="middle">2</text>
+<text x="370" y="24" class="small strong" text-anchor="middle">3</text>
+<text x="454" y="24" class="small strong" text-anchor="middle">4</text>
+<text x="8" y="60" class="strong t1">今（空間）</text>
+<text x="8" y="80" class="xs">短距離 8 個</text>
+<text x="8" y="97" class="xs">どれも全時間</text>
+<rect class="vis" x="170" y="40" width="64" height="64"/>
+<rect class="h1" x="170" y="40" width="8" height="8"/>
+<rect class="h1" x="178" y="40" width="8" height="8"/>
+<rect class="h1" x="186" y="40" width="8" height="8"/>
+<rect class="h1" x="210" y="40" width="8" height="8"/>
+<rect class="h1" x="218" y="40" width="8" height="8"/>
+<rect class="h1" x="226" y="40" width="8" height="8"/>
+<rect class="h1" x="170" y="48" width="8" height="8"/>
+<rect class="h1" x="178" y="48" width="8" height="8"/>
+<rect class="h1" x="186" y="48" width="8" height="8"/>
+<rect class="h1" x="194" y="48" width="8" height="8"/>
+<rect class="h1" x="202" y="48" width="8" height="8"/>
+<rect class="h1" x="210" y="48" width="8" height="8"/>
+<rect class="h1" x="218" y="48" width="8" height="8"/>
+<rect class="h1" x="226" y="48" width="8" height="8"/>
+<rect class="h1" x="170" y="56" width="8" height="8"/>
+<rect class="h1" x="178" y="56" width="8" height="8"/>
+<rect class="h1" x="186" y="56" width="8" height="8"/>
+<rect class="h1" x="194" y="56" width="8" height="8"/>
+<rect class="h1" x="202" y="56" width="8" height="8"/>
+<rect class="h1" x="210" y="56" width="8" height="8"/>
+<rect class="h1" x="218" y="56" width="8" height="8"/>
+<rect class="h1" x="226" y="56" width="8" height="8"/>
+<rect class="h1" x="186" y="64" width="8" height="8"/>
+<rect class="h1" x="194" y="64" width="8" height="8"/>
+<rect class="h1" x="202" y="64" width="8" height="8"/>
+<rect class="h1" x="210" y="64" width="8" height="8"/>
+<rect class="h1" x="218" y="64" width="8" height="8"/>
+<rect class="h1" x="226" y="64" width="8" height="8"/>
+<rect class="h1" x="170" y="72" width="8" height="8"/>
+<rect class="h1" x="178" y="72" width="8" height="8"/>
+<rect class="h1" x="186" y="72" width="8" height="8"/>
+<rect class="h1" x="194" y="72" width="8" height="8"/>
+<rect class="h1" x="202" y="72" width="8" height="8"/>
+<rect class="h1" x="210" y="72" width="8" height="8"/>
+<rect class="h1" x="218" y="72" width="8" height="8"/>
+<rect class="h1" x="226" y="72" width="8" height="8"/>
+<rect class="h1" x="170" y="80" width="8" height="8"/>
+<rect class="h1" x="178" y="80" width="8" height="8"/>
+<rect class="h1" x="186" y="80" width="8" height="8"/>
+<rect class="h1" x="194" y="80" width="8" height="8"/>
+<rect class="h1" x="202" y="80" width="8" height="8"/>
+<rect class="h1" x="210" y="80" width="8" height="8"/>
+<rect class="h1" x="218" y="80" width="8" height="8"/>
+<rect class="h1" x="226" y="80" width="8" height="8"/>
+<rect class="h1" x="170" y="88" width="8" height="8"/>
+<rect class="h1" x="178" y="88" width="8" height="8"/>
+<rect class="h1" x="186" y="88" width="8" height="8"/>
+<rect class="h1" x="194" y="88" width="8" height="8"/>
+<rect class="h1" x="202" y="88" width="8" height="8"/>
+<rect class="h1" x="210" y="88" width="8" height="8"/>
+<rect class="h1" x="218" y="88" width="8" height="8"/>
+<rect class="h1" x="178" y="96" width="8" height="8"/>
+<rect class="h1" x="186" y="96" width="8" height="8"/>
+<rect class="h1" x="194" y="96" width="8" height="8"/>
+<rect class="h1" x="202" y="96" width="8" height="8"/>
+<rect class="h1" x="210" y="96" width="8" height="8"/>
+<rect class="h1" x="218" y="96" width="8" height="8"/>
+<path class="gl" d="M178 40V104M170 48H234M186 40V104M170 56H234M194 40V104M170 64H234M202 40V104M170 72H234M210 40V104M170 80H234M218 40V104M170 88H234M226 40V104M170 96H234"/>
+<rect class="blk" x="170" y="40" width="24" height="24"/>
+<rect class="blk" x="210" y="40" width="24" height="24"/>
+<rect class="blk" x="186" y="56" width="24" height="24"/>
+<rect class="blk" x="170" y="72" width="24" height="24"/>
+<rect class="blk" x="202" y="80" width="24" height="24"/>
+<rect class="blk" x="210" y="64" width="24" height="24"/>
+<rect class="blk" x="194" y="48" width="24" height="24"/>
+<rect class="blk" x="178" y="80" width="24" height="24"/>
+<rect class="vis" x="254" y="40" width="64" height="64"/>
+<rect class="h1" x="254" y="40" width="8" height="8"/>
+<rect class="h1" x="262" y="40" width="8" height="8"/>
+<rect class="h1" x="270" y="40" width="8" height="8"/>
+<rect class="h1" x="294" y="40" width="8" height="8"/>
+<rect class="h1" x="302" y="40" width="8" height="8"/>
+<rect class="h1" x="310" y="40" width="8" height="8"/>
+<rect class="h1" x="254" y="48" width="8" height="8"/>
+<rect class="h1" x="262" y="48" width="8" height="8"/>
+<rect class="h1" x="270" y="48" width="8" height="8"/>
+<rect class="h1" x="278" y="48" width="8" height="8"/>
+<rect class="h1" x="286" y="48" width="8" height="8"/>
+<rect class="h1" x="294" y="48" width="8" height="8"/>
+<rect class="h1" x="302" y="48" width="8" height="8"/>
+<rect class="h1" x="310" y="48" width="8" height="8"/>
+<rect class="h1" x="254" y="56" width="8" height="8"/>
+<rect class="h1" x="262" y="56" width="8" height="8"/>
+<rect class="h1" x="270" y="56" width="8" height="8"/>
+<rect class="h1" x="278" y="56" width="8" height="8"/>
+<rect class="h1" x="286" y="56" width="8" height="8"/>
+<rect class="h1" x="294" y="56" width="8" height="8"/>
+<rect class="h1" x="302" y="56" width="8" height="8"/>
+<rect class="h1" x="310" y="56" width="8" height="8"/>
+<rect class="h1" x="270" y="64" width="8" height="8"/>
+<rect class="h1" x="278" y="64" width="8" height="8"/>
+<rect class="h1" x="286" y="64" width="8" height="8"/>
+<rect class="h1" x="294" y="64" width="8" height="8"/>
+<rect class="h1" x="302" y="64" width="8" height="8"/>
+<rect class="h1" x="310" y="64" width="8" height="8"/>
+<rect class="h1" x="254" y="72" width="8" height="8"/>
+<rect class="h1" x="262" y="72" width="8" height="8"/>
+<rect class="h1" x="270" y="72" width="8" height="8"/>
+<rect class="h1" x="278" y="72" width="8" height="8"/>
+<rect class="h1" x="286" y="72" width="8" height="8"/>
+<rect class="h1" x="294" y="72" width="8" height="8"/>
+<rect class="h1" x="302" y="72" width="8" height="8"/>
+<rect class="h1" x="310" y="72" width="8" height="8"/>
+<rect class="h1" x="254" y="80" width="8" height="8"/>
+<rect class="h1" x="262" y="80" width="8" height="8"/>
+<rect class="h1" x="270" y="80" width="8" height="8"/>
+<rect class="h1" x="278" y="80" width="8" height="8"/>
+<rect class="h1" x="286" y="80" width="8" height="8"/>
+<rect class="h1" x="294" y="80" width="8" height="8"/>
+<rect class="h1" x="302" y="80" width="8" height="8"/>
+<rect class="h1" x="310" y="80" width="8" height="8"/>
+<rect class="h1" x="254" y="88" width="8" height="8"/>
+<rect class="h1" x="262" y="88" width="8" height="8"/>
+<rect class="h1" x="270" y="88" width="8" height="8"/>
+<rect class="h1" x="278" y="88" width="8" height="8"/>
+<rect class="h1" x="286" y="88" width="8" height="8"/>
+<rect class="h1" x="294" y="88" width="8" height="8"/>
+<rect class="h1" x="302" y="88" width="8" height="8"/>
+<rect class="h1" x="262" y="96" width="8" height="8"/>
+<rect class="h1" x="270" y="96" width="8" height="8"/>
+<rect class="h1" x="278" y="96" width="8" height="8"/>
+<rect class="h1" x="286" y="96" width="8" height="8"/>
+<rect class="h1" x="294" y="96" width="8" height="8"/>
+<rect class="h1" x="302" y="96" width="8" height="8"/>
+<path class="gl" d="M262 40V104M254 48H318M270 40V104M254 56H318M278 40V104M254 64H318M286 40V104M254 72H318M294 40V104M254 80H318M302 40V104M254 88H318M310 40V104M254 96H318"/>
+<rect class="blk" x="254" y="40" width="24" height="24"/>
+<rect class="blk" x="294" y="40" width="24" height="24"/>
+<rect class="blk" x="270" y="56" width="24" height="24"/>
+<rect class="blk" x="254" y="72" width="24" height="24"/>
+<rect class="blk" x="286" y="80" width="24" height="24"/>
+<rect class="blk" x="294" y="64" width="24" height="24"/>
+<rect class="blk" x="278" y="48" width="24" height="24"/>
+<rect class="blk" x="262" y="80" width="24" height="24"/>
+<rect class="vis" x="338" y="40" width="64" height="64"/>
+<rect class="h1" x="338" y="40" width="8" height="8"/>
+<rect class="h1" x="346" y="40" width="8" height="8"/>
+<rect class="h1" x="354" y="40" width="8" height="8"/>
+<rect class="h1" x="378" y="40" width="8" height="8"/>
+<rect class="h1" x="386" y="40" width="8" height="8"/>
+<rect class="h1" x="394" y="40" width="8" height="8"/>
+<rect class="h1" x="338" y="48" width="8" height="8"/>
+<rect class="h1" x="346" y="48" width="8" height="8"/>
+<rect class="h1" x="354" y="48" width="8" height="8"/>
+<rect class="h1" x="362" y="48" width="8" height="8"/>
+<rect class="h1" x="370" y="48" width="8" height="8"/>
+<rect class="h1" x="378" y="48" width="8" height="8"/>
+<rect class="h1" x="386" y="48" width="8" height="8"/>
+<rect class="h1" x="394" y="48" width="8" height="8"/>
+<rect class="h1" x="338" y="56" width="8" height="8"/>
+<rect class="h1" x="346" y="56" width="8" height="8"/>
+<rect class="h1" x="354" y="56" width="8" height="8"/>
+<rect class="h1" x="362" y="56" width="8" height="8"/>
+<rect class="h1" x="370" y="56" width="8" height="8"/>
+<rect class="h1" x="378" y="56" width="8" height="8"/>
+<rect class="h1" x="386" y="56" width="8" height="8"/>
+<rect class="h1" x="394" y="56" width="8" height="8"/>
+<rect class="h1" x="354" y="64" width="8" height="8"/>
+<rect class="h1" x="362" y="64" width="8" height="8"/>
+<rect class="h1" x="370" y="64" width="8" height="8"/>
+<rect class="h1" x="378" y="64" width="8" height="8"/>
+<rect class="h1" x="386" y="64" width="8" height="8"/>
+<rect class="h1" x="394" y="64" width="8" height="8"/>
+<rect class="h1" x="338" y="72" width="8" height="8"/>
+<rect class="h1" x="346" y="72" width="8" height="8"/>
+<rect class="h1" x="354" y="72" width="8" height="8"/>
+<rect class="h1" x="362" y="72" width="8" height="8"/>
+<rect class="h1" x="370" y="72" width="8" height="8"/>
+<rect class="h1" x="378" y="72" width="8" height="8"/>
+<rect class="h1" x="386" y="72" width="8" height="8"/>
+<rect class="h1" x="394" y="72" width="8" height="8"/>
+<rect class="h1" x="338" y="80" width="8" height="8"/>
+<rect class="h1" x="346" y="80" width="8" height="8"/>
+<rect class="h1" x="354" y="80" width="8" height="8"/>
+<rect class="h1" x="362" y="80" width="8" height="8"/>
+<rect class="h1" x="370" y="80" width="8" height="8"/>
+<rect class="h1" x="378" y="80" width="8" height="8"/>
+<rect class="h1" x="386" y="80" width="8" height="8"/>
+<rect class="h1" x="394" y="80" width="8" height="8"/>
+<rect class="h1" x="338" y="88" width="8" height="8"/>
+<rect class="h1" x="346" y="88" width="8" height="8"/>
+<rect class="h1" x="354" y="88" width="8" height="8"/>
+<rect class="h1" x="362" y="88" width="8" height="8"/>
+<rect class="h1" x="370" y="88" width="8" height="8"/>
+<rect class="h1" x="378" y="88" width="8" height="8"/>
+<rect class="h1" x="386" y="88" width="8" height="8"/>
+<rect class="h1" x="346" y="96" width="8" height="8"/>
+<rect class="h1" x="354" y="96" width="8" height="8"/>
+<rect class="h1" x="362" y="96" width="8" height="8"/>
+<rect class="h1" x="370" y="96" width="8" height="8"/>
+<rect class="h1" x="378" y="96" width="8" height="8"/>
+<rect class="h1" x="386" y="96" width="8" height="8"/>
+<path class="gl" d="M346 40V104M338 48H402M354 40V104M338 56H402M362 40V104M338 64H402M370 40V104M338 72H402M378 40V104M338 80H402M386 40V104M338 88H402M394 40V104M338 96H402"/>
+<rect class="blk" x="338" y="40" width="24" height="24"/>
+<rect class="blk" x="378" y="40" width="24" height="24"/>
+<rect class="blk" x="354" y="56" width="24" height="24"/>
+<rect class="blk" x="338" y="72" width="24" height="24"/>
+<rect class="blk" x="370" y="80" width="24" height="24"/>
+<rect class="blk" x="378" y="64" width="24" height="24"/>
+<rect class="blk" x="362" y="48" width="24" height="24"/>
+<rect class="blk" x="346" y="80" width="24" height="24"/>
+<rect class="vis" x="422" y="40" width="64" height="64"/>
+<rect class="h1" x="422" y="40" width="8" height="8"/>
+<rect class="h1" x="430" y="40" width="8" height="8"/>
+<rect class="h1" x="438" y="40" width="8" height="8"/>
+<rect class="h1" x="462" y="40" width="8" height="8"/>
+<rect class="h1" x="470" y="40" width="8" height="8"/>
+<rect class="h1" x="478" y="40" width="8" height="8"/>
+<rect class="h1" x="422" y="48" width="8" height="8"/>
+<rect class="h1" x="430" y="48" width="8" height="8"/>
+<rect class="h1" x="438" y="48" width="8" height="8"/>
+<rect class="h1" x="446" y="48" width="8" height="8"/>
+<rect class="h1" x="454" y="48" width="8" height="8"/>
+<rect class="h1" x="462" y="48" width="8" height="8"/>
+<rect class="h1" x="470" y="48" width="8" height="8"/>
+<rect class="h1" x="478" y="48" width="8" height="8"/>
+<rect class="h1" x="422" y="56" width="8" height="8"/>
+<rect class="h1" x="430" y="56" width="8" height="8"/>
+<rect class="h1" x="438" y="56" width="8" height="8"/>
+<rect class="h1" x="446" y="56" width="8" height="8"/>
+<rect class="h1" x="454" y="56" width="8" height="8"/>
+<rect class="h1" x="462" y="56" width="8" height="8"/>
+<rect class="h1" x="470" y="56" width="8" height="8"/>
+<rect class="h1" x="478" y="56" width="8" height="8"/>
+<rect class="h1" x="438" y="64" width="8" height="8"/>
+<rect class="h1" x="446" y="64" width="8" height="8"/>
+<rect class="h1" x="454" y="64" width="8" height="8"/>
+<rect class="h1" x="462" y="64" width="8" height="8"/>
+<rect class="h1" x="470" y="64" width="8" height="8"/>
+<rect class="h1" x="478" y="64" width="8" height="8"/>
+<rect class="h1" x="422" y="72" width="8" height="8"/>
+<rect class="h1" x="430" y="72" width="8" height="8"/>
+<rect class="h1" x="438" y="72" width="8" height="8"/>
+<rect class="h1" x="446" y="72" width="8" height="8"/>
+<rect class="h1" x="454" y="72" width="8" height="8"/>
+<rect class="h1" x="462" y="72" width="8" height="8"/>
+<rect class="h1" x="470" y="72" width="8" height="8"/>
+<rect class="h1" x="478" y="72" width="8" height="8"/>
+<rect class="h1" x="422" y="80" width="8" height="8"/>
+<rect class="h1" x="430" y="80" width="8" height="8"/>
+<rect class="h1" x="438" y="80" width="8" height="8"/>
+<rect class="h1" x="446" y="80" width="8" height="8"/>
+<rect class="h1" x="454" y="80" width="8" height="8"/>
+<rect class="h1" x="462" y="80" width="8" height="8"/>
+<rect class="h1" x="470" y="80" width="8" height="8"/>
+<rect class="h1" x="478" y="80" width="8" height="8"/>
+<rect class="h1" x="422" y="88" width="8" height="8"/>
+<rect class="h1" x="430" y="88" width="8" height="8"/>
+<rect class="h1" x="438" y="88" width="8" height="8"/>
+<rect class="h1" x="446" y="88" width="8" height="8"/>
+<rect class="h1" x="454" y="88" width="8" height="8"/>
+<rect class="h1" x="462" y="88" width="8" height="8"/>
+<rect class="h1" x="470" y="88" width="8" height="8"/>
+<rect class="h1" x="430" y="96" width="8" height="8"/>
+<rect class="h1" x="438" y="96" width="8" height="8"/>
+<rect class="h1" x="446" y="96" width="8" height="8"/>
+<rect class="h1" x="454" y="96" width="8" height="8"/>
+<rect class="h1" x="462" y="96" width="8" height="8"/>
+<rect class="h1" x="470" y="96" width="8" height="8"/>
+<path class="gl" d="M430 40V104M422 48H486M438 40V104M422 56H486M446 40V104M422 64H486M454 40V104M422 72H486M462 40V104M422 80H486M470 40V104M422 88H486M478 40V104M422 96H486"/>
+<rect class="blk" x="422" y="40" width="24" height="24"/>
+<rect class="blk" x="462" y="40" width="24" height="24"/>
+<rect class="blk" x="438" y="56" width="24" height="24"/>
+<rect class="blk" x="422" y="72" width="24" height="24"/>
+<rect class="blk" x="454" y="80" width="24" height="24"/>
+<rect class="blk" x="462" y="64" width="24" height="24"/>
+<rect class="blk" x="446" y="48" width="24" height="24"/>
+<rect class="blk" x="430" y="80" width="24" height="24"/>
+<text x="8" y="148" class="strong t2">未来</text>
+<text x="8" y="168" class="xs">長距離 2 個</text>
+<text x="8" y="185" class="xs">時刻 3〜4 を覆う</text>
+<rect class="vis" x="170" y="128" width="64" height="64"/>
+<path class="gl" d="M178 128V192M170 136H234M186 128V192M170 144H234M194 128V192M170 152H234M202 128V192M170 160H234M210 128V192M170 168H234M218 128V192M170 176H234M226 128V192M170 184H234"/>
+<rect class="vis" x="254" y="128" width="64" height="64"/>
+<path class="gl" d="M262 128V192M254 136H318M270 128V192M254 144H318M278 128V192M254 152H318M286 128V192M254 160H318M294 128V192M254 168H318M302 128V192M254 176H318M310 128V192M254 184H318"/>
+<rect class="vis" x="338" y="128" width="64" height="64"/>
+<rect class="h2" x="338" y="128" width="8" height="8"/>
+<rect class="h2" x="346" y="128" width="8" height="8"/>
+<rect class="h2" x="354" y="128" width="8" height="8"/>
+<rect class="h2" x="362" y="128" width="8" height="8"/>
+<rect class="h2" x="370" y="128" width="8" height="8"/>
+<rect class="h2" x="378" y="128" width="8" height="8"/>
+<rect class="h2" x="338" y="136" width="8" height="8"/>
+<rect class="h2" x="346" y="136" width="8" height="8"/>
+<rect class="h2" x="354" y="136" width="8" height="8"/>
+<rect class="h2" x="362" y="136" width="8" height="8"/>
+<rect class="h2" x="370" y="136" width="8" height="8"/>
+<rect class="h2" x="378" y="136" width="8" height="8"/>
+<rect class="h2" x="386" y="136" width="8" height="8"/>
+<rect class="h2" x="394" y="136" width="8" height="8"/>
+<rect class="h2" x="338" y="144" width="8" height="8"/>
+<rect class="h2" x="346" y="144" width="8" height="8"/>
+<rect class="h2" x="354" y="144" width="8" height="8"/>
+<rect class="h2" x="362" y="144" width="8" height="8"/>
+<rect class="h2" x="370" y="144" width="8" height="8"/>
+<rect class="h2" x="378" y="144" width="8" height="8"/>
+<rect class="h2" x="386" y="144" width="8" height="8"/>
+<rect class="h2" x="394" y="144" width="8" height="8"/>
+<rect class="h2" x="338" y="152" width="8" height="8"/>
+<rect class="h2" x="346" y="152" width="8" height="8"/>
+<rect class="h2" x="354" y="152" width="8" height="8"/>
+<rect class="h2" x="362" y="152" width="8" height="8"/>
+<rect class="h2" x="370" y="152" width="8" height="8"/>
+<rect class="h2" x="378" y="152" width="8" height="8"/>
+<rect class="h2" x="386" y="152" width="8" height="8"/>
+<rect class="h2" x="394" y="152" width="8" height="8"/>
+<rect class="h2" x="338" y="160" width="8" height="8"/>
+<rect class="h2" x="346" y="160" width="8" height="8"/>
+<rect class="h2" x="354" y="160" width="8" height="8"/>
+<rect class="h2" x="362" y="160" width="8" height="8"/>
+<rect class="h2" x="370" y="160" width="8" height="8"/>
+<rect class="h2" x="378" y="160" width="8" height="8"/>
+<rect class="h2" x="386" y="160" width="8" height="8"/>
+<rect class="h2" x="394" y="160" width="8" height="8"/>
+<rect class="h2" x="338" y="168" width="8" height="8"/>
+<rect class="h2" x="346" y="168" width="8" height="8"/>
+<rect class="h2" x="354" y="168" width="8" height="8"/>
+<rect class="h2" x="362" y="168" width="8" height="8"/>
+<rect class="h2" x="370" y="168" width="8" height="8"/>
+<rect class="h2" x="378" y="168" width="8" height="8"/>
+<rect class="h2" x="386" y="168" width="8" height="8"/>
+<rect class="h2" x="394" y="168" width="8" height="8"/>
+<rect class="h2" x="338" y="176" width="8" height="8"/>
+<rect class="h2" x="346" y="176" width="8" height="8"/>
+<rect class="h2" x="354" y="176" width="8" height="8"/>
+<rect class="h2" x="362" y="176" width="8" height="8"/>
+<rect class="h2" x="370" y="176" width="8" height="8"/>
+<rect class="h2" x="378" y="176" width="8" height="8"/>
+<rect class="h2" x="386" y="176" width="8" height="8"/>
+<rect class="h2" x="394" y="176" width="8" height="8"/>
+<path class="gl" d="M346 128V192M338 136H402M354 128V192M338 144H402M362 128V192M338 152H402M370 128V192M338 160H402M378 128V192M338 168H402M386 128V192M338 176H402M394 128V192M338 184H402"/>
+<rect class="blk" x="338" y="128" width="48" height="56"/>
+<rect class="blk" x="346" y="136" width="56" height="48"/>
+<rect class="vis" x="422" y="128" width="64" height="64"/>
+<rect class="h2" x="422" y="128" width="8" height="8"/>
+<rect class="h2" x="430" y="128" width="8" height="8"/>
+<rect class="h2" x="438" y="128" width="8" height="8"/>
+<rect class="h2" x="446" y="128" width="8" height="8"/>
+<rect class="h2" x="454" y="128" width="8" height="8"/>
+<rect class="h2" x="462" y="128" width="8" height="8"/>
+<rect class="h2" x="422" y="136" width="8" height="8"/>
+<rect class="h2" x="430" y="136" width="8" height="8"/>
+<rect class="h2" x="438" y="136" width="8" height="8"/>
+<rect class="h2" x="446" y="136" width="8" height="8"/>
+<rect class="h2" x="454" y="136" width="8" height="8"/>
+<rect class="h2" x="462" y="136" width="8" height="8"/>
+<rect class="h2" x="470" y="136" width="8" height="8"/>
+<rect class="h2" x="478" y="136" width="8" height="8"/>
+<rect class="h2" x="422" y="144" width="8" height="8"/>
+<rect class="h2" x="430" y="144" width="8" height="8"/>
+<rect class="h2" x="438" y="144" width="8" height="8"/>
+<rect class="h2" x="446" y="144" width="8" height="8"/>
+<rect class="h2" x="454" y="144" width="8" height="8"/>
+<rect class="h2" x="462" y="144" width="8" height="8"/>
+<rect class="h2" x="470" y="144" width="8" height="8"/>
+<rect class="h2" x="478" y="144" width="8" height="8"/>
+<rect class="h2" x="422" y="152" width="8" height="8"/>
+<rect class="h2" x="430" y="152" width="8" height="8"/>
+<rect class="h2" x="438" y="152" width="8" height="8"/>
+<rect class="h2" x="446" y="152" width="8" height="8"/>
+<rect class="h2" x="454" y="152" width="8" height="8"/>
+<rect class="h2" x="462" y="152" width="8" height="8"/>
+<rect class="h2" x="470" y="152" width="8" height="8"/>
+<rect class="h2" x="478" y="152" width="8" height="8"/>
+<rect class="h2" x="422" y="160" width="8" height="8"/>
+<rect class="h2" x="430" y="160" width="8" height="8"/>
+<rect class="h2" x="438" y="160" width="8" height="8"/>
+<rect class="h2" x="446" y="160" width="8" height="8"/>
+<rect class="h2" x="454" y="160" width="8" height="8"/>
+<rect class="h2" x="462" y="160" width="8" height="8"/>
+<rect class="h2" x="470" y="160" width="8" height="8"/>
+<rect class="h2" x="478" y="160" width="8" height="8"/>
+<rect class="h2" x="422" y="168" width="8" height="8"/>
+<rect class="h2" x="430" y="168" width="8" height="8"/>
+<rect class="h2" x="438" y="168" width="8" height="8"/>
+<rect class="h2" x="446" y="168" width="8" height="8"/>
+<rect class="h2" x="454" y="168" width="8" height="8"/>
+<rect class="h2" x="462" y="168" width="8" height="8"/>
+<rect class="h2" x="470" y="168" width="8" height="8"/>
+<rect class="h2" x="478" y="168" width="8" height="8"/>
+<rect class="h2" x="422" y="176" width="8" height="8"/>
+<rect class="h2" x="430" y="176" width="8" height="8"/>
+<rect class="h2" x="438" y="176" width="8" height="8"/>
+<rect class="h2" x="446" y="176" width="8" height="8"/>
+<rect class="h2" x="454" y="176" width="8" height="8"/>
+<rect class="h2" x="462" y="176" width="8" height="8"/>
+<rect class="h2" x="470" y="176" width="8" height="8"/>
+<rect class="h2" x="478" y="176" width="8" height="8"/>
+<path class="gl" d="M430 128V192M422 136H486M438 128V192M422 144H486M446 128V192M422 152H486M454 128V192M422 160H486M462 128V192M422 168H486M470 128V192M422 176H486M478 128V192M422 184H486"/>
+<rect class="blk" x="422" y="128" width="48" height="56"/>
+<rect class="blk" x="430" y="136" width="56" height="48"/>
+<text x="8" y="236" class="strong t3">過去</text>
+<text x="8" y="256" class="xs">長距離 2 個</text>
+<text x="8" y="273" class="xs">時刻 1〜2 を覆う</text>
+<rect class="vis" x="170" y="216" width="64" height="64"/>
+<rect class="h3" x="170" y="216" width="8" height="8"/>
+<rect class="h3" x="178" y="216" width="8" height="8"/>
+<rect class="h3" x="186" y="216" width="8" height="8"/>
+<rect class="h3" x="194" y="216" width="8" height="8"/>
+<rect class="h3" x="202" y="216" width="8" height="8"/>
+<rect class="h3" x="210" y="216" width="8" height="8"/>
+<rect class="h3" x="170" y="224" width="8" height="8"/>
+<rect class="h3" x="178" y="224" width="8" height="8"/>
+<rect class="h3" x="186" y="224" width="8" height="8"/>
+<rect class="h3" x="194" y="224" width="8" height="8"/>
+<rect class="h3" x="202" y="224" width="8" height="8"/>
+<rect class="h3" x="210" y="224" width="8" height="8"/>
+<rect class="h3" x="218" y="224" width="8" height="8"/>
+<rect class="h3" x="226" y="224" width="8" height="8"/>
+<rect class="h3" x="170" y="232" width="8" height="8"/>
+<rect class="h3" x="178" y="232" width="8" height="8"/>
+<rect class="h3" x="186" y="232" width="8" height="8"/>
+<rect class="h3" x="194" y="232" width="8" height="8"/>
+<rect class="h3" x="202" y="232" width="8" height="8"/>
+<rect class="h3" x="210" y="232" width="8" height="8"/>
+<rect class="h3" x="218" y="232" width="8" height="8"/>
+<rect class="h3" x="226" y="232" width="8" height="8"/>
+<rect class="h3" x="170" y="240" width="8" height="8"/>
+<rect class="h3" x="178" y="240" width="8" height="8"/>
+<rect class="h3" x="186" y="240" width="8" height="8"/>
+<rect class="h3" x="194" y="240" width="8" height="8"/>
+<rect class="h3" x="202" y="240" width="8" height="8"/>
+<rect class="h3" x="210" y="240" width="8" height="8"/>
+<rect class="h3" x="218" y="240" width="8" height="8"/>
+<rect class="h3" x="226" y="240" width="8" height="8"/>
+<rect class="h3" x="170" y="248" width="8" height="8"/>
+<rect class="h3" x="178" y="248" width="8" height="8"/>
+<rect class="h3" x="186" y="248" width="8" height="8"/>
+<rect class="h3" x="194" y="248" width="8" height="8"/>
+<rect class="h3" x="202" y="248" width="8" height="8"/>
+<rect class="h3" x="210" y="248" width="8" height="8"/>
+<rect class="h3" x="218" y="248" width="8" height="8"/>
+<rect class="h3" x="226" y="248" width="8" height="8"/>
+<rect class="h3" x="170" y="256" width="8" height="8"/>
+<rect class="h3" x="178" y="256" width="8" height="8"/>
+<rect class="h3" x="186" y="256" width="8" height="8"/>
+<rect class="h3" x="194" y="256" width="8" height="8"/>
+<rect class="h3" x="202" y="256" width="8" height="8"/>
+<rect class="h3" x="210" y="256" width="8" height="8"/>
+<rect class="h3" x="218" y="256" width="8" height="8"/>
+<rect class="h3" x="226" y="256" width="8" height="8"/>
+<rect class="h3" x="170" y="264" width="8" height="8"/>
+<rect class="h3" x="178" y="264" width="8" height="8"/>
+<rect class="h3" x="186" y="264" width="8" height="8"/>
+<rect class="h3" x="194" y="264" width="8" height="8"/>
+<rect class="h3" x="202" y="264" width="8" height="8"/>
+<rect class="h3" x="210" y="264" width="8" height="8"/>
+<rect class="h3" x="218" y="264" width="8" height="8"/>
+<rect class="h3" x="226" y="264" width="8" height="8"/>
+<path class="gl" d="M178 216V280M170 224H234M186 216V280M170 232H234M194 216V280M170 240H234M202 216V280M170 248H234M210 216V280M170 256H234M218 216V280M170 264H234M226 216V280M170 272H234"/>
+<rect class="blk" x="170" y="216" width="48" height="56"/>
+<rect class="blk" x="178" y="224" width="56" height="48"/>
+<rect class="vis" x="254" y="216" width="64" height="64"/>
+<rect class="h3" x="254" y="216" width="8" height="8"/>
+<rect class="h3" x="262" y="216" width="8" height="8"/>
+<rect class="h3" x="270" y="216" width="8" height="8"/>
+<rect class="h3" x="278" y="216" width="8" height="8"/>
+<rect class="h3" x="286" y="216" width="8" height="8"/>
+<rect class="h3" x="294" y="216" width="8" height="8"/>
+<rect class="h3" x="254" y="224" width="8" height="8"/>
+<rect class="h3" x="262" y="224" width="8" height="8"/>
+<rect class="h3" x="270" y="224" width="8" height="8"/>
+<rect class="h3" x="278" y="224" width="8" height="8"/>
+<rect class="h3" x="286" y="224" width="8" height="8"/>
+<rect class="h3" x="294" y="224" width="8" height="8"/>
+<rect class="h3" x="302" y="224" width="8" height="8"/>
+<rect class="h3" x="310" y="224" width="8" height="8"/>
+<rect class="h3" x="254" y="232" width="8" height="8"/>
+<rect class="h3" x="262" y="232" width="8" height="8"/>
+<rect class="h3" x="270" y="232" width="8" height="8"/>
+<rect class="h3" x="278" y="232" width="8" height="8"/>
+<rect class="h3" x="286" y="232" width="8" height="8"/>
+<rect class="h3" x="294" y="232" width="8" height="8"/>
+<rect class="h3" x="302" y="232" width="8" height="8"/>
+<rect class="h3" x="310" y="232" width="8" height="8"/>
+<rect class="h3" x="254" y="240" width="8" height="8"/>
+<rect class="h3" x="262" y="240" width="8" height="8"/>
+<rect class="h3" x="270" y="240" width="8" height="8"/>
+<rect class="h3" x="278" y="240" width="8" height="8"/>
+<rect class="h3" x="286" y="240" width="8" height="8"/>
+<rect class="h3" x="294" y="240" width="8" height="8"/>
+<rect class="h3" x="302" y="240" width="8" height="8"/>
+<rect class="h3" x="310" y="240" width="8" height="8"/>
+<rect class="h3" x="254" y="248" width="8" height="8"/>
+<rect class="h3" x="262" y="248" width="8" height="8"/>
+<rect class="h3" x="270" y="248" width="8" height="8"/>
+<rect class="h3" x="278" y="248" width="8" height="8"/>
+<rect class="h3" x="286" y="248" width="8" height="8"/>
+<rect class="h3" x="294" y="248" width="8" height="8"/>
+<rect class="h3" x="302" y="248" width="8" height="8"/>
+<rect class="h3" x="310" y="248" width="8" height="8"/>
+<rect class="h3" x="254" y="256" width="8" height="8"/>
+<rect class="h3" x="262" y="256" width="8" height="8"/>
+<rect class="h3" x="270" y="256" width="8" height="8"/>
+<rect class="h3" x="278" y="256" width="8" height="8"/>
+<rect class="h3" x="286" y="256" width="8" height="8"/>
+<rect class="h3" x="294" y="256" width="8" height="8"/>
+<rect class="h3" x="302" y="256" width="8" height="8"/>
+<rect class="h3" x="310" y="256" width="8" height="8"/>
+<rect class="h3" x="254" y="264" width="8" height="8"/>
+<rect class="h3" x="262" y="264" width="8" height="8"/>
+<rect class="h3" x="270" y="264" width="8" height="8"/>
+<rect class="h3" x="278" y="264" width="8" height="8"/>
+<rect class="h3" x="286" y="264" width="8" height="8"/>
+<rect class="h3" x="294" y="264" width="8" height="8"/>
+<rect class="h3" x="302" y="264" width="8" height="8"/>
+<rect class="h3" x="310" y="264" width="8" height="8"/>
+<path class="gl" d="M262 216V280M254 224H318M270 216V280M254 232H318M278 216V280M254 240H318M286 216V280M254 248H318M294 216V280M254 256H318M302 216V280M254 264H318M310 216V280M254 272H318"/>
+<rect class="blk" x="254" y="216" width="48" height="56"/>
+<rect class="blk" x="262" y="224" width="56" height="48"/>
+<rect class="vis" x="338" y="216" width="64" height="64"/>
+<path class="gl" d="M346 216V280M338 224H402M354 216V280M338 232H402M362 216V280M338 240H402M370 216V280M338 248H402M378 216V280M338 256H402M386 216V280M338 264H402M394 216V280M338 272H402"/>
+<rect class="vis" x="422" y="216" width="64" height="64"/>
+<path class="gl" d="M430 216V280M422 224H486M438 216V280M422 232H486M446 216V280M422 240H486M454 216V280M422 248H486M462 216V280M422 256H486M470 216V280M422 264H486M478 216V280M422 272H486"/>
+<text x="8" y="324" class="strong ">間</text>
+<text x="8" y="344" class="xs">長距離 2 個</text>
+<text x="8" y="361" class="xs">時刻 2〜3 を覆う</text>
+<rect class="vis" x="170" y="304" width="64" height="64"/>
+<path class="gl" d="M178 304V368M170 312H234M186 304V368M170 320H234M194 304V368M170 328H234M202 304V368M170 336H234M210 304V368M170 344H234M218 304V368M170 352H234M226 304V368M170 360H234"/>
+<rect class="vis" x="254" y="304" width="64" height="64"/>
+<rect class="h4" x="254" y="304" width="8" height="8"/>
+<rect class="h4" x="262" y="304" width="8" height="8"/>
+<rect class="h4" x="270" y="304" width="8" height="8"/>
+<rect class="h4" x="278" y="304" width="8" height="8"/>
+<rect class="h4" x="286" y="304" width="8" height="8"/>
+<rect class="h4" x="294" y="304" width="8" height="8"/>
+<rect class="h4" x="254" y="312" width="8" height="8"/>
+<rect class="h4" x="262" y="312" width="8" height="8"/>
+<rect class="h4" x="270" y="312" width="8" height="8"/>
+<rect class="h4" x="278" y="312" width="8" height="8"/>
+<rect class="h4" x="286" y="312" width="8" height="8"/>
+<rect class="h4" x="294" y="312" width="8" height="8"/>
+<rect class="h4" x="302" y="312" width="8" height="8"/>
+<rect class="h4" x="310" y="312" width="8" height="8"/>
+<rect class="h4" x="254" y="320" width="8" height="8"/>
+<rect class="h4" x="262" y="320" width="8" height="8"/>
+<rect class="h4" x="270" y="320" width="8" height="8"/>
+<rect class="h4" x="278" y="320" width="8" height="8"/>
+<rect class="h4" x="286" y="320" width="8" height="8"/>
+<rect class="h4" x="294" y="320" width="8" height="8"/>
+<rect class="h4" x="302" y="320" width="8" height="8"/>
+<rect class="h4" x="310" y="320" width="8" height="8"/>
+<rect class="h4" x="254" y="328" width="8" height="8"/>
+<rect class="h4" x="262" y="328" width="8" height="8"/>
+<rect class="h4" x="270" y="328" width="8" height="8"/>
+<rect class="h4" x="278" y="328" width="8" height="8"/>
+<rect class="h4" x="286" y="328" width="8" height="8"/>
+<rect class="h4" x="294" y="328" width="8" height="8"/>
+<rect class="h4" x="302" y="328" width="8" height="8"/>
+<rect class="h4" x="310" y="328" width="8" height="8"/>
+<rect class="h4" x="254" y="336" width="8" height="8"/>
+<rect class="h4" x="262" y="336" width="8" height="8"/>
+<rect class="h4" x="270" y="336" width="8" height="8"/>
+<rect class="h4" x="278" y="336" width="8" height="8"/>
+<rect class="h4" x="286" y="336" width="8" height="8"/>
+<rect class="h4" x="294" y="336" width="8" height="8"/>
+<rect class="h4" x="302" y="336" width="8" height="8"/>
+<rect class="h4" x="310" y="336" width="8" height="8"/>
+<rect class="h4" x="254" y="344" width="8" height="8"/>
+<rect class="h4" x="262" y="344" width="8" height="8"/>
+<rect class="h4" x="270" y="344" width="8" height="8"/>
+<rect class="h4" x="278" y="344" width="8" height="8"/>
+<rect class="h4" x="286" y="344" width="8" height="8"/>
+<rect class="h4" x="294" y="344" width="8" height="8"/>
+<rect class="h4" x="302" y="344" width="8" height="8"/>
+<rect class="h4" x="310" y="344" width="8" height="8"/>
+<rect class="h4" x="254" y="352" width="8" height="8"/>
+<rect class="h4" x="262" y="352" width="8" height="8"/>
+<rect class="h4" x="270" y="352" width="8" height="8"/>
+<rect class="h4" x="278" y="352" width="8" height="8"/>
+<rect class="h4" x="286" y="352" width="8" height="8"/>
+<rect class="h4" x="294" y="352" width="8" height="8"/>
+<rect class="h4" x="302" y="352" width="8" height="8"/>
+<rect class="h4" x="310" y="352" width="8" height="8"/>
+<path class="gl" d="M262 304V368M254 312H318M270 304V368M254 320H318M278 304V368M254 328H318M286 304V368M254 336H318M294 304V368M254 344H318M302 304V368M254 352H318M310 304V368M254 360H318"/>
+<rect class="blk" x="254" y="304" width="48" height="56"/>
+<rect class="blk" x="262" y="312" width="56" height="48"/>
+<rect class="vis" x="338" y="304" width="64" height="64"/>
+<rect class="h4" x="338" y="304" width="8" height="8"/>
+<rect class="h4" x="346" y="304" width="8" height="8"/>
+<rect class="h4" x="354" y="304" width="8" height="8"/>
+<rect class="h4" x="362" y="304" width="8" height="8"/>
+<rect class="h4" x="370" y="304" width="8" height="8"/>
+<rect class="h4" x="378" y="304" width="8" height="8"/>
+<rect class="h4" x="338" y="312" width="8" height="8"/>
+<rect class="h4" x="346" y="312" width="8" height="8"/>
+<rect class="h4" x="354" y="312" width="8" height="8"/>
+<rect class="h4" x="362" y="312" width="8" height="8"/>
+<rect class="h4" x="370" y="312" width="8" height="8"/>
+<rect class="h4" x="378" y="312" width="8" height="8"/>
+<rect class="h4" x="386" y="312" width="8" height="8"/>
+<rect class="h4" x="394" y="312" width="8" height="8"/>
+<rect class="h4" x="338" y="320" width="8" height="8"/>
+<rect class="h4" x="346" y="320" width="8" height="8"/>
+<rect class="h4" x="354" y="320" width="8" height="8"/>
+<rect class="h4" x="362" y="320" width="8" height="8"/>
+<rect class="h4" x="370" y="320" width="8" height="8"/>
+<rect class="h4" x="378" y="320" width="8" height="8"/>
+<rect class="h4" x="386" y="320" width="8" height="8"/>
+<rect class="h4" x="394" y="320" width="8" height="8"/>
+<rect class="h4" x="338" y="328" width="8" height="8"/>
+<rect class="h4" x="346" y="328" width="8" height="8"/>
+<rect class="h4" x="354" y="328" width="8" height="8"/>
+<rect class="h4" x="362" y="328" width="8" height="8"/>
+<rect class="h4" x="370" y="328" width="8" height="8"/>
+<rect class="h4" x="378" y="328" width="8" height="8"/>
+<rect class="h4" x="386" y="328" width="8" height="8"/>
+<rect class="h4" x="394" y="328" width="8" height="8"/>
+<rect class="h4" x="338" y="336" width="8" height="8"/>
+<rect class="h4" x="346" y="336" width="8" height="8"/>
+<rect class="h4" x="354" y="336" width="8" height="8"/>
+<rect class="h4" x="362" y="336" width="8" height="8"/>
+<rect class="h4" x="370" y="336" width="8" height="8"/>
+<rect class="h4" x="378" y="336" width="8" height="8"/>
+<rect class="h4" x="386" y="336" width="8" height="8"/>
+<rect class="h4" x="394" y="336" width="8" height="8"/>
+<rect class="h4" x="338" y="344" width="8" height="8"/>
+<rect class="h4" x="346" y="344" width="8" height="8"/>
+<rect class="h4" x="354" y="344" width="8" height="8"/>
+<rect class="h4" x="362" y="344" width="8" height="8"/>
+<rect class="h4" x="370" y="344" width="8" height="8"/>
+<rect class="h4" x="378" y="344" width="8" height="8"/>
+<rect class="h4" x="386" y="344" width="8" height="8"/>
+<rect class="h4" x="394" y="344" width="8" height="8"/>
+<rect class="h4" x="338" y="352" width="8" height="8"/>
+<rect class="h4" x="346" y="352" width="8" height="8"/>
+<rect class="h4" x="354" y="352" width="8" height="8"/>
+<rect class="h4" x="362" y="352" width="8" height="8"/>
+<rect class="h4" x="370" y="352" width="8" height="8"/>
+<rect class="h4" x="378" y="352" width="8" height="8"/>
+<rect class="h4" x="386" y="352" width="8" height="8"/>
+<rect class="h4" x="394" y="352" width="8" height="8"/>
+<path class="gl" d="M346 304V368M338 312H402M354 304V368M338 320H402M362 304V368M338 328H402M370 304V368M338 336H402M378 304V368M338 344H402M386 304V368M338 352H402M394 304V368M338 360H402"/>
+<rect class="blk" x="338" y="304" width="48" height="56"/>
+<rect class="blk" x="346" y="312" width="56" height="48"/>
+<rect class="vis" x="422" y="304" width="64" height="64"/>
+<path class="gl" d="M430 304V368M422 312H486M438 304V368M422 320H486M446 304V368M422 328H486M454 304V368M422 336H486M462 304V368M422 344H486M470 304V368M422 352H486M478 304V368M422 360H486"/>
+<text x="8" y="412" class="strong ">ふつうの引き</text>
+<text x="8" y="432" class="xs">短距離 8 個</text>
+<text x="8" y="449" class="xs">長さと位置がばらばら</text>
+<rect class="vis" x="170" y="392" width="64" height="64"/>
+<rect class="hn" x="170" y="392" width="8" height="8"/>
+<rect class="hn" x="178" y="392" width="8" height="8"/>
+<rect class="hn" x="186" y="392" width="8" height="8"/>
+<rect class="hn" x="170" y="400" width="8" height="8"/>
+<rect class="hn" x="178" y="400" width="8" height="8"/>
+<rect class="hn" x="186" y="400" width="8" height="8"/>
+<rect class="hn" x="170" y="408" width="8" height="8"/>
+<rect class="hn" x="178" y="408" width="8" height="8"/>
+<rect class="hn" x="186" y="408" width="8" height="8"/>
+<rect class="hn" x="194" y="408" width="8" height="8"/>
+<rect class="hn" x="202" y="408" width="8" height="8"/>
+<rect class="hn" x="186" y="416" width="8" height="8"/>
+<rect class="hn" x="194" y="416" width="8" height="8"/>
+<rect class="hn" x="202" y="416" width="8" height="8"/>
+<rect class="hn" x="210" y="416" width="8" height="8"/>
+<rect class="hn" x="218" y="416" width="8" height="8"/>
+<rect class="hn" x="226" y="416" width="8" height="8"/>
+<rect class="hn" x="186" y="424" width="8" height="8"/>
+<rect class="hn" x="194" y="424" width="8" height="8"/>
+<rect class="hn" x="202" y="424" width="8" height="8"/>
+<rect class="hn" x="210" y="424" width="8" height="8"/>
+<rect class="hn" x="218" y="424" width="8" height="8"/>
+<rect class="hn" x="226" y="424" width="8" height="8"/>
+<rect class="hn" x="210" y="432" width="8" height="8"/>
+<rect class="hn" x="218" y="432" width="8" height="8"/>
+<rect class="hn" x="226" y="432" width="8" height="8"/>
+<path class="gl" d="M178 392V456M170 400H234M186 392V456M170 408H234M194 392V456M170 416H234M202 392V456M170 424H234M210 392V456M170 432H234M218 392V456M170 440H234M226 392V456M170 448H234"/>
+<rect class="blk" x="170" y="392" width="24" height="24"/>
+<rect class="blk" x="186" y="408" width="24" height="24"/>
+<rect class="blk" x="210" y="416" width="24" height="24"/>
+<rect class="vis" x="254" y="392" width="64" height="64"/>
+<rect class="hn" x="254" y="392" width="8" height="8"/>
+<rect class="hn" x="262" y="392" width="8" height="8"/>
+<rect class="hn" x="270" y="392" width="8" height="8"/>
+<rect class="hn" x="294" y="392" width="8" height="8"/>
+<rect class="hn" x="302" y="392" width="8" height="8"/>
+<rect class="hn" x="310" y="392" width="8" height="8"/>
+<rect class="hn" x="254" y="400" width="8" height="8"/>
+<rect class="hn" x="262" y="400" width="8" height="8"/>
+<rect class="hn" x="270" y="400" width="8" height="8"/>
+<rect class="hn" x="294" y="400" width="8" height="8"/>
+<rect class="hn" x="302" y="400" width="8" height="8"/>
+<rect class="hn" x="310" y="400" width="8" height="8"/>
+<rect class="hn" x="254" y="408" width="8" height="8"/>
+<rect class="hn" x="262" y="408" width="8" height="8"/>
+<rect class="hn" x="270" y="408" width="8" height="8"/>
+<rect class="hn" x="294" y="408" width="8" height="8"/>
+<rect class="hn" x="302" y="408" width="8" height="8"/>
+<rect class="hn" x="310" y="408" width="8" height="8"/>
+<rect class="hn" x="294" y="416" width="8" height="8"/>
+<rect class="hn" x="302" y="416" width="8" height="8"/>
+<rect class="hn" x="310" y="416" width="8" height="8"/>
+<rect class="hn" x="294" y="424" width="8" height="8"/>
+<rect class="hn" x="302" y="424" width="8" height="8"/>
+<rect class="hn" x="310" y="424" width="8" height="8"/>
+<rect class="hn" x="286" y="432" width="8" height="8"/>
+<rect class="hn" x="294" y="432" width="8" height="8"/>
+<rect class="hn" x="302" y="432" width="8" height="8"/>
+<rect class="hn" x="310" y="432" width="8" height="8"/>
+<rect class="hn" x="286" y="440" width="8" height="8"/>
+<rect class="hn" x="294" y="440" width="8" height="8"/>
+<rect class="hn" x="302" y="440" width="8" height="8"/>
+<rect class="hn" x="286" y="448" width="8" height="8"/>
+<rect class="hn" x="294" y="448" width="8" height="8"/>
+<rect class="hn" x="302" y="448" width="8" height="8"/>
+<path class="gl" d="M262 392V456M254 400H318M270 392V456M254 408H318M278 392V456M254 416H318M286 392V456M254 424H318M294 392V456M254 432H318M302 392V456M254 440H318M310 392V456M254 448H318"/>
+<rect class="blk" x="254" y="392" width="24" height="24"/>
+<rect class="blk" x="294" y="392" width="24" height="24"/>
+<rect class="blk" x="286" y="432" width="24" height="24"/>
+<rect class="blk" x="294" y="416" width="24" height="24"/>
+<rect class="vis" x="338" y="392" width="64" height="64"/>
+<rect class="hn" x="338" y="392" width="8" height="8"/>
+<rect class="hn" x="346" y="392" width="8" height="8"/>
+<rect class="hn" x="354" y="392" width="8" height="8"/>
+<rect class="hn" x="378" y="392" width="8" height="8"/>
+<rect class="hn" x="386" y="392" width="8" height="8"/>
+<rect class="hn" x="394" y="392" width="8" height="8"/>
+<rect class="hn" x="338" y="400" width="8" height="8"/>
+<rect class="hn" x="346" y="400" width="8" height="8"/>
+<rect class="hn" x="354" y="400" width="8" height="8"/>
+<rect class="hn" x="378" y="400" width="8" height="8"/>
+<rect class="hn" x="386" y="400" width="8" height="8"/>
+<rect class="hn" x="394" y="400" width="8" height="8"/>
+<rect class="hn" x="338" y="408" width="8" height="8"/>
+<rect class="hn" x="346" y="408" width="8" height="8"/>
+<rect class="hn" x="354" y="408" width="8" height="8"/>
+<rect class="hn" x="378" y="408" width="8" height="8"/>
+<rect class="hn" x="386" y="408" width="8" height="8"/>
+<rect class="hn" x="394" y="408" width="8" height="8"/>
+<rect class="hn" x="338" y="424" width="8" height="8"/>
+<rect class="hn" x="346" y="424" width="8" height="8"/>
+<rect class="hn" x="354" y="424" width="8" height="8"/>
+<rect class="hn" x="338" y="432" width="8" height="8"/>
+<rect class="hn" x="346" y="432" width="8" height="8"/>
+<rect class="hn" x="354" y="432" width="8" height="8"/>
+<rect class="hn" x="362" y="432" width="8" height="8"/>
+<rect class="hn" x="338" y="440" width="8" height="8"/>
+<rect class="hn" x="346" y="440" width="8" height="8"/>
+<rect class="hn" x="354" y="440" width="8" height="8"/>
+<rect class="hn" x="362" y="440" width="8" height="8"/>
+<rect class="hn" x="346" y="448" width="8" height="8"/>
+<rect class="hn" x="354" y="448" width="8" height="8"/>
+<rect class="hn" x="362" y="448" width="8" height="8"/>
+<path class="gl" d="M346 392V456M338 400H402M354 392V456M338 408H402M362 392V456M338 416H402M370 392V456M338 424H402M378 392V456M338 432H402M386 392V456M338 440H402M394 392V456M338 448H402"/>
+<rect class="blk" x="338" y="392" width="24" height="24"/>
+<rect class="blk" x="378" y="392" width="24" height="24"/>
+<rect class="blk" x="338" y="424" width="24" height="24"/>
+<rect class="blk" x="346" y="432" width="24" height="24"/>
+<rect class="vis" x="422" y="392" width="64" height="64"/>
+<rect class="hn" x="422" y="392" width="8" height="8"/>
+<rect class="hn" x="430" y="392" width="8" height="8"/>
+<rect class="hn" x="438" y="392" width="8" height="8"/>
+<rect class="hn" x="422" y="400" width="8" height="8"/>
+<rect class="hn" x="430" y="400" width="8" height="8"/>
+<rect class="hn" x="438" y="400" width="8" height="8"/>
+<rect class="hn" x="446" y="400" width="8" height="8"/>
+<rect class="hn" x="454" y="400" width="8" height="8"/>
+<rect class="hn" x="462" y="400" width="8" height="8"/>
+<rect class="hn" x="422" y="408" width="8" height="8"/>
+<rect class="hn" x="430" y="408" width="8" height="8"/>
+<rect class="hn" x="438" y="408" width="8" height="8"/>
+<rect class="hn" x="446" y="408" width="8" height="8"/>
+<rect class="hn" x="454" y="408" width="8" height="8"/>
+<rect class="hn" x="462" y="408" width="8" height="8"/>
+<rect class="hn" x="446" y="416" width="8" height="8"/>
+<rect class="hn" x="454" y="416" width="8" height="8"/>
+<rect class="hn" x="462" y="416" width="8" height="8"/>
+<rect class="hn" x="422" y="424" width="8" height="8"/>
+<rect class="hn" x="430" y="424" width="8" height="8"/>
+<rect class="hn" x="438" y="424" width="8" height="8"/>
+<rect class="hn" x="422" y="432" width="8" height="8"/>
+<rect class="hn" x="430" y="432" width="8" height="8"/>
+<rect class="hn" x="438" y="432" width="8" height="8"/>
+<rect class="hn" x="422" y="440" width="8" height="8"/>
+<rect class="hn" x="430" y="440" width="8" height="8"/>
+<rect class="hn" x="438" y="440" width="8" height="8"/>
+<path class="gl" d="M430 392V456M422 400H486M438 392V456M422 408H486M446 392V456M422 416H486M454 392V456M422 424H486M462 392V456M422 432H486M470 392V456M422 440H486M478 392V456M422 448H486"/>
+<rect class="blk" x="422" y="392" width="24" height="24"/>
+<rect class="blk" x="422" y="424" width="24" height="24"/>
+<rect class="blk" x="446" y="400" width="24" height="24"/>
+<text x="8" y="484" class="xs">色のついたマス = 隠すトークン（ブロックの和集合 U）。枠 = 1 つのブロック</text>
+<text x="8" y="502" class="xs">空間: 短距離は面積 15% × 8 個、長距離は面積 70% × 2 個（図は例）</text>
+<text x="8" y="520" class="xs">時間: ブロックごとに長さを {1,2,3,4} から、位置を均等に引く</text></svg></div>
+    <figcaption><b>図 2　マスクの族（multi-block を時空間に広げたもの）の引きの例。</b> 1 行が 1 回の引きです。4 つの箱が時刻 1〜4 で、1 つの箱の 8×8 のマスが空間の位置です。色のついたマスがブロックの和集合で、ここを隠します。残りの見えるトークンから、隠したトークンを当てます。1 行目は、短距離のブロックがどれも全時間を通る場合で、今（空間）の補完にあたります。2〜4 行目は、長距離のブロックが時間の一部だけを覆う場合で、覆う時刻によって未来・過去・間の補完になります。5 行目のように、ふつうはブロックごとに時間の長さと位置が違います。隠す数は引きごとに変わります。</figcaption>
   </figure>
 
   <div class="prose">
@@ -601,13 +1275,14 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <text x="428" y="238" class="xs">（今・過去・未来の切り口ごと）</text>
 <line class="arr" x1="110" y1="202" x2="110" y2="256" marker-end="url(#ah)"/>
 <line class="arr" x1="310" y1="202" x2="310" y2="256" marker-end="url(#ah)"/>
-<rect class="pbox" x="10" y="258" width="400" height="122" rx="5"/>
+<rect class="pbox" x="10" y="258" width="400" height="128" rx="5"/>
 <text x="20" y="278" class="small strong">2 つの分母で割る</text>
 <text x="20" y="295" class="xs">R<tspan dy="4" font-size="9">copy</tspan><tspan dy="-4"> = copy</tspan> の誤差で割った値</text>
 <text x="20" y="312" class="xs">R<tspan dy="4" font-size="9">clim</tspan><tspan dy="-4"> = 平均</tspan>の予測の誤差で割った値</text>
 <text x="20" y="329" class="xs">主の数 = 0.8〜25.6 秒の log R の平均</text>
 <text x="20" y="346" class="xs">下限: 線形のモデル（2 時点、既存の dyn/copy）</text>
-<text x="20" y="363" class="xs">比べ: 同じ minGRU を全ての符号（pca を含む）に</text>
+<text x="20" y="363" class="xs">比べ: 同じ minGRU を全ての符号（pca・VAE などの</text>
+<text x="20" y="376" class="xs">他の手法を含む）に</text>
 <text x="10" y="410" class="small strong">ガード（壊れていないこと）</text>
 <rect class="bw" x="10" y="420" width="196" height="86" rx="5"/>
 <text x="20" y="440" class="small strong">崩壊</text>
@@ -639,7 +1314,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
       <li><b>過去</b>: 同じ作りの minGRU を、時間を反転した系列で学びます。</li>
       <li><b>分母</b>: copy の誤差（R<sub>copy</sub>）と、平均の予測の誤差（R<sub>clim</sub>）の 2 つを使います。主の数は、0.8〜25.6 秒の log R の平均です。</li>
       <li><b>下限</b>: 線形のモデル（2 時点、既存の dyn/copy）を並べます。これは閉じた式で確かめられます。</li>
-      <li><b>比べ</b>: 同じ minGRU を、同じ学習の組・同じ早期終了の規則で、全ての符号（<code>pca</code> を含む）に当てます。判定の言葉は dyn/copy と同じです。2 つの分母の区間が同じ向きに良いときだけ「良い」とします。</li>
+      <li><b>比べ</b>: 同じ minGRU を、同じ学習の組・同じ早期終了の規則で、全ての符号に当てます。符号には、<code>pca</code>・VAE の <code>v16</code>・<code>v17</code> などの他の手法も含めます。判定の言葉は dyn/copy と同じです。2 つの分母の区間が同じ向きに良いときだけ「良い」とします。</li>
     </ul>
     <h3>4.2 今: stack の中の補完</h3>
     <ul>
@@ -667,50 +1342,53 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <section id="stages">
   <div class="sec-head"><div class="eyebrow">5</div><h2>段の順序</h2></div>
   <div class="prose">
-    <p>1 段では 1 つの要素だけを変えます。各段で「何が分かれば次へ進むか」を、回す前に書きます。</p>
+    <p>1 段では 1 つの要素だけを変えます。各段で「何が分かれば次へ進むか」を、回す前に書きます。<b>比べる相手は他の手法（<code>pca</code>・VAE の <code>v16</code>・<code>v17</code>・<code>mean8</code> などの物差し）だけです。以前の JEPA（V18〜V18d）の結果とは比べません</b>（ユーザー、2026-11-27）。段どうしの差は、何が効いたかを読むための記述です。</p>
   </div>
   <figure>
-    <div class="chart"><svg class="dg fit" viewBox="0 0 520 534" role="img" aria-label="段の順序 F0 から F3"><circle class="st" cx="34" cy="40" r="22"/>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 552" role="img" aria-label="段の順序 F0 から F3"><circle class="st" cx="34" cy="40" r="22"/>
 <text x="34" y="45" class="small strong mono accent" text-anchor="middle">F0</text>
 <line class="arr" x1="34" y1="64" x2="34" y2="142" marker-end="url(#ah)"/>
 <rect class="pbox" x="70" y="10" width="440" height="112" rx="5"/>
 <text x="82" y="32" class="small strong">評価の土台（学習しない）</text>
 <text x="82" y="54" class="xs">minGRU の評価を作り、合成で確かめる</text>
-<text x="82" y="72" class="xs">物差し（pca・mean8・学習前・V18c）に当てる</text>
+<text x="82" y="72" class="xs">物差し（pca・mean8・VAE の v16・v17・学習前）に当てる</text>
 <text x="82" y="94" class="xs strong accent">次へ: 合成の確かめが全て通り、物差しの順序が</text>
 <text x="82" y="112" class="xs strong accent">既存の dyn/copy と矛盾しない</text>
 <circle class="st" cx="34" cy="166" r="22"/>
 <text x="34" y="171" class="small strong mono accent" text-anchor="middle">F1</text>
 <line class="arr" x1="34" y1="190" x2="34" y2="268" marker-end="url(#ah)"/>
 <rect class="pbox" x="70" y="136" width="440" height="112" rx="5"/>
-<text x="82" y="158" class="small strong">T0: tubelet の箱で、管（今）だけ</text>
-<text x="82" y="180" class="xs">変える要素: 箱の形</text>
-<text x="82" y="202" class="xs strong accent">分かること: V18c との差 = 箱の形の効果</text>
-<text x="82" y="220" class="xs strong accent">次へ: 崩壊しない</text>
+<text x="82" y="158" class="small strong">T0: tubelet の箱で、全てのブロックを全時間に</text>
+<text x="82" y="180" class="xs">V-JEPA の multi-block そのもの（今だけ）</text>
+<text x="82" y="202" class="xs strong accent">次へ: 崩壊しない</text>
+<text x="82" y="220" class="xs strong accent">今・過去・未来の評価を pca・VAE と並べる</text>
 <circle class="st" cx="34" cy="292" r="22"/>
 <text x="34" y="297" class="small strong mono accent" text-anchor="middle">F2</text>
 <line class="arr" x1="34" y1="316" x2="34" y2="394" marker-end="url(#ah)"/>
 <rect class="pbox" x="70" y="262" width="440" height="112" rx="5"/>
-<text x="82" y="284" class="small strong">S1: 管 + 時間の側、s = 1</text>
-<text x="82" y="306" class="xs">変える要素: stack の中の時間の補完</text>
-<text x="82" y="328" class="xs strong accent">分かること: T0 との差 = stack の中の時間の補完の効果</text>
+<text x="82" y="284" class="small strong">S1: ブロックの時間の長さも引く（族の全体）、s = 1</text>
+<text x="82" y="306" class="xs">変える要素: ブロックの時間の長さ</text>
+<text x="82" y="328" class="xs strong accent">次へ: 崩壊しない（time_r2 を含む）</text>
+<text x="82" y="346" class="xs strong accent">読むこと: T0 より未来・過去の評価が良くなるか</text>
+<text x="82" y="364" class="xs strong accent">（時間の補完の効果）</text>
 <circle class="st" cx="34" cy="418" r="22"/>
 <text x="34" y="423" class="small strong mono accent" text-anchor="middle">F3</text>
 <rect class="bg" x="70" y="388" width="440" height="112" rx="5"/>
 <text x="82" y="410" class="small strong">Sσ: 同じ、log s を一様に</text>
 <text x="82" y="432" class="xs">変える要素: 時間の尺度</text>
-<text x="82" y="454" class="xs strong accent">分かること: S1 との差 = 時間の尺度の効果</text>
-<text x="82" y="472" class="xs strong accent">ここで pca 超えを判定する</text>
-<text x="70" y="522" class="xs">F3 の後: 元の計画の流れ（ストリーム、時間相関の SIGReg、PC-ALM）へ戻る</text></svg></div>
-    <figcaption><b>図 5　段の順序と、各段で分かること。</b> F0 では学習をせず、評価の土台だけを作って確かめます。F1〜F3 では 1 段に 1 つずつ要素を足し、前の段との差をその要素の効果として読みます。<code>pca</code> を超えたかどうかは F3 で判定します。</figcaption>
+<text x="82" y="454" class="xs strong accent">読むこと: S1 より良くなるか（時間の尺度の効果）</text>
+<text x="82" y="472" class="xs strong accent">ここで pca と VAE を超えたかを判定する</text>
+<text x="70" y="522" class="xs">比べる相手は pca・VAE などの他の手法だけ。以前の JEPA とは比べない</text>
+<text x="70" y="540" class="xs">F3 の後: 元の計画の流れ（ストリーム、時間相関の SIGReg、PC-ALM）へ戻る</text></svg></div>
+    <figcaption><b>図 5　段の順序と、各段で読むこと。</b> F0 では学習をせず、評価の土台だけを作って確かめます。F1〜F3 では、1 段に 1 つずつ要素を足します。前の段との差は、何が効いたかを読むための記述です。比べる相手は、<code>pca</code>・VAE などの他の手法だけです。以前の JEPA（V18〜V18d）とは比べません。<code>pca</code> と VAE を超えたかどうかは F3 で判定します。</figcaption>
   </figure>
   <div class="tbl"><table>
     <thead><tr><th>段</th><th>中身</th><th>次へ進む条件</th></tr></thead>
     <tbody>
-      <tr><td class="n">F0</td><td><b>評価の土台</b>。minGRU の評価を作り、合成で確かめます（OU、ガウスの状態空間モデルではカルマンの最良に近づくこと、定常なら未来と過去の誤差が一致すること）。物差し（<code>pca</code>・<code>mean8</code>・学習前・V18c）に当てます。学習はしません。</td><td>合成の確かめが全て通る。物差しの順序が既存の dyn/copy と矛盾しない。</td></tr>
-      <tr><td class="n">F1</td><td><b>T0</b>: tubelet の箱で、管（今）だけ。</td><td>V18c との差 = 箱の形の効果。崩壊しない。</td></tr>
-      <tr><td class="n">F2</td><td><b>S1</b>: 管 + 時間の側、<var>s</var> = 1。</td><td>T0 との差 = stack の中の時間の補完の効果。</td></tr>
-      <tr><td class="n">F3</td><td><b>Sσ</b>: 同じ、log <var>s</var> を一様に。</td><td>S1 との差 = 時間の尺度の効果。<b>ここで <code>pca</code> 超えを判定する。</b></td></tr>
+      <tr><td class="n">F0</td><td><b>評価の土台</b>。minGRU の評価を作り、合成で確かめます（OU、ガウスの状態空間モデルではカルマンの最良に近づくこと、定常なら未来と過去の誤差が一致すること）。物差し（<code>pca</code>・<code>mean8</code>・VAE の <code>v16</code>・<code>v17</code>・学習前）に当てます。学習はしません。</td><td>合成の確かめが全て通る。物差しの順序が既存の dyn/copy と矛盾しない。</td></tr>
+      <tr><td class="n">F1</td><td><b>T0</b>: tubelet の箱で、全てのブロックを全時間にする（V-JEPA の multi-block そのもの、今だけ）。</td><td>崩壊しない。今・過去・未来の評価を <code>pca</code>・VAE と並べる。</td></tr>
+      <tr><td class="n">F2</td><td><b>S1</b>: ブロックの時間の長さも引く（族の全体）、<var>s</var> = 1。</td><td>崩壊しない（<code>time_r2</code> を含む）。T0 より未来・過去の評価が良くなるか（時間の補完の効果）を読む。</td></tr>
+      <tr><td class="n">F3</td><td><b>Sσ</b>: 同じ、log <var>s</var> を一様に。</td><td>S1 より良くなるか（時間の尺度の効果）を読む。<b>ここで <code>pca</code> と VAE を超えたかを判定する。</b></td></tr>
     </tbody>
   </table></div>
   <div class="prose">
