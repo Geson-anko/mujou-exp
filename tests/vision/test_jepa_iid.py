@@ -4,7 +4,10 @@
 patch 4 at 64 px, and of V18c's patch 8 at 64 px with patch 2). The defaults
 reproduce the values of V18's code. V18d's ``--st``: one time is V18c's run
 bit for bit (plans/v18d.md, O1'), and the rows and settings of 4 times and
-of ST-perm."""
+of ST-perm. The foundation's ``--arm`` (plans/foundation.md, 3; stacks of 8
+frames): each arm's settings, rows and validation rows, the same seed's
+same run, step 0 the built JEPA with its fixed R and W, and no optimizer
+group of them."""
 
 import json
 import math
@@ -18,11 +21,13 @@ import yaml
 from exp.lib import ckpt
 from exp.lib.randproj import gaussian_projection
 from exp.vision.compose import from_dict, to_dict
+from exp.vision.fnd_jepa import build_fnd
 from exp.vision.jepa import LATENT_DIM, R_SEED, W_SEED, build_jepa, jepa_mup_lr
 from exp.vision.jepa_iid import (
     DELTA_SEED,
     PERM_SEED,
     RUNS,
+    SPACING_SEED,
     ST_BANDS,
     V16_RUN,
     _optimizer,
@@ -364,3 +369,91 @@ class TestV18d:
     def test_bad_clips_are_refused(self, root, tmp_path, extra, match):
         with pytest.raises(ValueError, match=match):
             run(root, tmp_path, "r", "--steps", "1", *V18C, *extra)
+
+
+def fnd_run(root: Path, tmp_path: Path, name: str, *extra: str) -> Path:
+    """A run of the foundation's arm on the tiny tours: stacks of 8 frames
+    (4 times of 2) of 16 px, patch 4 (4 x 4 positions), s up to 2."""
+    conf = conf_of()
+    tours = replace(conf.data.tours, frames=8)
+    conf = replace(conf, data=replace(conf.data, tours=tours))
+    cfg = tmp_path / "fnd.yaml"
+    cfg.write_text(yaml.safe_dump(to_dict(conf)))
+    out = tmp_path / name
+    argv = ["--config", str(cfg), "--lam", "0.5", "--lr", "1e-3", "--warmup", "2"]
+    argv += ["--directions", "64", "--batch", "4", "--s-max", "2", "--device", "cpu"]
+    argv += ["--root", str(root), "--out", str(out), *extra]
+    main(argv)
+    return out
+
+
+def vals(out: Path) -> list[dict]:
+    return [json.loads(x) for x in (out / "val.jsonl").read_text().splitlines()]
+
+
+class TestArms:
+    @pytest.mark.parametrize("arm", ["T0", "S1", "Ss"])
+    def test_an_arm_logs_finite_rows_and_its_settings(self, root, tmp_path, arm):
+        out = fnd_run(root, tmp_path, arm, "--arm", arm, "--steps", "3")
+        settings = json.loads((out / "jepa.json").read_text())
+        assert settings["arm"] == arm
+        assert settings["timed"] == (arm != "T0") and settings["scaled"] == (
+            arm == "Ss"
+        )
+        assert settings["s_max"] == (2 if arm == "Ss" else 1)
+        assert settings["tokens"] == 64 and settings["times"] == 4
+        assert settings["token_dim"] == 16 and settings["latent_dim"] == 64 * 16
+        assert settings["seeds"]["spacing"] == (SPACING_SEED if arm == "Ss" else None)
+        assert settings["val"]["video"] in ("A", "B", "C")
+        (r,) = rows(out)
+        keys = ("loss", "pred", "sigreg", "grad_norm", "t_var", "z_var", "time_r2")
+        for k in (*keys, "hidden", "pred_short", "pred_long"):
+            assert math.isfinite(r[k]), k
+        assert 0 < r["hidden"] < 1
+        assert r["pred"] == pytest.approx((r["pred_short"] + r["pred_long"]) / 2)
+        v = vals(out)
+        assert [x["step"] for x in v] == [0, 3]
+        for k in ("val_pred", "val_rel", "sigreg_heldin", "rank", "token_r2"):
+            assert all(math.isfinite(x[k]) for x in v), k
+        got = sorted((out / "ckpt").glob("*.pt"))
+        assert got == [ckpt.eval_path(out, 0.0), ckpt.eval_path(out, 1.2)]
+
+    def test_the_same_seed_gives_the_same_run(self, root, tmp_path):
+        a = fnd_run(root, tmp_path, "a", "--arm", "Ss", "--steps", "2")
+        b = fnd_run(root, tmp_path, "b", "--arm", "Ss", "--steps", "2")
+
+        def bare(rs: list[dict]) -> list[dict]:
+            return [{k: v for k, v in r.items() if k != "sec"} for r in rs]
+
+        assert bare(rows(a)) == bare(rows(b)) and bare(vals(a)) == bare(vals(b))
+        wa = torch.load(ckpt.eval_path(a, 0.8), weights_only=True)["modules"]
+        wb = torch.load(ckpt.eval_path(b, 0.8), weights_only=True)["modules"]
+        assert all(torch.equal(wa[m][k], wb[m][k]) for m in wa for k in wa[m])
+
+    def test_step_0_is_the_built_jepa_and_r_w_are_kept(self, root, tmp_path):
+        out = fnd_run(root, tmp_path, "r", "--arm", "S1", "--steps", "1")
+        conf = from_dict(yaml.safe_load((out / "config.yaml").read_text()))
+        mods = build_fnd(conf, seed=conf.seed)
+        saved = torch.load(ckpt.eval_path(out, 0.0), weights_only=True)["modules"]
+        assert set(saved) == {"encoder", "proj", "predictor", "mix"}
+        for name, m in mods.modules().items():
+            want = m.state_dict()
+            assert all(torch.equal(saved[name][k], want[k]) for k in want), name
+        d = 64 * 16
+        assert torch.equal(saved["mix"]["weight"], gaussian_projection(d, d, W_SEED))
+
+    def test_no_optimizer_group_holds_r_or_w(self):
+        conf = conf_of()
+        tours = replace(conf.data.tours, frames=8)
+        mods = build_fnd(replace(conf, data=replace(conf.data, tours=tours)), seed=0)
+        opt = _optimizer(mods, conf, 1e-3)
+        held = {id(p) for g in opt.param_groups for p in g["params"]}
+        assert mods.mix is not None
+        assert id(mods.mix.weight) not in held and id(mods.proj.weight) not in held
+        assert held == {id(p) for p in mods.parameters()}
+
+    def test_an_unknown_arm_or_no_mask_ratio_is_refused(self, root, tmp_path):
+        with pytest.raises(SystemExit):
+            fnd_run(root, tmp_path, "r", "--arm", "S2", "--steps", "1")
+        with pytest.raises(SystemExit):
+            fnd_run(root, tmp_path, "r", "--steps", "1")

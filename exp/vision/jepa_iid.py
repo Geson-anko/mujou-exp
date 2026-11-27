@@ -42,6 +42,19 @@ time side's of the lags in each band of ``ST_BANDS``, ``None`` of none) and
 ``overlap`` (the share of clips two of whose stacks share a frame); the
 z statistics are of every stack.
 
+The foundation (``--arm``, ``plans/foundation.md`` 3; ``train_fnd``): the
+arm ``T0``, ``S1`` or ``Ss`` of ``fnd_jepa.ARMS`` learns ``fnd_jepa.build_fnd``
+($d$ = ``fnd_jepa.TOKEN_DIM``, the square $W$; the config's patch, 8 at 64
+px) on ``--batch`` stacks of the spacings ``fnd_jepa.draw_spacings`` (on
+``--s-max``, from ``seed + SPACING_SEED``) drawn by ``Units.draw_spaced``
+(from ``seed + DRAW_SEED``), their masks ``fnd_jepa.draw_masks`` (from
+``seed + MASK_SEED``), descending ``fnd_jepa.fnd_terms``. Its rows add
+``pred_short`` and ``pred_long`` (the mean error of each kind's stacks),
+``t_var`` (that of the tokens), ``time_r2`` (``fnd_jepa.time_r2`` of the
+batch's tokens) and ``hidden`` (the share of the tokens hidden); ``z_var`` is
+of $z$. At each checkpoint ``val.jsonl`` gets a row of
+``fnd_val.val_rows`` of the validation video (``step`` and ``sec`` added).
+
 Time, as V16: a checkpoint after $s$ steps has seen ``frame`` $= s \cdot$
 ``batch`` stacks, $t$ = ``frame`` $\cdot$ ``time.frame`` (12.8 s a step at
 batch 128; of V18d's clips too, so a step's checkpoint has V18c's name). The checkpoints are at the steps of ``ckpt_steps``.
@@ -67,6 +80,8 @@ allocated, GiB) and
     python -m exp.vision.jepa_iid --patch 8 --token-dim 16 --proj fixed \
         --sigreg-on mix --mask-ratio 0.5 --lam 0.8 --lr 3e-5 --steps 6000 \
         --st 4 [--st-perm] --out <run_dir>
+    python -m exp.vision.jepa_iid --patch 8 --arm Ss --lam 0.8 --lr 1e-4 \
+        --steps 6000 --out <run_dir>
 """
 
 import argparse
@@ -85,6 +100,7 @@ from torch import Tensor
 from exp.lib import ckpt
 from exp.lib.provenance import configure_determinism, of_diagnosis
 from exp.lib.tours.stacks import tours_root
+from exp.vision import fnd_jepa
 from exp.vision.compose import from_dict, to_dict
 from exp.vision.iid import DRAW_SEED, Units, draw_lags, lr_at
 from exp.vision.jepa import (
@@ -127,12 +143,14 @@ __all__ = [
     "PERM_SEED",
     "RUNS",
     "SHORT_CKPT",
+    "SPACING_SEED",
     "ST_BANDS",
     "ST_LAGS",
     "V16_RUN",
     "ckpt_steps",
     "main",
     "train",
+    "train_fnd",
     "v16_config",
 ]
 
@@ -141,6 +159,7 @@ DIRECTION_SEED = 31  # added to the seed: SIGReg's directions
 DIRECTIONS = 1024  # M
 DELTA_SEED = 89  # added to the seed: V18d's lags
 PERM_SEED = 59  # added to the seed: ST-perm's stacks
+SPACING_SEED = 97  # added to the seed: the foundation's spacings
 ST_LAGS = (8, 512)  # V18d's lags, in stacks (0.8 to 51.2 s)
 ST_BANDS = (8, 32, 128, 512)  # the edges of the rows' bands of lags
 SHORT_CKPT = (0, 1000, 2000, 4000, 6000)  # steps of the checkpoints of a short run
@@ -464,12 +483,214 @@ def train(
     log.close()
 
 
+def train_fnd(
+    conf: RunConf,
+    out: Path,
+    *,
+    root: Path,
+    arm: str,
+    lam: float,
+    lr: float,
+    steps: int,
+    batch: int,
+    warmup: int,
+    s_max: int = fnd_jepa.S_MAX,
+    directions_count: int = DIRECTIONS,
+    log_every: int = 100,
+    checkpoint_blocks: bool = False,
+    val_count: int = 512,
+    held_count: int = 1024,
+) -> None:
+    """Learn the foundation's ``arm`` (module docstring) into ``out``: the
+    files of ``train``, its rows, and ``val.jsonl`` of ``val_count`` and
+    ``held_count`` stacks (``fnd_val.val_set``; ``fnd_val.VAL_COUNT`` and
+    ``HELD_COUNT`` by default).
+
+    Raises:
+        ValueError: ``arm`` is not of ``fnd_jepa.ARMS``, ``lam`` is not in
+            ``[0, 1]``, ``s_max`` is below 1, or as ``fnd_jepa.build_fnd``.
+        FloatingPointError: A mean of ``train.jsonl`` is not finite.
+    """
+    # fnd_val reads jepa_eval, which imports this module: imported here
+    from exp.vision import fnd_val
+
+    if arm not in fnd_jepa.ARMS:
+        raise ValueError(f"arm is one of {list(fnd_jepa.ARMS)}, not {arm!r}")
+    if not 0.0 <= lam <= 1.0:
+        raise ValueError(f"lam must be in [0, 1], not {lam}")
+    if s_max < 1:
+        raise ValueError(f"s_max must be at least 1, not {s_max}")
+    the = fnd_jepa.ARMS[arm]
+    dev = torch.device(conf.device)
+    t, m = conf.data.tours, conf.model
+    tubelet, token_dim = fnd_jepa.TUBELET, fnd_jepa.TOKEN_DIM
+    times, grid = t.frames // tubelet, t.size // m.patch
+    tokens_count = times * grid * grid
+    d = tokens_count * token_dim  # D, W square
+    heads = m.head_count
+    stamps = ckpt_steps(steps)
+    seed = conf.seed
+    settings: dict[str, Any] = {
+        "arm": arm,
+        "timed": the.timed,
+        "scaled": the.scaled,
+        "s_max": s_max if the.scaled else 1,
+        "tubelet": tubelet,
+        "patch": m.patch,
+        "times": times,
+        "grid": grid,
+        "tokens": tokens_count,
+        "token_dim": token_dim,
+        "proj": "fixed",
+        "latent_dim": d,
+        "sigreg_on": "mix",
+        "masks": {
+            "kinds": [
+                {"name": k.name, "blocks": k.blocks, "scale": k.scale}
+                for k in fnd_jepa.KINDS
+            ],
+            "aspect": list(fnd_jepa.ASPECT),
+            "split": "first half short, the rest long",
+        },
+        "lam": lam,
+        "checkpoint_blocks": checkpoint_blocks,
+        "directions": directions_count,
+        "predictor": {
+            "width": PRED_WIDTH,
+            "blocks": PRED_BLOCKS,
+            "heads": PRED_WIDTH // HEAD_DIM,
+        },
+        "lr": lr,
+        "steps": steps,
+        "batch": batch,
+        "warmup": warmup,
+        "ckpt_steps": stamps,
+        "val": {"count": val_count, "held": held_count, "seed": fnd_val.VAL_SEED},
+        "seeds": {
+            "init": seed,
+            "embed": seed + fnd_jepa.EMBED_SEED,
+            "r": R_SEED,
+            "w": W_SEED,
+            "predictor": seed + PREDICTOR_SEED,
+            "draw": seed + DRAW_SEED,
+            "spacing": seed + SPACING_SEED if the.scaled else None,
+            "mask": seed + MASK_SEED,
+            "direction": seed + DIRECTION_SEED,
+        },
+        "optimizer": "adamw(betas=(0.9, 0.999), eps=1e-8, weight_decay=0)",
+        "determinism": configure_determinism(conf.device),
+    }
+    prov = of_diagnosis({})
+    settings["provenance"] = {k: v for k, v in prov.items() if k != "settings"}
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "config.yaml").write_text(yaml.safe_dump(to_dict(conf), sort_keys=False))
+    mods = fnd_jepa.build_fnd(conf, seed=seed, token_dim=token_dim, tubelet=tubelet)
+    opt = _optimizer(mods, conf, lr)
+    params = mods.parameters()
+    units = Units(conf, root, "all", seed=seed + DRAW_SEED)
+    settings["units"] = units.count
+    vs = fnd_val.val_set(
+        conf, root, the, s_max=s_max, times=times, count=val_count, held=held_count
+    )
+    settings["val"]["video"] = vs.video
+    (out / "jepa.json").write_text(json.dumps(settings, indent=1))
+    space_gen = torch.Generator().manual_seed(seed + SPACING_SEED)
+    mask_gen = torch.Generator().manual_seed(seed + MASK_SEED)
+    dir_gen = torch.Generator(device=dev).manual_seed(seed + DIRECTION_SEED)
+
+    def draw() -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """The next batch: the spacings, the stacks, their masks and kinds."""
+        s = fnd_jepa.draw_spacings(batch, the, s_max, space_gen)
+        x = units.draw_spaced(s)
+        hidden, kind = fnd_jepa.draw_masks(batch, times, grid, the.timed, mask_gen)
+        return s, x, hidden, kind
+
+    start = time.monotonic()
+    val_log = (out / "val.jsonl").open("w")
+
+    def save(step: int) -> None:
+        frame = step * batch
+        ckpt.save_eval(
+            out,
+            program="fnd",
+            group="iid",
+            t=round(frame * conf.time.frame, 6),
+            frame=frame,
+            modules=mods.modules(),
+        )
+        row = fnd_val.val_rows(mods, vs, heads=heads, times=times, scaled=the.scaled)
+        rec = {"step": step, **row, "sec": time.monotonic() - start}
+        val_log.write(json.dumps(rec) + "\n")
+        val_log.flush()
+
+    keys = ("loss", "pred", "sigreg", "grad_norm", "t_var", "z_var", "time_r2")
+    keys += ("hidden", "pred_short", "pred_long")
+    acc = torch.zeros(len(keys), dtype=torch.float64, device=dev)
+    n = 0
+    log = (out / "train.jsonl").open("w")
+    with ThreadPoolExecutor(1) as pool:
+        nxt = pool.submit(draw)
+        for step in range(steps):
+            if step in stamps:
+                save(step)
+            s, x, hidden, kind = nxt.result()
+            x, hidden = x.to(dev, non_blocking=True), hidden.to(dev)
+            short = (kind == 0).to(dev)
+            nxt = pool.submit(draw)
+            ell = s.to(dev).double().log2() if the.scaled else None
+            dirs = directions(directions_count, d, dir_gen)
+            for g in opt.param_groups:
+                g["lr"] = lr_at(step, lr=lr, warmup=warmup, steps=steps) * g["mult"]
+            terms = fnd_jepa.fnd_terms(
+                mods,
+                x,
+                hidden,
+                dirs,
+                lam,
+                heads=heads,
+                times=times,
+                ell=ell,
+                again=checkpoint_blocks,
+            )
+            opt.zero_grad(set_to_none=True)
+            terms["loss"].backward()
+            norm = torch.nn.utils.clip_grad_norm_(params, math.inf)
+            opt.step()
+            tok, per = terms["tokens"], terms["per"]
+            row = [terms[k].detach() for k in ("loss", "pred", "sigreg")]
+            row += [norm.detach(), tok.flatten(1).var(0).mean()]
+            row += [terms["z"].var(0).mean(), fnd_jepa.time_r2(tok, times)]
+            row += [hidden.float().mean(), per[short].mean(), per[~short].mean()]
+            acc += torch.stack([r.double() for r in row])
+            n += 1
+            if (step + 1) % log_every == 0 or step + 1 == steps:
+                means = (acc / n).tolist()
+                if not all(map(math.isfinite, means)):
+                    raise FloatingPointError(f"non-finite loss at step {step}")
+                rec = {"step": step + 1, **dict(zip(keys, means, strict=True))}
+                rec |= {
+                    "lr": lr_at(step, lr=lr, warmup=warmup, steps=steps),
+                    "sec": time.monotonic() - start,
+                }
+                if dev.type == "cuda":
+                    rec["max_mem"] = torch.cuda.max_memory_allocated(dev) / 2**30
+                log.write(json.dumps(rec) + "\n")
+                log.flush()
+                acc.zero_()
+                n = 0
+    save(steps)
+    log.close()
+    val_log.close()
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument(
         "--config", type=Path, help="a run's config.yaml (default: v16_config)"
     )
-    ap.add_argument("--mask-ratio", type=float, required=True, help="r: k = r T")
+    ap.add_argument(
+        "--mask-ratio", type=float, help="r: k = r T (required but of --arm)"
+    )
     ap.add_argument("--lam", type=float, required=True, help="SIGReg's weight")
     ap.add_argument("--lr", type=float, required=True)
     ap.add_argument("--steps", type=int, required=True)
@@ -499,6 +720,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=ST_LAGS,
         help="lo:hi, V18d's lags in stacks (log-uniform)",
     )
+    ap.add_argument(
+        "--arm",
+        choices=list(fnd_jepa.ARMS),
+        help="the foundation's arm (train_fnd; the masks are its own)",
+    )
+    ap.add_argument(
+        "--s-max", type=int, default=fnd_jepa.S_MAX, help="Ss's largest spacing"
+    )
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--seed", type=int, help="instead of the config's")
     ap.add_argument("--device", default="cuda")
@@ -513,6 +742,25 @@ def main(argv: Sequence[str] | None = None) -> None:
         d["model"]["patch"] = args.patch
     conf = from_dict(d)
     root = tours_root(conf.data.tours.data_version) if args.root is None else args.root
+    if args.arm is not None:
+        train_fnd(
+            conf,
+            args.out,
+            root=root,
+            arm=args.arm,
+            lam=args.lam,
+            lr=args.lr,
+            steps=args.steps,
+            batch=args.batch,
+            warmup=args.warmup,
+            s_max=args.s_max,
+            directions_count=args.directions,
+            log_every=args.log_every,
+            checkpoint_blocks=args.checkpoint_blocks,
+        )
+        return
+    if args.mask_ratio is None:
+        ap.error("--mask-ratio is required but of --arm")
     train(
         conf,
         args.out,

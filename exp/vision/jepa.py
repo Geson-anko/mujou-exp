@@ -110,6 +110,7 @@ __all__ = [
     "Mix",
     "Predictor",
     "TokenEncoder",
+    "TubeletEmbed",
     "build_jepa",
     "directions",
     "draw_masks",
@@ -125,6 +126,7 @@ __all__ = [
     "rho_in",
     "sigreg_points",
     "sincos_1d",
+    "sincos_3d",
     "st_masks",
     "st_predict",
     "st_terms",
@@ -309,6 +311,11 @@ class TokenEncoder(nn.Module):
         self._vit = list(parts)  # the same modules, as ViTPart
         self._checkpoint = checkpoint_blocks
 
+    @property
+    def vit(self) -> list[ViTPart]:
+        """The ``ViTPart``\\ s, in order (the same modules as ``parts``)."""
+        return self._vit
+
     @override
     def forward(self, images: Tensor, keep: Tensor | None = None) -> Tensor:
         embed, norm = self._vit[0].embed, self._vit[-1].norm
@@ -333,6 +340,60 @@ def sincos_1d(x: Tensor, dim: int) -> Tensor:
     omega = 1.0 / 10000 ** (torch.arange(half, dtype=torch.float64) / half)
     a = x.double()[..., None] * omega.to(x.device)
     return torch.cat([a.sin(), a.cos()], -1)
+
+
+def sincos_3d(times: int, grid: int, dim: int) -> Tensor:
+    r"""The fixed positions of the tubelets' grid $\Omega$ of ``times`` x
+    ``grid`` x ``grid`` (the foundation's, ``plans/foundation.md`` 3),
+    ``(times grid^2, dim)`` float32 time-major ($\omega = j\,g^2 + p$):
+    $e(j, p) = e_P(p) + \phi(u_j)$, $e_P$ = ``sincos_2d((grid, grid), dim)``
+    and $\phi$ = ``sincos_1d`` of the centred time $u_j = j - (\mathrm{times}
+    - 1)/2$, each over the whole width (``Predictor.st_positions`` without
+    $\psi$: the same sum, so adding $\psi$ gives its table to the bit)."""
+    pos = sincos_2d((grid, grid), dim)  # (P, dim)
+    u = torch.arange(times, dtype=torch.float64) - (times - 1) / 2
+    phi = sincos_1d(u, dim).to(pos)  # (times, dim)
+    return (pos[None] + phi[:, None]).flatten(0, 1)
+
+
+class TubeletEmbed(PatchEmbed):
+    r"""The patch embedding of tubelets (``plans/foundation.md`` 3): the
+    early-fused stacks ``(B, 3 n, H, W)`` (``early_fusion``) as the tokens
+    ``(B, T P, w)`` of boxes of ``tubelet`` consecutive frames x ``patch``
+    x ``patch`` pixels, $T = n$ / ``tubelet`` times x $P = (H / p)^2$
+    positions, time-major ($\omega = j P + p$, ``sincos_3d``'s order). A box
+    is flattened as ``PatchEmbed`` flattens a patch of the early-fused
+    channels (channel $3 f + c$ of its frame $f$, then the row, then the
+    column), mapped by ``proj`` (``PatchEmbed``'s of ``3 tubelet`` channels:
+    ``Linear(3 tubelet p^2, w)``) plus its fixed position ``sincos_3d(T, H /
+    p, w)``. With ``tubelet`` = $n$ the linear part is ``PatchEmbed``'s of
+    the same weight.
+
+    Raises:
+        ValueError: The stacks are no whole number of tubelets.
+    """
+
+    def __init__(
+        self, *, frames: int, tubelet: int, patch: int, size: int, dim: int
+    ) -> None:
+        if frames % tubelet or size % patch:
+            raise ValueError(
+                f"{frames} frames of {size} px are no whole tubelets of "
+                f"{tubelet} x {patch} x {patch}"
+            )
+        super().__init__(channels=3 * tubelet, patch=patch, size=size, dim=dim)
+        self._tubelet = tubelet
+        self.pos = sincos_3d(frames // tubelet, size // patch, dim)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        b, c, h, w = x.shape
+        a, p = self._tubelet, self._patch
+        t = c // (3 * a)
+        x = x.reshape(b, t, 3 * a, h // p, p, w // p, p).permute(0, 1, 3, 5, 2, 4, 6)
+        return (
+            self.proj(x.reshape(b, t * (h // p) * (w // p), 3 * a * p * p)) + self.pos
+        )
 
 
 class Predictor(nn.Module):
@@ -547,9 +608,10 @@ def build_jepa(
 
 def jepa_mup_roles(mods: JEPAModules) -> dict[Tensor, str]:
     """The role in muP of each parameter (``exp.vision.models.ROLES``): the
-    patch embedding's matrix is ``"input"``; a learned $P$'s, ``embed``'s and
-    ``out``'s ``"output"``; the other matrices ``"hidden"``; the biases, the
-    norms and the mask token ``"vector"``.
+    patch embedding's matrix (``PatchEmbed``'s, a ``TubeletEmbed``'s too) is
+    ``"input"``; a learned $P$'s, ``embed``'s and ``out``'s ``"output"``;
+    the other matrices ``"hidden"``; the biases, the norms and the mask
+    token ``"vector"``.
 
     Raises:
         ValueError: The modules are not ``build_jepa``'s.

@@ -93,7 +93,8 @@ def draw_lags(b: int, lo: int, hi: int, gen: torch.Generator) -> Tensor:
 class Units:
     """Draws of the stacks of stream 0 of the run ``conf`` at its units of
     ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU; of
-    ``"all"`` also V18d's clips (``draw_clips``).
+    ``"all"`` also V18d's clips (``draw_clips``) and the foundation's
+    stacks of spaced frames (``draw_spaced``).
 
     Raises:
         ValueError: ``data`` is not of ``DATA``.
@@ -102,15 +103,18 @@ class Units:
     def __init__(self, conf: RunConf, root: Path, data: str, *, seed: int) -> None:
         t = conf.data.tours
         self._lengths: list[int] = []  # of the training videos, in the loop's order
+        self._readers: list[U8Reader] = []
         if data == "span":
             self.count = round(conf.measure.duration / conf.time.frame)
         elif data == "all":
             names = [v for v in videos(root) if v != t.held_out]
-            self._lengths = [len(U8Reader(root / v)) for v in names]
+            self._readers = [U8Reader(root / v) for v in names]
+            self._lengths = [len(r) for r in self._readers]
             self.count = sum(self._lengths)  # L
         else:
             raise ValueError(f"data must be one of {DATA}, not {data!r}")
         self._span = (t.frames - 1) * t.stride  # a stack's frames before its last
+        self._frames, self._stride = t.frames, t.stride
         self._advance = t.advance
         self._stream = StackedTourFrames(
             root,
@@ -178,6 +182,42 @@ class Units:
             ends.append(at)
             out.append(torch.stack([self._stack(int(firsts[v]) + e) for e in at]))
         return torch.stack(out), torch.tensor(ends)
+
+    def draw_spaced(self, spacing: Tensor) -> Tensor:
+        r"""The foundation's stacks (``plans/foundation.md`` 3) ``(B, n, 3,
+        S, S)`` u8 of the spacings $s$ = ``spacing`` ``(B,)``: the $n$ frames
+        $\tau, \tau + s\,r, \dots, \tau + (n - 1) s\,r$ ($r$ =
+        ``stride``) of one training video, oldest first, the last frame drawn
+        uniformly (from the same generator as ``draw``, drawn again until the
+        stack fits in its video) over every frame of the training videos, so
+        each stack is uniform on the places its spacing fits. Of $s$ = 1,
+        ``draw``'s stacks to the bit.
+
+        Raises:
+            ValueError: The units are not ``"all"``'s, or ``data.tours.advance``
+                is not 1 (a unit is not a frame), or a spacing is below 1 or
+                fits in no video.
+        """
+        if not self._lengths or self._advance != 1:
+            raise ValueError("spaced stacks are of the units 'all' of advance 1")
+        if len(spacing) and int(spacing.min()) < 1:
+            raise ValueError(f"the spacings are at least 1, not {int(spacing.min())}")
+        if len(spacing) and int(spacing.max()) * self._span >= max(self._lengths):
+            raise ValueError(
+                f"a stack of spacing {int(spacing.max())} fits in no video"
+            )
+        firsts = torch.tensor([0, *self._lengths]).cumsum(0)  # (videos + 1,)
+        back = torch.arange(self._frames - 1, -1, -1) * self._stride  # (n,)
+        out: list[Tensor] = []
+        for s in spacing.tolist():
+            while True:
+                u = int(torch.randint(self.count, (1,), generator=self._gen))
+                v = int(torch.searchsorted(firsts, torch.tensor(u), right=True)) - 1
+                local = u - int(firsts[v])
+                if local - s * self._span >= 0:
+                    break
+            out.append(self._readers[v][local - s * back])
+        return torch.stack(out)
 
     def _stack(self, unit: int) -> Tensor:
         """The stack ``(n, 3, S, S)`` ending at the unit ``unit`` (whole)."""

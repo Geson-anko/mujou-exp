@@ -3,10 +3,14 @@ learning rate's schedule by hand, the units drawn, and a tiny run read by
 ``stream_eval`` (tiny synthetic Walking Tours of ``test_eval``: videos A, B,
 C of 20 frames, H held out; stacks of 2 frames of 16 px). V18d's lags
 against their log-uniform law, and its clips on videos whose frames carry
-their video and their number (plans/v18d.md, O12)."""
+their video and their number (plans/v18d.md, O12), and the foundation's
+stacks of spaced frames on the same videos (plans/foundation.md, 3: one
+frame apart is ``draw``, the frames $s$ apart in one training video, the
+last frame uniform where the stack fits)."""
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -265,3 +269,58 @@ class TestClips:
         span = Units(conf_of(), numbered, "span", seed=0)
         with pytest.raises(ValueError, match="'all'"):
             span.draw_clips(torch.tensor([2]), self.K)
+
+
+def eight_of() -> RunConf:
+    """``conf_of`` of stacks of 8 frames (the foundation's)."""
+    conf = conf_of()
+    tours = replace(conf.data.tours, frames=8)
+    return replace(conf, data=replace(conf.data, tours=tours))
+
+
+class TestSpaced:
+    def test_one_frame_apart_is_draw_to_the_bit(self, numbered):
+        a = Units(eight_of(), numbered, "all", seed=3)
+        b = Units(eight_of(), numbered, "all", seed=3)
+        assert torch.equal(
+            a.draw_spaced(torch.ones(400, dtype=torch.long)), b.draw(400)
+        )
+
+    def test_the_frames_are_s_apart_in_one_training_video(self, numbered):
+        units = Units(eight_of(), numbered, "all", seed=4)
+        s = draw_lags(3000, 1, 5, torch.Generator().manual_seed(1))
+        x = units.draw_spaced(s)
+        assert x.shape == (3000, 8, 3, SIZE, SIZE)
+        video, frame = frames_of(x)  # (B, 8)
+        assert (video == video[:, :1]).all()  # one video a stack
+        assert not (video == CODES["H"]).any()  # never the held-out
+        steps = torch.arange(8)[None] * s[:, None]
+        assert torch.equal(frame, frame[:, :1] + steps)  # tau + i s, oldest first
+        assert int(frame.min()) >= 0
+        length = {CODES[v]: m for v, m in LENGTHS.items()}
+        assert all(int(f) < length[int(v)] for f, v in zip(frame[:, -1], video[:, 0]))
+
+    def test_the_last_frame_is_uniform_where_the_stack_fits(self, numbered):
+        # s = 5: a stack of video v ends at its frames 35..L_v - 1
+        units = Units(eight_of(), numbered, "all", seed=5)
+        x = units.draw_spaced(torch.full((6000,), 5))
+        video, frame = frames_of(x)
+        fit = [
+            (c, j) for v, c in CODES.items() if v != "H" for j in range(35, LENGTHS[v])
+        ]
+        index = {u: i for i, u in enumerate(fit)}
+        got = torch.tensor(
+            [index[(int(v), int(f))] for v, f in zip(video[:, -1], frame[:, -1])]
+        )
+        counts = torch.bincount(got, minlength=len(fit))
+        assert under_chi2(counts, torch.full((len(fit),), 1 / len(fit)))
+
+    def test_bad_spacings_or_the_span_units_are_refused(self, numbered):
+        units = Units(eight_of(), numbered, "all", seed=0)
+        with pytest.raises(ValueError, match="at least 1"):
+            units.draw_spaced(torch.tensor([0]))
+        with pytest.raises(ValueError, match="fits in no video"):
+            units.draw_spaced(torch.tensor([13]))  # 7 x 13 = 91 >= 90
+        span = Units(eight_of(), numbered, "span", seed=0)
+        with pytest.raises(ValueError, match="'all'"):
+            span.draw_spaced(torch.tensor([1]))
