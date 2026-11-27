@@ -186,6 +186,8 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   .decide dd { margin-bottom: 8px; }
 }
 .dg .vis { fill: var(--grid); stroke: var(--ink-3); stroke-width: 0.8; }
+.dg .gl { fill: none; stroke: var(--ink-3); stroke-width: 0.5; }
+.dg tspan.accent { fill: var(--accent); font-weight: 700; }
 .dg .frame { fill: var(--panel); stroke: var(--ink-3); stroke-width: 1; }
 .dg .tok { stroke: var(--ink); stroke-width: 2; }
 .dg .h1 { fill: var(--s1); } .dg .h2 { fill: var(--s2); } .dg .h3 { fill: var(--s3); } .dg .h4 { fill: var(--s4); } .dg .hn { fill: var(--neutral); }
@@ -276,13 +278,17 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <section id="principle">
   <div class="sec-head"><div class="eyebrow">3</div><h2>原理（学習）</h2></div>
   <div class="prose">
-    <p>Fable さんの提案をそのまま採ります。V18c から変えるのは、<b>トークンの箱の形だけ</b>です。</p>
+    <p>Fable さんの提案を土台にします。V18c から変えるのは、<b>トークンの箱の形だけ</b>です。箱の空間の大きさは提案の 16×16 ではなく、ユーザーの指摘で 8×8 にしました。空間の細かさを V18c と揃え、比べに交絡が入らないようにするためです。</p>
   </div>
   <dl class="gloss">
     <dt>stack</dt>
     <dd>始点 <var>τ</var> と間隔 <var>s</var> で取った 8 枚のフレーム <var>x</var><sub><var>τ</var></sub>, <var>x</var><sub><var>τ</var>+<var>s</var></sub>, …, <var>x</var><sub><var>τ</var>+7<var>s</var></sub> です。<var>s</var> の単位は 0.1 秒です。</dd>
     <dt>トークン</dt>
-    <dd>続く 2 枚 × 16×16 画素の tubelet です。格子は Ω = T × P（時刻 4 × 空間 4×4 = 64 個）です。V18c は 8 枚 × 8×8 画素の箱で、格子は時刻 1 × 空間 8×8 でした。トークンの数・入力の次元（1536）・符号の次元（1024）・パラメータ数・計算量は V18c と同じです。early fusion は「時刻が 1 点の特別な場合」として含まれます。</dd>
+    <dd>続く 2 枚 × 8×8 画素の tubelet です。格子は Ω = T × P（時刻 4 × 空間 8×8 = 256 個）です。V18c は 8 枚 × 8×8 画素の箱で、格子は時刻 1 × 空間 8×8 でした。<b>空間の細かさ（パッチ 8）は V18c と同じで、違いは stack の時間を 4 つに分けたことだけです。</b>64×64 のフレームならパッチは 8×8 がちょうどよい、というのがユーザーの指摘です（2026-11-27）。early fusion は「時刻が 1 点の特別な場合」として含まれます。</dd>
+    <dt>トークンの次元</dt>
+    <dd><var>d</var> = 4 です。平らにした列は 256 × 4 = 1024 次元で、固定の <var>W</var>（1024 × 1024、正方）・符号の次元・SIGReg の条件は V18c と同じです。<var>d</var> = 16 のままだと、列は 4096 次元になります。すると <var>W</var> の零空間の 3072 次元は SIGReg に縛られず、時間に沿って一定のトークンを罰なしで作れてしまいます（Fable さんの提案の 4 節）。<var>d</var> が変わるので、K3 などの自明な解の閾値は F1 の前に導き直します。</dd>
+    <dt>計算量</dt>
+    <dd>トークンは V18c の 4 倍です。1 step は 3〜4 倍かかり、長い run 1 本は 6〜8 時間と見込みます。これは推測で、F1 の試しで測ります。</dd>
     <dt>エンコーダ</dt>
     <dd>V18c と同じ ViT です。時刻も位置もまたいで attention をかけ、<b>再帰はありません</b>。見えるトークンだけを通します。</dd>
     <dt>符号</dt>
@@ -290,7 +296,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   </dl>
 
   <figure>
-    <div class="chart"><svg class="dg fit" viewBox="0 0 520 514" role="img" aria-label="V18c の箱と新しい箱の比べ"><rect class="panel" x="4" y="4" width="512" height="218" rx="6"/>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 554" role="img" aria-label="V18c の箱と新しい箱の比べ"><rect class="panel" x="4" y="4" width="512" height="218" rx="6"/>
 <text x="18" y="30" class="strong">V18c の箱</text>
 <rect class="frame" x="75" y="57" width="104" height="104"/>
 <rect class="frame" x="70" y="62" width="104" height="104"/>
@@ -299,161 +305,46 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <rect class="frame" x="55" y="77" width="104" height="104"/>
 <rect class="frame" x="50" y="82" width="104" height="104"/>
 <rect class="frame" x="45" y="87" width="104" height="104"/>
-<rect class="vis" x="40" y="92" width="13" height="13"/>
-<rect class="vis" x="53" y="92" width="13" height="13"/>
-<rect class="vis" x="66" y="92" width="13" height="13"/>
-<rect class="vis" x="79" y="92" width="13" height="13"/>
-<rect class="vis" x="92" y="92" width="13" height="13"/>
-<rect class="vis" x="105" y="92" width="13" height="13"/>
-<rect class="vis" x="118" y="92" width="13" height="13"/>
-<rect class="vis" x="131" y="92" width="13" height="13"/>
-<rect class="vis" x="40" y="105" width="13" height="13"/>
-<rect class="vis" x="53" y="105" width="13" height="13"/>
-<rect class="vis" x="66" y="105" width="13" height="13"/>
-<rect class="vis" x="79" y="105" width="13" height="13"/>
-<rect class="vis" x="92" y="105" width="13" height="13"/>
-<rect class="vis" x="105" y="105" width="13" height="13"/>
-<rect class="vis" x="118" y="105" width="13" height="13"/>
-<rect class="vis" x="131" y="105" width="13" height="13"/>
-<rect class="vis" x="40" y="118" width="13" height="13"/>
-<rect class="vis" x="53" y="118" width="13" height="13"/>
-<rect class="vis" x="66" y="118" width="13" height="13"/>
+<rect class="vis" x="40" y="92" width="104" height="104"/>
 <rect class="h1" x="79" y="118" width="13" height="13"/>
-<rect class="vis" x="92" y="118" width="13" height="13"/>
-<rect class="vis" x="105" y="118" width="13" height="13"/>
-<rect class="vis" x="118" y="118" width="13" height="13"/>
-<rect class="vis" x="131" y="118" width="13" height="13"/>
-<rect class="vis" x="40" y="131" width="13" height="13"/>
-<rect class="vis" x="53" y="131" width="13" height="13"/>
-<rect class="vis" x="66" y="131" width="13" height="13"/>
-<rect class="vis" x="79" y="131" width="13" height="13"/>
-<rect class="vis" x="92" y="131" width="13" height="13"/>
-<rect class="vis" x="105" y="131" width="13" height="13"/>
-<rect class="vis" x="118" y="131" width="13" height="13"/>
-<rect class="vis" x="131" y="131" width="13" height="13"/>
-<rect class="vis" x="40" y="144" width="13" height="13"/>
-<rect class="vis" x="53" y="144" width="13" height="13"/>
-<rect class="vis" x="66" y="144" width="13" height="13"/>
-<rect class="vis" x="79" y="144" width="13" height="13"/>
-<rect class="vis" x="92" y="144" width="13" height="13"/>
-<rect class="vis" x="105" y="144" width="13" height="13"/>
-<rect class="vis" x="118" y="144" width="13" height="13"/>
-<rect class="vis" x="131" y="144" width="13" height="13"/>
-<rect class="vis" x="40" y="157" width="13" height="13"/>
-<rect class="vis" x="53" y="157" width="13" height="13"/>
-<rect class="vis" x="66" y="157" width="13" height="13"/>
-<rect class="vis" x="79" y="157" width="13" height="13"/>
-<rect class="vis" x="92" y="157" width="13" height="13"/>
-<rect class="vis" x="105" y="157" width="13" height="13"/>
-<rect class="vis" x="118" y="157" width="13" height="13"/>
-<rect class="vis" x="131" y="157" width="13" height="13"/>
-<rect class="vis" x="40" y="170" width="13" height="13"/>
-<rect class="vis" x="53" y="170" width="13" height="13"/>
-<rect class="vis" x="66" y="170" width="13" height="13"/>
-<rect class="vis" x="79" y="170" width="13" height="13"/>
-<rect class="vis" x="92" y="170" width="13" height="13"/>
-<rect class="vis" x="105" y="170" width="13" height="13"/>
-<rect class="vis" x="118" y="170" width="13" height="13"/>
-<rect class="vis" x="131" y="170" width="13" height="13"/>
-<rect class="vis" x="40" y="183" width="13" height="13"/>
-<rect class="vis" x="53" y="183" width="13" height="13"/>
-<rect class="vis" x="66" y="183" width="13" height="13"/>
-<rect class="vis" x="79" y="183" width="13" height="13"/>
-<rect class="vis" x="92" y="183" width="13" height="13"/>
-<rect class="vis" x="105" y="183" width="13" height="13"/>
-<rect class="vis" x="118" y="183" width="13" height="13"/>
-<rect class="vis" x="131" y="183" width="13" height="13"/>
+<path class="gl" d="M53 92V196M40 105H144M66 92V196M40 118H144M79 92V196M40 131H144M92 92V196M40 144H144M105 92V196M40 157H144M118 92V196M40 170H144M131 92V196M40 183H144"/>
 <rect class="tok" fill="none" x="79" y="118" width="13" height="13"/>
 <text x="40" y="214" class="small">8 枚を重ねて 1 つの箱にする</text>
 <text x="210" y="84" class="small">1 つのトークン = 8 枚 × 8×8 画素</text>
-<text x="210" y="110" class="small">格子: 時刻 1 × 空間 8×8 = 64 個</text>
+<text x="210" y="108" class="small">格子: <tspan class="accent">時刻 1</tspan> × 空間 8×8 = 64 個</text>
 <text x="210" y="136" class="small">8 枚が 1 つのトークンに混ざる</text>
 <text x="210" y="158" class="small">（early fusion）ので、</text>
 <text x="210" y="180" class="small strong">トークンに時刻が無い</text>
-<rect class="panel" x="4" y="232" width="512" height="278" rx="6"/>
+<rect class="panel" x="4" y="232" width="512" height="318" rx="6"/>
 <text x="18" y="258" class="strong">新しい箱（tubelet）</text>
-<rect class="frame" x="35" y="287" width="72" height="72"/>
-<rect class="vis" x="30" y="292" width="18" height="18"/>
-<rect class="vis" x="48" y="292" width="18" height="18"/>
-<rect class="vis" x="66" y="292" width="18" height="18"/>
-<rect class="vis" x="84" y="292" width="18" height="18"/>
-<rect class="vis" x="30" y="310" width="18" height="18"/>
-<rect class="vis" x="48" y="310" width="18" height="18"/>
-<rect class="vis" x="66" y="310" width="18" height="18"/>
-<rect class="vis" x="84" y="310" width="18" height="18"/>
-<rect class="vis" x="30" y="328" width="18" height="18"/>
-<rect class="vis" x="48" y="328" width="18" height="18"/>
-<rect class="vis" x="66" y="328" width="18" height="18"/>
-<rect class="vis" x="84" y="328" width="18" height="18"/>
-<rect class="vis" x="30" y="346" width="18" height="18"/>
-<rect class="vis" x="48" y="346" width="18" height="18"/>
-<rect class="vis" x="66" y="346" width="18" height="18"/>
-<rect class="vis" x="84" y="346" width="18" height="18"/>
-<text x="66" y="386" class="small strong" text-anchor="middle">時刻 1</text>
-<text x="66" y="404" class="xs" text-anchor="middle">フレーム 1・2</text>
-<rect class="frame" x="155" y="287" width="72" height="72"/>
-<rect class="vis" x="150" y="292" width="18" height="18"/>
-<rect class="vis" x="168" y="292" width="18" height="18"/>
-<rect class="vis" x="186" y="292" width="18" height="18"/>
-<rect class="vis" x="204" y="292" width="18" height="18"/>
-<rect class="vis" x="150" y="310" width="18" height="18"/>
-<rect class="vis" x="168" y="310" width="18" height="18"/>
-<rect class="h1" x="186" y="310" width="18" height="18"/>
-<rect class="vis" x="204" y="310" width="18" height="18"/>
-<rect class="vis" x="150" y="328" width="18" height="18"/>
-<rect class="vis" x="168" y="328" width="18" height="18"/>
-<rect class="vis" x="186" y="328" width="18" height="18"/>
-<rect class="vis" x="204" y="328" width="18" height="18"/>
-<rect class="vis" x="150" y="346" width="18" height="18"/>
-<rect class="vis" x="168" y="346" width="18" height="18"/>
-<rect class="vis" x="186" y="346" width="18" height="18"/>
-<rect class="vis" x="204" y="346" width="18" height="18"/>
-<rect class="tok" fill="none" x="186" y="310" width="18" height="18"/>
-<text x="186" y="386" class="small strong" text-anchor="middle">時刻 2</text>
-<text x="186" y="404" class="xs" text-anchor="middle">フレーム 3・4</text>
-<rect class="frame" x="275" y="287" width="72" height="72"/>
-<rect class="vis" x="270" y="292" width="18" height="18"/>
-<rect class="vis" x="288" y="292" width="18" height="18"/>
-<rect class="vis" x="306" y="292" width="18" height="18"/>
-<rect class="vis" x="324" y="292" width="18" height="18"/>
-<rect class="vis" x="270" y="310" width="18" height="18"/>
-<rect class="vis" x="288" y="310" width="18" height="18"/>
-<rect class="vis" x="306" y="310" width="18" height="18"/>
-<rect class="vis" x="324" y="310" width="18" height="18"/>
-<rect class="vis" x="270" y="328" width="18" height="18"/>
-<rect class="vis" x="288" y="328" width="18" height="18"/>
-<rect class="vis" x="306" y="328" width="18" height="18"/>
-<rect class="vis" x="324" y="328" width="18" height="18"/>
-<rect class="vis" x="270" y="346" width="18" height="18"/>
-<rect class="vis" x="288" y="346" width="18" height="18"/>
-<rect class="vis" x="306" y="346" width="18" height="18"/>
-<rect class="vis" x="324" y="346" width="18" height="18"/>
-<text x="306" y="386" class="small strong" text-anchor="middle">時刻 3</text>
-<text x="306" y="404" class="xs" text-anchor="middle">フレーム 5・6</text>
-<rect class="frame" x="395" y="287" width="72" height="72"/>
-<rect class="vis" x="390" y="292" width="18" height="18"/>
-<rect class="vis" x="408" y="292" width="18" height="18"/>
-<rect class="vis" x="426" y="292" width="18" height="18"/>
-<rect class="vis" x="444" y="292" width="18" height="18"/>
-<rect class="vis" x="390" y="310" width="18" height="18"/>
-<rect class="vis" x="408" y="310" width="18" height="18"/>
-<rect class="vis" x="426" y="310" width="18" height="18"/>
-<rect class="vis" x="444" y="310" width="18" height="18"/>
-<rect class="vis" x="390" y="328" width="18" height="18"/>
-<rect class="vis" x="408" y="328" width="18" height="18"/>
-<rect class="vis" x="426" y="328" width="18" height="18"/>
-<rect class="vis" x="444" y="328" width="18" height="18"/>
-<rect class="vis" x="390" y="346" width="18" height="18"/>
-<rect class="vis" x="408" y="346" width="18" height="18"/>
-<rect class="vis" x="426" y="346" width="18" height="18"/>
-<rect class="vis" x="444" y="346" width="18" height="18"/>
-<text x="426" y="386" class="small strong" text-anchor="middle">時刻 4</text>
-<text x="426" y="404" class="xs" text-anchor="middle">フレーム 7・8</text>
-<line class="arr" x1="30" y1="440" x2="470" y2="440" marker-end="url(#ah)"/>
-<text x="474" y="444" class="xs">時間</text>
-<text x="18" y="470" class="small">1 つのトークン = 続く 2 枚 × 16×16 画素</text>
-<text x="18" y="494" class="small">格子 Ω = T × P: 時刻 4 × 空間 4×4 = 64 個</text></svg></div>
-    <figcaption><b>図 1　V18c の箱と新しい箱。</b> 上は V18c です。8 枚のフレームを重ねて 1 つの箱にし、空間だけを 8×8 に切ります。そのため、1 つのトークンに 8 枚分の時間が混ざり、トークンに時刻がありません。下は新しい箱です。続く 2 枚を 1 つの時刻とし、時刻 4 × 空間 4×4 に切ります。どちらもトークンは 64 個で、入力の次元・符号の次元・パラメータ数・計算量も同じです。太枠のマスが 1 つのトークンです。</figcaption>
+<rect class="frame" x="29" y="289" width="104" height="104"/>
+<rect class="vis" x="24" y="294" width="104" height="104"/>
+<path class="gl" d="M37 294V398M24 307H128M50 294V398M24 320H128M63 294V398M24 333H128M76 294V398M24 346H128M89 294V398M24 359H128M102 294V398M24 372H128M115 294V398M24 385H128"/>
+<text x="76" y="420" class="small strong" text-anchor="middle">時刻 1</text>
+<text x="76" y="438" class="xs" text-anchor="middle">フレーム 1・2</text>
+<rect class="frame" x="149" y="289" width="104" height="104"/>
+<rect class="vis" x="144" y="294" width="104" height="104"/>
+<rect class="h1" x="183" y="320" width="13" height="13"/>
+<path class="gl" d="M157 294V398M144 307H248M170 294V398M144 320H248M183 294V398M144 333H248M196 294V398M144 346H248M209 294V398M144 359H248M222 294V398M144 372H248M235 294V398M144 385H248"/>
+<rect class="tok" fill="none" x="183" y="320" width="13" height="13"/>
+<text x="196" y="420" class="small strong" text-anchor="middle">時刻 2</text>
+<text x="196" y="438" class="xs" text-anchor="middle">フレーム 3・4</text>
+<rect class="frame" x="269" y="289" width="104" height="104"/>
+<rect class="vis" x="264" y="294" width="104" height="104"/>
+<path class="gl" d="M277 294V398M264 307H368M290 294V398M264 320H368M303 294V398M264 333H368M316 294V398M264 346H368M329 294V398M264 359H368M342 294V398M264 372H368M355 294V398M264 385H368"/>
+<text x="316" y="420" class="small strong" text-anchor="middle">時刻 3</text>
+<text x="316" y="438" class="xs" text-anchor="middle">フレーム 5・6</text>
+<rect class="frame" x="389" y="289" width="104" height="104"/>
+<rect class="vis" x="384" y="294" width="104" height="104"/>
+<path class="gl" d="M397 294V398M384 307H488M410 294V398M384 320H488M423 294V398M384 333H488M436 294V398M384 346H488M449 294V398M384 359H488M462 294V398M384 372H488M475 294V398M384 385H488"/>
+<text x="436" y="420" class="small strong" text-anchor="middle">時刻 4</text>
+<text x="436" y="438" class="xs" text-anchor="middle">フレーム 7・8</text>
+<line class="arr" x1="24" y1="460" x2="470" y2="460" marker-end="url(#ah)"/>
+<text x="474" y="464" class="xs">時間</text>
+<text x="18" y="492" class="small">1 つのトークン = 続く 2 枚 × 8×8 画素</text>
+<text x="18" y="514" class="small">格子 Ω = T × P: <tspan class="accent">時刻 4</tspan> × 空間 8×8 = 256 個</text>
+<text x="18" y="536" class="small strong">空間の格子 8×8 は V18c と同じ。違いは時間を 4 つに分けたことだけ</text></svg></div>
+    <figcaption><b>図 1　V18c の箱と新しい箱。</b> 上は V18c です。8 枚のフレームを重ねて 1 つの箱にし、空間だけを 8×8 に切ります。そのため、1 つのトークンに 8 枚分の時間が混ざり、トークンに時刻がありません。下は新しい箱です。続く 2 枚を 1 つの時刻とし、時刻 4 × 空間 8×8 に切ります。空間の格子は両方とも 8×8 で同じです。違いは時間を 1 つから 4 つに分けたことだけです。そのため、トークンは 64 個から 256 個に増えます。太枠のマスが 1 つのトークンです。</figcaption>
   </figure>
 
   <div class="prose">
@@ -463,7 +354,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   <div class="prose">
     <p>V18c の式で空間の格子 P だった所を、時空間の格子 Ω に読み替えただけです。stop-gradient も EMA もありません。</p>
     <h3>マスクの族</h3>
-    <p>隠し方は 2 種類あり、各 step で半分ずつ使います。1 つは<b>管</b>で、空間の族 F<sub>8</sub> を 4 つの時刻すべてにかけます。これが<b>今</b>の補完です。もう 1 つは、4 つの時刻のうち 2 つを丸ごと隠す 6 通りです。{3,4} が<b>未来</b>、{1,2} が<b>過去</b>、{2,3} が間、{1,4} が外向き、{1,3}・{2,4} が補間です。どのトークンも隠れる確率は 1/2 です。隠す数は常に 32 です。この族は、時間を反転しても同じ族になります。</p>
+    <p>隠し方は 2 種類あり、各 step で半分ずつ使います。1 つは<b>管</b>で、V18c と同じ空間の族を 4 つの時刻すべてにかけます。この空間の族は粗い 4×4 の族 F<sub>8</sub> を 8×8 に広げたものです。これが<b>今</b>の補完です。もう 1 つは 4 つの時刻のうち 2 つを丸ごと隠す 6 通りです。{3,4} が<b>未来</b>、{1,2} が<b>過去</b>、{2,3} が間、{1,4} が外向き、{1,3}・{2,4} が補間です。どのトークンも隠れる確率は 1/2 です。隠す数は常に半分の 128 個です。この族は時間を反転しても同じ族になります。</p>
   </div>
   <figure>
     <div class="chart"><svg class="dg fit" viewBox="0 0 520 502" role="img" aria-label="マスクの族: 管と、時刻を 2 つ隠す 6 通り"><text x="8" y="22" class="small">時刻</text>
@@ -475,473 +366,125 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 <text x="420" y="56" class="xs">各 step の</text>
 <text x="420" y="72" class="xs">半分</text>
 <text x="8" y="64" class="strong t1">管 = 今</text>
-<text x="8" y="82" class="xs mono">空間の族 F8 を全時刻に</text>
-<rect class="h1" x="168" y="44" width="11" height="11"/>
-<rect class="h1" x="179" y="44" width="11" height="11"/>
-<rect class="vis" x="190" y="44" width="11" height="11"/>
-<rect class="vis" x="201" y="44" width="11" height="11"/>
-<rect class="h1" x="168" y="55" width="11" height="11"/>
-<rect class="h1" x="179" y="55" width="11" height="11"/>
-<rect class="vis" x="190" y="55" width="11" height="11"/>
-<rect class="vis" x="201" y="55" width="11" height="11"/>
-<rect class="vis" x="168" y="66" width="11" height="11"/>
-<rect class="vis" x="179" y="66" width="11" height="11"/>
-<rect class="h1" x="190" y="66" width="11" height="11"/>
-<rect class="h1" x="201" y="66" width="11" height="11"/>
-<rect class="vis" x="168" y="77" width="11" height="11"/>
-<rect class="vis" x="179" y="77" width="11" height="11"/>
-<rect class="h1" x="190" y="77" width="11" height="11"/>
-<rect class="h1" x="201" y="77" width="11" height="11"/>
-<rect class="h1" x="230" y="44" width="11" height="11"/>
-<rect class="h1" x="241" y="44" width="11" height="11"/>
-<rect class="vis" x="252" y="44" width="11" height="11"/>
-<rect class="vis" x="263" y="44" width="11" height="11"/>
-<rect class="h1" x="230" y="55" width="11" height="11"/>
-<rect class="h1" x="241" y="55" width="11" height="11"/>
-<rect class="vis" x="252" y="55" width="11" height="11"/>
-<rect class="vis" x="263" y="55" width="11" height="11"/>
-<rect class="vis" x="230" y="66" width="11" height="11"/>
-<rect class="vis" x="241" y="66" width="11" height="11"/>
-<rect class="h1" x="252" y="66" width="11" height="11"/>
-<rect class="h1" x="263" y="66" width="11" height="11"/>
-<rect class="vis" x="230" y="77" width="11" height="11"/>
-<rect class="vis" x="241" y="77" width="11" height="11"/>
-<rect class="h1" x="252" y="77" width="11" height="11"/>
-<rect class="h1" x="263" y="77" width="11" height="11"/>
-<rect class="h1" x="292" y="44" width="11" height="11"/>
-<rect class="h1" x="303" y="44" width="11" height="11"/>
-<rect class="vis" x="314" y="44" width="11" height="11"/>
-<rect class="vis" x="325" y="44" width="11" height="11"/>
-<rect class="h1" x="292" y="55" width="11" height="11"/>
-<rect class="h1" x="303" y="55" width="11" height="11"/>
-<rect class="vis" x="314" y="55" width="11" height="11"/>
-<rect class="vis" x="325" y="55" width="11" height="11"/>
-<rect class="vis" x="292" y="66" width="11" height="11"/>
-<rect class="vis" x="303" y="66" width="11" height="11"/>
-<rect class="h1" x="314" y="66" width="11" height="11"/>
-<rect class="h1" x="325" y="66" width="11" height="11"/>
-<rect class="vis" x="292" y="77" width="11" height="11"/>
-<rect class="vis" x="303" y="77" width="11" height="11"/>
-<rect class="h1" x="314" y="77" width="11" height="11"/>
-<rect class="h1" x="325" y="77" width="11" height="11"/>
-<rect class="h1" x="354" y="44" width="11" height="11"/>
-<rect class="h1" x="365" y="44" width="11" height="11"/>
-<rect class="vis" x="376" y="44" width="11" height="11"/>
-<rect class="vis" x="387" y="44" width="11" height="11"/>
-<rect class="h1" x="354" y="55" width="11" height="11"/>
-<rect class="h1" x="365" y="55" width="11" height="11"/>
-<rect class="vis" x="376" y="55" width="11" height="11"/>
-<rect class="vis" x="387" y="55" width="11" height="11"/>
-<rect class="vis" x="354" y="66" width="11" height="11"/>
-<rect class="vis" x="365" y="66" width="11" height="11"/>
-<rect class="h1" x="376" y="66" width="11" height="11"/>
-<rect class="h1" x="387" y="66" width="11" height="11"/>
-<rect class="vis" x="354" y="77" width="11" height="11"/>
-<rect class="vis" x="365" y="77" width="11" height="11"/>
-<rect class="h1" x="376" y="77" width="11" height="11"/>
-<rect class="h1" x="387" y="77" width="11" height="11"/>
+<text x="8" y="82" class="xs mono">空間の族を全時刻に</text>
 <text x="420" y="124" class="xs">各 step の</text>
 <text x="420" y="140" class="xs">残りの半分</text>
 <text x="420" y="156" class="xs">（6 通り）</text>
-<text x="8" y="130" class="strong t2">未来</text>
-<text x="8" y="148" class="xs mono">{3,4}</text>
-<rect class="vis" x="168" y="110" width="11" height="11"/>
-<rect class="vis" x="179" y="110" width="11" height="11"/>
-<rect class="vis" x="190" y="110" width="11" height="11"/>
-<rect class="vis" x="201" y="110" width="11" height="11"/>
-<rect class="vis" x="168" y="121" width="11" height="11"/>
-<rect class="vis" x="179" y="121" width="11" height="11"/>
-<rect class="vis" x="190" y="121" width="11" height="11"/>
-<rect class="vis" x="201" y="121" width="11" height="11"/>
-<rect class="vis" x="168" y="132" width="11" height="11"/>
-<rect class="vis" x="179" y="132" width="11" height="11"/>
-<rect class="vis" x="190" y="132" width="11" height="11"/>
-<rect class="vis" x="201" y="132" width="11" height="11"/>
-<rect class="vis" x="168" y="143" width="11" height="11"/>
-<rect class="vis" x="179" y="143" width="11" height="11"/>
-<rect class="vis" x="190" y="143" width="11" height="11"/>
-<rect class="vis" x="201" y="143" width="11" height="11"/>
-<rect class="vis" x="230" y="110" width="11" height="11"/>
-<rect class="vis" x="241" y="110" width="11" height="11"/>
-<rect class="vis" x="252" y="110" width="11" height="11"/>
-<rect class="vis" x="263" y="110" width="11" height="11"/>
-<rect class="vis" x="230" y="121" width="11" height="11"/>
-<rect class="vis" x="241" y="121" width="11" height="11"/>
-<rect class="vis" x="252" y="121" width="11" height="11"/>
-<rect class="vis" x="263" y="121" width="11" height="11"/>
-<rect class="vis" x="230" y="132" width="11" height="11"/>
-<rect class="vis" x="241" y="132" width="11" height="11"/>
-<rect class="vis" x="252" y="132" width="11" height="11"/>
-<rect class="vis" x="263" y="132" width="11" height="11"/>
-<rect class="vis" x="230" y="143" width="11" height="11"/>
-<rect class="vis" x="241" y="143" width="11" height="11"/>
-<rect class="vis" x="252" y="143" width="11" height="11"/>
-<rect class="vis" x="263" y="143" width="11" height="11"/>
-<rect class="h2" x="292" y="110" width="11" height="11"/>
-<rect class="h2" x="303" y="110" width="11" height="11"/>
-<rect class="h2" x="314" y="110" width="11" height="11"/>
-<rect class="h2" x="325" y="110" width="11" height="11"/>
-<rect class="h2" x="292" y="121" width="11" height="11"/>
-<rect class="h2" x="303" y="121" width="11" height="11"/>
-<rect class="h2" x="314" y="121" width="11" height="11"/>
-<rect class="h2" x="325" y="121" width="11" height="11"/>
-<rect class="h2" x="292" y="132" width="11" height="11"/>
-<rect class="h2" x="303" y="132" width="11" height="11"/>
-<rect class="h2" x="314" y="132" width="11" height="11"/>
-<rect class="h2" x="325" y="132" width="11" height="11"/>
-<rect class="h2" x="292" y="143" width="11" height="11"/>
-<rect class="h2" x="303" y="143" width="11" height="11"/>
-<rect class="h2" x="314" y="143" width="11" height="11"/>
-<rect class="h2" x="325" y="143" width="11" height="11"/>
-<rect class="h2" x="354" y="110" width="11" height="11"/>
-<rect class="h2" x="365" y="110" width="11" height="11"/>
-<rect class="h2" x="376" y="110" width="11" height="11"/>
-<rect class="h2" x="387" y="110" width="11" height="11"/>
-<rect class="h2" x="354" y="121" width="11" height="11"/>
-<rect class="h2" x="365" y="121" width="11" height="11"/>
-<rect class="h2" x="376" y="121" width="11" height="11"/>
-<rect class="h2" x="387" y="121" width="11" height="11"/>
-<rect class="h2" x="354" y="132" width="11" height="11"/>
-<rect class="h2" x="365" y="132" width="11" height="11"/>
-<rect class="h2" x="376" y="132" width="11" height="11"/>
-<rect class="h2" x="387" y="132" width="11" height="11"/>
-<rect class="h2" x="354" y="143" width="11" height="11"/>
-<rect class="h2" x="365" y="143" width="11" height="11"/>
-<rect class="h2" x="376" y="143" width="11" height="11"/>
-<rect class="h2" x="387" y="143" width="11" height="11"/>
-<text x="8" y="188" class="strong t3">過去</text>
-<text x="8" y="206" class="xs mono">{1,2}</text>
-<rect class="h3" x="168" y="168" width="11" height="11"/>
-<rect class="h3" x="179" y="168" width="11" height="11"/>
-<rect class="h3" x="190" y="168" width="11" height="11"/>
-<rect class="h3" x="201" y="168" width="11" height="11"/>
-<rect class="h3" x="168" y="179" width="11" height="11"/>
-<rect class="h3" x="179" y="179" width="11" height="11"/>
-<rect class="h3" x="190" y="179" width="11" height="11"/>
-<rect class="h3" x="201" y="179" width="11" height="11"/>
-<rect class="h3" x="168" y="190" width="11" height="11"/>
-<rect class="h3" x="179" y="190" width="11" height="11"/>
-<rect class="h3" x="190" y="190" width="11" height="11"/>
-<rect class="h3" x="201" y="190" width="11" height="11"/>
-<rect class="h3" x="168" y="201" width="11" height="11"/>
-<rect class="h3" x="179" y="201" width="11" height="11"/>
-<rect class="h3" x="190" y="201" width="11" height="11"/>
-<rect class="h3" x="201" y="201" width="11" height="11"/>
-<rect class="h3" x="230" y="168" width="11" height="11"/>
-<rect class="h3" x="241" y="168" width="11" height="11"/>
-<rect class="h3" x="252" y="168" width="11" height="11"/>
-<rect class="h3" x="263" y="168" width="11" height="11"/>
-<rect class="h3" x="230" y="179" width="11" height="11"/>
-<rect class="h3" x="241" y="179" width="11" height="11"/>
-<rect class="h3" x="252" y="179" width="11" height="11"/>
-<rect class="h3" x="263" y="179" width="11" height="11"/>
-<rect class="h3" x="230" y="190" width="11" height="11"/>
-<rect class="h3" x="241" y="190" width="11" height="11"/>
-<rect class="h3" x="252" y="190" width="11" height="11"/>
-<rect class="h3" x="263" y="190" width="11" height="11"/>
-<rect class="h3" x="230" y="201" width="11" height="11"/>
-<rect class="h3" x="241" y="201" width="11" height="11"/>
-<rect class="h3" x="252" y="201" width="11" height="11"/>
-<rect class="h3" x="263" y="201" width="11" height="11"/>
-<rect class="vis" x="292" y="168" width="11" height="11"/>
-<rect class="vis" x="303" y="168" width="11" height="11"/>
-<rect class="vis" x="314" y="168" width="11" height="11"/>
-<rect class="vis" x="325" y="168" width="11" height="11"/>
-<rect class="vis" x="292" y="179" width="11" height="11"/>
-<rect class="vis" x="303" y="179" width="11" height="11"/>
-<rect class="vis" x="314" y="179" width="11" height="11"/>
-<rect class="vis" x="325" y="179" width="11" height="11"/>
-<rect class="vis" x="292" y="190" width="11" height="11"/>
-<rect class="vis" x="303" y="190" width="11" height="11"/>
-<rect class="vis" x="314" y="190" width="11" height="11"/>
-<rect class="vis" x="325" y="190" width="11" height="11"/>
-<rect class="vis" x="292" y="201" width="11" height="11"/>
-<rect class="vis" x="303" y="201" width="11" height="11"/>
-<rect class="vis" x="314" y="201" width="11" height="11"/>
-<rect class="vis" x="325" y="201" width="11" height="11"/>
-<rect class="vis" x="354" y="168" width="11" height="11"/>
-<rect class="vis" x="365" y="168" width="11" height="11"/>
-<rect class="vis" x="376" y="168" width="11" height="11"/>
-<rect class="vis" x="387" y="168" width="11" height="11"/>
-<rect class="vis" x="354" y="179" width="11" height="11"/>
-<rect class="vis" x="365" y="179" width="11" height="11"/>
-<rect class="vis" x="376" y="179" width="11" height="11"/>
-<rect class="vis" x="387" y="179" width="11" height="11"/>
-<rect class="vis" x="354" y="190" width="11" height="11"/>
-<rect class="vis" x="365" y="190" width="11" height="11"/>
-<rect class="vis" x="376" y="190" width="11" height="11"/>
-<rect class="vis" x="387" y="190" width="11" height="11"/>
-<rect class="vis" x="354" y="201" width="11" height="11"/>
-<rect class="vis" x="365" y="201" width="11" height="11"/>
-<rect class="vis" x="376" y="201" width="11" height="11"/>
-<rect class="vis" x="387" y="201" width="11" height="11"/>
-<text x="8" y="246" class="strong ">間</text>
-<text x="8" y="264" class="xs mono">{2,3}</text>
-<rect class="vis" x="168" y="226" width="11" height="11"/>
-<rect class="vis" x="179" y="226" width="11" height="11"/>
-<rect class="vis" x="190" y="226" width="11" height="11"/>
-<rect class="vis" x="201" y="226" width="11" height="11"/>
-<rect class="vis" x="168" y="237" width="11" height="11"/>
-<rect class="vis" x="179" y="237" width="11" height="11"/>
-<rect class="vis" x="190" y="237" width="11" height="11"/>
-<rect class="vis" x="201" y="237" width="11" height="11"/>
-<rect class="vis" x="168" y="248" width="11" height="11"/>
-<rect class="vis" x="179" y="248" width="11" height="11"/>
-<rect class="vis" x="190" y="248" width="11" height="11"/>
-<rect class="vis" x="201" y="248" width="11" height="11"/>
-<rect class="vis" x="168" y="259" width="11" height="11"/>
-<rect class="vis" x="179" y="259" width="11" height="11"/>
-<rect class="vis" x="190" y="259" width="11" height="11"/>
-<rect class="vis" x="201" y="259" width="11" height="11"/>
-<rect class="h4" x="230" y="226" width="11" height="11"/>
-<rect class="h4" x="241" y="226" width="11" height="11"/>
-<rect class="h4" x="252" y="226" width="11" height="11"/>
-<rect class="h4" x="263" y="226" width="11" height="11"/>
-<rect class="h4" x="230" y="237" width="11" height="11"/>
-<rect class="h4" x="241" y="237" width="11" height="11"/>
-<rect class="h4" x="252" y="237" width="11" height="11"/>
-<rect class="h4" x="263" y="237" width="11" height="11"/>
-<rect class="h4" x="230" y="248" width="11" height="11"/>
-<rect class="h4" x="241" y="248" width="11" height="11"/>
-<rect class="h4" x="252" y="248" width="11" height="11"/>
-<rect class="h4" x="263" y="248" width="11" height="11"/>
-<rect class="h4" x="230" y="259" width="11" height="11"/>
-<rect class="h4" x="241" y="259" width="11" height="11"/>
-<rect class="h4" x="252" y="259" width="11" height="11"/>
-<rect class="h4" x="263" y="259" width="11" height="11"/>
-<rect class="h4" x="292" y="226" width="11" height="11"/>
-<rect class="h4" x="303" y="226" width="11" height="11"/>
-<rect class="h4" x="314" y="226" width="11" height="11"/>
-<rect class="h4" x="325" y="226" width="11" height="11"/>
-<rect class="h4" x="292" y="237" width="11" height="11"/>
-<rect class="h4" x="303" y="237" width="11" height="11"/>
-<rect class="h4" x="314" y="237" width="11" height="11"/>
-<rect class="h4" x="325" y="237" width="11" height="11"/>
-<rect class="h4" x="292" y="248" width="11" height="11"/>
-<rect class="h4" x="303" y="248" width="11" height="11"/>
-<rect class="h4" x="314" y="248" width="11" height="11"/>
-<rect class="h4" x="325" y="248" width="11" height="11"/>
-<rect class="h4" x="292" y="259" width="11" height="11"/>
-<rect class="h4" x="303" y="259" width="11" height="11"/>
-<rect class="h4" x="314" y="259" width="11" height="11"/>
-<rect class="h4" x="325" y="259" width="11" height="11"/>
-<rect class="vis" x="354" y="226" width="11" height="11"/>
-<rect class="vis" x="365" y="226" width="11" height="11"/>
-<rect class="vis" x="376" y="226" width="11" height="11"/>
-<rect class="vis" x="387" y="226" width="11" height="11"/>
-<rect class="vis" x="354" y="237" width="11" height="11"/>
-<rect class="vis" x="365" y="237" width="11" height="11"/>
-<rect class="vis" x="376" y="237" width="11" height="11"/>
-<rect class="vis" x="387" y="237" width="11" height="11"/>
-<rect class="vis" x="354" y="248" width="11" height="11"/>
-<rect class="vis" x="365" y="248" width="11" height="11"/>
-<rect class="vis" x="376" y="248" width="11" height="11"/>
-<rect class="vis" x="387" y="248" width="11" height="11"/>
-<rect class="vis" x="354" y="259" width="11" height="11"/>
-<rect class="vis" x="365" y="259" width="11" height="11"/>
-<rect class="vis" x="376" y="259" width="11" height="11"/>
-<rect class="vis" x="387" y="259" width="11" height="11"/>
-<text x="8" y="304" class="strong ">外向き</text>
-<text x="8" y="322" class="xs mono">{1,4}</text>
-<rect class="h4" x="168" y="284" width="11" height="11"/>
-<rect class="h4" x="179" y="284" width="11" height="11"/>
-<rect class="h4" x="190" y="284" width="11" height="11"/>
-<rect class="h4" x="201" y="284" width="11" height="11"/>
-<rect class="h4" x="168" y="295" width="11" height="11"/>
-<rect class="h4" x="179" y="295" width="11" height="11"/>
-<rect class="h4" x="190" y="295" width="11" height="11"/>
-<rect class="h4" x="201" y="295" width="11" height="11"/>
-<rect class="h4" x="168" y="306" width="11" height="11"/>
-<rect class="h4" x="179" y="306" width="11" height="11"/>
-<rect class="h4" x="190" y="306" width="11" height="11"/>
-<rect class="h4" x="201" y="306" width="11" height="11"/>
-<rect class="h4" x="168" y="317" width="11" height="11"/>
-<rect class="h4" x="179" y="317" width="11" height="11"/>
-<rect class="h4" x="190" y="317" width="11" height="11"/>
-<rect class="h4" x="201" y="317" width="11" height="11"/>
-<rect class="vis" x="230" y="284" width="11" height="11"/>
-<rect class="vis" x="241" y="284" width="11" height="11"/>
-<rect class="vis" x="252" y="284" width="11" height="11"/>
-<rect class="vis" x="263" y="284" width="11" height="11"/>
-<rect class="vis" x="230" y="295" width="11" height="11"/>
-<rect class="vis" x="241" y="295" width="11" height="11"/>
-<rect class="vis" x="252" y="295" width="11" height="11"/>
-<rect class="vis" x="263" y="295" width="11" height="11"/>
-<rect class="vis" x="230" y="306" width="11" height="11"/>
-<rect class="vis" x="241" y="306" width="11" height="11"/>
-<rect class="vis" x="252" y="306" width="11" height="11"/>
-<rect class="vis" x="263" y="306" width="11" height="11"/>
-<rect class="vis" x="230" y="317" width="11" height="11"/>
-<rect class="vis" x="241" y="317" width="11" height="11"/>
-<rect class="vis" x="252" y="317" width="11" height="11"/>
-<rect class="vis" x="263" y="317" width="11" height="11"/>
-<rect class="vis" x="292" y="284" width="11" height="11"/>
-<rect class="vis" x="303" y="284" width="11" height="11"/>
-<rect class="vis" x="314" y="284" width="11" height="11"/>
-<rect class="vis" x="325" y="284" width="11" height="11"/>
-<rect class="vis" x="292" y="295" width="11" height="11"/>
-<rect class="vis" x="303" y="295" width="11" height="11"/>
-<rect class="vis" x="314" y="295" width="11" height="11"/>
-<rect class="vis" x="325" y="295" width="11" height="11"/>
-<rect class="vis" x="292" y="306" width="11" height="11"/>
-<rect class="vis" x="303" y="306" width="11" height="11"/>
-<rect class="vis" x="314" y="306" width="11" height="11"/>
-<rect class="vis" x="325" y="306" width="11" height="11"/>
-<rect class="vis" x="292" y="317" width="11" height="11"/>
-<rect class="vis" x="303" y="317" width="11" height="11"/>
-<rect class="vis" x="314" y="317" width="11" height="11"/>
-<rect class="vis" x="325" y="317" width="11" height="11"/>
-<rect class="h4" x="354" y="284" width="11" height="11"/>
-<rect class="h4" x="365" y="284" width="11" height="11"/>
-<rect class="h4" x="376" y="284" width="11" height="11"/>
-<rect class="h4" x="387" y="284" width="11" height="11"/>
-<rect class="h4" x="354" y="295" width="11" height="11"/>
-<rect class="h4" x="365" y="295" width="11" height="11"/>
-<rect class="h4" x="376" y="295" width="11" height="11"/>
-<rect class="h4" x="387" y="295" width="11" height="11"/>
-<rect class="h4" x="354" y="306" width="11" height="11"/>
-<rect class="h4" x="365" y="306" width="11" height="11"/>
-<rect class="h4" x="376" y="306" width="11" height="11"/>
-<rect class="h4" x="387" y="306" width="11" height="11"/>
-<rect class="h4" x="354" y="317" width="11" height="11"/>
-<rect class="h4" x="365" y="317" width="11" height="11"/>
-<rect class="h4" x="376" y="317" width="11" height="11"/>
-<rect class="h4" x="387" y="317" width="11" height="11"/>
-<text x="8" y="362" class="strong ">補間</text>
-<text x="8" y="380" class="xs mono">{1,3}</text>
-<rect class="hn" x="168" y="342" width="11" height="11"/>
-<rect class="hn" x="179" y="342" width="11" height="11"/>
-<rect class="hn" x="190" y="342" width="11" height="11"/>
-<rect class="hn" x="201" y="342" width="11" height="11"/>
-<rect class="hn" x="168" y="353" width="11" height="11"/>
-<rect class="hn" x="179" y="353" width="11" height="11"/>
-<rect class="hn" x="190" y="353" width="11" height="11"/>
-<rect class="hn" x="201" y="353" width="11" height="11"/>
-<rect class="hn" x="168" y="364" width="11" height="11"/>
-<rect class="hn" x="179" y="364" width="11" height="11"/>
-<rect class="hn" x="190" y="364" width="11" height="11"/>
-<rect class="hn" x="201" y="364" width="11" height="11"/>
-<rect class="hn" x="168" y="375" width="11" height="11"/>
-<rect class="hn" x="179" y="375" width="11" height="11"/>
-<rect class="hn" x="190" y="375" width="11" height="11"/>
-<rect class="hn" x="201" y="375" width="11" height="11"/>
-<rect class="vis" x="230" y="342" width="11" height="11"/>
-<rect class="vis" x="241" y="342" width="11" height="11"/>
-<rect class="vis" x="252" y="342" width="11" height="11"/>
-<rect class="vis" x="263" y="342" width="11" height="11"/>
-<rect class="vis" x="230" y="353" width="11" height="11"/>
-<rect class="vis" x="241" y="353" width="11" height="11"/>
-<rect class="vis" x="252" y="353" width="11" height="11"/>
-<rect class="vis" x="263" y="353" width="11" height="11"/>
-<rect class="vis" x="230" y="364" width="11" height="11"/>
-<rect class="vis" x="241" y="364" width="11" height="11"/>
-<rect class="vis" x="252" y="364" width="11" height="11"/>
-<rect class="vis" x="263" y="364" width="11" height="11"/>
-<rect class="vis" x="230" y="375" width="11" height="11"/>
-<rect class="vis" x="241" y="375" width="11" height="11"/>
-<rect class="vis" x="252" y="375" width="11" height="11"/>
-<rect class="vis" x="263" y="375" width="11" height="11"/>
-<rect class="hn" x="292" y="342" width="11" height="11"/>
-<rect class="hn" x="303" y="342" width="11" height="11"/>
-<rect class="hn" x="314" y="342" width="11" height="11"/>
-<rect class="hn" x="325" y="342" width="11" height="11"/>
-<rect class="hn" x="292" y="353" width="11" height="11"/>
-<rect class="hn" x="303" y="353" width="11" height="11"/>
-<rect class="hn" x="314" y="353" width="11" height="11"/>
-<rect class="hn" x="325" y="353" width="11" height="11"/>
-<rect class="hn" x="292" y="364" width="11" height="11"/>
-<rect class="hn" x="303" y="364" width="11" height="11"/>
-<rect class="hn" x="314" y="364" width="11" height="11"/>
-<rect class="hn" x="325" y="364" width="11" height="11"/>
-<rect class="hn" x="292" y="375" width="11" height="11"/>
-<rect class="hn" x="303" y="375" width="11" height="11"/>
-<rect class="hn" x="314" y="375" width="11" height="11"/>
-<rect class="hn" x="325" y="375" width="11" height="11"/>
-<rect class="vis" x="354" y="342" width="11" height="11"/>
-<rect class="vis" x="365" y="342" width="11" height="11"/>
-<rect class="vis" x="376" y="342" width="11" height="11"/>
-<rect class="vis" x="387" y="342" width="11" height="11"/>
-<rect class="vis" x="354" y="353" width="11" height="11"/>
-<rect class="vis" x="365" y="353" width="11" height="11"/>
-<rect class="vis" x="376" y="353" width="11" height="11"/>
-<rect class="vis" x="387" y="353" width="11" height="11"/>
-<rect class="vis" x="354" y="364" width="11" height="11"/>
-<rect class="vis" x="365" y="364" width="11" height="11"/>
-<rect class="vis" x="376" y="364" width="11" height="11"/>
-<rect class="vis" x="387" y="364" width="11" height="11"/>
-<rect class="vis" x="354" y="375" width="11" height="11"/>
-<rect class="vis" x="365" y="375" width="11" height="11"/>
-<rect class="vis" x="376" y="375" width="11" height="11"/>
-<rect class="vis" x="387" y="375" width="11" height="11"/>
-<text x="8" y="420" class="strong ">補間</text>
-<text x="8" y="438" class="xs mono">{2,4}</text>
-<rect class="vis" x="168" y="400" width="11" height="11"/>
-<rect class="vis" x="179" y="400" width="11" height="11"/>
-<rect class="vis" x="190" y="400" width="11" height="11"/>
-<rect class="vis" x="201" y="400" width="11" height="11"/>
-<rect class="vis" x="168" y="411" width="11" height="11"/>
-<rect class="vis" x="179" y="411" width="11" height="11"/>
-<rect class="vis" x="190" y="411" width="11" height="11"/>
-<rect class="vis" x="201" y="411" width="11" height="11"/>
-<rect class="vis" x="168" y="422" width="11" height="11"/>
-<rect class="vis" x="179" y="422" width="11" height="11"/>
-<rect class="vis" x="190" y="422" width="11" height="11"/>
-<rect class="vis" x="201" y="422" width="11" height="11"/>
-<rect class="vis" x="168" y="433" width="11" height="11"/>
-<rect class="vis" x="179" y="433" width="11" height="11"/>
-<rect class="vis" x="190" y="433" width="11" height="11"/>
-<rect class="vis" x="201" y="433" width="11" height="11"/>
-<rect class="hn" x="230" y="400" width="11" height="11"/>
-<rect class="hn" x="241" y="400" width="11" height="11"/>
-<rect class="hn" x="252" y="400" width="11" height="11"/>
-<rect class="hn" x="263" y="400" width="11" height="11"/>
-<rect class="hn" x="230" y="411" width="11" height="11"/>
-<rect class="hn" x="241" y="411" width="11" height="11"/>
-<rect class="hn" x="252" y="411" width="11" height="11"/>
-<rect class="hn" x="263" y="411" width="11" height="11"/>
-<rect class="hn" x="230" y="422" width="11" height="11"/>
-<rect class="hn" x="241" y="422" width="11" height="11"/>
-<rect class="hn" x="252" y="422" width="11" height="11"/>
-<rect class="hn" x="263" y="422" width="11" height="11"/>
-<rect class="hn" x="230" y="433" width="11" height="11"/>
-<rect class="hn" x="241" y="433" width="11" height="11"/>
-<rect class="hn" x="252" y="433" width="11" height="11"/>
-<rect class="hn" x="263" y="433" width="11" height="11"/>
-<rect class="vis" x="292" y="400" width="11" height="11"/>
-<rect class="vis" x="303" y="400" width="11" height="11"/>
-<rect class="vis" x="314" y="400" width="11" height="11"/>
-<rect class="vis" x="325" y="400" width="11" height="11"/>
-<rect class="vis" x="292" y="411" width="11" height="11"/>
-<rect class="vis" x="303" y="411" width="11" height="11"/>
-<rect class="vis" x="314" y="411" width="11" height="11"/>
-<rect class="vis" x="325" y="411" width="11" height="11"/>
-<rect class="vis" x="292" y="422" width="11" height="11"/>
-<rect class="vis" x="303" y="422" width="11" height="11"/>
-<rect class="vis" x="314" y="422" width="11" height="11"/>
-<rect class="vis" x="325" y="422" width="11" height="11"/>
-<rect class="vis" x="292" y="433" width="11" height="11"/>
-<rect class="vis" x="303" y="433" width="11" height="11"/>
-<rect class="vis" x="314" y="433" width="11" height="11"/>
-<rect class="vis" x="325" y="433" width="11" height="11"/>
-<rect class="hn" x="354" y="400" width="11" height="11"/>
-<rect class="hn" x="365" y="400" width="11" height="11"/>
-<rect class="hn" x="376" y="400" width="11" height="11"/>
-<rect class="hn" x="387" y="400" width="11" height="11"/>
-<rect class="hn" x="354" y="411" width="11" height="11"/>
-<rect class="hn" x="365" y="411" width="11" height="11"/>
-<rect class="hn" x="376" y="411" width="11" height="11"/>
-<rect class="hn" x="387" y="411" width="11" height="11"/>
-<rect class="hn" x="354" y="422" width="11" height="11"/>
-<rect class="hn" x="365" y="422" width="11" height="11"/>
-<rect class="hn" x="376" y="422" width="11" height="11"/>
-<rect class="hn" x="387" y="422" width="11" height="11"/>
-<rect class="hn" x="354" y="433" width="11" height="11"/>
-<rect class="hn" x="365" y="433" width="11" height="11"/>
-<rect class="hn" x="376" y="433" width="11" height="11"/>
-<rect class="hn" x="387" y="433" width="11" height="11"/>
-<text x="8" y="474" class="xs">色のついたマス = 隠すトークン。どの行も 64 個のうち 32 個を隠す</text>
-<text x="8" y="492" class="xs">管の空間の隠し方は模式（実際は族 F8 から引く）</text></svg></div>
-    <figcaption><b>図 2　マスクの族。</b> 1 行が 1 つの隠し方で、4 つの箱が時刻 1〜4、1 つの箱の 4×4 のマスが空間の位置です。色のついたマスを隠し、残りの見えるトークンから隠したトークンを当てます。管（1 行目）は、同じ空間の位置を全ての時刻で隠します。残りの 6 行は、時刻を 2 つ丸ごと隠します。どの行も、隠す数は 64 個のうち 32 個です。</figcaption>
+<rect class="vis" x="168" y="44" width="44" height="44"/>
+<rect class="h1" x="168" y="44" width="11" height="11"/>
+<rect class="h1" x="179" y="44" width="11" height="11"/>
+<rect class="h1" x="168" y="55" width="11" height="11"/>
+<rect class="h1" x="179" y="55" width="11" height="11"/>
+<rect class="h1" x="190" y="66" width="11" height="11"/>
+<rect class="h1" x="201" y="66" width="11" height="11"/>
+<rect class="h1" x="190" y="77" width="11" height="11"/>
+<rect class="h1" x="201" y="77" width="11" height="11"/>
+<path class="gl" d="M173.5 44V88M168 49.5H212M179 44V88M168 55H212M184.5 44V88M168 60.5H212M190 44V88M168 66H212M195.5 44V88M168 71.5H212M201 44V88M168 77H212M206.5 44V88M168 82.5H212"/>
+<rect class="vis" x="230" y="44" width="44" height="44"/>
+<rect class="h1" x="230" y="44" width="11" height="11"/>
+<rect class="h1" x="241" y="44" width="11" height="11"/>
+<rect class="h1" x="230" y="55" width="11" height="11"/>
+<rect class="h1" x="241" y="55" width="11" height="11"/>
+<rect class="h1" x="252" y="66" width="11" height="11"/>
+<rect class="h1" x="263" y="66" width="11" height="11"/>
+<rect class="h1" x="252" y="77" width="11" height="11"/>
+<rect class="h1" x="263" y="77" width="11" height="11"/>
+<path class="gl" d="M235.5 44V88M230 49.5H274M241 44V88M230 55H274M246.5 44V88M230 60.5H274M252 44V88M230 66H274M257.5 44V88M230 71.5H274M263 44V88M230 77H274M268.5 44V88M230 82.5H274"/>
+<rect class="vis" x="292" y="44" width="44" height="44"/>
+<rect class="h1" x="292" y="44" width="11" height="11"/>
+<rect class="h1" x="303" y="44" width="11" height="11"/>
+<rect class="h1" x="292" y="55" width="11" height="11"/>
+<rect class="h1" x="303" y="55" width="11" height="11"/>
+<rect class="h1" x="314" y="66" width="11" height="11"/>
+<rect class="h1" x="325" y="66" width="11" height="11"/>
+<rect class="h1" x="314" y="77" width="11" height="11"/>
+<rect class="h1" x="325" y="77" width="11" height="11"/>
+<path class="gl" d="M297.5 44V88M292 49.5H336M303 44V88M292 55H336M308.5 44V88M292 60.5H336M314 44V88M292 66H336M319.5 44V88M292 71.5H336M325 44V88M292 77H336M330.5 44V88M292 82.5H336"/>
+<rect class="vis" x="354" y="44" width="44" height="44"/>
+<rect class="h1" x="354" y="44" width="11" height="11"/>
+<rect class="h1" x="365" y="44" width="11" height="11"/>
+<rect class="h1" x="354" y="55" width="11" height="11"/>
+<rect class="h1" x="365" y="55" width="11" height="11"/>
+<rect class="h1" x="376" y="66" width="11" height="11"/>
+<rect class="h1" x="387" y="66" width="11" height="11"/>
+<rect class="h1" x="376" y="77" width="11" height="11"/>
+<rect class="h1" x="387" y="77" width="11" height="11"/>
+<path class="gl" d="M359.5 44V88M354 49.5H398M365 44V88M354 55H398M370.5 44V88M354 60.5H398M376 44V88M354 66H398M381.5 44V88M354 71.5H398M387 44V88M354 77H398M392.5 44V88M354 82.5H398"/>
+<text x="8" y="122" class="strong t2">未来</text>
+<text x="8" y="140" class="xs mono">{3,4}</text>
+<rect class="vis" x="168" y="102" width="44" height="44"/>
+<path class="gl" d="M173.5 102V146M168 107.5H212M179 102V146M168 113H212M184.5 102V146M168 118.5H212M190 102V146M168 124H212M195.5 102V146M168 129.5H212M201 102V146M168 135H212M206.5 102V146M168 140.5H212"/>
+<rect class="vis" x="230" y="102" width="44" height="44"/>
+<path class="gl" d="M235.5 102V146M230 107.5H274M241 102V146M230 113H274M246.5 102V146M230 118.5H274M252 102V146M230 124H274M257.5 102V146M230 129.5H274M263 102V146M230 135H274M268.5 102V146M230 140.5H274"/>
+<rect class="vis" x="292" y="102" width="44" height="44"/>
+<rect class="h2" x="292" y="102" width="44" height="44"/>
+<path class="gl" d="M297.5 102V146M292 107.5H336M303 102V146M292 113H336M308.5 102V146M292 118.5H336M314 102V146M292 124H336M319.5 102V146M292 129.5H336M325 102V146M292 135H336M330.5 102V146M292 140.5H336"/>
+<rect class="vis" x="354" y="102" width="44" height="44"/>
+<rect class="h2" x="354" y="102" width="44" height="44"/>
+<path class="gl" d="M359.5 102V146M354 107.5H398M365 102V146M354 113H398M370.5 102V146M354 118.5H398M376 102V146M354 124H398M381.5 102V146M354 129.5H398M387 102V146M354 135H398M392.5 102V146M354 140.5H398"/>
+<text x="8" y="180" class="strong t3">過去</text>
+<text x="8" y="198" class="xs mono">{1,2}</text>
+<rect class="vis" x="168" y="160" width="44" height="44"/>
+<rect class="h3" x="168" y="160" width="44" height="44"/>
+<path class="gl" d="M173.5 160V204M168 165.5H212M179 160V204M168 171H212M184.5 160V204M168 176.5H212M190 160V204M168 182H212M195.5 160V204M168 187.5H212M201 160V204M168 193H212M206.5 160V204M168 198.5H212"/>
+<rect class="vis" x="230" y="160" width="44" height="44"/>
+<rect class="h3" x="230" y="160" width="44" height="44"/>
+<path class="gl" d="M235.5 160V204M230 165.5H274M241 160V204M230 171H274M246.5 160V204M230 176.5H274M252 160V204M230 182H274M257.5 160V204M230 187.5H274M263 160V204M230 193H274M268.5 160V204M230 198.5H274"/>
+<rect class="vis" x="292" y="160" width="44" height="44"/>
+<path class="gl" d="M297.5 160V204M292 165.5H336M303 160V204M292 171H336M308.5 160V204M292 176.5H336M314 160V204M292 182H336M319.5 160V204M292 187.5H336M325 160V204M292 193H336M330.5 160V204M292 198.5H336"/>
+<rect class="vis" x="354" y="160" width="44" height="44"/>
+<path class="gl" d="M359.5 160V204M354 165.5H398M365 160V204M354 171H398M370.5 160V204M354 176.5H398M376 160V204M354 182H398M381.5 160V204M354 187.5H398M387 160V204M354 193H398M392.5 160V204M354 198.5H398"/>
+<text x="8" y="238" class="strong ">間</text>
+<text x="8" y="256" class="xs mono">{2,3}</text>
+<rect class="vis" x="168" y="218" width="44" height="44"/>
+<path class="gl" d="M173.5 218V262M168 223.5H212M179 218V262M168 229H212M184.5 218V262M168 234.5H212M190 218V262M168 240H212M195.5 218V262M168 245.5H212M201 218V262M168 251H212M206.5 218V262M168 256.5H212"/>
+<rect class="vis" x="230" y="218" width="44" height="44"/>
+<rect class="h4" x="230" y="218" width="44" height="44"/>
+<path class="gl" d="M235.5 218V262M230 223.5H274M241 218V262M230 229H274M246.5 218V262M230 234.5H274M252 218V262M230 240H274M257.5 218V262M230 245.5H274M263 218V262M230 251H274M268.5 218V262M230 256.5H274"/>
+<rect class="vis" x="292" y="218" width="44" height="44"/>
+<rect class="h4" x="292" y="218" width="44" height="44"/>
+<path class="gl" d="M297.5 218V262M292 223.5H336M303 218V262M292 229H336M308.5 218V262M292 234.5H336M314 218V262M292 240H336M319.5 218V262M292 245.5H336M325 218V262M292 251H336M330.5 218V262M292 256.5H336"/>
+<rect class="vis" x="354" y="218" width="44" height="44"/>
+<path class="gl" d="M359.5 218V262M354 223.5H398M365 218V262M354 229H398M370.5 218V262M354 234.5H398M376 218V262M354 240H398M381.5 218V262M354 245.5H398M387 218V262M354 251H398M392.5 218V262M354 256.5H398"/>
+<text x="8" y="296" class="strong ">外向き</text>
+<text x="8" y="314" class="xs mono">{1,4}</text>
+<rect class="vis" x="168" y="276" width="44" height="44"/>
+<rect class="h4" x="168" y="276" width="44" height="44"/>
+<path class="gl" d="M173.5 276V320M168 281.5H212M179 276V320M168 287H212M184.5 276V320M168 292.5H212M190 276V320M168 298H212M195.5 276V320M168 303.5H212M201 276V320M168 309H212M206.5 276V320M168 314.5H212"/>
+<rect class="vis" x="230" y="276" width="44" height="44"/>
+<path class="gl" d="M235.5 276V320M230 281.5H274M241 276V320M230 287H274M246.5 276V320M230 292.5H274M252 276V320M230 298H274M257.5 276V320M230 303.5H274M263 276V320M230 309H274M268.5 276V320M230 314.5H274"/>
+<rect class="vis" x="292" y="276" width="44" height="44"/>
+<path class="gl" d="M297.5 276V320M292 281.5H336M303 276V320M292 287H336M308.5 276V320M292 292.5H336M314 276V320M292 298H336M319.5 276V320M292 303.5H336M325 276V320M292 309H336M330.5 276V320M292 314.5H336"/>
+<rect class="vis" x="354" y="276" width="44" height="44"/>
+<rect class="h4" x="354" y="276" width="44" height="44"/>
+<path class="gl" d="M359.5 276V320M354 281.5H398M365 276V320M354 287H398M370.5 276V320M354 292.5H398M376 276V320M354 298H398M381.5 276V320M354 303.5H398M387 276V320M354 309H398M392.5 276V320M354 314.5H398"/>
+<text x="8" y="354" class="strong ">補間</text>
+<text x="8" y="372" class="xs mono">{1,3}</text>
+<rect class="vis" x="168" y="334" width="44" height="44"/>
+<rect class="hn" x="168" y="334" width="44" height="44"/>
+<path class="gl" d="M173.5 334V378M168 339.5H212M179 334V378M168 345H212M184.5 334V378M168 350.5H212M190 334V378M168 356H212M195.5 334V378M168 361.5H212M201 334V378M168 367H212M206.5 334V378M168 372.5H212"/>
+<rect class="vis" x="230" y="334" width="44" height="44"/>
+<path class="gl" d="M235.5 334V378M230 339.5H274M241 334V378M230 345H274M246.5 334V378M230 350.5H274M252 334V378M230 356H274M257.5 334V378M230 361.5H274M263 334V378M230 367H274M268.5 334V378M230 372.5H274"/>
+<rect class="vis" x="292" y="334" width="44" height="44"/>
+<rect class="hn" x="292" y="334" width="44" height="44"/>
+<path class="gl" d="M297.5 334V378M292 339.5H336M303 334V378M292 345H336M308.5 334V378M292 350.5H336M314 334V378M292 356H336M319.5 334V378M292 361.5H336M325 334V378M292 367H336M330.5 334V378M292 372.5H336"/>
+<rect class="vis" x="354" y="334" width="44" height="44"/>
+<path class="gl" d="M359.5 334V378M354 339.5H398M365 334V378M354 345H398M370.5 334V378M354 350.5H398M376 334V378M354 356H398M381.5 334V378M354 361.5H398M387 334V378M354 367H398M392.5 334V378M354 372.5H398"/>
+<text x="8" y="412" class="strong ">補間</text>
+<text x="8" y="430" class="xs mono">{2,4}</text>
+<rect class="vis" x="168" y="392" width="44" height="44"/>
+<path class="gl" d="M173.5 392V436M168 397.5H212M179 392V436M168 403H212M184.5 392V436M168 408.5H212M190 392V436M168 414H212M195.5 392V436M168 419.5H212M201 392V436M168 425H212M206.5 392V436M168 430.5H212"/>
+<rect class="vis" x="230" y="392" width="44" height="44"/>
+<rect class="hn" x="230" y="392" width="44" height="44"/>
+<path class="gl" d="M235.5 392V436M230 397.5H274M241 392V436M230 403H274M246.5 392V436M230 408.5H274M252 392V436M230 414H274M257.5 392V436M230 419.5H274M263 392V436M230 425H274M268.5 392V436M230 430.5H274"/>
+<rect class="vis" x="292" y="392" width="44" height="44"/>
+<path class="gl" d="M297.5 392V436M292 397.5H336M303 392V436M292 403H336M308.5 392V436M292 408.5H336M314 392V436M292 414H336M319.5 392V436M292 419.5H336M325 392V436M292 425H336M330.5 392V436M292 430.5H336"/>
+<rect class="vis" x="354" y="392" width="44" height="44"/>
+<rect class="hn" x="354" y="392" width="44" height="44"/>
+<path class="gl" d="M359.5 392V436M354 397.5H398M365 392V436M354 403H398M370.5 392V436M354 408.5H398M376 392V436M354 414H398M381.5 392V436M354 419.5H398M387 392V436M354 425H398M392.5 392V436M354 430.5H398"/>
+<text x="8" y="474" class="xs">色のついたマス = 隠すトークン。どの行も 256 個のうち 128 個を隠す</text>
+<text x="8" y="492" class="xs">管の空間の隠し方は模式（実際は粗い 4×4 の族 F8 を 8×8 に広げて引く）</text></svg></div>
+    <figcaption><b>図 2　マスクの族。</b> 1 行が 1 つの隠し方で、4 つの箱が時刻 1〜4、1 つの箱の 8×8 のマスが空間の位置です。色のついたマスを隠し、残りの見えるトークンから隠したトークンを当てます。管（1 行目）は同じ空間の位置を全ての時刻で隠します。残りの 6 行は時刻を 2 つ丸ごと隠します。どの行も、隠す数は 256 個のうち 128 個です。</figcaption>
   </figure>
 
   <div class="prose">
@@ -1171,7 +714,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     </tbody>
   </table></div>
   <div class="prose">
-    <p>各段では、まず短い run（6000 step、学習率 × <var>λ</var> の掃引）を回し、次に長い run（60000 step、seed 2 つ）を回します。長い run の設定は、検証の動画の補完の損失と崩壊の指標で選びます。評価の動画 Zurich は、選択に使いません。計算量は V18c と同じ見込みで、長い run 1 本で約 2 時間です。</p>
+    <p>各段ではまず短い run（6000 step、学習率 × <var>λ</var> の掃引）を回し、次に長い run（60000 step、seed 2 つ）を回します。長い run の設定は検証の動画の補完の損失と崩壊の指標で選びます。評価の動画 Zurich は選択に使いません。長い run 1 本は 6〜8 時間の見込みで、4 枚の 4090 で並べて回します。</p>
     <p>F3 の後は、元の計画の流れ（ストリーム、時間相関の SIGReg、PC-ALM）へ戻ります。</p>
   </div>
 </section>
