@@ -2,7 +2,7 @@
 
 計画は [PLAN.md](PLAN.md)、V0 の実装の仕様は [plans/v0-foundation.md](plans/v0-foundation.md)。V0〜V8 のまとめは [results/v0-v8.md](results/v0-v8.md)。V0〜V10 の結果を、学習の経過の図・描き戻した画像・注釈つきで読める 1 枚のページにまとめたものが [report.html](report.html)（ブラウザで開く）。V11〜V15（optimizer の研究）と V16（同じモデルを普通の深層学習で学んだ結果）は、図と表で読める [report-optim.html](report-optim.html) にまとめた。V17（1 本のストリームを 480 万 stack まで見せた結果と、連続する stack をまとめる学び方の検証）は [report-long.html](report-long.html) にまとめた。V18・V18b・V18c（BP と i.i.d. なミニバッチで JEPA を学んだ結果。V18c は掃引・主の指標の 3 回の試み・長い run の L1・自分の表現空間での補完の同定・時間の線形性と情報の幅まで）と、JEPA の計画の全体と今後の進め方は、図と表で読める [report-jepa.html](report-jepa.html) にまとめた。V18c の評価指標（崩壊の検出、主の指標の 3 回の試み、補完の同定・対照・移植と局所性、時間の線形性と情報の幅・白色化した評価の分散の診断）は、図つきの解説 [eval-guide.html](eval-guide.html) で説明した。主の評価 dyn/copy（ダイナミクスモデルの予測誤差 / copy の誤差）の考え方・ずるとガード・確かめと、既存の 34 個の符号での探索の結果は、図つきの解説 [dyn-guide.html](dyn-guide.html) で説明した（数字の正は [results/dyn/README.md](results/dyn/README.md)）。`exp/video`（M0〜M18）の続きで、番号を V0 から振り直した。`exp/video` のコードは tag `video-final`（mujou 7a8b72e）にある。
 
-V18d（学習の目的に時間の予測を入れた JEPA）の計画は [plans/v18d.md](plans/v18d.md)、回す前に決めたことと結果は [results/v18d/README.md](results/v18d/README.md) にある。
+V18d（時間に並んだ 4 つの stack の今・未来・過去を 1 つの予測器で補完する、時空間の補完の JEPA）の計画は [plans/v18d.md](plans/v18d.md)、回す前に決めたことと結果は [results/v18d/README.md](results/v18d/README.md) にある。
 
 ## 実行方法
 
