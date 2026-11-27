@@ -78,7 +78,9 @@ __all__ = [
     "even_pick",
     "log_mean",
     "main",
+    "setup",
     "stacks_of",
+    "stats_rows",
     "time_loss_rel",
     "val_layout",
 ]
@@ -200,7 +202,7 @@ class ValStacks:
 
 
 @torch.no_grad()
-def _stats_rows(
+def stats_rows(
     code: Code, stats: CodeStats, vs: ValStacks, dev: torch.device
 ) -> dict[str, float]:
     """``CodeStats.of`` with its zurich keys renamed ``val`` and ``rank``."""
@@ -210,9 +212,11 @@ def _stats_rows(
     return row
 
 
-def _setup(
+def setup(
     conf: RunConf, root: Path, out: Path
 ) -> tuple[ValStacks, CodeStats, tuple[str, ...], SetLayout]:
+    """The collapse numbers' stacks (``ValStacks``) and ``CodeStats`` of the
+    validation video, its name(s) and its layout (``val_layout``)."""
     view = spanned(conf, SPAN)
     ev = StreamEvaluator(view, out, root, out / "tmp", c=1)
     names, layout = val_layout(conf, root)
@@ -250,7 +254,7 @@ def evaluate_run(
     root = tours_root(conf.data.tours.data_version) if root is None else root
     out = run_dir / OUT
     out.mkdir(parents=True, exist_ok=True)
-    vs, stats, names, layout = _setup(conf, root, out)
+    vs, stats, names, layout = setup(conf, root, out)
     dconf = DynConf()
     write_json(
         out / "config.json",
@@ -269,7 +273,7 @@ def evaluate_run(
     for step in todo:
         head = ckpt.load_eval(ckpts[step], mods.modules())
         row: dict[str, Any] = {"step": step, "t": head["t"], "code": "z"}
-        row |= _stats_rows(mods, stats, vs, dev)
+        row |= stats_rows(mods, stats, vs, dev)
         row |= stats.pred(mods, settings["k"], settings.get("expand", 1))
         append_jsonl(out / "select.jsonl", [row])
     return out / "select.jsonl"
@@ -282,7 +286,7 @@ def evaluate_yard(conf: RunConf, out: Path, *, root: Path | None = None) -> Path
     dev = torch.device(conf.device)
     root = tours_root(conf.data.tours.data_version) if root is None else root
     out.mkdir(parents=True, exist_ok=True)
-    vs, stats, names, _ = _setup(conf, root, out)
+    vs, stats, names, _ = setup(conf, root, out)
     init_c: JEPAModules = build_jepa(
         conf, seed=conf.seed, token_dim=16, proj="fixed", latent_dim=LATENT_DIM
     )
@@ -296,7 +300,7 @@ def evaluate_yard(conf: RunConf, out: Path, *, root: Path | None = None) -> Path
     (out / "select.jsonl").write_text("")
     for name, code in codes.items():
         append_jsonl(
-            out / "select.jsonl", [{"code": name} | _stats_rows(code, stats, vs, dev)]
+            out / "select.jsonl", [{"code": name} | stats_rows(code, stats, vs, dev)]
         )
     return out / "select.jsonl"
 
