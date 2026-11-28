@@ -244,7 +244,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <li><a href="#q">問い</a></li>
     <li><a href="#facts">ここまでで分かったこと</a></li>
     <li><a href="#principle">原理（学習）</a></li>
-    <li><a href="#eval">評価</a></li>
+    <li><a href="#eval">評価</a>（<a href="#howdyn">解説: minGRU の評価のしくみ</a>）</li>
     <li><a href="#stages">段の順序</a></li>
     <li><a href="#open">決めていないこと</a></li>
   </ol>
@@ -1337,6 +1337,257 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
       <li>E<sup>lin</sup> が、<code>pca</code> か学習前に対して非劣である</li>
     </ul>
   </div>
+</section>
+
+<section id="howdyn">
+  <div class="sec-head"><div class="eyebrow">4.4</div><h2>解説: minGRU による未来・過去の評価のしくみ</h2></div>
+  <div class="prose">
+    <p>この節では、4.1 の評価がどう動くのかと、なぜその形にしたのかを順に説明します。結果の数字はここには載せません。決めた設定と確定した数は <a href="results/foundation/README.md">results/foundation/README.md</a> の F0 の節にあります。</p>
+    <p>評価で知りたいのは、<b>学習した符号の系列が、先（または前）をどれだけ当てやすいか</b>です。当てやすいほど、符号が世界の時間の構造をとらえていると考えます。ただし「当てやすい」にはずるい形もあります。符号を遅くする、中身を捨てる、といった形です。そこで評価は予測のモデル、割り算の分母、合成の確かめ、ガードの 4 つで組み立てています。</p>
+  </div>
+
+  <div class="prose">
+    <h3>評価には状態を持つ RNN を使い、学習では再帰を使わない理由</h3>
+    <p>学習と評価では時間の扱い方を分けています。</p>
+    <ul>
+      <li><b>学習（エンコーダ）</b>: 1 つの stack（8 枚のフレーム）だけを見て、符号 <var>z</var> を 1 つ作ります。前の stack の状態は持ち越しません。そのため <var>z</var> は画素だけで決まる関数になります。再帰のあるエンコーダでは、潜在が自分の中でループするだけの解になるおそれがあります。そうなると、おかしくなっていないことを確かめるガードも複雑になります（ユーザーの判断）。</li>
+      <li><b>評価（minGRU）</b>: 学習が終わって固定した符号の列を、後から別のモデルで読みます。このモデルは評価のためだけに学び、符号は変えません。</li>
+    </ul>
+    <p>評価の側では状態を持たせます。符号の良さを公平に測るには、「その符号の系列から取り出せる最良の予測」に近い値が必要だからです。1 時点だけを見る予測器では、過去に散らばった情報（動きの向きや、雑音に隠れた状態）を使えません。その分だけ符号を低く見積もってしまいます。状態を持つ RNN なら、それまでの系列を状態 <var>h</var> に要約できます。たとえば、隠れた状態を雑音越しに見る過程では、最良の予測はカルマンフィルタです。カルマンフィルタも過去の観測を減衰しながら足し合わせて状態を更新します。</p>
+    <p>minGRU は、ゲートつきの移動平均です。</p>
+    <div class="eq">h<sub>t</sub> = (1 − u<sub>t</sub>) ⊙ h<sub>t−1</sub> + u<sub>t</sub> ⊙ <span class="math">h̃</span><sub>t</sub>　（u<sub>t</sub> と <span class="math">h̃</span><sub>t</sub> は入力 w<sub>t</sub> だけから作る）</div>
+    <p>ゲート <var>u<sub>t</sub></var> が前の状態に依らないので、系列全体を並列に計算でき、学習も安定します。状態は過去の入力を減衰しながら足し合わせたもので、上のカルマンフィルタと同じ形をしています。大きさは 1 層と 2 層、幅は 256 です。検証の組の損失が小さい方を主に出し、両方を記録に残します。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 330" role="img" aria-label="学習では再帰を使わず、評価では状態を持つ minGRU を使う">
+<rect class="panel" x="10" y="10" width="290" height="310" rx="6"/>
+<text x="24" y="36" class="small strong">学習: 再帰を使わない</text>
+<rect class="pbox" x="24" y="56" width="86" height="36" rx="4"/>
+<text x="67" y="79" class="xs" text-anchor="middle">stack τ</text>
+<line class="arr" x1="110" y1="74" x2="136" y2="74" marker-end="url(#ah)"/>
+<rect class="b1" x="138" y="56" width="62" height="36" rx="4"/>
+<text x="169" y="79" class="xs" text-anchor="middle">ViT</text>
+<line class="arr" x1="200" y1="74" x2="226" y2="74" marker-end="url(#ah)"/>
+<rect class="pbox" x="228" y="56" width="60" height="36" rx="4"/>
+<text x="258" y="79" class="xs mono" text-anchor="middle">z</text>
+<rect class="pbox" x="24" y="130" width="86" height="36" rx="4"/>
+<text x="67" y="153" class="xs" text-anchor="middle">次の stack</text>
+<line class="arr" x1="110" y1="148" x2="136" y2="148" marker-end="url(#ah)"/>
+<rect class="b1" x="138" y="130" width="62" height="36" rx="4"/>
+<text x="169" y="153" class="xs" text-anchor="middle">ViT</text>
+<line class="arr" x1="200" y1="148" x2="226" y2="148" marker-end="url(#ah)"/>
+<rect class="pbox" x="228" y="130" width="60" height="36" rx="4"/>
+<text x="258" y="153" class="xs mono" text-anchor="middle">z</text>
+<line class="ray" x1="169" y1="92" x2="169" y2="130"/>
+<line class="cross" x1="160" y1="104" x2="178" y2="118"/>
+<line class="cross" x1="178" y1="104" x2="160" y2="118"/>
+<text x="186" y="116" class="xs warn">状態を渡さない</text>
+<text x="24" y="200" class="xs">・1 つの stack の中だけで補完を学ぶ</text>
+<text x="24" y="220" class="xs">・z は画素だけで決まる関数</text>
+<text x="24" y="240" class="xs">・潜在がループするだけの解を避け、</text>
+<text x="24" y="258" class="xs">　ガードを単純に保つ</text>
+<rect class="panel" x="320" y="10" width="290" height="310" rx="6"/>
+<text x="334" y="36" class="small strong">評価: 状態を持つ minGRU</text>
+<circle class="st" cx="370" cy="74" r="18"/>
+<text x="370" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t−2</tspan></text>
+<circle class="st" cx="450" cy="74" r="18"/>
+<text x="450" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t−1</tspan></text>
+<circle class="st" cx="530" cy="74" r="18"/>
+<text x="530" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t</tspan></text>
+<line class="arr" x1="370" y1="92" x2="370" y2="126" marker-end="url(#ah)"/>
+<line class="arr" x1="450" y1="92" x2="450" y2="126" marker-end="url(#ah)"/>
+<line class="arr" x1="530" y1="92" x2="530" y2="126" marker-end="url(#ah)"/>
+<rect class="b2" x="346" y="128" width="48" height="34" rx="4"/>
+<text x="370" y="150" class="xs mono" text-anchor="middle">h</text>
+<rect class="b2" x="426" y="128" width="48" height="34" rx="4"/>
+<text x="450" y="150" class="xs mono" text-anchor="middle">h</text>
+<rect class="b2" x="506" y="128" width="48" height="34" rx="4"/>
+<text x="530" y="150" class="xs mono" text-anchor="middle">h</text>
+<line class="arr" x1="394" y1="145" x2="424" y2="145" marker-end="url(#ah)"/>
+<line class="arr" x1="474" y1="145" x2="504" y2="145" marker-end="url(#ah)"/>
+<line class="arr" x1="530" y1="162" x2="530" y2="190" marker-end="url(#ah)"/>
+<rect class="pbox" x="420" y="192" width="176" height="36" rx="4"/>
+<text x="508" y="215" class="xs" text-anchor="middle">刻みごとの線形の頭</text>
+<text x="334" y="252" class="xs">・過去の符号を状態 h に要約する</text>
+<text x="334" y="272" class="xs">・符号は固定し、minGRU だけを学ぶ</text>
+<text x="334" y="292" class="xs">・過去は、時間を反転した系列で</text>
+<text x="334" y="310" class="xs">　同じものを別に学ぶ</text></svg></div>
+    <figcaption><b>図 4-1　学習と評価の分担。</b> 左は学習です。エンコーダは stack を 1 つずつ別々に符号にし、stack の間で状態を渡しません。右は評価です。固定した符号の列（白色化した <var>w</var>）を minGRU が順に読み、状態 <var>h</var> に過去を要約します。その状態から、刻みごとの線形の頭で先を当てます。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>刻みごとの線形の頭で直接に当てる理由</h3>
+    <p>当てる先は刻み Δ ∈ {0.8, 1.6, 3.2, 6.4, 12.8, 25.6} 秒の 6 つです。遠い先を当てる方法は 2 つあります。</p>
+    <ul>
+      <li><b>巻き戻し（使わない）</b>: 0.8 秒先を当てるモデルを 1 つ作り、その予測を入力に戻して繰り返します。25.6 秒先には 32 回の繰り返しが要ります。1 回ごとの誤差が積み重なります。さらに、何回巻くか、予測を入力にどう戻すかなど、選ぶことが増えます。</li>
+      <li><b>直接（使う）</b>: 共有の minGRU の状態から、刻みごとに別の線形の頭で、Δ 秒先を 1 回で当てます。損失は 6 つの刻みの和です。誤差は積み重ならず、どの刻みも同じ規則で測れます。</li>
+    </ul>
+    <p>頭は次の形にしました。</p>
+    <div class="eq"><span class="math">ŵ</span><sub>t+Δ</sub> = M<sub>Δ</sub> [w<sub>t</sub>; w<sub>t−Δ</sub>] + c<sub>Δ</sub> + A<sub>Δ</sub> y<sub>t</sub> + b<sub>Δ</sub>　（y<sub>t</sub> は minGRU の頂上）</div>
+    <p>前半の M<sub>Δ</sub>[w<sub>t</sub>; w<sub>t−Δ</sub>] + c<sub>Δ</sub> は、既存の dyn/copy の「2 時点の線形」です。学習の初めはこの線形を ridge で合わせた値から始めます。後半の minGRU の頭 A<sub>Δ</sub>, b<sub>Δ</sub> は 0 から始めます。そのあと全てを一緒に学びます。</p>
+    <p>こうすると、エポック 0 のモデルは 2 時点の線形そのものになります。早期終了は検証の組の損失が最小のエポックを残すので、検証の組では線形（下限）より悪くなりません。minGRU は「線形に足りない分」だけを足します。2 時点の線形を入れたのは、minGRU の状態が減衰の足し合わせで、ちょうど Δ だけ前の値 w<sub>t−Δ</sub> を取り出せないからです。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 250" role="img" aria-label="巻き戻しと直接の予測">
+<rect class="panel" x="10" y="10" width="290" height="230" rx="6"/>
+<text x="24" y="36" class="small strong">巻き戻し（使わない）</text>
+<circle class="st" cx="44" cy="100" r="14"/>
+<text x="44" y="105" class="xs mono" text-anchor="middle">t</text>
+<line class="arr" x1="58" y1="100" x2="90" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="106" cy="100" r="14"/>
+<line class="arr" x1="120" y1="100" x2="148" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="168" cy="100" r="18"/>
+<line class="arr" x1="186" y1="100" x2="210" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="236" cy="100" r="24"/>
+<text x="106" y="140" class="xs" text-anchor="middle">+0.8</text>
+<text x="168" y="140" class="xs" text-anchor="middle">+1.6</text>
+<text x="236" y="140" class="xs" text-anchor="middle">+2.4 …</text>
+<text x="24" y="182" class="xs">・1 歩の予測を入力に戻して繰り返す</text>
+<text x="24" y="202" class="xs warn">・誤差が積み重なる（円が広がる）</text>
+<text x="24" y="222" class="xs warn">・何回巻くかなど、選ぶことが増える</text>
+<rect class="panel" x="320" y="10" width="290" height="230" rx="6"/>
+<text x="334" y="36" class="small strong">直接（使う）</text>
+<rect class="b2" x="334" y="96" width="56" height="34" rx="4"/>
+<text x="362" y="118" class="xs mono" text-anchor="middle">y<tspan dy="4" font-size="9">t</tspan></text>
+<line class="arr" x1="390" y1="113" x2="486" y2="58" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="80" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="102" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="124" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="146" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="168" marker-end="url(#ah)"/>
+<text x="494" y="62" class="xs">0.8 秒先</text>
+<text x="494" y="84" class="xs">1.6 秒先</text>
+<text x="494" y="106" class="xs">3.2 秒先</text>
+<text x="494" y="128" class="xs">6.4 秒先</text>
+<text x="494" y="150" class="xs">12.8 秒先</text>
+<text x="494" y="172" class="xs">25.6 秒先</text>
+<text x="334" y="202" class="xs">・刻みごとに別の線形の頭で 1 回で当てる</text>
+<text x="334" y="222" class="xs tg">・誤差は積み重ならない</text></svg></div>
+    <figcaption><b>図 4-2　巻き戻しと直接の予測。</b> 左の巻き戻しは、0.8 秒先の予測を何度も繰り返すので、誤差が広がっていきます。右の直接の予測は、minGRU の状態 <var>y<sub>t</sub></var> から、6 つの刻みのそれぞれを別の頭で 1 回で当てます。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>2 つの分母の読み方</h3>
+    <p>予測の誤差（平均二乗誤差）の大きさだけでは、符号どうしを比べられません。符号ごとに、ばらつきの大きさや動きの速さが違うからです。そこで、誤差を 2 つの「何も考えない予測」の誤差で割ります。</p>
+    <dl class="gloss">
+      <dt>R<sub>copy</sub></dt><dd>今の値をそのまま答える予測（<span class="math">ŵ</span><sub>t+Δ</sub> = w<sub>t</sub>）の誤差で割った値。copy より良ければ 1 より小さくなります。</dd>
+      <dt>R<sub>clim</sub></dt><dd>いつも平均を答える予測（<span class="math">ŵ</span><sub>t+Δ</sub> = <span class="math ob">w</span>、訓練の組の平均）の誤差で割った値。平均より良ければ 1 より小さくなります。</dd>
+      <dt>主の数</dt><dd>6 つの刻みの log R の平均。小さいほど当てやすいことを表します。対数をとるのは、刻みごとの「何倍良いか」を同じ重みで平均するためです。</dd>
+    </dl>
+    <p>分母を 2 つにしたのは、分かっている 2 つのずるが 2 つの分母で逆向きに動くからです。</p>
+    <ul>
+      <li><b>遅くする</b>（符号を時間で平均する）: 先の値が今の値に近づくので、平均より当てやすくなり、R<sub>clim</sub> は良くなります。一方で copy もとても強くなるので、R<sub>copy</sub> は 1 に近づき、悪くなります。</li>
+      <li><b>雑音を足す</b>: copy の誤差には今と先の 2 回分の雑音が入ります。予測の誤差には先の 1 回分しか入りません。そのため R<sub>copy</sub> は 1/2 に近づき、良く見えます。一方で、雑音は平均の予測と同じだけ予測も悪くするので、R<sub>clim</sub> は 1 に近づき、悪くなります。</li>
+    </ul>
+    <p>2 つの符号 a と b を比べるときは、主の数の差 ψ = (a の値) − (b の値) を分母ごとに出します。負なら a の方が当てやすいということです。区間は ±2 SE で、SE はブロックの揺れと seed の揺れから求めます。言葉は次のとおりです。</p>
+    <ul>
+      <li><b>a が良いと区別できた</b>: 2 つの分母の区間が、どちらも 0 より下にある</li>
+      <li><b>分母で向きが割れた</b>: 一方の区間は 0 より下、他方は 0 より上にある（ずるの形を疑う）</li>
+      <li><b>区別できない</b>: どちらかの区間が 0 をまたぐ</li>
+      <li>2 つの区間がどちらも 0 より上なら、逆に「b が良いと区別できた」になります</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 420" role="img" aria-label="2 つの分母の平面と判定の言葉">
+<rect class="shade" x="60" y="210" width="200" height="170"/>
+<line class="axis" x1="60" y1="210" x2="460" y2="210"/>
+<line class="axis" x1="260" y1="40" x2="260" y2="380"/>
+<text x="460" y="200" class="xs" text-anchor="end">ψ<tspan dy="4" font-size="9">copy</tspan><tspan dy="-4">（a − b）→</tspan></text>
+<text x="268" y="50" class="xs">↑ ψ<tspan dy="4" font-size="9">clim</tspan><tspan dy="-4">（a − b）</tspan></text>
+<text x="160" y="362" class="small strong tg" text-anchor="middle">a が良い</text>
+<text x="160" y="380" class="xs" text-anchor="middle" dy="-2">（両方の分母で）</text>
+<text x="360" y="84" class="small strong" text-anchor="middle">b が良い</text>
+<text x="160" y="84" class="xs warn" text-anchor="middle">分母で向きが割れた</text>
+<text x="360" y="300" class="xs warn" text-anchor="middle">分母で向きが割れた</text>
+<line class="arr" x1="260" y1="210" x2="180" y2="128" marker-end="url(#ah)"/>
+<text x="96" y="122" class="xs strong">雑音を足す</text>
+<line class="arr" x1="260" y1="210" x2="340" y2="292" marker-end="url(#ah)"/>
+<text x="352" y="322" class="xs strong">遅くする</text>
+<rect class="band" x="120" y="250" width="70" height="50"/>
+<line class="cross" x1="155" y1="250" x2="155" y2="300"/>
+<line class="cross" x1="120" y1="275" x2="190" y2="275"/>
+<text x="155" y="318" class="xs" text-anchor="middle">区間が象限に</text>
+<text x="155" y="334" class="xs" text-anchor="middle">収まる → 良い</text>
+<rect class="band" x="290" y="140" width="60" height="100"/>
+<text x="358" y="160" class="xs">0 をまたぐ</text>
+<text x="358" y="176" class="xs">→ 区別できない</text></svg></div>
+    <figcaption><b>図 4-3　2 つの分母の平面。</b> 横軸は copy で割った主の数の差、縦軸は平均で割った主の数の差です（a − b、左・下ほど a が良い）。「良い」と書くのは、2 つの区間が作る長方形が、左下の象限（灰色）に収まるときだけです。遅くするずると雑音を足すずるは、この平面で逆の象限へ動くので、どちらも「分母で向きが割れた」になります。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>合成の確かめが保証すること</h3>
+    <p>実データでは最良の予測がどれだけの誤差になるかが分かりません。そこで、最良の誤差 E<sup>*</sup>（神託）を式で計算できる合成の系列を作り、minGRU の評価をそのまま当てます。確かめるのは、測った誤差 <span class="math">Ê</span> が次の範囲に入ることです。</p>
+    <div class="eq">E<sup>*</sup><sub>Δ</sub> − z·SE　≤　<span class="math">Ê</span><sub>Δ</sub>　≤　E<sup>*</sup><sub>Δ</sub> (1 + p / (nk)) + z·SE　　（z = 4）</div>
+    <p>下限を下回るなら、最良より良いことになるので、未来の値が入力に漏れているか、計算の誤りです。上限の p/(nk) は、パラメータ p 個のモデルを nk 個の値で合わせたときに、正しいモデルでも避けられない誤差の上乗せです。上限を超えるなら、学習が最良に届いていないということです。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 170" role="img" aria-label="合成の確かめの通る範囲">
+<rect class="band" x="200" y="56" width="250" height="40"/>
+<line class="axis" x1="30" y1="96" x2="590" y2="96"/>
+<line class="refline" x1="230" y1="44" x2="230" y2="108"/>
+<text x="230" y="38" class="xs" text-anchor="middle">神託 E*</text>
+<line class="chance" x1="200" y1="56" x2="200" y2="108"/>
+<line class="chance" x1="450" y1="56" x2="450" y2="108"/>
+<text x="200" y="126" class="xs" text-anchor="middle">下限</text>
+<text x="450" y="126" class="xs" text-anchor="middle">上限</text>
+<circle class="c3" cx="300" cy="76" r="7"/>
+<text x="312" y="81" class="xs">Ê（通る）</text>
+<text x="590" y="116" class="xs" text-anchor="end">誤差 →</text>
+<text x="30" y="152" class="xs lab-bad">下回る: 未来の漏れ・計算の誤り</text>
+<text x="590" y="152" class="xs lab-bad" text-anchor="end">上回る: 最良に届いていない</text></svg></div>
+    <figcaption><b>図 4-4　合成の確かめの通る範囲。</b> 神託 E<sup>*</sup> の少し下から、学習で避けられない上乗せを足した少し上までが、通る範囲です。この範囲は、学習した符号の値を見る前に式で決まっています。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>確かめ</th><th>合成の系列と神託</th><th>保証すること</th></tr></thead>
+    <tbody>
+      <tr><td class="n">ou</td><td>多次元の AR(1)（今の値に係数を掛けて雑音を足す）。最良は今の値の線形で、閉じた式で出る。</td><td>最良が単純なとき、学習で余計に悪くならない。早期終了と頭の作りがおかしくなっていない。</td></tr>
+      <tr><td class="n">kalman</td><td>隠れた AR(1) の状態を直交行列で混ぜ、雑音越しに観測する。最良はカルマンフィルタで、過去の全体を使う。</td><td>履歴に予測の情報があれば、minGRU がそれを拾い、2 時点の線形を超えて最良に届く。学習しない予測器（2 時点の線形だけ）は落ちる（陰性の対照）。</td></tr>
+      <tr><td class="n">reverse</td><td>時間を反転しても統計が変わらない過程を、一部だけ観測する。未来と過去の最良の誤差は等しい。</td><td>過去の評価（系列の反転）に偏りがなく、未来と過去を同じ物差しで比べられる。</td></tr>
+      <tr><td class="n">iid</td><td>白い雑音。どの予測も平均より良くならない。</td><td>R<sub>clim</sub> ≈ 1、R<sub>copy</sub> ≈ 1/2 になる。分母の計算が正しい。</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p><b>保証しないこと</b>もあります。kalman の過程は、最良が minGRU の族（減衰の足し合わせ）に入る形に選びました（README の「値を見た後の直し」の 2）。この確かめが示すのは、「族の中に最良があるとき、学習でそこへ届く」ことです。実データの最良が族の外にあるとき、そこへ届くことまでは保証しません。それでも、全ての符号に同じ評価を当てるので、符号の間の比べには偏りが入りません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>ガードの閾値の決め方</h3>
+    <p>予測しやすさが上がっても、それがずるによるものなら意味がありません。ガードはそれを見張ります。閾値は、<b>学習した符号の値を見る前に</b>、学習前の符号と物差しの値から数を確定し、README に書きました。</p>
+    <ul>
+      <li><b><code>time_r2</code>（時間に沿って一定のトークンへの崩壊）</b>: トークンの分散のうち、同じ位置の 4 つの時刻の平均で説明できる割合です。トークンが時間に沿って一定なら 1 になり、時刻ごとに独立なら 1/T = 1/4 になります。学習の目的（SIGReg）はこの崩壊を弱くしか罰しないので、評価の側で見張ります。閾値は max(学習前の符号, 画素の tubelet) + 0.05 です。画素そのものと学習前の符号は、まだ何も学んでいない基準です。そこから 0.05 を超えて時間に沿って一定の方へ寄ったら、崩壊とみなします。</li>
+      <li><b>E<sup>lin</sup>（中身を捨てていないこと）</b>: 符号から観測（stack の最後のフレームを 32×32 に平均したもの）を ridge で読み出したときの、説明できる割合です。読み出しを線形だけに限るのは、MLP では区間の記憶で高く出てしまったからです。比べるのは誤差 U = 1 − E<sup>lin</sup> の方で、U ≤ 1.10 × max(U<sub>pca</sub>, U<sub>学習前</sub>) を非劣とします。E<sup>lin</sup> は高いほど良い量なので、E<sup>lin</sup> にそのまま「1.10 倍以下」をかけても抑えになりません。そのため誤差の側で書きます。線形の読み出しは非線形な符号の中身を低く読むので、外れたときは保守的な警告として読みます。</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 250" role="img" aria-label="time_r2 と E lin の閾値の決め方">
+<text x="30" y="26" class="small strong">time_r2</text>
+<line class="axis" x1="40" y1="70" x2="580" y2="70"/>
+<rect x="508" y="56" width="72" height="28" fill="var(--bad-bg)"/>
+<line class="refline bad" x1="508" y1="46" x2="508" y2="94"/>
+<text x="40" y="92" class="xs" text-anchor="middle">0</text>
+<line class="tick c1s" x1="175" y1="62" x2="175" y2="78"/>
+<text x="175" y="54" class="xs" text-anchor="middle">1/T（独立）</text>
+<line class="tick c1s" x1="580" y1="62" x2="580" y2="78"/>
+<text x="580" y="92" class="xs" text-anchor="middle">1</text>
+<text x="590" y="54" class="xs" text-anchor="end">一定</text>
+<circle class="cn" cx="456" cy="70" r="5"/>
+<circle class="cn" cx="483" cy="70" r="5"/>
+<text x="462" y="110" class="xs" text-anchor="end">学習前</text>
+<text x="478" y="110" class="xs">画素</text>
+<text x="508" y="126" class="xs lab-bad" text-anchor="middle">大きい方 + 0.05</text>
+<text x="30" y="160" class="small strong">E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5"> の誤差 U = 1 − E</tspan><tspan dy="-5" font-size="9">lin</tspan></text>
+<line class="axis" x1="40" y1="204" x2="580" y2="204"/>
+<rect x="425" y="190" width="155" height="28" fill="var(--bad-bg)"/>
+<line class="refline bad" x1="425" y1="180" x2="425" y2="228"/>
+<text x="40" y="226" class="xs" text-anchor="middle">0</text>
+<circle class="cn" cx="342" cy="204" r="5"/>
+<circle class="cn" cx="390" cy="204" r="5"/>
+<text x="342" y="226" class="xs" text-anchor="middle">U(pca)</text>
+<text x="412" y="244" class="xs" text-anchor="end">U(学習前)</text>
+<text x="430" y="244" class="xs lab-bad">1.10 × 大きい方</text>
+<text x="580" y="226" class="xs" text-anchor="end">悪い →</text></svg></div>
+    <figcaption><b>図 4-5　ガードの閾値の決め方（位置は模式）。</b> 上は <code>time_r2</code> です。学習前の符号と画素の tubelet の大きい方に 0.05 を足した所が閾値で、赤い範囲に入ったら崩壊とみなします。下は内容の誤差 U です。<code>pca</code> と学習前の大きい方を 1.10 倍した所が閾値で、赤い範囲に入ったら非劣でないとします。どちらの閾値も、学習した符号の値を見る前に決めました。</figcaption>
+  </figure>
 </section>
 
 <section id="stages">
