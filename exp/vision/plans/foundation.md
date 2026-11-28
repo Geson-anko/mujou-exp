@@ -116,3 +116,5 @@ F3 の後に、元の計画の流れ（ストリーム、時間相関の SIGReg�
 - $s$ の範囲の上端（128）が動画の長さと読み出しの速さで実際に回るか
 
 追記（2026-11-27）: minGRU の大きさと学習の規則、`time_r2` の閾値の式と $E^{\mathrm{lin}}$ の非劣性の余裕は決めた。中身は [results/foundation/README.md](../results/foundation/README.md) の F0 の節にある。$s$ の上端は F1〜F3 の学習の側で決める。
+
+追記（2026-11-28）: 評価の段の規則（対象の符号、腕の判定、ずるの形、予測器自身による同定、復元の定性評価）は、学習した符号の値を読む前に [results/foundation/README.md](../results/foundation/README.md) の「評価の段」に書いた。結果は同じ節にある。3 つの腕は、どれも `pca` と VAE を超えなかった。
