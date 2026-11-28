@@ -74,6 +74,17 @@ class TestStackedTourFrames:
         for x, y in zip(a.next(), b.next(), strict=True):
             assert torch.equal(x, y)
 
+    def test_locate_names_the_frame_a_stack_ends_at(self, root):
+        n = 3
+        s = StackedTourFrames(root, n=n, held_out="H", frames=2, stride=2, advance=3)
+        for k in range(12):
+            stack, _, _ = s.next()
+            for i in range(n):
+                video, frame = s.locate(k, i)
+                assert decode(stack[i : i + 1, -1].float() / 255) == [
+                    ("ABC".index(video), frame)
+                ]
+
     def test_non_positive_settings_raise(self, root):
         with pytest.raises(ValueError, match="positive"):
             StackedTourFrames(root, n=1, held_out="H", frames=2, stride=0, advance=1)

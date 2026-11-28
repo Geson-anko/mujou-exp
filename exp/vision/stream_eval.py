@@ -75,11 +75,11 @@ import statistics
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import yaml
-from torch import Tensor
+from torch import Tensor, nn
 
 from exp.lib import ckpt, linear_dyn
 from exp.lib.blur_error import blur_recon
@@ -115,7 +115,9 @@ __all__ = [
     "PAST_EVERY",
     "PROBE_AT",
     "PROBE_EVERY",
+    "Code",
     "StreamEvaluator",
+    "append_jsonl",
     "evaluate_stream",
     "groups",
     "main",
@@ -142,6 +144,20 @@ FUTURE_GROUPS = (
     ("next_60_300", 60.0, 300.0),
     ("next_300_", 300.0, math.inf),
 )
+
+
+class Code(Protocol):
+    """What the probes read of a model: its modules and its code (as
+    ``eval.VaeCode``'s). A code that also has ``VaeCode.decode`` gets the
+    system's row in the pictures."""
+
+    def modules(self) -> Mapping[str, nn.Module]:
+        """The modules whose weights an evaluation checkpoint holds."""
+        ...
+
+    def mu(self, x: Tensor, /) -> Tensor:
+        """The code ``(B, D)`` of the stacks ``x`` u8 ``(B, n, 3, H, W)``."""
+        ...
 
 
 def spanned(conf: RunConf, span: float | None) -> RunConf:
@@ -299,6 +315,30 @@ class StreamEvaluator:
         self._mean = last.double().mean(0).div(255).float().to(self._dev)
         out.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def fit_stacks(self) -> Tensor:
+        """The first stacks u8 ``(m, n, C, H, W)`` (CPU) of the probes' fit
+        pairs."""
+        return self._fit[1][:, 0]
+
+    @property
+    def fit_ks(self) -> list[int]:
+        """The units $k$ of stream 0 of the probes' fit pairs' first stacks
+        (``fit_stacks``)."""
+        return list(self._fit[0])
+
+    @property
+    def zurich_stacks(self) -> Tensor:
+        """The first stack u8 ``(m, n, C, H, W)`` (CPU) of each of the
+        held-out video's val windows."""
+        return self._zx
+
+    @property
+    def zurich_calib_stacks(self) -> Tensor:
+        """The first stack u8 ``(m, n, C, H, W)`` (CPU) of each of the
+        held-out video's calib windows."""
+        return self._zurich["calib"][:, : self._conf.data.tours.frames]
+
     def _pairs(self, root: Path, ks: Sequence[int]) -> tuple[list[int], Tensor]:
         """The ``k`` of ``ks`` whose stacks $x_k$ and $x_{k+1}$ are both kept
         by ``stacks_at`` and those pairs u8 ``(m, 2, n, C, H, W)``."""
@@ -367,10 +407,12 @@ class StreamEvaluator:
         return row
 
     @torch.no_grad()
-    def probes(self, code: VaeCode, name: str) -> list[dict[str, Any]]:
+    def probes(
+        self, code: Code, name: str, pictures: Sequence[str] = ("span", "after")
+    ) -> list[dict[str, Any]]:
         """The rows of the groups span, after and zurich (module docstring)
-        of a checkpoint, and its pictures ``<name>-span.png`` and
-        ``<name>-after.png``."""
+        of a checkpoint, and its pictures ``<name>-<group>.png`` of the
+        groups ``pictures``."""
         conf = self._conf
         z_zur = {s: self._codes(code, self._zurich_pairs(s)) for s in ("calib", "val")}
         d = z_zur["calib"].shape[-1]
@@ -419,7 +461,7 @@ class StreamEvaluator:
                 }
                 row |= linear_dyn.errors(a, b, z, [HORIZON], train=z0)
             rows.append(row)
-        for s in ("span", "after"):
+        for s in pictures:
             z, x = sets[s]
             if len(z):
                 self._picture(
@@ -433,7 +475,7 @@ class StreamEvaluator:
         w, n = self._zurich[split], self._conf.data.tours.frames
         return torch.stack([w[:, :n], w[:, 1 : n + 1]], 1)
 
-    def _codes(self, code: VaeCode, pairs: Tensor, d: int = 0) -> Tensor:
+    def _codes(self, code: Code, pairs: Tensor, d: int = 0) -> Tensor:
         """The codes ``(m, 2, D)`` of the pairs u8 ``(m, 2, n, C, H, W)``;
         ``(0, 2, d)`` of none."""
         if not len(pairs):
@@ -445,17 +487,21 @@ class StreamEvaluator:
     def _picture(
         self,
         name: str,
-        code: VaeCode,
+        code: Code,
         z: Tensor,
         x: Tensor,
         post_of: Callable[[Tensor], Tensor],
     ) -> None:
         """``<name>.png`` of ``SHOWN`` of the pairs evenly spaced: the true
-        last frames, the system's and the decoder's of seed 0."""
+        last frames, the system's (of a code with ``decode``) and the
+        decoder's of seed 0."""
         idx = [i * len(z) // SHOWN for i in range(min(SHOWN, len(z)))]
-        true = x[idx, 0, -1].to(self._dev).float() / 255
-        own = code.decode(z[idx, 0])[:, -1].clamp(0, 1)
-        grid = torch.stack([true, own, post_of(z[idx, 0])]).cpu()
+        rows = [x[idx, 0, -1].to(self._dev).float() / 255]
+        decode = getattr(code, "decode", None)  # VaeCode's, or none
+        if decode is not None:
+            rows.append(decode(z[idx, 0])[:, -1].clamp(0, 1))
+        rows.append(post_of(z[idx, 0]))
+        grid = torch.stack(rows).cpu()
         write_png(self._out / f"{name}.png", tile(grid, scale=SCALE))
 
 
@@ -534,12 +580,12 @@ def evaluate_stream(
         t, frame = round(head["t"] * c, 6), int(head["frame"]) * c
         err = ev.errors(code)
         stamp = {"t": t, "frame": frame}
-        _append(out / "matrix.jsonl", [stamp | {"err": err}])
+        append_jsonl(out / "matrix.jsonl", [stamp | {"err": err}])
         row = ev.summary(err, frame) | {"zurich": ev.zurich(code)}
-        _append(out / "summary.jsonl", [stamp | row])
+        append_jsonl(out / "summary.jsonl", [stamp | row])
         if at in probed:
             rows = ev.probes(code, path.stem)
-            _append(out / "probes.jsonl", [stamp | r for r in rows])
+            append_jsonl(out / "probes.jsonl", [stamp | r for r in rows])
     return out
 
 
@@ -559,7 +605,8 @@ def _write(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         f.write(_lines(rows).encode())
 
 
-def _append(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+def append_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Append ``rows`` to ``path`` as JSON lines, non-finite floats as null."""
     with path.open("a") as f:
         f.write(_lines(rows))
 

@@ -2,7 +2,9 @@
 that learn it through time online. ``MinGRU.scan`` and ``ResidualMinGRU.scan``
 run a cell over a whole sequence of inputs at once (the matmuls over all the
 steps together, the elementwise recurrence step by step), for a learner that
-replays a window of frames."""
+replays a window of frames. ``MinGRUStack`` is the stack of
+``exp/video/dyn``'s dynamics (a minGRU, then residual minGRUs) run over
+sequences from a zero state, read at its top."""
 
 from collections.abc import Mapping
 from typing import Any, override
@@ -12,7 +14,7 @@ from torch import nn
 
 from mujou import Stateful
 
-__all__ = ["MinGRU", "MinGRUTrace", "ResidualMinGRU", "linear_scan"]
+__all__ = ["MinGRU", "MinGRUStack", "MinGRUTrace", "ResidualMinGRU", "linear_scan"]
 
 
 class _LinearScan(torch.autograd.Function):
@@ -99,6 +101,32 @@ class ResidualMinGRU(nn.Module):
         ``(*batch, T, d)`` from the state $h_0$ = ``h0`` ``(*batch, d)``:
         ``forward`` step after step (``MinGRU.scan``)."""
         return x + self.cell.scan(nn.functional.gelu(x), h0)
+
+
+class MinGRUStack(nn.Module):
+    r"""``layers`` minGRUs of width ``d``: $y_1 = s = \mathrm{minGRU}(x,
+    s_\text{prev})$ of the input (``d_in -> d``), then ``layers - 1``
+    ``ResidualMinGRU`` $y_{l+1} = y_l + \mathrm{minGRU}(\mathrm{GELU}(y_l),
+    h_\text{prev})$; the output is the top $y_L$ (``exp/video/dyn``'s
+    ``DynamicsStack`` read by its ``Top``)."""
+
+    def __init__(self, d_in: int, d: int, layers: int) -> None:
+        super().__init__()
+        if layers < 1:
+            raise ValueError(f"a stack has at least 1 layer, got {layers}")
+        self.first = MinGRU(d_in, d)
+        self.rest = nn.ModuleList(ResidualMinGRU(d) for _ in range(layers - 1))
+        self.d = d
+
+    def scan(self, x: torch.Tensor) -> torch.Tensor:
+        """The tops $y_L$ ``(*batch, T, d)`` of the inputs ``x`` ``(*batch,
+        T, d_in)``, every layer's state starting at 0."""
+        zero = x.new_zeros(*x.shape[:-2], self.d)
+        y = self.first.scan(x, zero)
+        for layer in self.rest:
+            assert isinstance(layer, ResidualMinGRU)
+            y = layer.scan(y, zero)
+        return y
 
 
 class MinGRUTrace(Stateful):

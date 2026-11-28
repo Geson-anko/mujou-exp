@@ -27,9 +27,11 @@
 - [optimizer の研究](project_optim_study.md) — 2026-11-19、V11〜V14 でストリームで学べる最適な optimizer を探す。t を含む式は外す、Adam 系は AdamW、OGD の間隔は秒、μP は幅だけ、mujou への PR は性能が出たものだけ
 - [μP と普通の VAE の上限](project_mup_and_iid_reference.md) — 2026-11-20、μP は今後も使う。V16 でストリームの最良のモデルを、ランダムな stack と BP で学び、上限の目安にする
 - [V17 の後は JEPA へ](project_v17_to_jepa.md) — 2026-11-22、VAE の検証は V17（480 万 stack で span 0.211）で締めくくり、次は JEPA。長い単一ストリームは c = 10 の chunk で回す
+- [JEPA の計画](project_jepa_plan.md) — 2026-11-23、V18 BP・i.i.d. → V19 ストリーム → V20 時間相関の SIGReg → V21 PC-ALM。バッファは FIFO、時間相関の SIGReg は Fable の調査で考案
 
 ## feedback
 
+- [CPU の試しは fleet で](feedback_cpu_trials_on_fleet.md) — 2026-11-26、数分を超える CPU の計算・並列は Mac でなく std-00〜03・mini-00 のコンテナで回す
 - [ルーティンは sonnet に](feedback_routine_to_sonnet.md) — 2026-11-18、run の投入・監視・posthoc・集計は sonnet のサブエージェントか Workflow に任せる。std-00〜03 に並列、mini-00 は試し
 - [質問は最後にまとめる](feedback_questions_at_end.md) — 推奨案で進み、質問は区切りにまとめて出す
 - [ドキュメントは日本語](feedback_docs_in_japanese.md) — README・規約・計画書・skill・memory は日本語。docstring とコメントは英語
@@ -39,3 +41,5 @@
 - [ソースを tmp に置かない](feedback_no_sources_in_tmp.md) — 解析・較正のスクリプトは必ずリポジトリへ（tmp は消える）
 - [手法の前に学習の設定](feedback_learn_setting_first.md) — 2026-11-13、うまくいかないときは optimizer（SGD・RMSProp・Adam）と学習率を 10 倍刻みで掃引して損失が下がる条件を先に探す
 - [結果の書き方](feedback_results_writing.md) — 2026-11-18、体系的に順を追って説明し、日本語は sonnet/haiku に /yomiyasu で推敲させる。文科省の HP の文体が手本
+- [相談相手に敬意を](feedback_respect_collaborators.md) — 2026-11-23、Codex・Fable とは互いに敬意と尊敬をもって協働する
+- [評価は学習目的に合わせる](feedback_eval_matches_objective.md) — JEPA の主の評価はマスク部・未来の補完能力。再構成・分類・人のラベルを主にしない（2026-11-24/25）

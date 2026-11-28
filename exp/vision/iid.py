@@ -63,7 +63,16 @@ from exp.vision.compose import from_dict, to_dict
 from exp.vision.models import VAEModules, build_vae, early_fusion, mup_lr
 from exp.vision.schema.run import RunConf
 
-__all__ = ["CKPT_T", "DATA", "Units", "lr_at", "main", "neg_elbo", "train"]
+__all__ = [
+    "CKPT_T",
+    "DATA",
+    "Units",
+    "draw_lags",
+    "lr_at",
+    "main",
+    "neg_elbo",
+    "train",
+]
 
 DATA = ("span", "all")
 # the stamps (s) of the checkpoints: stream_eval.PROBE_AT, then on to 1e6
@@ -72,9 +81,20 @@ NOISE_SEED = 13  # added to the seed: u, eps (program.NOISE_SEED)
 DRAW_SEED = 17  # added to the seed: the units drawn
 
 
+def draw_lags(b: int, lo: int, hi: int, gen: torch.Generator) -> Tensor:
+    r"""``b`` lags ``(b,)`` int64 of V18d's clips (plans/v18d.md): $\log n$
+    uniform on $[\log lo, \log hi]$, $n$ rounded to the nearest whole
+    number, so $P(n = k)$ is the uniform's mass of $[k - 1/2, k + 1/2]$
+    clipped to $[lo, hi]$."""
+    u = torch.rand(b, generator=gen, dtype=torch.float64)
+    return (math.log(lo) + u * math.log(hi / lo)).exp().round().long()
+
+
 class Units:
     """Draws of the stacks of stream 0 of the run ``conf`` at its units of
-    ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU.
+    ``data`` (module docstring), u8 ``(B, n, 3, S, S)`` on the CPU; of
+    ``"all"`` also V18d's clips (``draw_clips``) and the foundation's
+    stacks of spaced frames (``draw_spaced``).
 
     Raises:
         ValueError: ``data`` is not of ``DATA``.
@@ -82,13 +102,20 @@ class Units:
 
     def __init__(self, conf: RunConf, root: Path, data: str, *, seed: int) -> None:
         t = conf.data.tours
+        self._lengths: list[int] = []  # of the training videos, in the loop's order
+        self._readers: list[U8Reader] = []
         if data == "span":
             self.count = round(conf.measure.duration / conf.time.frame)
         elif data == "all":
             names = [v for v in videos(root) if v != t.held_out]
-            self.count = sum(len(U8Reader(root / v)) for v in names)  # L
+            self._readers = [U8Reader(root / v) for v in names]
+            self._lengths = [len(r) for r in self._readers]
+            self.count = sum(self._lengths)  # L
         else:
             raise ValueError(f"data must be one of {DATA}, not {data!r}")
+        self._span = (t.frames - 1) * t.stride  # a stack's frames before its last
+        self._frames, self._stride = t.frames, t.stride
+        self._advance = t.advance
         self._stream = StackedTourFrames(
             root,
             n=1,
@@ -109,6 +136,95 @@ class Units:
             if ready[0] and not reset[0]:
                 out.append(x[0])
         return torch.stack(out)
+
+    def draw_clips(
+        self, lags: Tensor, k: int, perm: torch.Generator | None = None
+    ) -> tuple[Tensor, Tensor]:
+        r"""V18d's clips ``(B, k, n, 3, S, S)`` u8 at the lags ``lags``
+        ``(B,)`` (``draw_lags``): the stacks ending at the units $\tau +
+        i n$ ($i < k$), the first $\tau$ drawn uniformly (from the same
+        generator as ``draw``) from the units whose ``k`` stacks' frames are
+        all in one training video (plans/v18d.md, 「刻みの引き方」), and the
+        frames of their videos the stacks end at ``(B, k)``. With ``perm``
+        (ST-perm's) each stack $i$ is instead drawn uniformly by ``perm``,
+        independently, from the units its role takes in the same video at
+        the same lag (those of $\tau + i n$ for every $\tau$ that fits), so
+        each time's law is ST's and only their joint placement is lost. For
+        ``k`` = 1 and a stack of more than one frame, ``draw``'s stacks.
+
+        Raises:
+            ValueError: The units are not ``"all"``'s, or ``data.tours.advance``
+                is not 1 (a unit is not a frame), or a clip fits in no video.
+        """
+        if not self._lengths or self._advance != 1:
+            raise ValueError("clips are of the units 'all' of advance 1")
+        reach = (k - 1) * int(lags.max())
+        if reach + self._span >= max(self._lengths):
+            raise ValueError(f"a clip of {k} stacks {int(lags.max())} apart "
+                             "fits in no video")  # fmt: skip
+        firsts = torch.tensor([0, *self._lengths]).cumsum(0)  # (videos + 1,)
+        out: list[Tensor] = []
+        ends: list[list[int]] = []
+        for n in lags.tolist():
+            while True:
+                u = int(torch.randint(self.count, (1,), generator=self._gen))
+                v = int(torch.searchsorted(firsts, torch.tensor(u), right=True)) - 1
+                local, length = u - int(firsts[v]), self._lengths[v]
+                if local - self._span >= 0 and local + (k - 1) * n < length:
+                    break
+            at = [local + i * n for i in range(k)]
+            if perm is not None:
+                fit = length - (k - 1) * n - self._span  # the firsts that fit
+                at = [
+                    self._span + i * n + int(torch.randint(fit, (1,), generator=perm))
+                    for i in range(k)
+                ]
+            ends.append(at)
+            out.append(torch.stack([self._stack(int(firsts[v]) + e) for e in at]))
+        return torch.stack(out), torch.tensor(ends)
+
+    def draw_spaced(self, spacing: Tensor) -> Tensor:
+        r"""The foundation's stacks (``plans/foundation.md`` 3) ``(B, n, 3,
+        S, S)`` u8 of the spacings $s$ = ``spacing`` ``(B,)``: the $n$ frames
+        $\tau, \tau + s\,r, \dots, \tau + (n - 1) s\,r$ ($r$ =
+        ``stride``) of one training video, oldest first, the last frame drawn
+        uniformly (from the same generator as ``draw``, drawn again until the
+        stack fits in its video) over every frame of the training videos, so
+        each stack is uniform on the places its spacing fits. Of $s$ = 1,
+        ``draw``'s stacks to the bit.
+
+        Raises:
+            ValueError: The units are not ``"all"``'s, or ``data.tours.advance``
+                is not 1 (a unit is not a frame), or a spacing is below 1 or
+                fits in no video.
+        """
+        if not self._lengths or self._advance != 1:
+            raise ValueError("spaced stacks are of the units 'all' of advance 1")
+        if len(spacing) and int(spacing.min()) < 1:
+            raise ValueError(f"the spacings are at least 1, not {int(spacing.min())}")
+        if len(spacing) and int(spacing.max()) * self._span >= max(self._lengths):
+            raise ValueError(
+                f"a stack of spacing {int(spacing.max())} fits in no video"
+            )
+        firsts = torch.tensor([0, *self._lengths]).cumsum(0)  # (videos + 1,)
+        back = torch.arange(self._frames - 1, -1, -1) * self._stride  # (n,)
+        out: list[Tensor] = []
+        for s in spacing.tolist():
+            while True:
+                u = int(torch.randint(self.count, (1,), generator=self._gen))
+                v = int(torch.searchsorted(firsts, torch.tensor(u), right=True)) - 1
+                local = u - int(firsts[v])
+                if local - s * self._span >= 0:
+                    break
+            out.append(self._readers[v][local - s * back])
+        return torch.stack(out)
+
+    def _stack(self, unit: int) -> Tensor:
+        """The stack ``(n, 3, S, S)`` ending at the unit ``unit`` (whole)."""
+        self._stream.load_state_dict({"k": unit})
+        x, ready, _ = self._stream.next()
+        assert ready[0]  # draw_clips kept the stacks within their video
+        return x[0]
 
 
 def neg_elbo(mods: VAEModules, x: Tensor, u: Tensor, eps: Tensor) -> dict[str, Tensor]:

@@ -111,7 +111,8 @@ class StackedTourFrames(StackStreams):
         names = videos(root)
         if held_out not in names:
             raise ValueError(f"{held_out!r} is not in {root} ({names})")
-        self._readers = [U8Reader(root / v) for v in names if v != held_out]
+        self._names = [v for v in names if v != held_out]
+        self._readers = [U8Reader(root / v) for v in self._names]
         lengths = torch.tensor([len(r) for r in self._readers])
         self._firsts = torch.cumsum(lengths, 0) - lengths  # (videos,)
         self._total = int(lengths.sum())  # L
@@ -150,6 +151,13 @@ class StackedTourFrames(StackStreams):
             ]
         )
         return stacks, ready, local
+
+    def locate(self, k: int, stream: int = 0) -> tuple[str, int]:
+        """The video and its frame that the stack of ``stream`` at its
+        ``k``-th ``next()`` ends at (its newest frame)."""
+        g = (int(self._offsets[stream]) + k * self._step) % self._total
+        v = int(torch.searchsorted(self._firsts, torch.tensor(g), right=True)) - 1
+        return self._names[v], g - int(self._firsts[v])
 
     @override
     def state_dict(self) -> dict[str, Any]:

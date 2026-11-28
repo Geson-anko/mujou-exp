@@ -1,0 +1,1971 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>基礎の組み直し</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one reading column of about 46rem; figures widen to 60rem. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #13171e;
+  --ink-2: #4b5462;
+  --ink-3: #6f7886;
+  --rule: #d7dce4;
+  --grid: #e6e9ee;
+  --accent: #2a78d6;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --neutral: #9aa3af;
+  --good: #0a7d0a;
+  --bad: #c03434;
+  --warn: #9a6400;
+  --good-bg: #e3f3e3;
+  --bad-bg: #fbe5e5;
+  --warn-bg: #fbf0d9;
+  --why-bg: #e8f0fb;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+    --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+    --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+    --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #181c22; --ink: #e8ebef; --ink-2: #b3bac5; --ink-3: #8b94a1;
+  --rule: #2b313a; --grid: #232830; --accent: #5b9df0;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --neutral: #6c7582;
+  --good: #4cc24c; --bad: #ec6b6b; --warn: #e0a23a;
+  --good-bg: #16301a; --bad-bg: #3a1c1c; --warn-bg: #3a2c12; --why-bg: #172436;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.9;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+main { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 64px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.4; margin: 0; }
+h1 { font-weight: 900; font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: 0.01em; }
+h2 { font-weight: 900; font-size: 1.5rem; }
+h3 { font-weight: 700; font-size: 1.1rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--grid); padding: 0.05em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+var { font-style: italic; font-family: "Times New Roman", serif; font-size: 1.05em; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+section { display: flex; flex-direction: column; gap: 20px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; color: var(--ink-3); }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-top: 2px solid var(--ink); padding-top: 14px; max-width: 46rem; }
+.prose { display: flex; flex-direction: column; gap: 14px; max-width: 46rem; }
+.prose ul, .prose ol { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.muted { color: var(--ink-2); }
+.small { font-size: 0.88rem; }
+.ob { text-decoration: overline; }
+
+header.hero { padding-top: 48px; display: flex; flex-direction: column; gap: 18px; max-width: 46rem; }
+.hero .lead { font-size: 1.08rem; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-3); }
+nav.toc { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 18px; }
+nav.toc ol { margin: 6px 0 0; padding-left: 1.4em; font-size: 0.92rem; columns: 2 16rem; column-gap: 2rem; }
+nav.toc a { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { text-decoration: underline; }
+
+.why { max-width: 46rem; background: var(--why-bg); border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+.why .k { font-weight: 700; font-size: 0.86rem; color: var(--accent); }
+.status { max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.status ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+
+/* the flow of this guide */
+.flow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; max-width: 46rem; counter-reset: step; }
+.flow li { position: relative; padding: 10px 0 10px 52px; border-left: 2px solid var(--rule); margin-left: 17px; }
+.flow li::before { counter-increment: step; content: counter(step); position: absolute; left: -18px; top: 10px; width: 34px; height: 34px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent); color: var(--accent); font-family: var(--font-mono); font-weight: 500; display: flex; align-items: center; justify-content: center; }
+.flow li b { display: block; }
+.flow .grp { margin: 14px 0 4px 0; font-size: 0.8rem; color: var(--ink-3); font-family: var(--font-mono); letter-spacing: 0.06em; padding-left: 0; border: 0; }
+.flow .grp::before { content: none; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.card .k { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.card h3 { font-size: 1rem; }
+.card p { font-size: 0.92rem; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+figcaption { font-size: 0.86rem; color: var(--ink-2); line-height: 1.75; max-width: 46rem; }
+.tag { display: inline-block; font-size: 0.74rem; font-weight: 700; border-radius: 3px; padding: 0 6px; margin-right: 6px; vertical-align: 1px; }
+.tag.schema { background: var(--warn-bg); color: var(--warn); }
+.tag.data { background: var(--good-bg); color: var(--good); }
+.chart { width: 100%; max-width: 46rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; }
+.chart svg { display: block; width: 100%; height: auto; }
+
+/* diagrams */
+.dg text { font-family: var(--font-body); fill: var(--ink-2); font-size: 15px; }
+.dg text.strong { fill: var(--ink); font-weight: 700; }
+.dg text.small { font-size: 13px; }
+.dg text.mono { font-family: var(--font-mono); }
+.dg text.big { font-size: 22px; font-weight: 900; fill: var(--ink); }
+.dg text.accent { fill: var(--accent); }
+.dg text.warn { fill: var(--warn); }
+.dg text.onbar { fill: #ffffff; }
+.dg .box { fill: var(--bg); stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .ln { stroke: var(--ink-3); stroke-width: 1.5; fill: none; }
+.dg .axis { stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .gridline { stroke: var(--grid); stroke-width: 1; }
+.dg .chance { stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.dg .tick { stroke-width: 2; }
+.dg .ray { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.dg .cross { stroke: var(--ink); stroke-width: 2.5; }
+.dg .cell { stroke: var(--panel); stroke-width: 1; }
+.dg .c1 { fill: var(--s1); } .dg .c2 { fill: var(--s2); } .dg .c3 { fill: var(--s3); } .dg .c4 { fill: var(--s4); } .dg .cn { fill: var(--neutral); }
+.dg .c2s { stroke: var(--s2); } .dg .c4s { stroke: var(--s4); }
+.dg .hatch { fill: url(#hatch); }
+.dg .qline { fill: none; stroke: var(--ink); stroke-width: 2.5; }
+.dg .shade { fill: var(--grid); }
+.dg .refline { stroke: var(--ink-2); stroke-width: 1.5; }
+.dg .refline.bad { stroke: var(--bad); stroke-dasharray: 5 4; }
+.dg .cloud { fill: var(--why-bg); stroke: var(--ink-3); stroke-width: 1; }
+.dg .ring { fill: none; stroke: var(--s2); stroke-width: 1.5; }
+.dg .whisk { stroke-width: 3; }
+.dg .c1s { stroke: var(--s1); } .dg .c3s { stroke: var(--s3); } .dg .cns { stroke: var(--neutral); }
+.dg text.lab-bad { fill: var(--bad); }
+.defs .hl { stroke: var(--ink-2); stroke-width: 2; }
+.defs .hbg { fill: var(--panel); }
+.defs .ah { fill: var(--ink-3); }
+
+.eq { font-family: var(--font-mono); font-size: 0.9rem; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px; overflow-x: auto; max-width: 46rem; line-height: 1.8; }
+.tbl { width: 100%; max-width: 46rem; overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; line-height: 1.65; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 700; background: var(--grid); }
+tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.badge { display: inline-block; font-size: 0.76rem; font-weight: 700; border-radius: 3px; padding: 0 6px; white-space: nowrap; }
+.badge.ok { background: var(--good-bg); color: var(--good); }
+.badge.ng { background: var(--bad-bg); color: var(--bad); }
+.badge.wait { background: var(--warn-bg); color: var(--warn); }
+blockquote { margin: 0; max-width: 46rem; border-left: 4px solid var(--rule); padding: 6px 16px; color: var(--ink-2); }
+dl.gloss { max-width: 46rem; margin: 0; display: grid; grid-template-columns: minmax(7rem, 11rem) 1fr; gap: 8px 18px; font-size: 0.92rem; }
+dl.gloss dt { font-weight: 700; }
+dl.gloss dd { margin: 0; color: var(--ink-2); }
+@media (max-width: 560px) {
+  dl.gloss { grid-template-columns: 1fr; gap: 2px; }
+  dl.gloss dd { margin-bottom: 10px; }
+  th, td { padding: 6px 8px; }
+}
+
+/* foundation additions */
+.chart { overflow-x: auto; }
+.chart svg.fit { min-width: 440px; max-width: 600px; margin: 0 auto; }
+.chart svg.wide { min-width: 460px; max-width: 720px; margin: 0 auto; }
+.decide { max-width: 46rem; background: var(--panel); border: 2px solid var(--accent); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.decide h2 { font-size: 1.15rem; }
+.decide dl { margin: 0; display: grid; grid-template-columns: 7.5rem 1fr; gap: 8px 14px; }
+.decide dt { font-weight: 700; color: var(--accent); }
+.decide dd { margin: 0; }
+@media (max-width: 560px) {
+  .decide dl { grid-template-columns: 1fr; gap: 2px; }
+  .decide dd { margin-bottom: 8px; }
+}
+.dg .vis { fill: var(--grid); stroke: var(--ink-3); stroke-width: 0.8; }
+.dg .gl { fill: none; stroke: var(--ink-3); stroke-width: 0.5; }
+.dg tspan.accent { fill: var(--accent); font-weight: 700; }
+.dg .frame { fill: var(--panel); stroke: var(--ink-3); stroke-width: 1; }
+.dg .tok { stroke: var(--ink); stroke-width: 2; }
+.dg .h1 { fill: var(--s1); } .dg .h2 { fill: var(--s2); } .dg .h3 { fill: var(--s3); } .dg .h4 { fill: var(--s4); } .dg .hn { fill: var(--neutral); }
+.dg .panel { fill: var(--panel); stroke: var(--rule); stroke-width: 1.2; }
+.dg .pbox { fill: var(--bg); stroke: var(--ink-3); stroke-width: 1.2; }
+.dg .b1 { fill: var(--bg); stroke: var(--s1); stroke-width: 2; }
+.dg .b2 { fill: var(--bg); stroke: var(--s2); stroke-width: 2; }
+.dg .b3 { fill: var(--bg); stroke: var(--s3); stroke-width: 2; }
+.dg .bg { fill: var(--bg); stroke: var(--good); stroke-width: 2; }
+.dg .bw { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1.2; }
+.dg .band { fill: var(--why-bg); stroke: var(--accent); stroke-width: 1; }
+.dg .arr { stroke: var(--ink-3); stroke-width: 1.5; fill: none; }
+.dg text.t1 { fill: var(--s1); } .dg text.t2 { fill: var(--s2); } .dg text.t3 { fill: var(--s3); } .dg text.tg { fill: var(--good); }
+.dg text.xs { font-size: 12px; }
+.dg circle.st { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+.math { font-family: "Times New Roman", serif; font-size: 1.12em; }
+.dg .blk { fill: none; stroke: var(--ink); stroke-width: 1; }
+#results td:first-child { white-space: nowrap; }
+#results .tbl table { min-width: 40rem; }
+</style>
+<svg class="defs" width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="ah" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+  </defs>
+</svg>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">mujou-exp · exp/vision · 基礎の組み直し · 2026-11-27</div>
+  <h1>1 つの stack の中で、空間にも時間にも補完できる潜在を学べるか</h1>
+  <p class="lead">V18 から V18d までの間に、評価の作り直しと目的の変更が何度も重なりました。主の指標は 3 回、ガードは 3 回作り直しています。この資料は、それをいったん白紙に戻し、問い・原理・評価・段の順序をまとめて決め直すためのものです。ここに書いていないことは、これからの判定に使いません。問いと進め方をユーザーに確かめていただいてから、学習を回します。</p>
+  <div class="meta"><span>2026-11-27 時点</span><span>ブランチ exp/2026-11-27/vision-v18d-temporal-jepa</span></div>
+  <div class="meta"><span>出典: <a href="plans/foundation.md">exp/vision/plans/foundation.md</a>（この資料と同じ中身）</span></div>
+  <div class="meta"><span>材料: Fable さんの提案（memory/agents/fable/st-completion-instack.md）、ユーザーの決定（memory/project_jepa_plan.md の 2026-11-27 の段落）</span></div>
+</header>
+
+<section class="decide" aria-label="この資料で決めたいこと">
+  <h2>この資料で決めたいこと</h2>
+  <dl>
+    <dt>問い</dt>
+    <dd>単一の視覚のストリームから、1 つの stack の中で空間にも時間（今・過去・未来）にも補完できる潜在を、JEPA + SIGReg で学べるか。</dd>
+    <dt>成功の最低線</dt>
+    <dd>未来と過去の予測しやすさで、画素の PCA（<code>pca</code>）を超えること。そのうえで、それがずるでないことをガードで示すこと。</dd>
+    <dt>進め方</dt>
+    <dd>まず評価の土台（F0）を作って確かめます。次に、V-JEPA の multi-block を tubelet の箱にかけた形（F1）、ブロックの時間の長さも引く形（F2）、時間の尺度（F3）の順に、1 段に 1 つずつ変えます。<code>pca</code> と VAE を超えたかどうかは F3 で判定します。</dd>
+    <dt>比べる相手</dt>
+    <dd>比べる相手は、他の手法（<code>pca</code>・VAE の <code>v16</code>・<code>v17</code>・<code>mean8</code> などの物差し）だけです。以前の JEPA（V18〜V18d）の結果とは比べません。</dd>
+  </dl>
+</section>
+
+<div class="status"><p><span class="badge ng">結果</span> <b>2026-11-28: T0・S1・Sσ のどの腕も、<code>pca</code> と VAE を超えませんでした。</b> 詳しくは <a href="#results">7 節</a>にあります。</p></div>
+
+<nav class="toc" aria-label="目次">
+  <b>目次</b>
+  <ol>
+    <li><a href="#q">問い</a></li>
+    <li><a href="#facts">ここまでで分かったこと</a></li>
+    <li><a href="#principle">原理（学習）</a></li>
+    <li><a href="#eval">評価</a>（<a href="#howdyn">解説: minGRU の評価のしくみ</a>）</li>
+    <li><a href="#stages">段の順序</a></li>
+    <li><a href="#open">決めていないこと</a></li>
+    <li><a href="#results">結果: F1〜F3 の判定</a></li>
+  </ol>
+</nav>
+
+<section id="q">
+  <div class="sec-head"><div class="eyebrow">1</div><h2>問い</h2></div>
+  <div class="prose">
+    <p><b>単一の視覚のストリームから、1 つの stack の中で空間にも時間（今・過去・未来）にも補完できる潜在を、JEPA + SIGReg で学べるか。</b></p>
+    <p>成功の最低線は、ユーザーが 2026-11-27 に決めました。<b>未来と過去の予測しやすさで、画素の PCA（<code>pca</code>）を超えること</b>です。そのうえで、それが「遅くするだけ」「中身を捨てる」などのずるでないことを、ガードで示します。</p>
+  </div>
+</section>
+
+<section id="facts">
+  <div class="sec-head"><div class="eyebrow">2</div><h2>ここまでで分かったこと（残す事実）</h2></div>
+  <div class="prose">
+    <p>確かめを通った道具で得た結果だけを残します。</p>
+    <ul>
+      <li><b>今の JEPA（V18〜V18c）は、時間の予測に向いた潜在になっていません。</b> 34 個の符号のどれも、2 時点の予測器の dyn/copy で <code>pca</code> より良いとは区別できませんでした。0.8 秒未満では、<code>pca</code> より予測しにくい結果でした（<a href="results/dyn/README.md">results/dyn/README.md</a>）。</li>
+      <li><b>理由は目的にあります。</b> V18〜V18c の目的は、1 つの stack の中の空間の補完だけでした。また、early fusion のため、トークンに時刻がありません。目的の中に、時間を予測しやすくする理由がありません。</li>
+      <li><b>0.8 秒より先は、どの符号も平均の予測をほとんど超えません。</b> 25.6 秒の R_clim は 0.96〜1.00 で、<code>pca</code> も同じです。時間の予測しやすさで差がつくのは、主に 0.8〜数秒の範囲と見込んでいます。</li>
+      <li><b>ずるの形は 2 つ分かっています。</b> 1 つは遅くすること（時間の平均）、もう 1 つは雑音を足すことです。copy の誤差と平均の誤差の 2 つの分母を並べると、この 2 つは逆向きに動くので見分けられます。ただし、中身の無い時計の成分は、この規則でも捕まりません。これは物差しで実際に出ました。</li>
+    </ul>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th style="width:9rem">扱い</th><th>中身</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge ok">残す道具</span></td><td>学習の基盤（<code>jepa_iid.py</code>、BP + AdamW、i.i.d. なミニバッチ）、崩壊の指標（K1〜K3）、白色化 PCA64 の座標、2 つの分母の考え方とその確かめ（V-p1・V-p2）、物差し（<code>pca</code>・<code>mean8</code>・<code>color</code>・学習前）</td></tr>
+      <tr><td><span class="badge wait">置くもの</span><br><span class="small muted">記録に残し、判定に使わない</span></td><td>場面のカテゴリ・Inception の同定・320 px の的の主の指標。内容のガード v2・v3（MLP の読み出しが区間を記憶して外れた）。線形の幅（dyn/copy の特別な場合として残るので、独立には読まない）。4 つの stack の V18d（<a href="plans/v18d.md">plans/v18d.md</a>、run は <code>runs/v18d-st-long</code>）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="principle">
+  <div class="sec-head"><div class="eyebrow">3</div><h2>原理（学習）</h2></div>
+  <div class="prose">
+    <p>Fable さんの提案を土台にします。V18c から変えるのは、<b>トークンの箱の形だけ</b>です。箱の空間の大きさは提案の 16×16 ではなく、ユーザーの指摘で 8×8 にしました。64×64 のフレームには 8×8 がちょうどよいためです。</p>
+  </div>
+  <dl class="gloss">
+    <dt>stack</dt>
+    <dd>始点 <var>τ</var> と間隔 <var>s</var> で取った 8 枚のフレーム <var>x</var><sub><var>τ</var></sub>, <var>x</var><sub><var>τ</var>+<var>s</var></sub>, …, <var>x</var><sub><var>τ</var>+7<var>s</var></sub> です。<var>s</var> の単位は 0.1 秒です。</dd>
+    <dt>トークン</dt>
+    <dd>続く 2 枚 × 8×8 画素の tubelet です。格子は Ω = T × P（時刻 4 × 空間 8×8 = 256 個）です。V18c は 8 枚 × 8×8 画素の箱で、格子は時刻 1 × 空間 8×8 でした。<b>空間の細かさ（パッチ 8）は V18c と同じで、違いは stack の時間を 4 つに分けたことだけです。</b>64×64 のフレームならパッチは 8×8 がちょうどよい、というのがユーザーの指摘です（2026-11-27）。early fusion は「時刻が 1 点の特別な場合」として含まれます。</dd>
+    <dt>トークンの次元</dt>
+    <dd><var>d</var> = 16 で、V18c と同じです。平らにした列は 256 × 16 = 4096 次元です。固定の <var>W</var> を 4096 × 4096 の正方行列にし、<var>z</var> = <var>W</var> vec(<var>t</var>) ∈ ℝ<sup>4096</sup> とします。本家の I-JEPA・V-JEPA は、的をエンコーダの幅のままにします。ただし本家は、EMA と stop-gradient で崩壊を防いでいます。ここでは EMA を使わず、SIGReg だけで崩壊を防ぎます。この形では、トークンの次元 <var>q</var> が、K3（全てのトークンが同じ符号）に対する罰 0.241 <var>N</var> (1/<var>q</var> − 1/<var>D</var>) を決めます（<var>N</var> = 128）。幅のまま（<var>q</var> = 1024）では罰が約 0.03 で、K3 を防げません。<var>d</var> = 16・<var>D</var> = 4096 では罰が 1.92 で、V18c（1.90）と同じ強さで K3 を排除します。「時間に沿って一定のトークン」に対する罰は約 0.02 と弱く、学習の側では防げません。そのため、ガードの <code>time_r2</code> で必ず確かめます。</dd>
+    <dt>計算量</dt>
+    <dd>トークンは V18c の 4 倍です。1 step は 3〜4 倍かかり、長い run 1 本は 6〜8 時間と見込みます。これは推測で、F1 の試しで測ります。</dd>
+    <dt>エンコーダ</dt>
+    <dd>V18c と同じ ViT です。時刻も位置もまたいで attention をかけ、<b>再帰はありません</b>。見えるトークンだけを通します。</dd>
+    <dt>符号</dt>
+    <dd><var>z</var> = <var>W</var> vec(<var>t</var>(Ω)) ∈ ℝ<sup>4096</sup> で、stack ごとに 1 つです。<var>t</var> = <var>R</var> <var>h</var> で、固定の <var>R</var> は V18c と同じ 16 × 1024 です。</dd>
+  </dl>
+
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 554" role="img" aria-label="V18c の箱と新しい箱の比べ"><rect class="panel" x="4" y="4" width="512" height="218" rx="6"/>
+<text x="18" y="30" class="strong">V18c の箱</text>
+<rect class="frame" x="75" y="57" width="104" height="104"/>
+<rect class="frame" x="70" y="62" width="104" height="104"/>
+<rect class="frame" x="65" y="67" width="104" height="104"/>
+<rect class="frame" x="60" y="72" width="104" height="104"/>
+<rect class="frame" x="55" y="77" width="104" height="104"/>
+<rect class="frame" x="50" y="82" width="104" height="104"/>
+<rect class="frame" x="45" y="87" width="104" height="104"/>
+<rect class="vis" x="40" y="92" width="104" height="104"/>
+<rect class="h1" x="79" y="118" width="13" height="13"/>
+<path class="gl" d="M53 92V196M40 105H144M66 92V196M40 118H144M79 92V196M40 131H144M92 92V196M40 144H144M105 92V196M40 157H144M118 92V196M40 170H144M131 92V196M40 183H144"/>
+<rect class="tok" fill="none" x="79" y="118" width="13" height="13"/>
+<text x="40" y="214" class="small">8 枚を重ねて 1 つの箱にする</text>
+<text x="210" y="84" class="small">1 つのトークン = 8 枚 × 8×8 画素</text>
+<text x="210" y="108" class="small">格子: <tspan class="accent">時刻 1</tspan> × 空間 8×8 = 64 個</text>
+<text x="210" y="136" class="small">8 枚が 1 つのトークンに混ざる</text>
+<text x="210" y="158" class="small">（early fusion）ので、</text>
+<text x="210" y="180" class="small strong">トークンに時刻が無い</text>
+<rect class="panel" x="4" y="232" width="512" height="318" rx="6"/>
+<text x="18" y="258" class="strong">新しい箱（tubelet）</text>
+<rect class="frame" x="29" y="289" width="104" height="104"/>
+<rect class="vis" x="24" y="294" width="104" height="104"/>
+<path class="gl" d="M37 294V398M24 307H128M50 294V398M24 320H128M63 294V398M24 333H128M76 294V398M24 346H128M89 294V398M24 359H128M102 294V398M24 372H128M115 294V398M24 385H128"/>
+<text x="76" y="420" class="small strong" text-anchor="middle">時刻 1</text>
+<text x="76" y="438" class="xs" text-anchor="middle">フレーム 1・2</text>
+<rect class="frame" x="149" y="289" width="104" height="104"/>
+<rect class="vis" x="144" y="294" width="104" height="104"/>
+<rect class="h1" x="183" y="320" width="13" height="13"/>
+<path class="gl" d="M157 294V398M144 307H248M170 294V398M144 320H248M183 294V398M144 333H248M196 294V398M144 346H248M209 294V398M144 359H248M222 294V398M144 372H248M235 294V398M144 385H248"/>
+<rect class="tok" fill="none" x="183" y="320" width="13" height="13"/>
+<text x="196" y="420" class="small strong" text-anchor="middle">時刻 2</text>
+<text x="196" y="438" class="xs" text-anchor="middle">フレーム 3・4</text>
+<rect class="frame" x="269" y="289" width="104" height="104"/>
+<rect class="vis" x="264" y="294" width="104" height="104"/>
+<path class="gl" d="M277 294V398M264 307H368M290 294V398M264 320H368M303 294V398M264 333H368M316 294V398M264 346H368M329 294V398M264 359H368M342 294V398M264 372H368M355 294V398M264 385H368"/>
+<text x="316" y="420" class="small strong" text-anchor="middle">時刻 3</text>
+<text x="316" y="438" class="xs" text-anchor="middle">フレーム 5・6</text>
+<rect class="frame" x="389" y="289" width="104" height="104"/>
+<rect class="vis" x="384" y="294" width="104" height="104"/>
+<path class="gl" d="M397 294V398M384 307H488M410 294V398M384 320H488M423 294V398M384 333H488M436 294V398M384 346H488M449 294V398M384 359H488M462 294V398M384 372H488M475 294V398M384 385H488"/>
+<text x="436" y="420" class="small strong" text-anchor="middle">時刻 4</text>
+<text x="436" y="438" class="xs" text-anchor="middle">フレーム 7・8</text>
+<line class="arr" x1="24" y1="460" x2="470" y2="460" marker-end="url(#ah)"/>
+<text x="474" y="464" class="xs">時間</text>
+<text x="18" y="492" class="small">1 つのトークン = 続く 2 枚 × 8×8 画素</text>
+<text x="18" y="514" class="small">格子 Ω = T × P: <tspan class="accent">時刻 4</tspan> × 空間 8×8 = 256 個</text>
+<text x="18" y="536" class="small strong">空間の格子 8×8 は V18c と同じ。違いは時間を 4 つに分けたことだけ</text></svg></div>
+    <figcaption><b>図 1　V18c の箱と新しい箱。</b> 上は V18c です。8 枚のフレームを重ねて 1 つの箱にし、空間だけを 8×8 に切ります。そのため、1 つのトークンに 8 枚分の時間が混ざり、トークンに時刻がありません。下は新しい箱です。続く 2 枚を 1 つの時刻とし、時刻 4 × 空間 8×8 に切ります。空間の格子は両方とも 8×8 で同じです。違いは時間を 1 つから 4 つに分けたことだけです。そのため、トークンは 64 個から 256 個に増えます。太枠のマスが 1 つのトークンです。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>目的</h3>
+  </div>
+  <div class="eq"><span class="math"><var>L</var> = (1 − <var>λ</var>) <var>E</var><sub><var>x</var>,<var>s</var></sub> <var>E</var><sub><var>U</var>∼<var>μ</var></sub>[ (1 / |<var>U</var>| <var>d</var>) Σ<sub><var>ω</var>∈<var>U</var></sub> ‖<var>g</var>(<var>c</var><sub><var>V</var></sub>, <var>V</var>, <var>ω</var>) − <var>t</var>(<var>ω</var>)‖² ] + <var>λ</var> SIGReg({<var>z</var><sub><var>b</var></sub>}<sub><var>b</var>=1</sub><sup>128</sup>)</span></div>
+  <div class="prose">
+    <p>V18c の式で空間の格子 P だった所を、時空間の格子 Ω に読み替えただけです。stop-gradient も EMA もありません。</p>
+    <h3>マスクの族</h3>
+    <p>ユーザーの指摘（2026-11-27: JEPA は multi-block のはず）に従い、V-JEPA の multi-block を時空間の格子に広げます。</p>
+    <ul>
+      <li>空間の側は、V-JEPA の公開設定のままです。トークンの解像度（8×8）の上で、短距離か長距離のどちらかを引きます。短距離は面積 15% のブロック 8 個、長距離は面積 70% のブロック 2 個です。縦横比は 0.75〜1.5 です。</li>
+      <li>時間の側で足すのは 1 つだけです。ブロックごとに、時間の長さを {1,2,3,4} から均等に引き、置く位置も均等に引きます。この分布は、時間を反転しても、平行移動しても変わりません。</li>
+      <li>隠すのはブロックの和集合 <var>U</var> で、文脈は残りの <var>V</var> = Ω \ <var>U</var> です。<var>V</var> が空なら引き直します。隠す数は、本家と同じく固定しません。これは 2026-11-23 の「ちょうど <var>k</var> 個」を置き換えるものです。損失は、隠したトークンの数で割ります。</li>
+      <li>特別な場合として、全てのブロックが全時間なら V-JEPA になり、時刻が 1 つなら I-JEPA の multi-block になります。全時間のブロックは、<b>今</b>（空間）の補完にあたります。長距離のブロックが時間の一部を覆うと、<b>未来</b>・<b>過去</b>・間の補完になります。今・過去・未来を別々に読むのは評価の側で、決まったマスクを使います。学習の族は、今・過去・未来に分けません。</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 532" role="img" aria-label="マスクの族: 時空間の multi-block の引きの例"><text x="8" y="24" class="small">時刻</text>
+<text x="202" y="24" class="small strong" text-anchor="middle">1</text>
+<text x="286" y="24" class="small strong" text-anchor="middle">2</text>
+<text x="370" y="24" class="small strong" text-anchor="middle">3</text>
+<text x="454" y="24" class="small strong" text-anchor="middle">4</text>
+<text x="8" y="60" class="strong t1">今（空間）</text>
+<text x="8" y="80" class="xs">短距離 8 個</text>
+<text x="8" y="97" class="xs">どれも全時間</text>
+<rect class="vis" x="170" y="40" width="64" height="64"/>
+<rect class="h1" x="170" y="40" width="8" height="8"/>
+<rect class="h1" x="178" y="40" width="8" height="8"/>
+<rect class="h1" x="186" y="40" width="8" height="8"/>
+<rect class="h1" x="210" y="40" width="8" height="8"/>
+<rect class="h1" x="218" y="40" width="8" height="8"/>
+<rect class="h1" x="226" y="40" width="8" height="8"/>
+<rect class="h1" x="170" y="48" width="8" height="8"/>
+<rect class="h1" x="178" y="48" width="8" height="8"/>
+<rect class="h1" x="186" y="48" width="8" height="8"/>
+<rect class="h1" x="194" y="48" width="8" height="8"/>
+<rect class="h1" x="202" y="48" width="8" height="8"/>
+<rect class="h1" x="210" y="48" width="8" height="8"/>
+<rect class="h1" x="218" y="48" width="8" height="8"/>
+<rect class="h1" x="226" y="48" width="8" height="8"/>
+<rect class="h1" x="170" y="56" width="8" height="8"/>
+<rect class="h1" x="178" y="56" width="8" height="8"/>
+<rect class="h1" x="186" y="56" width="8" height="8"/>
+<rect class="h1" x="194" y="56" width="8" height="8"/>
+<rect class="h1" x="202" y="56" width="8" height="8"/>
+<rect class="h1" x="210" y="56" width="8" height="8"/>
+<rect class="h1" x="218" y="56" width="8" height="8"/>
+<rect class="h1" x="226" y="56" width="8" height="8"/>
+<rect class="h1" x="186" y="64" width="8" height="8"/>
+<rect class="h1" x="194" y="64" width="8" height="8"/>
+<rect class="h1" x="202" y="64" width="8" height="8"/>
+<rect class="h1" x="210" y="64" width="8" height="8"/>
+<rect class="h1" x="218" y="64" width="8" height="8"/>
+<rect class="h1" x="226" y="64" width="8" height="8"/>
+<rect class="h1" x="170" y="72" width="8" height="8"/>
+<rect class="h1" x="178" y="72" width="8" height="8"/>
+<rect class="h1" x="186" y="72" width="8" height="8"/>
+<rect class="h1" x="194" y="72" width="8" height="8"/>
+<rect class="h1" x="202" y="72" width="8" height="8"/>
+<rect class="h1" x="210" y="72" width="8" height="8"/>
+<rect class="h1" x="218" y="72" width="8" height="8"/>
+<rect class="h1" x="226" y="72" width="8" height="8"/>
+<rect class="h1" x="170" y="80" width="8" height="8"/>
+<rect class="h1" x="178" y="80" width="8" height="8"/>
+<rect class="h1" x="186" y="80" width="8" height="8"/>
+<rect class="h1" x="194" y="80" width="8" height="8"/>
+<rect class="h1" x="202" y="80" width="8" height="8"/>
+<rect class="h1" x="210" y="80" width="8" height="8"/>
+<rect class="h1" x="218" y="80" width="8" height="8"/>
+<rect class="h1" x="226" y="80" width="8" height="8"/>
+<rect class="h1" x="170" y="88" width="8" height="8"/>
+<rect class="h1" x="178" y="88" width="8" height="8"/>
+<rect class="h1" x="186" y="88" width="8" height="8"/>
+<rect class="h1" x="194" y="88" width="8" height="8"/>
+<rect class="h1" x="202" y="88" width="8" height="8"/>
+<rect class="h1" x="210" y="88" width="8" height="8"/>
+<rect class="h1" x="218" y="88" width="8" height="8"/>
+<rect class="h1" x="178" y="96" width="8" height="8"/>
+<rect class="h1" x="186" y="96" width="8" height="8"/>
+<rect class="h1" x="194" y="96" width="8" height="8"/>
+<rect class="h1" x="202" y="96" width="8" height="8"/>
+<rect class="h1" x="210" y="96" width="8" height="8"/>
+<rect class="h1" x="218" y="96" width="8" height="8"/>
+<path class="gl" d="M178 40V104M170 48H234M186 40V104M170 56H234M194 40V104M170 64H234M202 40V104M170 72H234M210 40V104M170 80H234M218 40V104M170 88H234M226 40V104M170 96H234"/>
+<rect class="blk" x="170" y="40" width="24" height="24"/>
+<rect class="blk" x="210" y="40" width="24" height="24"/>
+<rect class="blk" x="186" y="56" width="24" height="24"/>
+<rect class="blk" x="170" y="72" width="24" height="24"/>
+<rect class="blk" x="202" y="80" width="24" height="24"/>
+<rect class="blk" x="210" y="64" width="24" height="24"/>
+<rect class="blk" x="194" y="48" width="24" height="24"/>
+<rect class="blk" x="178" y="80" width="24" height="24"/>
+<rect class="vis" x="254" y="40" width="64" height="64"/>
+<rect class="h1" x="254" y="40" width="8" height="8"/>
+<rect class="h1" x="262" y="40" width="8" height="8"/>
+<rect class="h1" x="270" y="40" width="8" height="8"/>
+<rect class="h1" x="294" y="40" width="8" height="8"/>
+<rect class="h1" x="302" y="40" width="8" height="8"/>
+<rect class="h1" x="310" y="40" width="8" height="8"/>
+<rect class="h1" x="254" y="48" width="8" height="8"/>
+<rect class="h1" x="262" y="48" width="8" height="8"/>
+<rect class="h1" x="270" y="48" width="8" height="8"/>
+<rect class="h1" x="278" y="48" width="8" height="8"/>
+<rect class="h1" x="286" y="48" width="8" height="8"/>
+<rect class="h1" x="294" y="48" width="8" height="8"/>
+<rect class="h1" x="302" y="48" width="8" height="8"/>
+<rect class="h1" x="310" y="48" width="8" height="8"/>
+<rect class="h1" x="254" y="56" width="8" height="8"/>
+<rect class="h1" x="262" y="56" width="8" height="8"/>
+<rect class="h1" x="270" y="56" width="8" height="8"/>
+<rect class="h1" x="278" y="56" width="8" height="8"/>
+<rect class="h1" x="286" y="56" width="8" height="8"/>
+<rect class="h1" x="294" y="56" width="8" height="8"/>
+<rect class="h1" x="302" y="56" width="8" height="8"/>
+<rect class="h1" x="310" y="56" width="8" height="8"/>
+<rect class="h1" x="270" y="64" width="8" height="8"/>
+<rect class="h1" x="278" y="64" width="8" height="8"/>
+<rect class="h1" x="286" y="64" width="8" height="8"/>
+<rect class="h1" x="294" y="64" width="8" height="8"/>
+<rect class="h1" x="302" y="64" width="8" height="8"/>
+<rect class="h1" x="310" y="64" width="8" height="8"/>
+<rect class="h1" x="254" y="72" width="8" height="8"/>
+<rect class="h1" x="262" y="72" width="8" height="8"/>
+<rect class="h1" x="270" y="72" width="8" height="8"/>
+<rect class="h1" x="278" y="72" width="8" height="8"/>
+<rect class="h1" x="286" y="72" width="8" height="8"/>
+<rect class="h1" x="294" y="72" width="8" height="8"/>
+<rect class="h1" x="302" y="72" width="8" height="8"/>
+<rect class="h1" x="310" y="72" width="8" height="8"/>
+<rect class="h1" x="254" y="80" width="8" height="8"/>
+<rect class="h1" x="262" y="80" width="8" height="8"/>
+<rect class="h1" x="270" y="80" width="8" height="8"/>
+<rect class="h1" x="278" y="80" width="8" height="8"/>
+<rect class="h1" x="286" y="80" width="8" height="8"/>
+<rect class="h1" x="294" y="80" width="8" height="8"/>
+<rect class="h1" x="302" y="80" width="8" height="8"/>
+<rect class="h1" x="310" y="80" width="8" height="8"/>
+<rect class="h1" x="254" y="88" width="8" height="8"/>
+<rect class="h1" x="262" y="88" width="8" height="8"/>
+<rect class="h1" x="270" y="88" width="8" height="8"/>
+<rect class="h1" x="278" y="88" width="8" height="8"/>
+<rect class="h1" x="286" y="88" width="8" height="8"/>
+<rect class="h1" x="294" y="88" width="8" height="8"/>
+<rect class="h1" x="302" y="88" width="8" height="8"/>
+<rect class="h1" x="262" y="96" width="8" height="8"/>
+<rect class="h1" x="270" y="96" width="8" height="8"/>
+<rect class="h1" x="278" y="96" width="8" height="8"/>
+<rect class="h1" x="286" y="96" width="8" height="8"/>
+<rect class="h1" x="294" y="96" width="8" height="8"/>
+<rect class="h1" x="302" y="96" width="8" height="8"/>
+<path class="gl" d="M262 40V104M254 48H318M270 40V104M254 56H318M278 40V104M254 64H318M286 40V104M254 72H318M294 40V104M254 80H318M302 40V104M254 88H318M310 40V104M254 96H318"/>
+<rect class="blk" x="254" y="40" width="24" height="24"/>
+<rect class="blk" x="294" y="40" width="24" height="24"/>
+<rect class="blk" x="270" y="56" width="24" height="24"/>
+<rect class="blk" x="254" y="72" width="24" height="24"/>
+<rect class="blk" x="286" y="80" width="24" height="24"/>
+<rect class="blk" x="294" y="64" width="24" height="24"/>
+<rect class="blk" x="278" y="48" width="24" height="24"/>
+<rect class="blk" x="262" y="80" width="24" height="24"/>
+<rect class="vis" x="338" y="40" width="64" height="64"/>
+<rect class="h1" x="338" y="40" width="8" height="8"/>
+<rect class="h1" x="346" y="40" width="8" height="8"/>
+<rect class="h1" x="354" y="40" width="8" height="8"/>
+<rect class="h1" x="378" y="40" width="8" height="8"/>
+<rect class="h1" x="386" y="40" width="8" height="8"/>
+<rect class="h1" x="394" y="40" width="8" height="8"/>
+<rect class="h1" x="338" y="48" width="8" height="8"/>
+<rect class="h1" x="346" y="48" width="8" height="8"/>
+<rect class="h1" x="354" y="48" width="8" height="8"/>
+<rect class="h1" x="362" y="48" width="8" height="8"/>
+<rect class="h1" x="370" y="48" width="8" height="8"/>
+<rect class="h1" x="378" y="48" width="8" height="8"/>
+<rect class="h1" x="386" y="48" width="8" height="8"/>
+<rect class="h1" x="394" y="48" width="8" height="8"/>
+<rect class="h1" x="338" y="56" width="8" height="8"/>
+<rect class="h1" x="346" y="56" width="8" height="8"/>
+<rect class="h1" x="354" y="56" width="8" height="8"/>
+<rect class="h1" x="362" y="56" width="8" height="8"/>
+<rect class="h1" x="370" y="56" width="8" height="8"/>
+<rect class="h1" x="378" y="56" width="8" height="8"/>
+<rect class="h1" x="386" y="56" width="8" height="8"/>
+<rect class="h1" x="394" y="56" width="8" height="8"/>
+<rect class="h1" x="354" y="64" width="8" height="8"/>
+<rect class="h1" x="362" y="64" width="8" height="8"/>
+<rect class="h1" x="370" y="64" width="8" height="8"/>
+<rect class="h1" x="378" y="64" width="8" height="8"/>
+<rect class="h1" x="386" y="64" width="8" height="8"/>
+<rect class="h1" x="394" y="64" width="8" height="8"/>
+<rect class="h1" x="338" y="72" width="8" height="8"/>
+<rect class="h1" x="346" y="72" width="8" height="8"/>
+<rect class="h1" x="354" y="72" width="8" height="8"/>
+<rect class="h1" x="362" y="72" width="8" height="8"/>
+<rect class="h1" x="370" y="72" width="8" height="8"/>
+<rect class="h1" x="378" y="72" width="8" height="8"/>
+<rect class="h1" x="386" y="72" width="8" height="8"/>
+<rect class="h1" x="394" y="72" width="8" height="8"/>
+<rect class="h1" x="338" y="80" width="8" height="8"/>
+<rect class="h1" x="346" y="80" width="8" height="8"/>
+<rect class="h1" x="354" y="80" width="8" height="8"/>
+<rect class="h1" x="362" y="80" width="8" height="8"/>
+<rect class="h1" x="370" y="80" width="8" height="8"/>
+<rect class="h1" x="378" y="80" width="8" height="8"/>
+<rect class="h1" x="386" y="80" width="8" height="8"/>
+<rect class="h1" x="394" y="80" width="8" height="8"/>
+<rect class="h1" x="338" y="88" width="8" height="8"/>
+<rect class="h1" x="346" y="88" width="8" height="8"/>
+<rect class="h1" x="354" y="88" width="8" height="8"/>
+<rect class="h1" x="362" y="88" width="8" height="8"/>
+<rect class="h1" x="370" y="88" width="8" height="8"/>
+<rect class="h1" x="378" y="88" width="8" height="8"/>
+<rect class="h1" x="386" y="88" width="8" height="8"/>
+<rect class="h1" x="346" y="96" width="8" height="8"/>
+<rect class="h1" x="354" y="96" width="8" height="8"/>
+<rect class="h1" x="362" y="96" width="8" height="8"/>
+<rect class="h1" x="370" y="96" width="8" height="8"/>
+<rect class="h1" x="378" y="96" width="8" height="8"/>
+<rect class="h1" x="386" y="96" width="8" height="8"/>
+<path class="gl" d="M346 40V104M338 48H402M354 40V104M338 56H402M362 40V104M338 64H402M370 40V104M338 72H402M378 40V104M338 80H402M386 40V104M338 88H402M394 40V104M338 96H402"/>
+<rect class="blk" x="338" y="40" width="24" height="24"/>
+<rect class="blk" x="378" y="40" width="24" height="24"/>
+<rect class="blk" x="354" y="56" width="24" height="24"/>
+<rect class="blk" x="338" y="72" width="24" height="24"/>
+<rect class="blk" x="370" y="80" width="24" height="24"/>
+<rect class="blk" x="378" y="64" width="24" height="24"/>
+<rect class="blk" x="362" y="48" width="24" height="24"/>
+<rect class="blk" x="346" y="80" width="24" height="24"/>
+<rect class="vis" x="422" y="40" width="64" height="64"/>
+<rect class="h1" x="422" y="40" width="8" height="8"/>
+<rect class="h1" x="430" y="40" width="8" height="8"/>
+<rect class="h1" x="438" y="40" width="8" height="8"/>
+<rect class="h1" x="462" y="40" width="8" height="8"/>
+<rect class="h1" x="470" y="40" width="8" height="8"/>
+<rect class="h1" x="478" y="40" width="8" height="8"/>
+<rect class="h1" x="422" y="48" width="8" height="8"/>
+<rect class="h1" x="430" y="48" width="8" height="8"/>
+<rect class="h1" x="438" y="48" width="8" height="8"/>
+<rect class="h1" x="446" y="48" width="8" height="8"/>
+<rect class="h1" x="454" y="48" width="8" height="8"/>
+<rect class="h1" x="462" y="48" width="8" height="8"/>
+<rect class="h1" x="470" y="48" width="8" height="8"/>
+<rect class="h1" x="478" y="48" width="8" height="8"/>
+<rect class="h1" x="422" y="56" width="8" height="8"/>
+<rect class="h1" x="430" y="56" width="8" height="8"/>
+<rect class="h1" x="438" y="56" width="8" height="8"/>
+<rect class="h1" x="446" y="56" width="8" height="8"/>
+<rect class="h1" x="454" y="56" width="8" height="8"/>
+<rect class="h1" x="462" y="56" width="8" height="8"/>
+<rect class="h1" x="470" y="56" width="8" height="8"/>
+<rect class="h1" x="478" y="56" width="8" height="8"/>
+<rect class="h1" x="438" y="64" width="8" height="8"/>
+<rect class="h1" x="446" y="64" width="8" height="8"/>
+<rect class="h1" x="454" y="64" width="8" height="8"/>
+<rect class="h1" x="462" y="64" width="8" height="8"/>
+<rect class="h1" x="470" y="64" width="8" height="8"/>
+<rect class="h1" x="478" y="64" width="8" height="8"/>
+<rect class="h1" x="422" y="72" width="8" height="8"/>
+<rect class="h1" x="430" y="72" width="8" height="8"/>
+<rect class="h1" x="438" y="72" width="8" height="8"/>
+<rect class="h1" x="446" y="72" width="8" height="8"/>
+<rect class="h1" x="454" y="72" width="8" height="8"/>
+<rect class="h1" x="462" y="72" width="8" height="8"/>
+<rect class="h1" x="470" y="72" width="8" height="8"/>
+<rect class="h1" x="478" y="72" width="8" height="8"/>
+<rect class="h1" x="422" y="80" width="8" height="8"/>
+<rect class="h1" x="430" y="80" width="8" height="8"/>
+<rect class="h1" x="438" y="80" width="8" height="8"/>
+<rect class="h1" x="446" y="80" width="8" height="8"/>
+<rect class="h1" x="454" y="80" width="8" height="8"/>
+<rect class="h1" x="462" y="80" width="8" height="8"/>
+<rect class="h1" x="470" y="80" width="8" height="8"/>
+<rect class="h1" x="478" y="80" width="8" height="8"/>
+<rect class="h1" x="422" y="88" width="8" height="8"/>
+<rect class="h1" x="430" y="88" width="8" height="8"/>
+<rect class="h1" x="438" y="88" width="8" height="8"/>
+<rect class="h1" x="446" y="88" width="8" height="8"/>
+<rect class="h1" x="454" y="88" width="8" height="8"/>
+<rect class="h1" x="462" y="88" width="8" height="8"/>
+<rect class="h1" x="470" y="88" width="8" height="8"/>
+<rect class="h1" x="430" y="96" width="8" height="8"/>
+<rect class="h1" x="438" y="96" width="8" height="8"/>
+<rect class="h1" x="446" y="96" width="8" height="8"/>
+<rect class="h1" x="454" y="96" width="8" height="8"/>
+<rect class="h1" x="462" y="96" width="8" height="8"/>
+<rect class="h1" x="470" y="96" width="8" height="8"/>
+<path class="gl" d="M430 40V104M422 48H486M438 40V104M422 56H486M446 40V104M422 64H486M454 40V104M422 72H486M462 40V104M422 80H486M470 40V104M422 88H486M478 40V104M422 96H486"/>
+<rect class="blk" x="422" y="40" width="24" height="24"/>
+<rect class="blk" x="462" y="40" width="24" height="24"/>
+<rect class="blk" x="438" y="56" width="24" height="24"/>
+<rect class="blk" x="422" y="72" width="24" height="24"/>
+<rect class="blk" x="454" y="80" width="24" height="24"/>
+<rect class="blk" x="462" y="64" width="24" height="24"/>
+<rect class="blk" x="446" y="48" width="24" height="24"/>
+<rect class="blk" x="430" y="80" width="24" height="24"/>
+<text x="8" y="148" class="strong t2">未来</text>
+<text x="8" y="168" class="xs">長距離 2 個</text>
+<text x="8" y="185" class="xs">時刻 3〜4 を覆う</text>
+<rect class="vis" x="170" y="128" width="64" height="64"/>
+<path class="gl" d="M178 128V192M170 136H234M186 128V192M170 144H234M194 128V192M170 152H234M202 128V192M170 160H234M210 128V192M170 168H234M218 128V192M170 176H234M226 128V192M170 184H234"/>
+<rect class="vis" x="254" y="128" width="64" height="64"/>
+<path class="gl" d="M262 128V192M254 136H318M270 128V192M254 144H318M278 128V192M254 152H318M286 128V192M254 160H318M294 128V192M254 168H318M302 128V192M254 176H318M310 128V192M254 184H318"/>
+<rect class="vis" x="338" y="128" width="64" height="64"/>
+<rect class="h2" x="338" y="128" width="8" height="8"/>
+<rect class="h2" x="346" y="128" width="8" height="8"/>
+<rect class="h2" x="354" y="128" width="8" height="8"/>
+<rect class="h2" x="362" y="128" width="8" height="8"/>
+<rect class="h2" x="370" y="128" width="8" height="8"/>
+<rect class="h2" x="378" y="128" width="8" height="8"/>
+<rect class="h2" x="338" y="136" width="8" height="8"/>
+<rect class="h2" x="346" y="136" width="8" height="8"/>
+<rect class="h2" x="354" y="136" width="8" height="8"/>
+<rect class="h2" x="362" y="136" width="8" height="8"/>
+<rect class="h2" x="370" y="136" width="8" height="8"/>
+<rect class="h2" x="378" y="136" width="8" height="8"/>
+<rect class="h2" x="386" y="136" width="8" height="8"/>
+<rect class="h2" x="394" y="136" width="8" height="8"/>
+<rect class="h2" x="338" y="144" width="8" height="8"/>
+<rect class="h2" x="346" y="144" width="8" height="8"/>
+<rect class="h2" x="354" y="144" width="8" height="8"/>
+<rect class="h2" x="362" y="144" width="8" height="8"/>
+<rect class="h2" x="370" y="144" width="8" height="8"/>
+<rect class="h2" x="378" y="144" width="8" height="8"/>
+<rect class="h2" x="386" y="144" width="8" height="8"/>
+<rect class="h2" x="394" y="144" width="8" height="8"/>
+<rect class="h2" x="338" y="152" width="8" height="8"/>
+<rect class="h2" x="346" y="152" width="8" height="8"/>
+<rect class="h2" x="354" y="152" width="8" height="8"/>
+<rect class="h2" x="362" y="152" width="8" height="8"/>
+<rect class="h2" x="370" y="152" width="8" height="8"/>
+<rect class="h2" x="378" y="152" width="8" height="8"/>
+<rect class="h2" x="386" y="152" width="8" height="8"/>
+<rect class="h2" x="394" y="152" width="8" height="8"/>
+<rect class="h2" x="338" y="160" width="8" height="8"/>
+<rect class="h2" x="346" y="160" width="8" height="8"/>
+<rect class="h2" x="354" y="160" width="8" height="8"/>
+<rect class="h2" x="362" y="160" width="8" height="8"/>
+<rect class="h2" x="370" y="160" width="8" height="8"/>
+<rect class="h2" x="378" y="160" width="8" height="8"/>
+<rect class="h2" x="386" y="160" width="8" height="8"/>
+<rect class="h2" x="394" y="160" width="8" height="8"/>
+<rect class="h2" x="338" y="168" width="8" height="8"/>
+<rect class="h2" x="346" y="168" width="8" height="8"/>
+<rect class="h2" x="354" y="168" width="8" height="8"/>
+<rect class="h2" x="362" y="168" width="8" height="8"/>
+<rect class="h2" x="370" y="168" width="8" height="8"/>
+<rect class="h2" x="378" y="168" width="8" height="8"/>
+<rect class="h2" x="386" y="168" width="8" height="8"/>
+<rect class="h2" x="394" y="168" width="8" height="8"/>
+<rect class="h2" x="338" y="176" width="8" height="8"/>
+<rect class="h2" x="346" y="176" width="8" height="8"/>
+<rect class="h2" x="354" y="176" width="8" height="8"/>
+<rect class="h2" x="362" y="176" width="8" height="8"/>
+<rect class="h2" x="370" y="176" width="8" height="8"/>
+<rect class="h2" x="378" y="176" width="8" height="8"/>
+<rect class="h2" x="386" y="176" width="8" height="8"/>
+<rect class="h2" x="394" y="176" width="8" height="8"/>
+<path class="gl" d="M346 128V192M338 136H402M354 128V192M338 144H402M362 128V192M338 152H402M370 128V192M338 160H402M378 128V192M338 168H402M386 128V192M338 176H402M394 128V192M338 184H402"/>
+<rect class="blk" x="338" y="128" width="48" height="56"/>
+<rect class="blk" x="346" y="136" width="56" height="48"/>
+<rect class="vis" x="422" y="128" width="64" height="64"/>
+<rect class="h2" x="422" y="128" width="8" height="8"/>
+<rect class="h2" x="430" y="128" width="8" height="8"/>
+<rect class="h2" x="438" y="128" width="8" height="8"/>
+<rect class="h2" x="446" y="128" width="8" height="8"/>
+<rect class="h2" x="454" y="128" width="8" height="8"/>
+<rect class="h2" x="462" y="128" width="8" height="8"/>
+<rect class="h2" x="422" y="136" width="8" height="8"/>
+<rect class="h2" x="430" y="136" width="8" height="8"/>
+<rect class="h2" x="438" y="136" width="8" height="8"/>
+<rect class="h2" x="446" y="136" width="8" height="8"/>
+<rect class="h2" x="454" y="136" width="8" height="8"/>
+<rect class="h2" x="462" y="136" width="8" height="8"/>
+<rect class="h2" x="470" y="136" width="8" height="8"/>
+<rect class="h2" x="478" y="136" width="8" height="8"/>
+<rect class="h2" x="422" y="144" width="8" height="8"/>
+<rect class="h2" x="430" y="144" width="8" height="8"/>
+<rect class="h2" x="438" y="144" width="8" height="8"/>
+<rect class="h2" x="446" y="144" width="8" height="8"/>
+<rect class="h2" x="454" y="144" width="8" height="8"/>
+<rect class="h2" x="462" y="144" width="8" height="8"/>
+<rect class="h2" x="470" y="144" width="8" height="8"/>
+<rect class="h2" x="478" y="144" width="8" height="8"/>
+<rect class="h2" x="422" y="152" width="8" height="8"/>
+<rect class="h2" x="430" y="152" width="8" height="8"/>
+<rect class="h2" x="438" y="152" width="8" height="8"/>
+<rect class="h2" x="446" y="152" width="8" height="8"/>
+<rect class="h2" x="454" y="152" width="8" height="8"/>
+<rect class="h2" x="462" y="152" width="8" height="8"/>
+<rect class="h2" x="470" y="152" width="8" height="8"/>
+<rect class="h2" x="478" y="152" width="8" height="8"/>
+<rect class="h2" x="422" y="160" width="8" height="8"/>
+<rect class="h2" x="430" y="160" width="8" height="8"/>
+<rect class="h2" x="438" y="160" width="8" height="8"/>
+<rect class="h2" x="446" y="160" width="8" height="8"/>
+<rect class="h2" x="454" y="160" width="8" height="8"/>
+<rect class="h2" x="462" y="160" width="8" height="8"/>
+<rect class="h2" x="470" y="160" width="8" height="8"/>
+<rect class="h2" x="478" y="160" width="8" height="8"/>
+<rect class="h2" x="422" y="168" width="8" height="8"/>
+<rect class="h2" x="430" y="168" width="8" height="8"/>
+<rect class="h2" x="438" y="168" width="8" height="8"/>
+<rect class="h2" x="446" y="168" width="8" height="8"/>
+<rect class="h2" x="454" y="168" width="8" height="8"/>
+<rect class="h2" x="462" y="168" width="8" height="8"/>
+<rect class="h2" x="470" y="168" width="8" height="8"/>
+<rect class="h2" x="478" y="168" width="8" height="8"/>
+<rect class="h2" x="422" y="176" width="8" height="8"/>
+<rect class="h2" x="430" y="176" width="8" height="8"/>
+<rect class="h2" x="438" y="176" width="8" height="8"/>
+<rect class="h2" x="446" y="176" width="8" height="8"/>
+<rect class="h2" x="454" y="176" width="8" height="8"/>
+<rect class="h2" x="462" y="176" width="8" height="8"/>
+<rect class="h2" x="470" y="176" width="8" height="8"/>
+<rect class="h2" x="478" y="176" width="8" height="8"/>
+<path class="gl" d="M430 128V192M422 136H486M438 128V192M422 144H486M446 128V192M422 152H486M454 128V192M422 160H486M462 128V192M422 168H486M470 128V192M422 176H486M478 128V192M422 184H486"/>
+<rect class="blk" x="422" y="128" width="48" height="56"/>
+<rect class="blk" x="430" y="136" width="56" height="48"/>
+<text x="8" y="236" class="strong t3">過去</text>
+<text x="8" y="256" class="xs">長距離 2 個</text>
+<text x="8" y="273" class="xs">時刻 1〜2 を覆う</text>
+<rect class="vis" x="170" y="216" width="64" height="64"/>
+<rect class="h3" x="170" y="216" width="8" height="8"/>
+<rect class="h3" x="178" y="216" width="8" height="8"/>
+<rect class="h3" x="186" y="216" width="8" height="8"/>
+<rect class="h3" x="194" y="216" width="8" height="8"/>
+<rect class="h3" x="202" y="216" width="8" height="8"/>
+<rect class="h3" x="210" y="216" width="8" height="8"/>
+<rect class="h3" x="170" y="224" width="8" height="8"/>
+<rect class="h3" x="178" y="224" width="8" height="8"/>
+<rect class="h3" x="186" y="224" width="8" height="8"/>
+<rect class="h3" x="194" y="224" width="8" height="8"/>
+<rect class="h3" x="202" y="224" width="8" height="8"/>
+<rect class="h3" x="210" y="224" width="8" height="8"/>
+<rect class="h3" x="218" y="224" width="8" height="8"/>
+<rect class="h3" x="226" y="224" width="8" height="8"/>
+<rect class="h3" x="170" y="232" width="8" height="8"/>
+<rect class="h3" x="178" y="232" width="8" height="8"/>
+<rect class="h3" x="186" y="232" width="8" height="8"/>
+<rect class="h3" x="194" y="232" width="8" height="8"/>
+<rect class="h3" x="202" y="232" width="8" height="8"/>
+<rect class="h3" x="210" y="232" width="8" height="8"/>
+<rect class="h3" x="218" y="232" width="8" height="8"/>
+<rect class="h3" x="226" y="232" width="8" height="8"/>
+<rect class="h3" x="170" y="240" width="8" height="8"/>
+<rect class="h3" x="178" y="240" width="8" height="8"/>
+<rect class="h3" x="186" y="240" width="8" height="8"/>
+<rect class="h3" x="194" y="240" width="8" height="8"/>
+<rect class="h3" x="202" y="240" width="8" height="8"/>
+<rect class="h3" x="210" y="240" width="8" height="8"/>
+<rect class="h3" x="218" y="240" width="8" height="8"/>
+<rect class="h3" x="226" y="240" width="8" height="8"/>
+<rect class="h3" x="170" y="248" width="8" height="8"/>
+<rect class="h3" x="178" y="248" width="8" height="8"/>
+<rect class="h3" x="186" y="248" width="8" height="8"/>
+<rect class="h3" x="194" y="248" width="8" height="8"/>
+<rect class="h3" x="202" y="248" width="8" height="8"/>
+<rect class="h3" x="210" y="248" width="8" height="8"/>
+<rect class="h3" x="218" y="248" width="8" height="8"/>
+<rect class="h3" x="226" y="248" width="8" height="8"/>
+<rect class="h3" x="170" y="256" width="8" height="8"/>
+<rect class="h3" x="178" y="256" width="8" height="8"/>
+<rect class="h3" x="186" y="256" width="8" height="8"/>
+<rect class="h3" x="194" y="256" width="8" height="8"/>
+<rect class="h3" x="202" y="256" width="8" height="8"/>
+<rect class="h3" x="210" y="256" width="8" height="8"/>
+<rect class="h3" x="218" y="256" width="8" height="8"/>
+<rect class="h3" x="226" y="256" width="8" height="8"/>
+<rect class="h3" x="170" y="264" width="8" height="8"/>
+<rect class="h3" x="178" y="264" width="8" height="8"/>
+<rect class="h3" x="186" y="264" width="8" height="8"/>
+<rect class="h3" x="194" y="264" width="8" height="8"/>
+<rect class="h3" x="202" y="264" width="8" height="8"/>
+<rect class="h3" x="210" y="264" width="8" height="8"/>
+<rect class="h3" x="218" y="264" width="8" height="8"/>
+<rect class="h3" x="226" y="264" width="8" height="8"/>
+<path class="gl" d="M178 216V280M170 224H234M186 216V280M170 232H234M194 216V280M170 240H234M202 216V280M170 248H234M210 216V280M170 256H234M218 216V280M170 264H234M226 216V280M170 272H234"/>
+<rect class="blk" x="170" y="216" width="48" height="56"/>
+<rect class="blk" x="178" y="224" width="56" height="48"/>
+<rect class="vis" x="254" y="216" width="64" height="64"/>
+<rect class="h3" x="254" y="216" width="8" height="8"/>
+<rect class="h3" x="262" y="216" width="8" height="8"/>
+<rect class="h3" x="270" y="216" width="8" height="8"/>
+<rect class="h3" x="278" y="216" width="8" height="8"/>
+<rect class="h3" x="286" y="216" width="8" height="8"/>
+<rect class="h3" x="294" y="216" width="8" height="8"/>
+<rect class="h3" x="254" y="224" width="8" height="8"/>
+<rect class="h3" x="262" y="224" width="8" height="8"/>
+<rect class="h3" x="270" y="224" width="8" height="8"/>
+<rect class="h3" x="278" y="224" width="8" height="8"/>
+<rect class="h3" x="286" y="224" width="8" height="8"/>
+<rect class="h3" x="294" y="224" width="8" height="8"/>
+<rect class="h3" x="302" y="224" width="8" height="8"/>
+<rect class="h3" x="310" y="224" width="8" height="8"/>
+<rect class="h3" x="254" y="232" width="8" height="8"/>
+<rect class="h3" x="262" y="232" width="8" height="8"/>
+<rect class="h3" x="270" y="232" width="8" height="8"/>
+<rect class="h3" x="278" y="232" width="8" height="8"/>
+<rect class="h3" x="286" y="232" width="8" height="8"/>
+<rect class="h3" x="294" y="232" width="8" height="8"/>
+<rect class="h3" x="302" y="232" width="8" height="8"/>
+<rect class="h3" x="310" y="232" width="8" height="8"/>
+<rect class="h3" x="254" y="240" width="8" height="8"/>
+<rect class="h3" x="262" y="240" width="8" height="8"/>
+<rect class="h3" x="270" y="240" width="8" height="8"/>
+<rect class="h3" x="278" y="240" width="8" height="8"/>
+<rect class="h3" x="286" y="240" width="8" height="8"/>
+<rect class="h3" x="294" y="240" width="8" height="8"/>
+<rect class="h3" x="302" y="240" width="8" height="8"/>
+<rect class="h3" x="310" y="240" width="8" height="8"/>
+<rect class="h3" x="254" y="248" width="8" height="8"/>
+<rect class="h3" x="262" y="248" width="8" height="8"/>
+<rect class="h3" x="270" y="248" width="8" height="8"/>
+<rect class="h3" x="278" y="248" width="8" height="8"/>
+<rect class="h3" x="286" y="248" width="8" height="8"/>
+<rect class="h3" x="294" y="248" width="8" height="8"/>
+<rect class="h3" x="302" y="248" width="8" height="8"/>
+<rect class="h3" x="310" y="248" width="8" height="8"/>
+<rect class="h3" x="254" y="256" width="8" height="8"/>
+<rect class="h3" x="262" y="256" width="8" height="8"/>
+<rect class="h3" x="270" y="256" width="8" height="8"/>
+<rect class="h3" x="278" y="256" width="8" height="8"/>
+<rect class="h3" x="286" y="256" width="8" height="8"/>
+<rect class="h3" x="294" y="256" width="8" height="8"/>
+<rect class="h3" x="302" y="256" width="8" height="8"/>
+<rect class="h3" x="310" y="256" width="8" height="8"/>
+<rect class="h3" x="254" y="264" width="8" height="8"/>
+<rect class="h3" x="262" y="264" width="8" height="8"/>
+<rect class="h3" x="270" y="264" width="8" height="8"/>
+<rect class="h3" x="278" y="264" width="8" height="8"/>
+<rect class="h3" x="286" y="264" width="8" height="8"/>
+<rect class="h3" x="294" y="264" width="8" height="8"/>
+<rect class="h3" x="302" y="264" width="8" height="8"/>
+<rect class="h3" x="310" y="264" width="8" height="8"/>
+<path class="gl" d="M262 216V280M254 224H318M270 216V280M254 232H318M278 216V280M254 240H318M286 216V280M254 248H318M294 216V280M254 256H318M302 216V280M254 264H318M310 216V280M254 272H318"/>
+<rect class="blk" x="254" y="216" width="48" height="56"/>
+<rect class="blk" x="262" y="224" width="56" height="48"/>
+<rect class="vis" x="338" y="216" width="64" height="64"/>
+<path class="gl" d="M346 216V280M338 224H402M354 216V280M338 232H402M362 216V280M338 240H402M370 216V280M338 248H402M378 216V280M338 256H402M386 216V280M338 264H402M394 216V280M338 272H402"/>
+<rect class="vis" x="422" y="216" width="64" height="64"/>
+<path class="gl" d="M430 216V280M422 224H486M438 216V280M422 232H486M446 216V280M422 240H486M454 216V280M422 248H486M462 216V280M422 256H486M470 216V280M422 264H486M478 216V280M422 272H486"/>
+<text x="8" y="324" class="strong ">間</text>
+<text x="8" y="344" class="xs">長距離 2 個</text>
+<text x="8" y="361" class="xs">時刻 2〜3 を覆う</text>
+<rect class="vis" x="170" y="304" width="64" height="64"/>
+<path class="gl" d="M178 304V368M170 312H234M186 304V368M170 320H234M194 304V368M170 328H234M202 304V368M170 336H234M210 304V368M170 344H234M218 304V368M170 352H234M226 304V368M170 360H234"/>
+<rect class="vis" x="254" y="304" width="64" height="64"/>
+<rect class="h4" x="254" y="304" width="8" height="8"/>
+<rect class="h4" x="262" y="304" width="8" height="8"/>
+<rect class="h4" x="270" y="304" width="8" height="8"/>
+<rect class="h4" x="278" y="304" width="8" height="8"/>
+<rect class="h4" x="286" y="304" width="8" height="8"/>
+<rect class="h4" x="294" y="304" width="8" height="8"/>
+<rect class="h4" x="254" y="312" width="8" height="8"/>
+<rect class="h4" x="262" y="312" width="8" height="8"/>
+<rect class="h4" x="270" y="312" width="8" height="8"/>
+<rect class="h4" x="278" y="312" width="8" height="8"/>
+<rect class="h4" x="286" y="312" width="8" height="8"/>
+<rect class="h4" x="294" y="312" width="8" height="8"/>
+<rect class="h4" x="302" y="312" width="8" height="8"/>
+<rect class="h4" x="310" y="312" width="8" height="8"/>
+<rect class="h4" x="254" y="320" width="8" height="8"/>
+<rect class="h4" x="262" y="320" width="8" height="8"/>
+<rect class="h4" x="270" y="320" width="8" height="8"/>
+<rect class="h4" x="278" y="320" width="8" height="8"/>
+<rect class="h4" x="286" y="320" width="8" height="8"/>
+<rect class="h4" x="294" y="320" width="8" height="8"/>
+<rect class="h4" x="302" y="320" width="8" height="8"/>
+<rect class="h4" x="310" y="320" width="8" height="8"/>
+<rect class="h4" x="254" y="328" width="8" height="8"/>
+<rect class="h4" x="262" y="328" width="8" height="8"/>
+<rect class="h4" x="270" y="328" width="8" height="8"/>
+<rect class="h4" x="278" y="328" width="8" height="8"/>
+<rect class="h4" x="286" y="328" width="8" height="8"/>
+<rect class="h4" x="294" y="328" width="8" height="8"/>
+<rect class="h4" x="302" y="328" width="8" height="8"/>
+<rect class="h4" x="310" y="328" width="8" height="8"/>
+<rect class="h4" x="254" y="336" width="8" height="8"/>
+<rect class="h4" x="262" y="336" width="8" height="8"/>
+<rect class="h4" x="270" y="336" width="8" height="8"/>
+<rect class="h4" x="278" y="336" width="8" height="8"/>
+<rect class="h4" x="286" y="336" width="8" height="8"/>
+<rect class="h4" x="294" y="336" width="8" height="8"/>
+<rect class="h4" x="302" y="336" width="8" height="8"/>
+<rect class="h4" x="310" y="336" width="8" height="8"/>
+<rect class="h4" x="254" y="344" width="8" height="8"/>
+<rect class="h4" x="262" y="344" width="8" height="8"/>
+<rect class="h4" x="270" y="344" width="8" height="8"/>
+<rect class="h4" x="278" y="344" width="8" height="8"/>
+<rect class="h4" x="286" y="344" width="8" height="8"/>
+<rect class="h4" x="294" y="344" width="8" height="8"/>
+<rect class="h4" x="302" y="344" width="8" height="8"/>
+<rect class="h4" x="310" y="344" width="8" height="8"/>
+<rect class="h4" x="254" y="352" width="8" height="8"/>
+<rect class="h4" x="262" y="352" width="8" height="8"/>
+<rect class="h4" x="270" y="352" width="8" height="8"/>
+<rect class="h4" x="278" y="352" width="8" height="8"/>
+<rect class="h4" x="286" y="352" width="8" height="8"/>
+<rect class="h4" x="294" y="352" width="8" height="8"/>
+<rect class="h4" x="302" y="352" width="8" height="8"/>
+<rect class="h4" x="310" y="352" width="8" height="8"/>
+<path class="gl" d="M262 304V368M254 312H318M270 304V368M254 320H318M278 304V368M254 328H318M286 304V368M254 336H318M294 304V368M254 344H318M302 304V368M254 352H318M310 304V368M254 360H318"/>
+<rect class="blk" x="254" y="304" width="48" height="56"/>
+<rect class="blk" x="262" y="312" width="56" height="48"/>
+<rect class="vis" x="338" y="304" width="64" height="64"/>
+<rect class="h4" x="338" y="304" width="8" height="8"/>
+<rect class="h4" x="346" y="304" width="8" height="8"/>
+<rect class="h4" x="354" y="304" width="8" height="8"/>
+<rect class="h4" x="362" y="304" width="8" height="8"/>
+<rect class="h4" x="370" y="304" width="8" height="8"/>
+<rect class="h4" x="378" y="304" width="8" height="8"/>
+<rect class="h4" x="338" y="312" width="8" height="8"/>
+<rect class="h4" x="346" y="312" width="8" height="8"/>
+<rect class="h4" x="354" y="312" width="8" height="8"/>
+<rect class="h4" x="362" y="312" width="8" height="8"/>
+<rect class="h4" x="370" y="312" width="8" height="8"/>
+<rect class="h4" x="378" y="312" width="8" height="8"/>
+<rect class="h4" x="386" y="312" width="8" height="8"/>
+<rect class="h4" x="394" y="312" width="8" height="8"/>
+<rect class="h4" x="338" y="320" width="8" height="8"/>
+<rect class="h4" x="346" y="320" width="8" height="8"/>
+<rect class="h4" x="354" y="320" width="8" height="8"/>
+<rect class="h4" x="362" y="320" width="8" height="8"/>
+<rect class="h4" x="370" y="320" width="8" height="8"/>
+<rect class="h4" x="378" y="320" width="8" height="8"/>
+<rect class="h4" x="386" y="320" width="8" height="8"/>
+<rect class="h4" x="394" y="320" width="8" height="8"/>
+<rect class="h4" x="338" y="328" width="8" height="8"/>
+<rect class="h4" x="346" y="328" width="8" height="8"/>
+<rect class="h4" x="354" y="328" width="8" height="8"/>
+<rect class="h4" x="362" y="328" width="8" height="8"/>
+<rect class="h4" x="370" y="328" width="8" height="8"/>
+<rect class="h4" x="378" y="328" width="8" height="8"/>
+<rect class="h4" x="386" y="328" width="8" height="8"/>
+<rect class="h4" x="394" y="328" width="8" height="8"/>
+<rect class="h4" x="338" y="336" width="8" height="8"/>
+<rect class="h4" x="346" y="336" width="8" height="8"/>
+<rect class="h4" x="354" y="336" width="8" height="8"/>
+<rect class="h4" x="362" y="336" width="8" height="8"/>
+<rect class="h4" x="370" y="336" width="8" height="8"/>
+<rect class="h4" x="378" y="336" width="8" height="8"/>
+<rect class="h4" x="386" y="336" width="8" height="8"/>
+<rect class="h4" x="394" y="336" width="8" height="8"/>
+<rect class="h4" x="338" y="344" width="8" height="8"/>
+<rect class="h4" x="346" y="344" width="8" height="8"/>
+<rect class="h4" x="354" y="344" width="8" height="8"/>
+<rect class="h4" x="362" y="344" width="8" height="8"/>
+<rect class="h4" x="370" y="344" width="8" height="8"/>
+<rect class="h4" x="378" y="344" width="8" height="8"/>
+<rect class="h4" x="386" y="344" width="8" height="8"/>
+<rect class="h4" x="394" y="344" width="8" height="8"/>
+<rect class="h4" x="338" y="352" width="8" height="8"/>
+<rect class="h4" x="346" y="352" width="8" height="8"/>
+<rect class="h4" x="354" y="352" width="8" height="8"/>
+<rect class="h4" x="362" y="352" width="8" height="8"/>
+<rect class="h4" x="370" y="352" width="8" height="8"/>
+<rect class="h4" x="378" y="352" width="8" height="8"/>
+<rect class="h4" x="386" y="352" width="8" height="8"/>
+<rect class="h4" x="394" y="352" width="8" height="8"/>
+<path class="gl" d="M346 304V368M338 312H402M354 304V368M338 320H402M362 304V368M338 328H402M370 304V368M338 336H402M378 304V368M338 344H402M386 304V368M338 352H402M394 304V368M338 360H402"/>
+<rect class="blk" x="338" y="304" width="48" height="56"/>
+<rect class="blk" x="346" y="312" width="56" height="48"/>
+<rect class="vis" x="422" y="304" width="64" height="64"/>
+<path class="gl" d="M430 304V368M422 312H486M438 304V368M422 320H486M446 304V368M422 328H486M454 304V368M422 336H486M462 304V368M422 344H486M470 304V368M422 352H486M478 304V368M422 360H486"/>
+<text x="8" y="412" class="strong ">ふつうの引き</text>
+<text x="8" y="432" class="xs">短距離 8 個</text>
+<text x="8" y="449" class="xs">長さと位置がばらばら</text>
+<rect class="vis" x="170" y="392" width="64" height="64"/>
+<rect class="hn" x="170" y="392" width="8" height="8"/>
+<rect class="hn" x="178" y="392" width="8" height="8"/>
+<rect class="hn" x="186" y="392" width="8" height="8"/>
+<rect class="hn" x="170" y="400" width="8" height="8"/>
+<rect class="hn" x="178" y="400" width="8" height="8"/>
+<rect class="hn" x="186" y="400" width="8" height="8"/>
+<rect class="hn" x="170" y="408" width="8" height="8"/>
+<rect class="hn" x="178" y="408" width="8" height="8"/>
+<rect class="hn" x="186" y="408" width="8" height="8"/>
+<rect class="hn" x="194" y="408" width="8" height="8"/>
+<rect class="hn" x="202" y="408" width="8" height="8"/>
+<rect class="hn" x="186" y="416" width="8" height="8"/>
+<rect class="hn" x="194" y="416" width="8" height="8"/>
+<rect class="hn" x="202" y="416" width="8" height="8"/>
+<rect class="hn" x="210" y="416" width="8" height="8"/>
+<rect class="hn" x="218" y="416" width="8" height="8"/>
+<rect class="hn" x="226" y="416" width="8" height="8"/>
+<rect class="hn" x="186" y="424" width="8" height="8"/>
+<rect class="hn" x="194" y="424" width="8" height="8"/>
+<rect class="hn" x="202" y="424" width="8" height="8"/>
+<rect class="hn" x="210" y="424" width="8" height="8"/>
+<rect class="hn" x="218" y="424" width="8" height="8"/>
+<rect class="hn" x="226" y="424" width="8" height="8"/>
+<rect class="hn" x="210" y="432" width="8" height="8"/>
+<rect class="hn" x="218" y="432" width="8" height="8"/>
+<rect class="hn" x="226" y="432" width="8" height="8"/>
+<path class="gl" d="M178 392V456M170 400H234M186 392V456M170 408H234M194 392V456M170 416H234M202 392V456M170 424H234M210 392V456M170 432H234M218 392V456M170 440H234M226 392V456M170 448H234"/>
+<rect class="blk" x="170" y="392" width="24" height="24"/>
+<rect class="blk" x="186" y="408" width="24" height="24"/>
+<rect class="blk" x="210" y="416" width="24" height="24"/>
+<rect class="vis" x="254" y="392" width="64" height="64"/>
+<rect class="hn" x="254" y="392" width="8" height="8"/>
+<rect class="hn" x="262" y="392" width="8" height="8"/>
+<rect class="hn" x="270" y="392" width="8" height="8"/>
+<rect class="hn" x="294" y="392" width="8" height="8"/>
+<rect class="hn" x="302" y="392" width="8" height="8"/>
+<rect class="hn" x="310" y="392" width="8" height="8"/>
+<rect class="hn" x="254" y="400" width="8" height="8"/>
+<rect class="hn" x="262" y="400" width="8" height="8"/>
+<rect class="hn" x="270" y="400" width="8" height="8"/>
+<rect class="hn" x="294" y="400" width="8" height="8"/>
+<rect class="hn" x="302" y="400" width="8" height="8"/>
+<rect class="hn" x="310" y="400" width="8" height="8"/>
+<rect class="hn" x="254" y="408" width="8" height="8"/>
+<rect class="hn" x="262" y="408" width="8" height="8"/>
+<rect class="hn" x="270" y="408" width="8" height="8"/>
+<rect class="hn" x="294" y="408" width="8" height="8"/>
+<rect class="hn" x="302" y="408" width="8" height="8"/>
+<rect class="hn" x="310" y="408" width="8" height="8"/>
+<rect class="hn" x="294" y="416" width="8" height="8"/>
+<rect class="hn" x="302" y="416" width="8" height="8"/>
+<rect class="hn" x="310" y="416" width="8" height="8"/>
+<rect class="hn" x="294" y="424" width="8" height="8"/>
+<rect class="hn" x="302" y="424" width="8" height="8"/>
+<rect class="hn" x="310" y="424" width="8" height="8"/>
+<rect class="hn" x="286" y="432" width="8" height="8"/>
+<rect class="hn" x="294" y="432" width="8" height="8"/>
+<rect class="hn" x="302" y="432" width="8" height="8"/>
+<rect class="hn" x="310" y="432" width="8" height="8"/>
+<rect class="hn" x="286" y="440" width="8" height="8"/>
+<rect class="hn" x="294" y="440" width="8" height="8"/>
+<rect class="hn" x="302" y="440" width="8" height="8"/>
+<rect class="hn" x="286" y="448" width="8" height="8"/>
+<rect class="hn" x="294" y="448" width="8" height="8"/>
+<rect class="hn" x="302" y="448" width="8" height="8"/>
+<path class="gl" d="M262 392V456M254 400H318M270 392V456M254 408H318M278 392V456M254 416H318M286 392V456M254 424H318M294 392V456M254 432H318M302 392V456M254 440H318M310 392V456M254 448H318"/>
+<rect class="blk" x="254" y="392" width="24" height="24"/>
+<rect class="blk" x="294" y="392" width="24" height="24"/>
+<rect class="blk" x="286" y="432" width="24" height="24"/>
+<rect class="blk" x="294" y="416" width="24" height="24"/>
+<rect class="vis" x="338" y="392" width="64" height="64"/>
+<rect class="hn" x="338" y="392" width="8" height="8"/>
+<rect class="hn" x="346" y="392" width="8" height="8"/>
+<rect class="hn" x="354" y="392" width="8" height="8"/>
+<rect class="hn" x="378" y="392" width="8" height="8"/>
+<rect class="hn" x="386" y="392" width="8" height="8"/>
+<rect class="hn" x="394" y="392" width="8" height="8"/>
+<rect class="hn" x="338" y="400" width="8" height="8"/>
+<rect class="hn" x="346" y="400" width="8" height="8"/>
+<rect class="hn" x="354" y="400" width="8" height="8"/>
+<rect class="hn" x="378" y="400" width="8" height="8"/>
+<rect class="hn" x="386" y="400" width="8" height="8"/>
+<rect class="hn" x="394" y="400" width="8" height="8"/>
+<rect class="hn" x="338" y="408" width="8" height="8"/>
+<rect class="hn" x="346" y="408" width="8" height="8"/>
+<rect class="hn" x="354" y="408" width="8" height="8"/>
+<rect class="hn" x="378" y="408" width="8" height="8"/>
+<rect class="hn" x="386" y="408" width="8" height="8"/>
+<rect class="hn" x="394" y="408" width="8" height="8"/>
+<rect class="hn" x="338" y="424" width="8" height="8"/>
+<rect class="hn" x="346" y="424" width="8" height="8"/>
+<rect class="hn" x="354" y="424" width="8" height="8"/>
+<rect class="hn" x="338" y="432" width="8" height="8"/>
+<rect class="hn" x="346" y="432" width="8" height="8"/>
+<rect class="hn" x="354" y="432" width="8" height="8"/>
+<rect class="hn" x="362" y="432" width="8" height="8"/>
+<rect class="hn" x="338" y="440" width="8" height="8"/>
+<rect class="hn" x="346" y="440" width="8" height="8"/>
+<rect class="hn" x="354" y="440" width="8" height="8"/>
+<rect class="hn" x="362" y="440" width="8" height="8"/>
+<rect class="hn" x="346" y="448" width="8" height="8"/>
+<rect class="hn" x="354" y="448" width="8" height="8"/>
+<rect class="hn" x="362" y="448" width="8" height="8"/>
+<path class="gl" d="M346 392V456M338 400H402M354 392V456M338 408H402M362 392V456M338 416H402M370 392V456M338 424H402M378 392V456M338 432H402M386 392V456M338 440H402M394 392V456M338 448H402"/>
+<rect class="blk" x="338" y="392" width="24" height="24"/>
+<rect class="blk" x="378" y="392" width="24" height="24"/>
+<rect class="blk" x="338" y="424" width="24" height="24"/>
+<rect class="blk" x="346" y="432" width="24" height="24"/>
+<rect class="vis" x="422" y="392" width="64" height="64"/>
+<rect class="hn" x="422" y="392" width="8" height="8"/>
+<rect class="hn" x="430" y="392" width="8" height="8"/>
+<rect class="hn" x="438" y="392" width="8" height="8"/>
+<rect class="hn" x="422" y="400" width="8" height="8"/>
+<rect class="hn" x="430" y="400" width="8" height="8"/>
+<rect class="hn" x="438" y="400" width="8" height="8"/>
+<rect class="hn" x="446" y="400" width="8" height="8"/>
+<rect class="hn" x="454" y="400" width="8" height="8"/>
+<rect class="hn" x="462" y="400" width="8" height="8"/>
+<rect class="hn" x="422" y="408" width="8" height="8"/>
+<rect class="hn" x="430" y="408" width="8" height="8"/>
+<rect class="hn" x="438" y="408" width="8" height="8"/>
+<rect class="hn" x="446" y="408" width="8" height="8"/>
+<rect class="hn" x="454" y="408" width="8" height="8"/>
+<rect class="hn" x="462" y="408" width="8" height="8"/>
+<rect class="hn" x="446" y="416" width="8" height="8"/>
+<rect class="hn" x="454" y="416" width="8" height="8"/>
+<rect class="hn" x="462" y="416" width="8" height="8"/>
+<rect class="hn" x="422" y="424" width="8" height="8"/>
+<rect class="hn" x="430" y="424" width="8" height="8"/>
+<rect class="hn" x="438" y="424" width="8" height="8"/>
+<rect class="hn" x="422" y="432" width="8" height="8"/>
+<rect class="hn" x="430" y="432" width="8" height="8"/>
+<rect class="hn" x="438" y="432" width="8" height="8"/>
+<rect class="hn" x="422" y="440" width="8" height="8"/>
+<rect class="hn" x="430" y="440" width="8" height="8"/>
+<rect class="hn" x="438" y="440" width="8" height="8"/>
+<path class="gl" d="M430 392V456M422 400H486M438 392V456M422 408H486M446 392V456M422 416H486M454 392V456M422 424H486M462 392V456M422 432H486M470 392V456M422 440H486M478 392V456M422 448H486"/>
+<rect class="blk" x="422" y="392" width="24" height="24"/>
+<rect class="blk" x="422" y="424" width="24" height="24"/>
+<rect class="blk" x="446" y="400" width="24" height="24"/>
+<text x="8" y="484" class="xs">色のついたマス = 隠すトークン（ブロックの和集合 U）。枠 = 1 つのブロック</text>
+<text x="8" y="502" class="xs">空間: 短距離は面積 15% × 8 個、長距離は面積 70% × 2 個（図は例）</text>
+<text x="8" y="520" class="xs">時間: ブロックごとに長さを {1,2,3,4} から、位置を均等に引く</text></svg></div>
+    <figcaption><b>図 2　マスクの族（multi-block を時空間に広げたもの）の引きの例。</b> 1 行が 1 回の引きです。4 つの箱が時刻 1〜4 で、1 つの箱の 8×8 のマスが空間の位置です。色のついたマスがブロックの和集合で、ここを隠します。残りの見えるトークンから、隠したトークンを当てます。1 行目は、短距離のブロックがどれも全時間を通る場合で、今（空間）の補完にあたります。2〜4 行目は、長距離のブロックが時間の一部だけを覆う場合で、覆う時刻によって未来・過去・間の補完になります。5 行目のように、ふつうはブロックごとに時間の長さと位置が違います。隠す数は引きごとに変わります。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>時間の尺度</h3>
+    <p>log <var>s</var> を一様に引きます（<var>s</var> = 1〜128）。隣の時刻の差は 0.2〜25.6 秒になります。伸縮すると格子は自分自身に写るので、どの尺度も優先しません。<var>s</var> はエンコーダに渡しません。符号を画素だけの関数に保つためです。予測器には <var>s</var> を渡します。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 362" role="img" aria-label="間隔 s を伸ばすと 1 つの stack が覆う時間が伸びる"><text x="8" y="20" class="small strong">同じ 8 枚・同じ格子のまま、間隔 s だけを変える（単位 0.1 秒）</text>
+<text x="8" y="63" class="small mono">s = 1</text>
+<line class="axis" x1="70" y1="58" x2="496" y2="58"/>
+<rect class="h1" x="67" y="44" width="6" height="14" rx="1"/>
+<rect class="h1" x="82" y="44" width="6" height="14" rx="1"/>
+<rect class="h2" x="97" y="44" width="6" height="14" rx="1"/>
+<rect class="h2" x="112" y="44" width="6" height="14" rx="1"/>
+<rect class="h3" x="127" y="44" width="6" height="14" rx="1"/>
+<rect class="h3" x="142" y="44" width="6" height="14" rx="1"/>
+<rect class="h4" x="157" y="44" width="6" height="14" rx="1"/>
+<rect class="h4" x="172" y="44" width="6" height="14" rx="1"/>
+<text x="77.5" y="76" class="xs" text-anchor="middle">1</text>
+<text x="107.5" y="76" class="xs" text-anchor="middle">2</text>
+<text x="137.5" y="76" class="xs" text-anchor="middle">3</text>
+<text x="167.5" y="76" class="xs" text-anchor="middle">4</text>
+<text x="8" y="121" class="small mono">s = 2</text>
+<line class="axis" x1="70" y1="116" x2="496" y2="116"/>
+<rect class="h1" x="67" y="102" width="6" height="14" rx="1"/>
+<rect class="h1" x="97" y="102" width="6" height="14" rx="1"/>
+<rect class="h2" x="127" y="102" width="6" height="14" rx="1"/>
+<rect class="h2" x="157" y="102" width="6" height="14" rx="1"/>
+<rect class="h3" x="187" y="102" width="6" height="14" rx="1"/>
+<rect class="h3" x="217" y="102" width="6" height="14" rx="1"/>
+<rect class="h4" x="247" y="102" width="6" height="14" rx="1"/>
+<rect class="h4" x="277" y="102" width="6" height="14" rx="1"/>
+<text x="85.0" y="134" class="xs" text-anchor="middle">1</text>
+<text x="145.0" y="134" class="xs" text-anchor="middle">2</text>
+<text x="205.0" y="134" class="xs" text-anchor="middle">3</text>
+<text x="265.0" y="134" class="xs" text-anchor="middle">4</text>
+<text x="8" y="179" class="small mono">s = 4</text>
+<line class="axis" x1="70" y1="174" x2="496" y2="174"/>
+<rect class="h1" x="67" y="160" width="6" height="14" rx="1"/>
+<rect class="h1" x="127" y="160" width="6" height="14" rx="1"/>
+<rect class="h2" x="187" y="160" width="6" height="14" rx="1"/>
+<rect class="h2" x="247" y="160" width="6" height="14" rx="1"/>
+<rect class="h3" x="307" y="160" width="6" height="14" rx="1"/>
+<rect class="h3" x="367" y="160" width="6" height="14" rx="1"/>
+<rect class="h4" x="427" y="160" width="6" height="14" rx="1"/>
+<rect class="h4" x="487" y="160" width="6" height="14" rx="1"/>
+<text x="100.0" y="192" class="xs" text-anchor="middle">1</text>
+<text x="220.0" y="192" class="xs" text-anchor="middle">2</text>
+<text x="340.0" y="192" class="xs" text-anchor="middle">3</text>
+<text x="460.0" y="192" class="xs" text-anchor="middle">4</text>
+<text x="8" y="222" class="xs">縦の棒 = フレーム。色と下の数字 = 時刻（続く 2 枚で 1 つ）</text>
+<text x="8" y="252" class="small strong">隣の時刻の差（対数の軸）</text>
+<rect class="band" x="70" y="274" width="380" height="16"/>
+<line class="axis" x1="60" y1="290" x2="460" y2="290"/>
+<line class="axis" x1="70" y1="270" x2="70" y2="294"/>
+<text x="70" y="310" class="xs mono" text-anchor="middle">s = 1</text>
+<text x="70" y="326" class="xs" text-anchor="middle">0.2 秒</text>
+<line class="axis" x1="450" y1="270" x2="450" y2="294"/>
+<text x="450" y="310" class="xs mono" text-anchor="middle">s = 128</text>
+<text x="450" y="326" class="xs" text-anchor="middle">25.6 秒</text>
+<text x="260.0" y="268" class="xs" text-anchor="middle">log s を一様に引く（この軸の上で一様）</text>
+<text x="8" y="352" class="xs">s はエンコーダに渡さない（符号は画素だけの関数）。予測器には渡す</text></svg></div>
+    <figcaption><b>図 3　間隔 s と、1 つの stack が覆う時間。</b> 上の 3 行は、同じ 8 枚・同じ格子のまま、間隔 <var>s</var> だけを変えた例です。<var>s</var> を伸ばすと、1 つの stack が覆う時間も伸びます。下は、隣の時刻の差を対数の軸に描いたものです。<var>s</var> = 1 で 0.2 秒、<var>s</var> = 128 で 25.6 秒です。log <var>s</var> を一様に引くので、この軸の上で一様に選ばれます。</figcaption>
+  </figure>
+
+  <div class="why">
+    <span class="k">再帰を使わない理由（ユーザー）</span>
+    <p>再帰のあるエンコーダは、潜在空間がループするだけになるおそれがあります。また、ガードが複雑になります。</p>
+  </div>
+
+  <div class="prose">
+    <h3>目的から出る自明な解（Fable さんの導出）</h3>
+  </div>
+  <div class="prose"><ul>
+    <li>定数: 排除されます。</li>
+    <li>K3: <var>λ</var> ≥ 0.5 で排除されます。</li>
+    <li><b>時間に沿って一定のトークン</b>: SIGReg の超過は約 0.02（<var>d</var> = 16）で、<var>λ</var> = 0.5 では排除されません。stack にした理由を失う解なので、必ず見ます。</li>
+    <li>遅くする。</li>
+    <li>予測器が代わりをする。</li>
+    <li>隠した所に周りの情報を詰める（鏡の符号）。</li>
+  </ul></div>
+</section>
+
+<section id="eval">
+  <div class="sec-head"><div class="eyebrow">4</div><h2>評価</h2></div>
+  <div class="prose">
+    <p>学習の目的は、今・過去・未来の補完です。評価もこれと対になるように、<b>今・過去・未来を別々に</b>出します。主の評価は未来と過去です。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 594" role="img" aria-label="評価の全体"><rect class="pbox" x="10" y="8" width="600" height="62" rx="5"/>
+<text x="20" y="28" class="small strong">入力: 評価の動画（Zurich）と学習の動画</text>
+<text x="20" y="45" class="xs">重ならない stack（s = 1、0.8 秒おき）→ エンコーダ → 符号 z</text>
+<text x="20" y="62" class="xs">→ 参照の組で白色化した PCA64 の座標 w の系列</text>
+<line class="arr" x1="110" y1="70" x2="110" y2="96" marker-end="url(#ah)"/>
+<line class="arr" x1="310" y1="70" x2="310" y2="96" marker-end="url(#ah)"/>
+<line class="arr" x1="510" y1="70" x2="510" y2="96" marker-end="url(#ah)"/>
+<rect class="b2" x="10" y="98" width="196" height="104" rx="5"/>
+<text x="20" y="118" class="small strong">未来（主）</text>
+<text x="20" y="135" class="xs">状態のある minGRU</text>
+<text x="20" y="152" class="xs">系列を読み、Δ = 0.8〜25.6 秒</text>
+<text x="20" y="169" class="xs">先の w を刻みごとの線形の</text>
+<text x="20" y="186" class="xs">頭で直接に当てる</text>
+<rect class="b3" x="214" y="98" width="196" height="104" rx="5"/>
+<text x="224" y="118" class="small strong">過去（主）</text>
+<text x="224" y="135" class="xs">同じ作りの minGRU を</text>
+<text x="224" y="152" class="xs">時間を反転した系列で学ぶ</text>
+<rect class="b1" x="418" y="98" width="192" height="104" rx="5"/>
+<text x="428" y="118" class="small strong">今（stack の中の補完）</text>
+<text x="428" y="135" class="xs">半分の視野: 格子を空間の</text>
+<text x="428" y="152" class="xs">軸で切り、片方から他方を</text>
+<text x="428" y="169" class="xs">当てる（時間の軸で切ると</text>
+<text x="428" y="186" class="xs">stack の中の未来・過去）</text>
+<text x="428" y="222" class="xs">＋ 予測器自身による同定</text>
+<text x="428" y="238" class="xs">（今・過去・未来の切り口ごと）</text>
+<line class="arr" x1="110" y1="202" x2="110" y2="256" marker-end="url(#ah)"/>
+<line class="arr" x1="310" y1="202" x2="310" y2="256" marker-end="url(#ah)"/>
+<rect class="pbox" x="10" y="258" width="400" height="128" rx="5"/>
+<text x="20" y="278" class="small strong">2 つの分母で割る</text>
+<text x="20" y="295" class="xs">R<tspan dy="4" font-size="9">copy</tspan><tspan dy="-4"> = copy</tspan> の誤差で割った値</text>
+<text x="20" y="312" class="xs">R<tspan dy="4" font-size="9">clim</tspan><tspan dy="-4"> = 平均</tspan>の予測の誤差で割った値</text>
+<text x="20" y="329" class="xs">主の数 = 0.8〜25.6 秒の log R の平均</text>
+<text x="20" y="346" class="xs">下限: 線形のモデル（2 時点、既存の dyn/copy）</text>
+<text x="20" y="363" class="xs">比べ: 同じ minGRU を全ての符号（pca・VAE などの</text>
+<text x="20" y="376" class="xs">他の手法を含む）に</text>
+<text x="10" y="410" class="small strong">ガード（壊れていないこと）</text>
+<rect class="bw" x="10" y="420" width="196" height="86" rx="5"/>
+<text x="20" y="440" class="small strong">崩壊</text>
+<text x="20" y="457" class="xs">K1〜K3</text>
+<text x="20" y="474" class="xs">time_r2（時間に沿った</text>
+<text x="20" y="491" class="xs">平均で説明できる割合）</text>
+<rect class="bw" x="214" y="420" width="196" height="86" rx="5"/>
+<text x="224" y="440" class="small strong">内容</text>
+<text x="224" y="457" class="xs">線形（ridge）だけで読み出す</text>
+<text x="224" y="474" class="xs">忠実さ E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5"> と E</tspan><tspan dy="-5" font-size="9">d,lin</tspan></text>
+<text x="224" y="491" class="xs">MLP の読み出しは使わない</text>
+<rect class="bw" x="418" y="420" width="192" height="86" rx="5"/>
+<text x="428" y="440" class="small strong">復元の定性評価</text>
+<text x="428" y="457" class="xs">符号から画像を復元して並べ、</text>
+<text x="428" y="474" class="xs">内容の数値と見た目が</text>
+<text x="428" y="491" class="xs">合うかを見る</text>
+<rect class="bg" x="10" y="524" width="600" height="62" rx="5"/>
+<text x="20" y="544" class="small strong tg">「良い」と書くのは</text>
+<text x="20" y="561" class="xs">未来と過去の両方で 2 つの分母がそろって pca より良く、崩壊なし、</text>
+<text x="20" y="578" class="xs">time_r2 が閾値の内、E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5"> が pca</tspan> か学習前に対して非劣のときだけ</text></svg></div>
+    <figcaption><b>図 4　評価の全体。</b> 未来と過去は、符号の系列に minGRU を当てて測ります（主）。今は、stack の中の補完で測ります。どちらも 2 つの分母（copy の誤差と平均の予測の誤差）で割ります。下の 3 つの箱がガードで、表現が壊れていないことを確かめます。一番下の条件がそろったときだけ「良い」と書きます。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>4.1 未来と過去: minGRU のダイナミクスモデル（主）</h3>
+    <ul>
+      <li><b>入力の系列</b>: 評価の動画（Zurich）と学習の動画から、重ならない stack（<var>s</var> = 1、0.8 秒おき）を取ります。その <var>z</var> を、参照の組で白色化した PCA64 の座標 <var>w</var> にして、系列にします。</li>
+      <li><b>モデル</b>: 状態のある minGRU です（<a href="../video/dyn/">exp/video/dyn/</a> と同じ系統）。系列を読み、各時刻で、刻み Δ ∈ {0.8, 1.6, …, 25.6} 秒先の <var>w</var><sub><var>t</var>+Δ</sub> を当てます。刻みごとに線形の頭を置き、直接に当てます。巻き戻しはしません。誤差の積み重ねと、選択を増やさないためです。</li>
+      <li><b>過去</b>: 同じ作りの minGRU を、時間を反転した系列で学びます。</li>
+      <li><b>分母</b>: copy の誤差（R<sub>copy</sub>）と、平均の予測の誤差（R<sub>clim</sub>）の 2 つを使います。主の数は、0.8〜25.6 秒の log R の平均です。</li>
+      <li><b>下限</b>: 線形のモデル（2 時点、既存の dyn/copy）を並べます。これは閉じた式で確かめられます。</li>
+      <li><b>比べ</b>: 同じ minGRU を、同じ学習の組・同じ早期終了の規則で、全ての符号に当てます。符号には、<code>pca</code>・VAE の <code>v16</code>・<code>v17</code> などの他の手法も含めます。判定の言葉は dyn/copy と同じです。2 つの分母の区間が同じ向きに良いときだけ「良い」とします。</li>
+    </ul>
+    <h3>4.2 今: stack の中の補完</h3>
+    <ul>
+      <li>立方体の格子を空間の軸で半分に切り、一方の半分だけを見た符号から、他方を当てます（Fable さんの「半分の視野」）。同じ形で時間の軸で切ると、stack の中の未来・過去になります。これは記述として並べます。</li>
+      <li>学習した予測器自身による同定（自分の表現空間での補完）も、今・過去・未来の切り口ごとに並べます。</li>
+    </ul>
+    <h3>4.3 ガード（壊れていないこと）</h3>
+    <ul>
+      <li><b>崩壊</b>: K1〜K3 と、その時間の版の <code>time_r2</code> を見ます。<code>time_r2</code> は、トークンの分散のうち、時間に沿った平均で説明できる割合です。閾値は、学習前と物差しから、値を見る前に決めます。</li>
+      <li><b>内容</b>: 観測を符号から<b>線形（ridge、検証の組で α を選ぶ）だけ</b>で読み出したときの忠実さ E<sup>lin</sup> と、その変化の版 E<sup>d,lin</sup> を見ます。MLP の読み出しは使いません。v3 で、区間の記憶が確かめられたためです。線形の読み出しは、非線形な符号の内容を低く読みます。そのため、「下がった」は保守的な警告として読みます。</li>
+      <li><b>復元の定性評価</b>: 符号から画像を復元して並べます。内容の数値と見た目が合うかを確かめます。</li>
+    </ul>
+  </div>
+  <div class="status">
+    <b>「良い」と書くのは、次の全てを満たすときだけです</b>
+    <ul>
+      <li>未来と過去の両方で、2 つの分母がそろって <code>pca</code> より良い</li>
+      <li>崩壊していない</li>
+      <li><code>time_r2</code> が閾値の内にある</li>
+      <li>E<sup>lin</sup> が、<code>pca</code> か学習前に対して非劣である</li>
+    </ul>
+  </div>
+</section>
+
+<section id="howdyn">
+  <div class="sec-head"><div class="eyebrow">4.4</div><h2>解説: minGRU による未来・過去の評価のしくみ</h2></div>
+  <div class="prose">
+    <p>この節では、4.1 の評価がどう動くのかと、なぜその形にしたのかを順に説明します。結果の数字はここには載せません。決めた設定と確定した数は <a href="results/foundation/README.md">results/foundation/README.md</a> の F0 の節にあります。</p>
+    <p>評価で知りたいのは、<b>学習した符号の系列が、先（または前）をどれだけ当てやすいか</b>です。当てやすいほど、符号が世界の時間の構造をとらえていると考えます。ただし「当てやすい」にはずるい形もあります。符号を遅くする、中身を捨てる、といった形です。そこで評価は予測のモデル、割り算の分母、合成の確かめ、ガードの 4 つで組み立てています。</p>
+  </div>
+
+  <div class="prose">
+    <h3>評価には状態を持つ RNN を使い、学習では再帰を使わない理由</h3>
+    <p>学習と評価では時間の扱い方を分けています。</p>
+    <ul>
+      <li><b>学習（エンコーダ）</b>: 1 つの stack（8 枚のフレーム）だけを見て、符号 <var>z</var> を 1 つ作ります。前の stack の状態は持ち越しません。そのため <var>z</var> は画素だけで決まる関数になります。再帰のあるエンコーダでは、潜在が自分の中でループするだけの解になるおそれがあります。そうなると、おかしくなっていないことを確かめるガードも複雑になります（ユーザーの判断）。</li>
+      <li><b>評価（minGRU）</b>: 学習が終わって固定した符号の列を、後から別のモデルで読みます。このモデルは評価のためだけに学び、符号は変えません。</li>
+    </ul>
+    <p>評価の側では状態を持たせます。符号の良さを公平に測るには、「その符号の系列から取り出せる最良の予測」に近い値が必要だからです。1 時点だけを見る予測器では、過去に散らばった情報（動きの向きや、雑音に隠れた状態）を使えません。その分だけ符号を低く見積もってしまいます。状態を持つ RNN なら、それまでの系列を状態 <var>h</var> に要約できます。たとえば、隠れた状態を雑音越しに見る過程では、最良の予測はカルマンフィルタです。カルマンフィルタも過去の観測を減衰しながら足し合わせて状態を更新します。</p>
+    <p>minGRU は、ゲートつきの移動平均です。</p>
+    <div class="eq">h<sub>t</sub> = (1 − u<sub>t</sub>) ⊙ h<sub>t−1</sub> + u<sub>t</sub> ⊙ <span class="math">h̃</span><sub>t</sub>　（u<sub>t</sub> と <span class="math">h̃</span><sub>t</sub> は入力 w<sub>t</sub> だけから作る）</div>
+    <p>ゲート <var>u<sub>t</sub></var> が前の状態に依らないので、系列全体を並列に計算でき、学習も安定します。状態は過去の入力を減衰しながら足し合わせたもので、上のカルマンフィルタと同じ形をしています。大きさは 1 層と 2 層、幅は 256 です。検証の組の損失が小さい方を主に出し、両方を記録に残します。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 330" role="img" aria-label="学習では再帰を使わず、評価では状態を持つ minGRU を使う">
+<rect class="panel" x="10" y="10" width="290" height="310" rx="6"/>
+<text x="24" y="36" class="small strong">学習: 再帰を使わない</text>
+<rect class="pbox" x="24" y="56" width="86" height="36" rx="4"/>
+<text x="67" y="79" class="xs" text-anchor="middle">stack τ</text>
+<line class="arr" x1="110" y1="74" x2="136" y2="74" marker-end="url(#ah)"/>
+<rect class="b1" x="138" y="56" width="62" height="36" rx="4"/>
+<text x="169" y="79" class="xs" text-anchor="middle">ViT</text>
+<line class="arr" x1="200" y1="74" x2="226" y2="74" marker-end="url(#ah)"/>
+<rect class="pbox" x="228" y="56" width="60" height="36" rx="4"/>
+<text x="258" y="79" class="xs mono" text-anchor="middle">z</text>
+<rect class="pbox" x="24" y="130" width="86" height="36" rx="4"/>
+<text x="67" y="153" class="xs" text-anchor="middle">次の stack</text>
+<line class="arr" x1="110" y1="148" x2="136" y2="148" marker-end="url(#ah)"/>
+<rect class="b1" x="138" y="130" width="62" height="36" rx="4"/>
+<text x="169" y="153" class="xs" text-anchor="middle">ViT</text>
+<line class="arr" x1="200" y1="148" x2="226" y2="148" marker-end="url(#ah)"/>
+<rect class="pbox" x="228" y="130" width="60" height="36" rx="4"/>
+<text x="258" y="153" class="xs mono" text-anchor="middle">z</text>
+<line class="ray" x1="169" y1="92" x2="169" y2="130"/>
+<line class="cross" x1="160" y1="104" x2="178" y2="118"/>
+<line class="cross" x1="178" y1="104" x2="160" y2="118"/>
+<text x="186" y="116" class="xs warn">状態を渡さない</text>
+<text x="24" y="200" class="xs">・1 つの stack の中だけで補完を学ぶ</text>
+<text x="24" y="220" class="xs">・z は画素だけで決まる関数</text>
+<text x="24" y="240" class="xs">・潜在がループするだけの解を避け、</text>
+<text x="24" y="258" class="xs">　ガードを単純に保つ</text>
+<rect class="panel" x="320" y="10" width="290" height="310" rx="6"/>
+<text x="334" y="36" class="small strong">評価: 状態を持つ minGRU</text>
+<circle class="st" cx="370" cy="74" r="18"/>
+<text x="370" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t−2</tspan></text>
+<circle class="st" cx="450" cy="74" r="18"/>
+<text x="450" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t−1</tspan></text>
+<circle class="st" cx="530" cy="74" r="18"/>
+<text x="530" y="79" class="xs mono" text-anchor="middle">w<tspan dy="4" font-size="9">t</tspan></text>
+<line class="arr" x1="370" y1="92" x2="370" y2="126" marker-end="url(#ah)"/>
+<line class="arr" x1="450" y1="92" x2="450" y2="126" marker-end="url(#ah)"/>
+<line class="arr" x1="530" y1="92" x2="530" y2="126" marker-end="url(#ah)"/>
+<rect class="b2" x="346" y="128" width="48" height="34" rx="4"/>
+<text x="370" y="150" class="xs mono" text-anchor="middle">h</text>
+<rect class="b2" x="426" y="128" width="48" height="34" rx="4"/>
+<text x="450" y="150" class="xs mono" text-anchor="middle">h</text>
+<rect class="b2" x="506" y="128" width="48" height="34" rx="4"/>
+<text x="530" y="150" class="xs mono" text-anchor="middle">h</text>
+<line class="arr" x1="394" y1="145" x2="424" y2="145" marker-end="url(#ah)"/>
+<line class="arr" x1="474" y1="145" x2="504" y2="145" marker-end="url(#ah)"/>
+<line class="arr" x1="530" y1="162" x2="530" y2="190" marker-end="url(#ah)"/>
+<rect class="pbox" x="420" y="192" width="176" height="36" rx="4"/>
+<text x="508" y="215" class="xs" text-anchor="middle">刻みごとの線形の頭</text>
+<text x="334" y="252" class="xs">・過去の符号を状態 h に要約する</text>
+<text x="334" y="272" class="xs">・符号は固定し、minGRU だけを学ぶ</text>
+<text x="334" y="292" class="xs">・過去は、時間を反転した系列で</text>
+<text x="334" y="310" class="xs">　同じものを別に学ぶ</text></svg></div>
+    <figcaption><b>図 4-1　学習と評価の分担。</b> 左は学習です。エンコーダは stack を 1 つずつ別々に符号にし、stack の間で状態を渡しません。右は評価です。固定した符号の列（白色化した <var>w</var>）を minGRU が順に読み、状態 <var>h</var> に過去を要約します。その状態から、刻みごとの線形の頭で先を当てます。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>刻みごとの線形の頭で直接に当てる理由</h3>
+    <p>当てる先は刻み Δ ∈ {0.8, 1.6, 3.2, 6.4, 12.8, 25.6} 秒の 6 つです。遠い先を当てる方法は 2 つあります。</p>
+    <ul>
+      <li><b>巻き戻し（使わない）</b>: 0.8 秒先を当てるモデルを 1 つ作り、その予測を入力に戻して繰り返します。25.6 秒先には 32 回の繰り返しが要ります。1 回ごとの誤差が積み重なります。さらに、何回巻くか、予測を入力にどう戻すかなど、選ぶことが増えます。</li>
+      <li><b>直接（使う）</b>: 共有の minGRU の状態から、刻みごとに別の線形の頭で、Δ 秒先を 1 回で当てます。損失は 6 つの刻みの和です。誤差は積み重ならず、どの刻みも同じ規則で測れます。</li>
+    </ul>
+    <p>頭は次の形にしました。</p>
+    <div class="eq"><span class="math">ŵ</span><sub>t+Δ</sub> = M<sub>Δ</sub> [w<sub>t</sub>; w<sub>t−Δ</sub>] + c<sub>Δ</sub> + A<sub>Δ</sub> y<sub>t</sub> + b<sub>Δ</sub>　（y<sub>t</sub> は minGRU の頂上）</div>
+    <p>前半の M<sub>Δ</sub>[w<sub>t</sub>; w<sub>t−Δ</sub>] + c<sub>Δ</sub> は、既存の dyn/copy の「2 時点の線形」です。学習の初めはこの線形を ridge で合わせた値から始めます。後半の minGRU の頭 A<sub>Δ</sub>, b<sub>Δ</sub> は 0 から始めます。そのあと全てを一緒に学びます。</p>
+    <p>こうすると、エポック 0 のモデルは 2 時点の線形そのものになります。早期終了は検証の組の損失が最小のエポックを残すので、検証の組では線形（下限）より悪くなりません。minGRU は「線形に足りない分」だけを足します。2 時点の線形を入れたのは、minGRU の状態が減衰の足し合わせで、ちょうど Δ だけ前の値 w<sub>t−Δ</sub> を取り出せないからです。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 250" role="img" aria-label="巻き戻しと直接の予測">
+<rect class="panel" x="10" y="10" width="290" height="230" rx="6"/>
+<text x="24" y="36" class="small strong">巻き戻し（使わない）</text>
+<circle class="st" cx="44" cy="100" r="14"/>
+<text x="44" y="105" class="xs mono" text-anchor="middle">t</text>
+<line class="arr" x1="58" y1="100" x2="90" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="106" cy="100" r="14"/>
+<line class="arr" x1="120" y1="100" x2="148" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="168" cy="100" r="18"/>
+<line class="arr" x1="186" y1="100" x2="210" y2="100" marker-end="url(#ah)"/>
+<circle class="ring" cx="236" cy="100" r="24"/>
+<text x="106" y="140" class="xs" text-anchor="middle">+0.8</text>
+<text x="168" y="140" class="xs" text-anchor="middle">+1.6</text>
+<text x="236" y="140" class="xs" text-anchor="middle">+2.4 …</text>
+<text x="24" y="182" class="xs">・1 歩の予測を入力に戻して繰り返す</text>
+<text x="24" y="202" class="xs warn">・誤差が積み重なる（円が広がる）</text>
+<text x="24" y="222" class="xs warn">・何回巻くかなど、選ぶことが増える</text>
+<rect class="panel" x="320" y="10" width="290" height="230" rx="6"/>
+<text x="334" y="36" class="small strong">直接（使う）</text>
+<rect class="b2" x="334" y="96" width="56" height="34" rx="4"/>
+<text x="362" y="118" class="xs mono" text-anchor="middle">y<tspan dy="4" font-size="9">t</tspan></text>
+<line class="arr" x1="390" y1="113" x2="486" y2="58" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="80" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="102" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="124" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="146" marker-end="url(#ah)"/>
+<line class="arr" x1="390" y1="113" x2="486" y2="168" marker-end="url(#ah)"/>
+<text x="494" y="62" class="xs">0.8 秒先</text>
+<text x="494" y="84" class="xs">1.6 秒先</text>
+<text x="494" y="106" class="xs">3.2 秒先</text>
+<text x="494" y="128" class="xs">6.4 秒先</text>
+<text x="494" y="150" class="xs">12.8 秒先</text>
+<text x="494" y="172" class="xs">25.6 秒先</text>
+<text x="334" y="202" class="xs">・刻みごとに別の線形の頭で 1 回で当てる</text>
+<text x="334" y="222" class="xs tg">・誤差は積み重ならない</text></svg></div>
+    <figcaption><b>図 4-2　巻き戻しと直接の予測。</b> 左の巻き戻しは、0.8 秒先の予測を何度も繰り返すので、誤差が広がっていきます。右の直接の予測は、minGRU の状態 <var>y<sub>t</sub></var> から、6 つの刻みのそれぞれを別の頭で 1 回で当てます。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>2 つの分母の読み方</h3>
+    <p>予測の誤差（平均二乗誤差）の大きさだけでは、符号どうしを比べられません。符号ごとに、ばらつきの大きさや動きの速さが違うからです。そこで、誤差を 2 つの「何も考えない予測」の誤差で割ります。</p>
+    <dl class="gloss">
+      <dt>R<sub>copy</sub></dt><dd>今の値をそのまま答える予測（<span class="math">ŵ</span><sub>t+Δ</sub> = w<sub>t</sub>）の誤差で割った値。copy より良ければ 1 より小さくなります。</dd>
+      <dt>R<sub>clim</sub></dt><dd>いつも平均を答える予測（<span class="math">ŵ</span><sub>t+Δ</sub> = <span class="math ob">w</span>、訓練の組の平均）の誤差で割った値。平均より良ければ 1 より小さくなります。</dd>
+      <dt>主の数</dt><dd>6 つの刻みの log R の平均。小さいほど当てやすいことを表します。対数をとるのは、刻みごとの「何倍良いか」を同じ重みで平均するためです。</dd>
+    </dl>
+    <p>分母を 2 つにしたのは、分かっている 2 つのずるが 2 つの分母で逆向きに動くからです。</p>
+    <ul>
+      <li><b>遅くする</b>（符号を時間で平均する）: 先の値が今の値に近づくので、平均より当てやすくなり、R<sub>clim</sub> は良くなります。一方で copy もとても強くなるので、R<sub>copy</sub> は 1 に近づき、悪くなります。</li>
+      <li><b>雑音を足す</b>: copy の誤差には今と先の 2 回分の雑音が入ります。予測の誤差には先の 1 回分しか入りません。そのため R<sub>copy</sub> は 1/2 に近づき、良く見えます。一方で、雑音は平均の予測と同じだけ予測も悪くするので、R<sub>clim</sub> は 1 に近づき、悪くなります。</li>
+    </ul>
+    <p>2 つの符号 a と b を比べるときは、主の数の差 ψ = (a の値) − (b の値) を分母ごとに出します。負なら a の方が当てやすいということです。区間は ±2 SE で、SE はブロックの揺れと seed の揺れから求めます。言葉は次のとおりです。</p>
+    <ul>
+      <li><b>a が良いと区別できた</b>: 2 つの分母の区間が、どちらも 0 より下にある</li>
+      <li><b>分母で向きが割れた</b>: 一方の区間は 0 より下、他方は 0 より上にある（ずるの形を疑う）</li>
+      <li><b>区別できない</b>: どちらかの区間が 0 をまたぐ</li>
+      <li>2 つの区間がどちらも 0 より上なら、逆に「b が良いと区別できた」になります</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 420" role="img" aria-label="2 つの分母の平面と判定の言葉">
+<rect class="shade" x="60" y="210" width="200" height="170"/>
+<line class="axis" x1="60" y1="210" x2="460" y2="210"/>
+<line class="axis" x1="260" y1="40" x2="260" y2="380"/>
+<text x="460" y="200" class="xs" text-anchor="end">ψ<tspan dy="4" font-size="9">copy</tspan><tspan dy="-4">（a − b）→</tspan></text>
+<text x="268" y="50" class="xs">↑ ψ<tspan dy="4" font-size="9">clim</tspan><tspan dy="-4">（a − b）</tspan></text>
+<text x="160" y="362" class="small strong tg" text-anchor="middle">a が良い</text>
+<text x="160" y="380" class="xs" text-anchor="middle" dy="-2">（両方の分母で）</text>
+<text x="360" y="84" class="small strong" text-anchor="middle">b が良い</text>
+<text x="160" y="84" class="xs warn" text-anchor="middle">分母で向きが割れた</text>
+<text x="360" y="300" class="xs warn" text-anchor="middle">分母で向きが割れた</text>
+<line class="arr" x1="260" y1="210" x2="180" y2="128" marker-end="url(#ah)"/>
+<text x="96" y="122" class="xs strong">雑音を足す</text>
+<line class="arr" x1="260" y1="210" x2="340" y2="292" marker-end="url(#ah)"/>
+<text x="352" y="322" class="xs strong">遅くする</text>
+<rect class="band" x="120" y="250" width="70" height="50"/>
+<line class="cross" x1="155" y1="250" x2="155" y2="300"/>
+<line class="cross" x1="120" y1="275" x2="190" y2="275"/>
+<text x="155" y="318" class="xs" text-anchor="middle">区間が象限に</text>
+<text x="155" y="334" class="xs" text-anchor="middle">収まる → 良い</text>
+<rect class="band" x="290" y="140" width="60" height="100"/>
+<text x="358" y="160" class="xs">0 をまたぐ</text>
+<text x="358" y="176" class="xs">→ 区別できない</text></svg></div>
+    <figcaption><b>図 4-3　2 つの分母の平面。</b> 横軸は copy で割った主の数の差、縦軸は平均で割った主の数の差です（a − b、左・下ほど a が良い）。「良い」と書くのは、2 つの区間が作る長方形が、左下の象限（灰色）に収まるときだけです。遅くするずると雑音を足すずるは、この平面で逆の象限へ動くので、どちらも「分母で向きが割れた」になります。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>合成の確かめが保証すること</h3>
+    <p>実データでは最良の予測がどれだけの誤差になるかが分かりません。そこで、最良の誤差 E<sup>*</sup>（神託）を式で計算できる合成の系列を作り、minGRU の評価をそのまま当てます。確かめるのは、測った誤差 <span class="math">Ê</span> が次の範囲に入ることです。</p>
+    <div class="eq">E<sup>*</sup><sub>Δ</sub> − z·SE　≤　<span class="math">Ê</span><sub>Δ</sub>　≤　E<sup>*</sup><sub>Δ</sub> (1 + p / (nk)) + z·SE　　（z = 4）</div>
+    <p>下限を下回るなら、最良より良いことになるので、未来の値が入力に漏れているか、計算の誤りです。上限の p/(nk) は、パラメータ p 個のモデルを nk 個の値で合わせたときに、正しいモデルでも避けられない誤差の上乗せです。上限を超えるなら、学習が最良に届いていないということです。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 170" role="img" aria-label="合成の確かめの通る範囲">
+<rect class="band" x="200" y="56" width="250" height="40"/>
+<line class="axis" x1="30" y1="96" x2="590" y2="96"/>
+<line class="refline" x1="230" y1="44" x2="230" y2="108"/>
+<text x="230" y="38" class="xs" text-anchor="middle">神託 E*</text>
+<line class="chance" x1="200" y1="56" x2="200" y2="108"/>
+<line class="chance" x1="450" y1="56" x2="450" y2="108"/>
+<text x="200" y="126" class="xs" text-anchor="middle">下限</text>
+<text x="450" y="126" class="xs" text-anchor="middle">上限</text>
+<circle class="c3" cx="300" cy="76" r="7"/>
+<text x="312" y="81" class="xs">Ê（通る）</text>
+<text x="590" y="116" class="xs" text-anchor="end">誤差 →</text>
+<text x="30" y="152" class="xs lab-bad">下回る: 未来の漏れ・計算の誤り</text>
+<text x="590" y="152" class="xs lab-bad" text-anchor="end">上回る: 最良に届いていない</text></svg></div>
+    <figcaption><b>図 4-4　合成の確かめの通る範囲。</b> 神託 E<sup>*</sup> の少し下から、学習で避けられない上乗せを足した少し上までが、通る範囲です。この範囲は、学習した符号の値を見る前に式で決まっています。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>確かめ</th><th>合成の系列と神託</th><th>保証すること</th></tr></thead>
+    <tbody>
+      <tr><td class="n">ou</td><td>多次元の AR(1)（今の値に係数を掛けて雑音を足す）。最良は今の値の線形で、閉じた式で出る。</td><td>最良が単純なとき、学習で余計に悪くならない。早期終了と頭の作りがおかしくなっていない。</td></tr>
+      <tr><td class="n">kalman</td><td>隠れた AR(1) の状態を直交行列で混ぜ、雑音越しに観測する。最良はカルマンフィルタで、過去の全体を使う。</td><td>履歴に予測の情報があれば、minGRU がそれを拾い、2 時点の線形を超えて最良に届く。学習しない予測器（2 時点の線形だけ）は落ちる（陰性の対照）。</td></tr>
+      <tr><td class="n">reverse</td><td>時間を反転しても統計が変わらない過程を、一部だけ観測する。未来と過去の最良の誤差は等しい。</td><td>過去の評価（系列の反転）に偏りがなく、未来と過去を同じ物差しで比べられる。</td></tr>
+      <tr><td class="n">iid</td><td>白い雑音。どの予測も平均より良くならない。</td><td>R<sub>clim</sub> ≈ 1、R<sub>copy</sub> ≈ 1/2 になる。分母の計算が正しい。</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p><b>保証しないこと</b>もあります。kalman の過程は、最良が minGRU の族（減衰の足し合わせ）に入る形に選びました（README の「値を見た後の直し」の 2）。この確かめが示すのは、「族の中に最良があるとき、学習でそこへ届く」ことです。実データの最良が族の外にあるとき、そこへ届くことまでは保証しません。それでも、全ての符号に同じ評価を当てるので、符号の間の比べには偏りが入りません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>ガードの閾値の決め方</h3>
+    <p>予測しやすさが上がっても、それがずるによるものなら意味がありません。ガードはそれを見張ります。閾値は、<b>学習した符号の値を見る前に</b>、学習前の符号と物差しの値から数を確定し、README に書きました。</p>
+    <ul>
+      <li><b><code>time_r2</code>（時間に沿って一定のトークンへの崩壊）</b>: トークンの分散のうち、同じ位置の 4 つの時刻の平均で説明できる割合です。トークンが時間に沿って一定なら 1 になり、時刻ごとに独立なら 1/T = 1/4 になります。学習の目的（SIGReg）はこの崩壊を弱くしか罰しないので、評価の側で見張ります。閾値は max(学習前の符号, 画素の tubelet) + 0.05 です。画素そのものと学習前の符号は、まだ何も学んでいない基準です。そこから 0.05 を超えて時間に沿って一定の方へ寄ったら、崩壊とみなします。</li>
+      <li><b>E<sup>lin</sup>（中身を捨てていないこと）</b>: 符号から観測（stack の最後のフレームを 32×32 に平均したもの）を ridge で読み出したときの、説明できる割合です。読み出しを線形だけに限るのは、MLP では区間の記憶で高く出てしまったからです。比べるのは誤差 U = 1 − E<sup>lin</sup> の方で、U ≤ 1.10 × max(U<sub>pca</sub>, U<sub>学習前</sub>) を非劣とします。E<sup>lin</sup> は高いほど良い量なので、E<sup>lin</sup> にそのまま「1.10 倍以下」をかけても抑えになりません。そのため誤差の側で書きます。線形の読み出しは非線形な符号の中身を低く読むので、外れたときは保守的な警告として読みます。</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 250" role="img" aria-label="time_r2 と E lin の閾値の決め方">
+<text x="30" y="26" class="small strong">time_r2</text>
+<line class="axis" x1="40" y1="70" x2="580" y2="70"/>
+<rect x="508" y="56" width="72" height="28" fill="var(--bad-bg)"/>
+<line class="refline bad" x1="508" y1="46" x2="508" y2="94"/>
+<text x="40" y="92" class="xs" text-anchor="middle">0</text>
+<line class="tick c1s" x1="175" y1="62" x2="175" y2="78"/>
+<text x="175" y="54" class="xs" text-anchor="middle">1/T（独立）</text>
+<line class="tick c1s" x1="580" y1="62" x2="580" y2="78"/>
+<text x="580" y="92" class="xs" text-anchor="middle">1</text>
+<text x="590" y="54" class="xs" text-anchor="end">一定</text>
+<circle class="cn" cx="456" cy="70" r="5"/>
+<circle class="cn" cx="483" cy="70" r="5"/>
+<text x="462" y="110" class="xs" text-anchor="end">学習前</text>
+<text x="478" y="110" class="xs">画素</text>
+<text x="508" y="126" class="xs lab-bad" text-anchor="middle">大きい方 + 0.05</text>
+<text x="30" y="160" class="small strong">E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5"> の誤差 U = 1 − E</tspan><tspan dy="-5" font-size="9">lin</tspan></text>
+<line class="axis" x1="40" y1="204" x2="580" y2="204"/>
+<rect x="425" y="190" width="155" height="28" fill="var(--bad-bg)"/>
+<line class="refline bad" x1="425" y1="180" x2="425" y2="228"/>
+<text x="40" y="226" class="xs" text-anchor="middle">0</text>
+<circle class="cn" cx="342" cy="204" r="5"/>
+<circle class="cn" cx="390" cy="204" r="5"/>
+<text x="342" y="226" class="xs" text-anchor="middle">U(pca)</text>
+<text x="412" y="244" class="xs" text-anchor="end">U(学習前)</text>
+<text x="430" y="244" class="xs lab-bad">1.10 × 大きい方</text>
+<text x="580" y="226" class="xs" text-anchor="end">悪い →</text></svg></div>
+    <figcaption><b>図 4-5　ガードの閾値の決め方（位置は模式）。</b> 上は <code>time_r2</code> です。学習前の符号と画素の tubelet の大きい方に 0.05 を足した所が閾値で、赤い範囲に入ったら崩壊とみなします。下は内容の誤差 U です。<code>pca</code> と学習前の大きい方を 1.10 倍した所が閾値で、赤い範囲に入ったら非劣でないとします。どちらの閾値も、学習した符号の値を見る前に決めました。</figcaption>
+  </figure>
+</section>
+
+<section id="stages">
+  <div class="sec-head"><div class="eyebrow">5</div><h2>段の順序</h2></div>
+  <div class="prose">
+    <p>1 段では 1 つの要素だけを変えます。各段で「何が分かれば次へ進むか」を、回す前に書きます。<b>比べる相手は他の手法（<code>pca</code>・VAE の <code>v16</code>・<code>v17</code>・<code>mean8</code> などの物差し）だけです。以前の JEPA（V18〜V18d）の結果とは比べません</b>（ユーザー、2026-11-27）。段どうしの差は、何が効いたかを読むための記述です。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg fit" viewBox="0 0 520 552" role="img" aria-label="段の順序 F0 から F3"><circle class="st" cx="34" cy="40" r="22"/>
+<text x="34" y="45" class="small strong mono accent" text-anchor="middle">F0</text>
+<line class="arr" x1="34" y1="64" x2="34" y2="142" marker-end="url(#ah)"/>
+<rect class="pbox" x="70" y="10" width="440" height="112" rx="5"/>
+<text x="82" y="32" class="small strong">評価の土台（学習しない）</text>
+<text x="82" y="54" class="xs">minGRU の評価を作り、合成で確かめる</text>
+<text x="82" y="72" class="xs">物差し（pca・mean8・VAE の v16・v17・学習前）に当てる</text>
+<text x="82" y="94" class="xs strong accent">次へ: 合成の確かめが全て通り、物差しの順序が</text>
+<text x="82" y="112" class="xs strong accent">既存の dyn/copy と矛盾しない</text>
+<circle class="st" cx="34" cy="166" r="22"/>
+<text x="34" y="171" class="small strong mono accent" text-anchor="middle">F1</text>
+<line class="arr" x1="34" y1="190" x2="34" y2="268" marker-end="url(#ah)"/>
+<rect class="pbox" x="70" y="136" width="440" height="112" rx="5"/>
+<text x="82" y="158" class="small strong">T0: tubelet の箱で、全てのブロックを全時間に</text>
+<text x="82" y="180" class="xs">V-JEPA の multi-block そのもの（今だけ）</text>
+<text x="82" y="202" class="xs strong accent">次へ: 崩壊しない</text>
+<text x="82" y="220" class="xs strong accent">今・過去・未来の評価を pca・VAE と並べる</text>
+<circle class="st" cx="34" cy="292" r="22"/>
+<text x="34" y="297" class="small strong mono accent" text-anchor="middle">F2</text>
+<line class="arr" x1="34" y1="316" x2="34" y2="394" marker-end="url(#ah)"/>
+<rect class="pbox" x="70" y="262" width="440" height="112" rx="5"/>
+<text x="82" y="284" class="small strong">S1: ブロックの時間の長さも引く（族の全体）、s = 1</text>
+<text x="82" y="306" class="xs">変える要素: ブロックの時間の長さ</text>
+<text x="82" y="328" class="xs strong accent">次へ: 崩壊しない（time_r2 を含む）</text>
+<text x="82" y="346" class="xs strong accent">読むこと: T0 より未来・過去の評価が良くなるか</text>
+<text x="82" y="364" class="xs strong accent">（時間の補完の効果）</text>
+<circle class="st" cx="34" cy="418" r="22"/>
+<text x="34" y="423" class="small strong mono accent" text-anchor="middle">F3</text>
+<rect class="bg" x="70" y="388" width="440" height="112" rx="5"/>
+<text x="82" y="410" class="small strong">Sσ: 同じ、log s を一様に</text>
+<text x="82" y="432" class="xs">変える要素: 時間の尺度</text>
+<text x="82" y="454" class="xs strong accent">読むこと: S1 より良くなるか（時間の尺度の効果）</text>
+<text x="82" y="472" class="xs strong accent">ここで pca と VAE を超えたかを判定する</text>
+<text x="70" y="522" class="xs">比べる相手は pca・VAE などの他の手法だけ。以前の JEPA とは比べない</text>
+<text x="70" y="540" class="xs">F3 の後: 元の計画の流れ（ストリーム、時間相関の SIGReg、PC-ALM）へ戻る</text></svg></div>
+    <figcaption><b>図 5　段の順序と、各段で読むこと。</b> F0 では学習をせず、評価の土台だけを作って確かめます。F1〜F3 では、1 段に 1 つずつ要素を足します。前の段との差は、何が効いたかを読むための記述です。比べる相手は、<code>pca</code>・VAE などの他の手法だけです。以前の JEPA（V18〜V18d）とは比べません。<code>pca</code> と VAE を超えたかどうかは F3 で判定します。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>段</th><th>中身</th><th>次へ進む条件</th></tr></thead>
+    <tbody>
+      <tr><td class="n">F0</td><td><b>評価の土台</b>。minGRU の評価を作り、合成で確かめます（OU、ガウスの状態空間モデルではカルマンの最良に近づくこと、定常なら未来と過去の誤差が一致すること）。物差し（<code>pca</code>・<code>mean8</code>・VAE の <code>v16</code>・<code>v17</code>・学習前）に当てます。学習はしません。</td><td>合成の確かめが全て通る。物差しの順序が既存の dyn/copy と矛盾しない。</td></tr>
+      <tr><td class="n">F1</td><td><b>T0</b>: tubelet の箱で、全てのブロックを全時間にする（V-JEPA の multi-block そのもの、今だけ）。</td><td>崩壊しない。今・過去・未来の評価を <code>pca</code>・VAE と並べる。</td></tr>
+      <tr><td class="n">F2</td><td><b>S1</b>: ブロックの時間の長さも引く（族の全体）、<var>s</var> = 1。</td><td>崩壊しない（<code>time_r2</code> を含む）。T0 より未来・過去の評価が良くなるか（時間の補完の効果）を読む。</td></tr>
+      <tr><td class="n">F3</td><td><b>Sσ</b>: 同じ、log <var>s</var> を一様に。</td><td>S1 より良くなるか（時間の尺度の効果）を読む。<b>ここで <code>pca</code> と VAE を超えたかを判定する。</b></td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p>各段ではまず短い run（6000 step、学習率 × <var>λ</var> の掃引）を回し、次に長い run（60000 step、seed 2 つ）を回します。長い run の設定は検証の動画の補完の損失と崩壊の指標で選びます。評価の動画 Zurich は選択に使いません。長い run 1 本は 6〜8 時間の見込みで、4 枚の 4090 で並べて回します。</p>
+    <p>F3 の後は、元の計画の流れ（ストリーム、時間相関の SIGReg、PC-ALM）へ戻ります。</p>
+  </div>
+</section>
+
+<section id="open">
+  <div class="sec-head"><div class="eyebrow">6</div><h2>決めていないこと（F0 の前に決める）</h2></div>
+  <div class="prose">
+    <ul>
+      <li>minGRU の大きさ（層の数・幅）と、学習の規則（早期終了、seed の数）</li>
+      <li><code>time_r2</code> と E<sup>lin</sup> の非劣性の余裕</li>
+      <li><var>s</var> の範囲の上端（128）が、動画の長さと読み出しの速さで実際に回るか</li>
+    </ul>
+  </div>
+</section>
+
+<section id="results">
+  <div class="sec-head"><div class="eyebrow">7</div><h2>結果: F1〜F3 の判定（2026-11-28）</h2></div>
+  <div class="status">
+    <p><span class="badge ng">良いに当たらない</span> <b>T0・S1・Sσ のどの腕も、<code>pca</code> と VAE（<code>v16</code>・<code>v17</code>）を超えませんでした。</b> 長い run の step 45000 を seed 0 と seed 1 のそれぞれで判定し、6 つとも 4 節の「良い」に当たりませんでした。<code>mean8</code> と比べても同じです。</p>
+    <ul>
+      <li><b>2 つの分母で向きが割れた。</b> 学習した符号は、copy に対しては <code>pca</code> より予測しやすく、平均に対しては、はっきり予測しにくくなりました。</li>
+      <li><b>内容のガードに落ちた。</b> U は 0.75〜0.91 で、基準の 0.2854 を大きく超えました。</li>
+      <li>崩壊（K1〜K3・時間の線）と <code>time_r2</code> は、学習した全ての符号で通りました。</li>
+    </ul>
+    <p class="small muted">数字は全て <a href="results/foundation/README.md">results/foundation/README.md</a> の「評価の段」から取りました。判定は <code>judge_eval.py</code> の出力（<code>fnd-eval/judge.json</code>）です。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.1 未来と過去</h3>
+    <p>主の範囲 0.8〜25.6 秒の mean log R を、2 つの分母の平面に置きました（図 4-3 と同じ向きで、左・下ほど良い）。主の層は検証の損失で選んだ結果、全て 1 層になりました。minGRU は全ての符号で、検証の損失がエポック 0（2 時点の線形）で最小になりました。そのため値は 2 時点の線形と同じで、seed のばらつきは 0 です。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 640 360" role="img" aria-label="腕ごとの未来と過去の mean log R を pca・VAE と比べた散布図">
+<text x="80" y="24" class="small strong">未来</text>
+<rect class="panel" x="80" y="40" width="250" height="250"/>
+<line class="gridline" x1="105.0" y1="40" x2="105.0" y2="290"/>
+<text x="105.0" y="306" class="xs mono" text-anchor="middle">−0.64</text>
+<line class="gridline" x1="155.0" y1="40" x2="155.0" y2="290"/>
+<text x="155.0" y="306" class="xs mono" text-anchor="middle">−0.60</text>
+<line class="gridline" x1="205.0" y1="40" x2="205.0" y2="290"/>
+<text x="205.0" y="306" class="xs mono" text-anchor="middle">−0.56</text>
+<line class="gridline" x1="255.0" y1="40" x2="255.0" y2="290"/>
+<text x="255.0" y="306" class="xs mono" text-anchor="middle">−0.52</text>
+<line class="gridline" x1="305.0" y1="40" x2="305.0" y2="290"/>
+<text x="305.0" y="306" class="xs mono" text-anchor="middle">−0.48</text>
+<line class="gridline" x1="80" y1="290.0" x2="330" y2="290.0"/>
+<text x="74" y="294.0" class="xs mono" text-anchor="end">−0.30</text>
+<line class="gridline" x1="80" y1="248.3" x2="330" y2="248.3"/>
+<text x="74" y="252.3" class="xs mono" text-anchor="end">−0.25</text>
+<line class="gridline" x1="80" y1="206.7" x2="330" y2="206.7"/>
+<text x="74" y="210.7" class="xs mono" text-anchor="end">−0.20</text>
+<line class="gridline" x1="80" y1="165.0" x2="330" y2="165.0"/>
+<text x="74" y="169.0" class="xs mono" text-anchor="end">−0.15</text>
+<line class="gridline" x1="80" y1="123.3" x2="330" y2="123.3"/>
+<text x="74" y="127.3" class="xs mono" text-anchor="end">−0.10</text>
+<line class="gridline" x1="80" y1="81.7" x2="330" y2="81.7"/>
+<text x="74" y="85.7" class="xs mono" text-anchor="end">−0.05</text>
+<line class="gridline" x1="80" y1="40.0" x2="330" y2="40.0"/>
+<text x="74" y="44.0" class="xs mono" text-anchor="end">0.00</text>
+<line class="chance" x1="267.5" y1="40" x2="267.5" y2="290"/>
+<line class="chance" x1="80" y1="267.5" x2="330" y2="267.5"/>
+<text x="88" y="177.5" class="xs warn">分母で向きが割れた</text>
+<text x="88" y="193.5" class="xs warn">（copy で良く clim で悪い）</text>
+<text x="86" y="282" class="xs tg">pca より良い</text>
+<rect x="262.5" y="262.5" width="10" height="10" fill="var(--ink)"/>
+<rect class="cn" x="291.0" y="261.0" width="8" height="8"/>
+<rect class="cn" x="301.0" y="245.2" width="8" height="8"/>
+<rect class="cn" x="229.8" y="230.2" width="8" height="8"/>
+<circle class="c1" cx="121.3" cy="54.2" r="5"/>
+<circle cx="128.8" cy="58.3" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="237.5" cy="108.3" r="5"/>
+<circle cx="200.0" cy="96.7" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="211.2" cy="115.8" r="5"/>
+<circle cx="207.5" cy="113.3" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<text x="259.5" y="283.5" class="xs mono" text-anchor="end">pca</text>
+<text x="295.0" y="283.0" class="xs mono" text-anchor="middle">mean8</text>
+<text x="299.0" y="243.2" class="xs mono" text-anchor="end">v16</text>
+<text x="227.8" y="228.2" class="xs mono" text-anchor="end">v17</text>
+<text x="138.8" y="60.2" class="xs strong t1" text-anchor="start">T0</text>
+<text x="247.5" y="106.5" class="xs strong t2" text-anchor="start">S1</text>
+<text x="221.2" y="128.6" class="xs strong t3" text-anchor="start">Sσ</text>
+<text x="370" y="24" class="small strong">過去</text>
+<rect class="panel" x="370" y="40" width="250" height="250"/>
+<line class="gridline" x1="395.0" y1="40" x2="395.0" y2="290"/>
+<text x="395.0" y="306" class="xs mono" text-anchor="middle">−0.64</text>
+<line class="gridline" x1="445.0" y1="40" x2="445.0" y2="290"/>
+<text x="445.0" y="306" class="xs mono" text-anchor="middle">−0.60</text>
+<line class="gridline" x1="495.0" y1="40" x2="495.0" y2="290"/>
+<text x="495.0" y="306" class="xs mono" text-anchor="middle">−0.56</text>
+<line class="gridline" x1="545.0" y1="40" x2="545.0" y2="290"/>
+<text x="545.0" y="306" class="xs mono" text-anchor="middle">−0.52</text>
+<line class="gridline" x1="595.0" y1="40" x2="595.0" y2="290"/>
+<text x="595.0" y="306" class="xs mono" text-anchor="middle">−0.48</text>
+<line class="gridline" x1="370" y1="290.0" x2="620" y2="290.0"/>
+<line class="gridline" x1="370" y1="248.3" x2="620" y2="248.3"/>
+<line class="gridline" x1="370" y1="206.7" x2="620" y2="206.7"/>
+<line class="gridline" x1="370" y1="165.0" x2="620" y2="165.0"/>
+<line class="gridline" x1="370" y1="123.3" x2="620" y2="123.3"/>
+<line class="gridline" x1="370" y1="81.7" x2="620" y2="81.7"/>
+<line class="gridline" x1="370" y1="40.0" x2="620" y2="40.0"/>
+<line class="chance" x1="552.5" y1="40" x2="552.5" y2="290"/>
+<line class="chance" x1="370" y1="266.7" x2="620" y2="266.7"/>
+<text x="378" y="177.5" class="xs warn">分母で向きが割れた</text>
+<text x="378" y="193.5" class="xs warn">（copy で良く clim で悪い）</text>
+<text x="376" y="282" class="xs tg">pca より良い</text>
+<rect x="547.5" y="261.7" width="10" height="10" fill="var(--ink)"/>
+<rect class="cn" x="576.0" y="259.3" width="8" height="8"/>
+<rect class="cn" x="588.5" y="245.2" width="8" height="8"/>
+<rect class="cn" x="518.5" y="229.3" width="8" height="8"/>
+<circle class="c1" cx="405.0" cy="53.3" r="5"/>
+<circle cx="416.3" cy="57.5" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="520.0" cy="106.7" r="5"/>
+<circle cx="483.8" cy="95.8" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="495.0" cy="114.2" r="5"/>
+<circle cx="488.8" cy="112.5" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<text x="544.5" y="282.7" class="xs mono" text-anchor="end">pca</text>
+<text x="580.0" y="281.3" class="xs mono" text-anchor="middle">mean8</text>
+<text x="586.5" y="243.2" class="xs mono" text-anchor="end">v16</text>
+<text x="516.5" y="227.3" class="xs mono" text-anchor="end">v17</text>
+<text x="426.3" y="59.4" class="xs strong t1" text-anchor="start">T0</text>
+<text x="530.0" y="105.3" class="xs strong t2" text-anchor="start">S1</text>
+<text x="505.0" y="127.3" class="xs strong t3" text-anchor="start">Sσ</text>
+<text x="350" y="326" class="xs" text-anchor="middle">mean log R_copy（左ほど良い）→</text>
+<text x="16" y="165" class="xs" text-anchor="middle" transform="rotate(-90 16 165)">mean log R_clim（下ほど良い）</text>
+<circle class="c1" cx="100" cy="346" r="5"/><text x="110" y="350" class="xs">seed 0（塗り）</text>
+<circle cx="220" cy="346" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/><text x="230" y="350" class="xs">seed 1（白抜き）</text>
+<rect class="cn" x="346" y="342" width="8" height="8"/><text x="360" y="350" class="xs">物差し（黒は pca）</text></svg></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-1　腕ごとの未来と過去の mean log R（copy / clim）。</b> 点線は <code>pca</code> を通る線です。学習した 6 つの符号は、全て <code>pca</code> の左上にあります。copy では <code>pca</code> より良く、clim では悪いということで、図 4-3 の「雑音を足す」の向きです。clim が 0 に近いのは、0.8 秒先でも平均の予測とほとんど変わらないということです。過去も未来とほぼ同じ位置に来ました。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>未来（copy / clim）</th><th>過去（copy / clim）</th></tr></thead>
+    <tbody>
+      <tr><td style="white-space:nowrap"><code>pca</code></td><td class="n">−0.510 / −0.273</td><td class="n">−0.514 / −0.272</td></tr>
+      <tr><td style="white-space:nowrap"><code>v16</code></td><td class="n">−0.480 / −0.251</td><td class="n">−0.482 / −0.251</td></tr>
+      <tr><td style="white-space:nowrap"><code>v17</code></td><td class="n">−0.537 / −0.233</td><td class="n">−0.538 / −0.232</td></tr>
+      <tr><td style="white-space:nowrap"><code>mean8</code></td><td class="n">−0.488 / −0.270</td><td class="n">−0.492 / −0.268</td></tr>
+      <tr><td style="white-space:nowrap">T0 s0</td><td class="n">−0.627 / −0.017</td><td class="n">−0.632 / −0.016</td></tr>
+      <tr><td style="white-space:nowrap">T0 s1</td><td class="n">−0.621 / −0.022</td><td class="n">−0.623 / −0.021</td></tr>
+      <tr><td style="white-space:nowrap">S1 s0</td><td class="n">−0.534 / −0.082</td><td class="n">−0.540 / −0.080</td></tr>
+      <tr><td style="white-space:nowrap">S1 s1</td><td class="n">−0.564 / −0.068</td><td class="n">−0.569 / −0.067</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s0</td><td class="n">−0.555 / −0.091</td><td class="n">−0.560 / −0.089</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s1</td><td class="n">−0.558 / −0.088</td><td class="n">−0.565 / −0.087</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>未来の ψ<sub>copy</sub> 対 <code>pca</code>（±2 SE）</th><th>未来の ψ<sub>clim</sub> 対 <code>pca</code>（±2 SE）</th><th>言葉（対 <code>pca</code>・<code>v16</code>・<code>v17</code>）</th></tr></thead>
+    <tbody>
+      <tr><td style="white-space:nowrap">T0 s0</td><td class="n">−0.118 [−0.143, −0.092]</td><td class="n">+0.257 [0.209, 0.304]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">T0 s1</td><td class="n">−0.111 [−0.142, −0.080]</td><td class="n">+0.252 [0.210, 0.293]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">S1 s0</td><td class="n">−0.024 [−0.053, 0.005]</td><td class="n">+0.192 [0.161, 0.223]</td><td>区別できない・割れた・区別できない</td></tr>
+      <tr><td style="white-space:nowrap">S1 s1</td><td class="n">−0.054 [−0.079, −0.030]</td><td class="n">+0.206 [0.166, 0.246]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s0</td><td class="n">−0.045 [−0.072, −0.017]</td><td class="n">+0.183 [0.147, 0.218]</td><td>割れた・割れた・区別できない</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s1</td><td class="n">−0.049 [−0.073, −0.024]</td><td class="n">+0.185 [0.150, 0.220]</td><td>割れた・割れた・区別できない</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p class="small muted">「割れた」は「分母で向きが割れた」の略です。言葉は未来と過去で同じでした。過去の ψ と区間は README の表にあります。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.2 今: stack の中の補完</h3>
+    <p>格子の半分から他方の半分を ridge で当てたときの R（copy / clim）です。値は Zurich の seed 0、step 45000 のものです。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>左 → 右</th><th>上 → 下</th><th>前半 → 後半（stack の中の未来）</th><th>後半 → 前半（過去）</th></tr></thead>
+    <tbody>
+      <tr><td><code>pca</code></td><td class="n">0.489 / 0.856</td><td class="n">0.423 / 0.903</td><td class="n">0.788 / 0.283</td><td class="n">0.788 / 0.283</td></tr>
+      <tr><td><code>init</code></td><td class="n">0.487 / 0.857</td><td class="n">0.428 / 0.888</td><td class="n">0.813 / 0.319</td><td class="n">0.757 / 0.315</td></tr>
+      <tr><td>T0</td><td class="n">0.556 / 0.984</td><td class="n">0.589 / 1.000</td><td class="n">0.533 / 0.923</td><td class="n">0.530 / 0.932</td></tr>
+      <tr><td>S1</td><td class="n">0.493 / 0.969</td><td class="n">0.475 / 0.999</td><td class="n">0.490 / 0.774</td><td class="n">0.469 / 0.788</td></tr>
+      <tr><td>Sσ</td><td class="n">0.486 / 0.967</td><td class="n">0.507 / 0.995</td><td class="n">0.487 / 0.696</td><td class="n">0.467 / 0.703</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <ul>
+      <li>空間の半分を当てる問題では、学習した符号の clim は 0.96〜1.00 で、平均の予測とほぼ変わりません（<code>pca</code> は 0.86〜0.90）。</li>
+      <li>stack の中の未来と過去の clim は、時間の補完を学んだ腕ほど低くなりました（T0 0.92〜0.93、S1 0.77〜0.79、Sσ 0.70）。それでも <code>pca</code> の 0.283 より悪い値です。</li>
+    </ul>
+    <p><b>予測器自身による同定（記述）。</b> 学習した予測器に、自分のトークンの空間で同じ補完をさせると、次のようになりました。分母がその符号自身のトークンなので、符号どうしの比べには使いません。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>左 → 右</th><th>上 → 下</th><th>前半 → 後半</th><th>後半 → 前半</th></tr></thead>
+    <tbody>
+      <tr><td>T0</td><td class="n">0.974 / 0.960</td><td class="n">0.982 / 0.982</td><td class="n">0.640 / 0.914</td><td class="n">0.723 / 0.913</td></tr>
+      <tr><td>S1</td><td class="n">0.917 / 0.913</td><td class="n">0.930 / 0.962</td><td class="n">0.316 / 0.354</td><td class="n">0.351 / 0.373</td></tr>
+      <tr><td>Sσ</td><td class="n">0.896 / 0.896</td><td class="n">0.929 / 0.947</td><td class="n">0.471 / 0.414</td><td class="n">0.526 / 0.462</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p>S1 と Sσ の予測器は、自分の空間では stack の中の未来と過去を平均より大幅に良く当てます（clim 0.35〜0.46）。しかし、その予測しやすさは、<var>z</var> を白色化した PCA64 で読む評価には表れていません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.3 ガードとずるの形</h3>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 320" role="img" aria-label="内容と time_r2 のガード">
+<text x="20" y="38" class="small strong">内容の誤差 U = 1 − E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5">（基準 0.2854 以下で非劣）</tspan></text>
+<rect x="221.3" y="76" width="378.7" height="28" fill="var(--bad-bg)"/>
+<line class="axis" x1="70" y1="90" x2="600" y2="90"/>
+<line class="axis" x1="70.0" y1="90" x2="70.0" y2="95"/><text x="70.0" y="146" class="xs mono" text-anchor="middle">0</text>
+<line class="axis" x1="176.0" y1="90" x2="176.0" y2="95"/><text x="176.0" y="146" class="xs mono" text-anchor="middle">0.2</text>
+<line class="axis" x1="282.0" y1="90" x2="282.0" y2="95"/><text x="282.0" y="146" class="xs mono" text-anchor="middle">0.4</text>
+<line class="axis" x1="388.0" y1="90" x2="388.0" y2="95"/><text x="388.0" y="146" class="xs mono" text-anchor="middle">0.6</text>
+<line class="axis" x1="494.0" y1="90" x2="494.0" y2="95"/><text x="494.0" y="146" class="xs mono" text-anchor="middle">0.8</text>
+<line class="axis" x1="600.0" y1="90" x2="600.0" y2="95"/><text x="600.0" y="146" class="xs mono" text-anchor="middle">1</text>
+<line class="refline bad" x1="221.3" y1="68" x2="221.3" y2="112"/><text x="221.3" y="64" class="xs lab-bad" text-anchor="middle">0.2854</text>
+<rect class="cn" x="184.7" y="86" width="8" height="8"/>
+<rect class="cn" x="191.1" y="86" width="8" height="8"/>
+<rect class="cn" x="202.2" y="86" width="8" height="8"/>
+<rect class="cn" x="203.3" y="86" width="8" height="8"/>
+<rect class="cn" x="207.0" y="86" width="8" height="8"/>
+<rect class="cn" x="212.8" y="86" width="8" height="8"/>
+<text x="170.7" y="108" class="xs" text-anchor="middle">物差し・init</text>
+<circle class="c3" cx="468.0" cy="90" r="5"/>
+<text x="468.0" y="108" class="xs" text-anchor="middle">Sσ</text>
+<circle cx="466.4" cy="90" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<circle class="c2" cx="473.3" cy="90" r="5"/>
+<text x="473.3" y="122" class="xs" text-anchor="middle">S1</text>
+<circle cx="504.1" cy="90" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c1" cx="550.7" cy="90" r="5"/>
+<text x="550.7" y="108" class="xs" text-anchor="middle">T0</text>
+<circle cx="543.8" cy="90" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<text x="20" y="188" class="small strong">time_r2（線 0.867 を超えたら時間に一定）</text>
+<rect x="506.0" y="226" width="94.0" height="28" fill="var(--bad-bg)"/>
+<line class="axis" x1="70" y1="240" x2="600" y2="240"/>
+<line class="axis" x1="70.0" y1="240" x2="70.0" y2="245"/><text x="70.0" y="296" class="xs mono" text-anchor="middle">0.25</text>
+<line class="axis" x1="246.7" y1="240" x2="246.7" y2="245"/><text x="246.7" y="296" class="xs mono" text-anchor="middle">0.5</text>
+<line class="axis" x1="423.3" y1="240" x2="423.3" y2="245"/><text x="423.3" y="296" class="xs mono" text-anchor="middle">0.75</text>
+<line class="axis" x1="600.0" y1="240" x2="600.0" y2="245"/><text x="600.0" y="296" class="xs mono" text-anchor="middle">1</text>
+<line class="refline bad" x1="506.0" y1="218" x2="506.0" y2="262"/><text x="506.0" y="214" class="xs lab-bad" text-anchor="middle">0.867</text>
+<circle class="c1" cx="158.3" cy="240" r="5"/>
+<text x="158.3" y="258" class="xs" text-anchor="middle">T0</text>
+<circle cx="157.6" cy="240" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="180.9" cy="240" r="5"/>
+<text x="180.9" y="272" class="xs" text-anchor="middle">S1</text>
+<circle cx="235.4" cy="240" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="261.5" cy="240" r="5"/>
+<text x="261.5" y="258" class="xs" text-anchor="middle">Sσ</text>
+<circle cx="283.4" cy="240" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<rect class="cn" x="433.5" y="236" width="8" height="8"/>
+<rect class="cn" x="421.5" y="236" width="8" height="8"/>
+<text x="430.4" y="272" class="xs" text-anchor="middle">init</text>
+<rect class="cn" x="466.7" y="236" width="8" height="8"/>
+<text x="470.7" y="258" class="xs" text-anchor="middle">画素</text></svg></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-2　内容の誤差 U と time_r2。</b> 図 4-5 の閾値の位置に、実際の値を置きました。塗りの丸が seed 0、白抜きが seed 1、灰色の四角が物差し（<code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>）と学習前（<code>init</code>・<code>init-s1</code>）、画素の tubelet です。学習した符号は、内容では全て基準の外（赤い範囲）にあり、time_r2 では全て線の内にあります。</figcaption>
+  </figure>
+  <div class="prose">
+    <ul>
+      <li><b>遅いだけ</b>（ψ<sub>copy</sub> &gt; 0 かつ ψ<sub>clim</sub> &lt; 0）: どの符号にも当たりませんでした。向きはその逆で、4.4 節の「雑音を足す」形です。</li>
+      <li><b>時間に一定</b>（time_r2 &gt; 0.867）: 当たりません。time_r2 は 0.37〜0.55 で、学習前（0.770）や画素の tubelet（0.817）より低い値です。</li>
+      <li><b>内容を捨てた</b>（U &gt; 0.2854）: 長い run の全ての step（6000 以降）と、短い run 17 本が当たりました。例外は Sσ の lr 1e-5・λ 0.5（step 6000）だけで、U = 0.28499 が基準の内にわずかに入りました。ただし、この符号でも未来と過去の言葉は「分母で向きが割れた」です。</li>
+    </ul>
+  </div>
+
+  <div class="prose">
+    <h3>7.4 復元の像</h3>
+    <p>学習した JEPA には復元の口がありません。そこで全ての符号に、内容のガードと同じ ridge の読み出し（白色化した PCA64 の座標から、32×32 の最後のフレームへ）を当てました。</p>
+  </div>
+  <figure>
+    <div class="chart"><img src="results/foundation/recon-s0.png" alt="ridge で読み出した像。1 行目が観測、2 行目から pca・mean8・v16・v17・init・T0・S1・Sσ" style="display:block;width:100%;max-width:658px;height:auto;margin:0 auto"></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-3　ridge の読み出しの像（seed 0、step 45000）。</b> 1 行目は観測（Zurich の stack を等間隔に 10 個）です。2 行目からは <code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>・<code>init</code>・T0・S1・Sσ の順です。物差しと <code>init</code> では、場面の明るさと大きな構造（空・建物・青い壁）が出ます。学習した 3 つの腕は、ほぼ平均の灰色のぼかしで、場面を見分けられません。E<sup>lin</sup> 0.09〜0.25 という数値と見た目は合っています。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>7.5 判定の表</h3>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>未来・過去（対 <code>pca</code>）</th><th>崩壊</th><th>time_r2（≤ 0.867）</th><th>U（≤ 0.2854）</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>T0（F1）</td><td>割れた / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.375 / 0.374</td><td class="n">0.907 / 0.894</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+      <tr><td>S1（F2）</td><td>区別できない / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.407 / 0.484</td><td class="n">0.761 / 0.819</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+      <tr><td>Sσ（F3）</td><td>割れた / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.521 / 0.552</td><td class="n">0.751 / 0.748</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p class="small muted">各欄は seed 0 / seed 1 です。2 つの seed がそろって良いときだけ、その腕を「良い」とします（README の「回す前に決めたこと」）。<code>v16</code>・<code>v17</code>・<code>mean8</code> に対しても、どの腕も「良い」に当たりません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.6 段の差と学習の経過（記述）</h3>
+    <p>seed 0 の未来の mean log R（copy / clim）と E<sup>lin</sup> を、step ごとに並べました。step 0 は学習前の <code>init</code> で、3 つの腕に共通です。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>step 0</th><th>6000</th><th>30000</th><th>45000</th></tr></thead>
+    <tbody>
+      <tr><td>T0</td><td class="n">−0.498 / −0.255、0.741</td><td class="n">−0.580 / −0.110、0.474</td><td class="n">−0.638 / −0.018、0.105</td><td class="n">−0.627 / −0.017、0.093</td></tr>
+      <tr><td>S1</td><td>同上</td><td class="n">−0.565 / −0.136、0.528</td><td class="n">−0.545 / −0.077、0.266</td><td class="n">−0.534 / −0.082、0.239</td></tr>
+      <tr><td>Sσ</td><td>同上</td><td class="n">−0.585 / −0.128、0.484</td><td class="n">−0.566 / −0.079、0.223</td><td class="n">−0.555 / −0.091、0.249</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <ul>
+      <li><b>学習の経過</b>: 学習が進むほど clim は 0 に近づき、E<sup>lin</sup> は下がりました。step 6000 の時点で既に、全ての腕が「分母で向きが割れた」になっています。</li>
+      <li><b>T0 → S1（時間の補完の効果）</b>: step 45000 で clim は −0.017 → −0.082、E<sup>lin</sup> は 0.093 → 0.239 です。時間の予測しやすさと内容が、両方とも良い向きに動きました。ただし、どちらも <code>pca</code> には遠く及びません。</li>
+      <li><b>S1 → Sσ（時間の尺度の効果）</b>: clim は −0.082 → −0.091、E<sup>lin</sup> は 0.239 → 0.249 で、差は小さいです。</li>
+    </ul>
+    <p><b>値を見た後の診断（判定は変えていない）。</b> 内容が <var>z</var> に無いのか、評価が読む PCA64 に無いだけなのかを分けました。学習した <var>z</var> の全体からは内容が 0.49〜0.59 読めますが、白色化した PCA64 からは 0.05〜0.19 しか読めません（<code>init</code> は 0.790 / 0.658）。上位 64 の主成分は分散の 46〜57% を持つので、SIGReg で <var>z</var> が等方になったという見込みは外れました。分散の大きい方向が、フレームから線形に読めず、時間にも予測しにくい成分で占められています。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.7 次に持ち込むもの</h3>
+    <p>この組み直しは、成功の最低線（未来と過去で <code>pca</code> を超え、ずるでないことをガードで示す）を満たしませんでした。次に持ち込むのは、次の事実と問いです。</p>
+    <ul>
+      <li><b>評価の土台で、落ち方を見分けられた。</b> minGRU の評価、2 つの分母、ガード、復元の像は、学習した符号の落ち方を「雑音を足す」形と「内容を捨てた」形に分けて示しました。比べる相手は、これからも <code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>・学習前です。</li>
+      <li><b>落ち方は、平均に対する予測しやすさと内容が失われる形。</b> 「遅いだけ」でも「時間に一定」でもありません。崩壊の指標（K1〜K3・time_r2）だけでは、この落ち方を捉えられませんでした。学習の経過では、step 6000 で既にこの形になっています。</li>
+      <li><b>時間の補完は良い向きに効く。</b> T0 → S1 で、時間の予測しやすさ・内容・stack の中の未来の補完が、いずれも良い向きに動きました。時間の尺度（S1 → Sσ）の効果は小さいものでした。</li>
+      <li><b>予測器の空間と z の分散の大きい方向が食い違う。</b> 予測器は自分の空間で stack の中の未来と過去を当てられます（S1 の clim 0.35〜0.37）。しかし、その予測しやすさは、<var>z</var> の分散の大きい方向にも、stack をまたぐ時間の予測しやすさにも表れていません。</li>
+    </ul>
+    <p><b>まだ言えないこと</b>:</p>
+    <ul>
+      <li>掃引の外（lr &gt; 1e-4、λ &lt; 0.5、より長い学習）なら結果が変わるか。選んだ設定は掃引の端にあります。</li>
+      <li>評価が PCA64 ではなく <var>z</var> の全体を読んでいたら、判定が変わったか。評価の規則は F0 で決めたもので、値を見た後には変えていません。</li>
+      <li>分散の大きい方向を占める成分が何か（位置や時刻の符号、SIGReg の分布合わせの副産物など）。確かめていません。</li>
+    </ul>
+  </div>
+</section>
+</main>
+
+</html>

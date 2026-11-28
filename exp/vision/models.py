@@ -54,6 +54,7 @@ __all__ = [
     "Decoder",
     "DecoderPart",
     "Encoder",
+    "LR_EXPONENT",
     "LogSigma",
     "PatchEmbed",
     "ResNetPart",
@@ -501,7 +502,7 @@ def build_vae(conf: RunConf, *, seed: int) -> VAEModules:
 ROLES = ("input", "hidden", "output", "vector")
 # The exponent e of the learning rate's k^e of each role (Adam's rules of muP,
 # Tensor Programs V, table 3, about BASE_WIDTH): k = width / BASE_WIDTH.
-_LR_EXPONENT = {"input": 0, "hidden": -1, "output": -1, "vector": 0}
+LR_EXPONENT = {"input": 0, "hidden": -1, "output": -1, "vector": 0}
 
 
 def _widths(m: ModelConf) -> tuple[float, float]:
@@ -563,7 +564,7 @@ def mup_lr(mods: VAEModules, m: ModelConf) -> dict[Tensor, float]:
     k_enc, k_dec = _widths(m)
     decoder = {id(p) for p in mods.decoder.parameters()}
     return {
-        p: (k_dec if id(p) in decoder else k_enc) ** _LR_EXPONENT[role]
+        p: (k_dec if id(p) in decoder else k_enc) ** LR_EXPONENT[role]
         for p, role in mup_roles(mods).items()
     }
 
