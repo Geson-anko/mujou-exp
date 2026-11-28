@@ -205,6 +205,8 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
 .dg circle.st { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
 .math { font-family: "Times New Roman", serif; font-size: 1.12em; }
 .dg .blk { fill: none; stroke: var(--ink); stroke-width: 1; }
+#results td:first-child { white-space: nowrap; }
+#results .tbl table { min-width: 40rem; }
 </style>
 <svg class="defs" width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
@@ -238,6 +240,8 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
   </dl>
 </section>
 
+<div class="status"><p><span class="badge ng">結果</span> <b>2026-11-28: T0・S1・Sσ のどの腕も、<code>pca</code> と VAE を超えませんでした。</b> 詳しくは <a href="#results">7 節</a>にあります。</p></div>
+
 <nav class="toc" aria-label="目次">
   <b>目次</b>
   <ol>
@@ -247,6 +251,7 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
     <li><a href="#eval">評価</a>（<a href="#howdyn">解説: minGRU の評価のしくみ</a>）</li>
     <li><a href="#stages">段の順序</a></li>
     <li><a href="#open">決めていないこと</a></li>
+    <li><a href="#results">結果: F1〜F3 の判定</a></li>
   </ol>
 </nav>
 
@@ -1655,6 +1660,309 @@ dl.gloss dd { margin: 0; color: var(--ink-2); }
       <li>minGRU の大きさ（層の数・幅）と、学習の規則（早期終了、seed の数）</li>
       <li><code>time_r2</code> と E<sup>lin</sup> の非劣性の余裕</li>
       <li><var>s</var> の範囲の上端（128）が、動画の長さと読み出しの速さで実際に回るか</li>
+    </ul>
+  </div>
+</section>
+
+<section id="results">
+  <div class="sec-head"><div class="eyebrow">7</div><h2>結果: F1〜F3 の判定（2026-11-28）</h2></div>
+  <div class="status">
+    <p><span class="badge ng">良いに当たらない</span> <b>T0・S1・Sσ のどの腕も、<code>pca</code> と VAE（<code>v16</code>・<code>v17</code>）を超えませんでした。</b> 長い run の step 45000 を seed 0 と seed 1 のそれぞれで判定し、6 つとも 4 節の「良い」に当たりませんでした。<code>mean8</code> と比べても同じです。</p>
+    <ul>
+      <li><b>2 つの分母で向きが割れた。</b> 学習した符号は、copy に対しては <code>pca</code> より予測しやすく、平均に対しては、はっきり予測しにくくなりました。</li>
+      <li><b>内容のガードに落ちた。</b> U は 0.75〜0.91 で、基準の 0.2854 を大きく超えました。</li>
+      <li>崩壊（K1〜K3・時間の線）と <code>time_r2</code> は、学習した全ての符号で通りました。</li>
+    </ul>
+    <p class="small muted">数字は全て <a href="results/foundation/README.md">results/foundation/README.md</a> の「評価の段」から取りました。判定は <code>judge_eval.py</code> の出力（<code>fnd-eval/judge.json</code>）です。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.1 未来と過去</h3>
+    <p>主の範囲 0.8〜25.6 秒の mean log R を、2 つの分母の平面に置きました（図 4-3 と同じ向きで、左・下ほど良い）。主の層は検証の損失で選んだ結果、全て 1 層になりました。minGRU は全ての符号で、検証の損失がエポック 0（2 時点の線形）で最小になりました。そのため値は 2 時点の線形と同じで、seed のばらつきは 0 です。</p>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 640 360" role="img" aria-label="腕ごとの未来と過去の mean log R を pca・VAE と比べた散布図">
+<text x="80" y="24" class="small strong">未来</text>
+<rect class="panel" x="80" y="40" width="250" height="250"/>
+<line class="gridline" x1="105.0" y1="40" x2="105.0" y2="290"/>
+<text x="105.0" y="306" class="xs mono" text-anchor="middle">−0.64</text>
+<line class="gridline" x1="155.0" y1="40" x2="155.0" y2="290"/>
+<text x="155.0" y="306" class="xs mono" text-anchor="middle">−0.60</text>
+<line class="gridline" x1="205.0" y1="40" x2="205.0" y2="290"/>
+<text x="205.0" y="306" class="xs mono" text-anchor="middle">−0.56</text>
+<line class="gridline" x1="255.0" y1="40" x2="255.0" y2="290"/>
+<text x="255.0" y="306" class="xs mono" text-anchor="middle">−0.52</text>
+<line class="gridline" x1="305.0" y1="40" x2="305.0" y2="290"/>
+<text x="305.0" y="306" class="xs mono" text-anchor="middle">−0.48</text>
+<line class="gridline" x1="80" y1="290.0" x2="330" y2="290.0"/>
+<text x="74" y="294.0" class="xs mono" text-anchor="end">−0.30</text>
+<line class="gridline" x1="80" y1="248.3" x2="330" y2="248.3"/>
+<text x="74" y="252.3" class="xs mono" text-anchor="end">−0.25</text>
+<line class="gridline" x1="80" y1="206.7" x2="330" y2="206.7"/>
+<text x="74" y="210.7" class="xs mono" text-anchor="end">−0.20</text>
+<line class="gridline" x1="80" y1="165.0" x2="330" y2="165.0"/>
+<text x="74" y="169.0" class="xs mono" text-anchor="end">−0.15</text>
+<line class="gridline" x1="80" y1="123.3" x2="330" y2="123.3"/>
+<text x="74" y="127.3" class="xs mono" text-anchor="end">−0.10</text>
+<line class="gridline" x1="80" y1="81.7" x2="330" y2="81.7"/>
+<text x="74" y="85.7" class="xs mono" text-anchor="end">−0.05</text>
+<line class="gridline" x1="80" y1="40.0" x2="330" y2="40.0"/>
+<text x="74" y="44.0" class="xs mono" text-anchor="end">0.00</text>
+<line class="chance" x1="267.5" y1="40" x2="267.5" y2="290"/>
+<line class="chance" x1="80" y1="267.5" x2="330" y2="267.5"/>
+<text x="88" y="177.5" class="xs warn">分母で向きが割れた</text>
+<text x="88" y="193.5" class="xs warn">（copy で良く clim で悪い）</text>
+<text x="86" y="282" class="xs tg">pca より良い</text>
+<rect x="262.5" y="262.5" width="10" height="10" fill="var(--ink)"/>
+<rect class="cn" x="291.0" y="261.0" width="8" height="8"/>
+<rect class="cn" x="301.0" y="245.2" width="8" height="8"/>
+<rect class="cn" x="229.8" y="230.2" width="8" height="8"/>
+<circle class="c1" cx="121.3" cy="54.2" r="5"/>
+<circle cx="128.8" cy="58.3" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="237.5" cy="108.3" r="5"/>
+<circle cx="200.0" cy="96.7" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="211.2" cy="115.8" r="5"/>
+<circle cx="207.5" cy="113.3" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<text x="259.5" y="283.5" class="xs mono" text-anchor="end">pca</text>
+<text x="295.0" y="283.0" class="xs mono" text-anchor="middle">mean8</text>
+<text x="299.0" y="243.2" class="xs mono" text-anchor="end">v16</text>
+<text x="227.8" y="228.2" class="xs mono" text-anchor="end">v17</text>
+<text x="138.8" y="60.2" class="xs strong t1" text-anchor="start">T0</text>
+<text x="247.5" y="106.5" class="xs strong t2" text-anchor="start">S1</text>
+<text x="221.2" y="128.6" class="xs strong t3" text-anchor="start">Sσ</text>
+<text x="370" y="24" class="small strong">過去</text>
+<rect class="panel" x="370" y="40" width="250" height="250"/>
+<line class="gridline" x1="395.0" y1="40" x2="395.0" y2="290"/>
+<text x="395.0" y="306" class="xs mono" text-anchor="middle">−0.64</text>
+<line class="gridline" x1="445.0" y1="40" x2="445.0" y2="290"/>
+<text x="445.0" y="306" class="xs mono" text-anchor="middle">−0.60</text>
+<line class="gridline" x1="495.0" y1="40" x2="495.0" y2="290"/>
+<text x="495.0" y="306" class="xs mono" text-anchor="middle">−0.56</text>
+<line class="gridline" x1="545.0" y1="40" x2="545.0" y2="290"/>
+<text x="545.0" y="306" class="xs mono" text-anchor="middle">−0.52</text>
+<line class="gridline" x1="595.0" y1="40" x2="595.0" y2="290"/>
+<text x="595.0" y="306" class="xs mono" text-anchor="middle">−0.48</text>
+<line class="gridline" x1="370" y1="290.0" x2="620" y2="290.0"/>
+<line class="gridline" x1="370" y1="248.3" x2="620" y2="248.3"/>
+<line class="gridline" x1="370" y1="206.7" x2="620" y2="206.7"/>
+<line class="gridline" x1="370" y1="165.0" x2="620" y2="165.0"/>
+<line class="gridline" x1="370" y1="123.3" x2="620" y2="123.3"/>
+<line class="gridline" x1="370" y1="81.7" x2="620" y2="81.7"/>
+<line class="gridline" x1="370" y1="40.0" x2="620" y2="40.0"/>
+<line class="chance" x1="552.5" y1="40" x2="552.5" y2="290"/>
+<line class="chance" x1="370" y1="266.7" x2="620" y2="266.7"/>
+<text x="378" y="177.5" class="xs warn">分母で向きが割れた</text>
+<text x="378" y="193.5" class="xs warn">（copy で良く clim で悪い）</text>
+<text x="376" y="282" class="xs tg">pca より良い</text>
+<rect x="547.5" y="261.7" width="10" height="10" fill="var(--ink)"/>
+<rect class="cn" x="576.0" y="259.3" width="8" height="8"/>
+<rect class="cn" x="588.5" y="245.2" width="8" height="8"/>
+<rect class="cn" x="518.5" y="229.3" width="8" height="8"/>
+<circle class="c1" cx="405.0" cy="53.3" r="5"/>
+<circle cx="416.3" cy="57.5" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="520.0" cy="106.7" r="5"/>
+<circle cx="483.8" cy="95.8" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="495.0" cy="114.2" r="5"/>
+<circle cx="488.8" cy="112.5" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<text x="544.5" y="282.7" class="xs mono" text-anchor="end">pca</text>
+<text x="580.0" y="281.3" class="xs mono" text-anchor="middle">mean8</text>
+<text x="586.5" y="243.2" class="xs mono" text-anchor="end">v16</text>
+<text x="516.5" y="227.3" class="xs mono" text-anchor="end">v17</text>
+<text x="426.3" y="59.4" class="xs strong t1" text-anchor="start">T0</text>
+<text x="530.0" y="105.3" class="xs strong t2" text-anchor="start">S1</text>
+<text x="505.0" y="127.3" class="xs strong t3" text-anchor="start">Sσ</text>
+<text x="350" y="326" class="xs" text-anchor="middle">mean log R_copy（左ほど良い）→</text>
+<text x="16" y="165" class="xs" text-anchor="middle" transform="rotate(-90 16 165)">mean log R_clim（下ほど良い）</text>
+<circle class="c1" cx="100" cy="346" r="5"/><text x="110" y="350" class="xs">seed 0（塗り）</text>
+<circle cx="220" cy="346" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/><text x="230" y="350" class="xs">seed 1（白抜き）</text>
+<rect class="cn" x="346" y="342" width="8" height="8"/><text x="360" y="350" class="xs">物差し（黒は pca）</text></svg></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-1　腕ごとの未来と過去の mean log R（copy / clim）。</b> 点線は <code>pca</code> を通る線です。学習した 6 つの符号は、全て <code>pca</code> の左上にあります。copy では <code>pca</code> より良く、clim では悪いということで、図 4-3 の「雑音を足す」の向きです。clim が 0 に近いのは、0.8 秒先でも平均の予測とほとんど変わらないということです。過去も未来とほぼ同じ位置に来ました。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>未来（copy / clim）</th><th>過去（copy / clim）</th></tr></thead>
+    <tbody>
+      <tr><td style="white-space:nowrap"><code>pca</code></td><td class="n">−0.510 / −0.273</td><td class="n">−0.514 / −0.272</td></tr>
+      <tr><td style="white-space:nowrap"><code>v16</code></td><td class="n">−0.480 / −0.251</td><td class="n">−0.482 / −0.251</td></tr>
+      <tr><td style="white-space:nowrap"><code>v17</code></td><td class="n">−0.537 / −0.233</td><td class="n">−0.538 / −0.232</td></tr>
+      <tr><td style="white-space:nowrap"><code>mean8</code></td><td class="n">−0.488 / −0.270</td><td class="n">−0.492 / −0.268</td></tr>
+      <tr><td style="white-space:nowrap">T0 s0</td><td class="n">−0.627 / −0.017</td><td class="n">−0.632 / −0.016</td></tr>
+      <tr><td style="white-space:nowrap">T0 s1</td><td class="n">−0.621 / −0.022</td><td class="n">−0.623 / −0.021</td></tr>
+      <tr><td style="white-space:nowrap">S1 s0</td><td class="n">−0.534 / −0.082</td><td class="n">−0.540 / −0.080</td></tr>
+      <tr><td style="white-space:nowrap">S1 s1</td><td class="n">−0.564 / −0.068</td><td class="n">−0.569 / −0.067</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s0</td><td class="n">−0.555 / −0.091</td><td class="n">−0.560 / −0.089</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s1</td><td class="n">−0.558 / −0.088</td><td class="n">−0.565 / −0.087</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>未来の ψ<sub>copy</sub> 対 <code>pca</code>（±2 SE）</th><th>未来の ψ<sub>clim</sub> 対 <code>pca</code>（±2 SE）</th><th>言葉（対 <code>pca</code>・<code>v16</code>・<code>v17</code>）</th></tr></thead>
+    <tbody>
+      <tr><td style="white-space:nowrap">T0 s0</td><td class="n">−0.118 [−0.143, −0.092]</td><td class="n">+0.257 [0.209, 0.304]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">T0 s1</td><td class="n">−0.111 [−0.142, −0.080]</td><td class="n">+0.252 [0.210, 0.293]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">S1 s0</td><td class="n">−0.024 [−0.053, 0.005]</td><td class="n">+0.192 [0.161, 0.223]</td><td>区別できない・割れた・区別できない</td></tr>
+      <tr><td style="white-space:nowrap">S1 s1</td><td class="n">−0.054 [−0.079, −0.030]</td><td class="n">+0.206 [0.166, 0.246]</td><td>割れた・割れた・割れた</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s0</td><td class="n">−0.045 [−0.072, −0.017]</td><td class="n">+0.183 [0.147, 0.218]</td><td>割れた・割れた・区別できない</td></tr>
+      <tr><td style="white-space:nowrap">Sσ s1</td><td class="n">−0.049 [−0.073, −0.024]</td><td class="n">+0.185 [0.150, 0.220]</td><td>割れた・割れた・区別できない</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p class="small muted">「割れた」は「分母で向きが割れた」の略です。言葉は未来と過去で同じでした。過去の ψ と区間は README の表にあります。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.2 今: stack の中の補完</h3>
+    <p>格子の半分から他方の半分を ridge で当てたときの R（copy / clim）です。値は Zurich の seed 0、step 45000 のものです。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>符号</th><th>左 → 右</th><th>上 → 下</th><th>前半 → 後半（stack の中の未来）</th><th>後半 → 前半（過去）</th></tr></thead>
+    <tbody>
+      <tr><td><code>pca</code></td><td class="n">0.489 / 0.856</td><td class="n">0.423 / 0.903</td><td class="n">0.788 / 0.283</td><td class="n">0.788 / 0.283</td></tr>
+      <tr><td><code>init</code></td><td class="n">0.487 / 0.857</td><td class="n">0.428 / 0.888</td><td class="n">0.813 / 0.319</td><td class="n">0.757 / 0.315</td></tr>
+      <tr><td>T0</td><td class="n">0.556 / 0.984</td><td class="n">0.589 / 1.000</td><td class="n">0.533 / 0.923</td><td class="n">0.530 / 0.932</td></tr>
+      <tr><td>S1</td><td class="n">0.493 / 0.969</td><td class="n">0.475 / 0.999</td><td class="n">0.490 / 0.774</td><td class="n">0.469 / 0.788</td></tr>
+      <tr><td>Sσ</td><td class="n">0.486 / 0.967</td><td class="n">0.507 / 0.995</td><td class="n">0.487 / 0.696</td><td class="n">0.467 / 0.703</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <ul>
+      <li>空間の半分を当てる問題では、学習した符号の clim は 0.96〜1.00 で、平均の予測とほぼ変わりません（<code>pca</code> は 0.86〜0.90）。</li>
+      <li>stack の中の未来と過去の clim は、時間の補完を学んだ腕ほど低くなりました（T0 0.92〜0.93、S1 0.77〜0.79、Sσ 0.70）。それでも <code>pca</code> の 0.283 より悪い値です。</li>
+    </ul>
+    <p><b>予測器自身による同定（記述）。</b> 学習した予測器に、自分のトークンの空間で同じ補完をさせると、次のようになりました。分母がその符号自身のトークンなので、符号どうしの比べには使いません。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>左 → 右</th><th>上 → 下</th><th>前半 → 後半</th><th>後半 → 前半</th></tr></thead>
+    <tbody>
+      <tr><td>T0</td><td class="n">0.974 / 0.960</td><td class="n">0.982 / 0.982</td><td class="n">0.640 / 0.914</td><td class="n">0.723 / 0.913</td></tr>
+      <tr><td>S1</td><td class="n">0.917 / 0.913</td><td class="n">0.930 / 0.962</td><td class="n">0.316 / 0.354</td><td class="n">0.351 / 0.373</td></tr>
+      <tr><td>Sσ</td><td class="n">0.896 / 0.896</td><td class="n">0.929 / 0.947</td><td class="n">0.471 / 0.414</td><td class="n">0.526 / 0.462</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p>S1 と Sσ の予測器は、自分の空間では stack の中の未来と過去を平均より大幅に良く当てます（clim 0.35〜0.46）。しかし、その予測しやすさは、<var>z</var> を白色化した PCA64 で読む評価には表れていません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.3 ガードとずるの形</h3>
+  </div>
+  <figure>
+    <div class="chart"><svg class="dg wide" viewBox="0 0 620 320" role="img" aria-label="内容と time_r2 のガード">
+<text x="20" y="38" class="small strong">内容の誤差 U = 1 − E<tspan dy="-5" font-size="9">lin</tspan><tspan dy="5">（基準 0.2854 以下で非劣）</tspan></text>
+<rect x="221.3" y="76" width="378.7" height="28" fill="var(--bad-bg)"/>
+<line class="axis" x1="70" y1="90" x2="600" y2="90"/>
+<line class="axis" x1="70.0" y1="90" x2="70.0" y2="95"/><text x="70.0" y="146" class="xs mono" text-anchor="middle">0</text>
+<line class="axis" x1="176.0" y1="90" x2="176.0" y2="95"/><text x="176.0" y="146" class="xs mono" text-anchor="middle">0.2</text>
+<line class="axis" x1="282.0" y1="90" x2="282.0" y2="95"/><text x="282.0" y="146" class="xs mono" text-anchor="middle">0.4</text>
+<line class="axis" x1="388.0" y1="90" x2="388.0" y2="95"/><text x="388.0" y="146" class="xs mono" text-anchor="middle">0.6</text>
+<line class="axis" x1="494.0" y1="90" x2="494.0" y2="95"/><text x="494.0" y="146" class="xs mono" text-anchor="middle">0.8</text>
+<line class="axis" x1="600.0" y1="90" x2="600.0" y2="95"/><text x="600.0" y="146" class="xs mono" text-anchor="middle">1</text>
+<line class="refline bad" x1="221.3" y1="68" x2="221.3" y2="112"/><text x="221.3" y="64" class="xs lab-bad" text-anchor="middle">0.2854</text>
+<rect class="cn" x="184.7" y="86" width="8" height="8"/>
+<rect class="cn" x="191.1" y="86" width="8" height="8"/>
+<rect class="cn" x="202.2" y="86" width="8" height="8"/>
+<rect class="cn" x="203.3" y="86" width="8" height="8"/>
+<rect class="cn" x="207.0" y="86" width="8" height="8"/>
+<rect class="cn" x="212.8" y="86" width="8" height="8"/>
+<text x="170.7" y="108" class="xs" text-anchor="middle">物差し・init</text>
+<circle class="c3" cx="468.0" cy="90" r="5"/>
+<text x="468.0" y="108" class="xs" text-anchor="middle">Sσ</text>
+<circle cx="466.4" cy="90" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<circle class="c2" cx="473.3" cy="90" r="5"/>
+<text x="473.3" y="122" class="xs" text-anchor="middle">S1</text>
+<circle cx="504.1" cy="90" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c1" cx="550.7" cy="90" r="5"/>
+<text x="550.7" y="108" class="xs" text-anchor="middle">T0</text>
+<circle cx="543.8" cy="90" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<text x="20" y="188" class="small strong">time_r2（線 0.867 を超えたら時間に一定）</text>
+<rect x="506.0" y="226" width="94.0" height="28" fill="var(--bad-bg)"/>
+<line class="axis" x1="70" y1="240" x2="600" y2="240"/>
+<line class="axis" x1="70.0" y1="240" x2="70.0" y2="245"/><text x="70.0" y="296" class="xs mono" text-anchor="middle">0.25</text>
+<line class="axis" x1="246.7" y1="240" x2="246.7" y2="245"/><text x="246.7" y="296" class="xs mono" text-anchor="middle">0.5</text>
+<line class="axis" x1="423.3" y1="240" x2="423.3" y2="245"/><text x="423.3" y="296" class="xs mono" text-anchor="middle">0.75</text>
+<line class="axis" x1="600.0" y1="240" x2="600.0" y2="245"/><text x="600.0" y="296" class="xs mono" text-anchor="middle">1</text>
+<line class="refline bad" x1="506.0" y1="218" x2="506.0" y2="262"/><text x="506.0" y="214" class="xs lab-bad" text-anchor="middle">0.867</text>
+<circle class="c1" cx="158.3" cy="240" r="5"/>
+<text x="158.3" y="258" class="xs" text-anchor="middle">T0</text>
+<circle cx="157.6" cy="240" r="4.5" fill="var(--panel)" class="ring c1s" style="stroke-width:2"/>
+<circle class="c2" cx="180.9" cy="240" r="5"/>
+<text x="180.9" y="272" class="xs" text-anchor="middle">S1</text>
+<circle cx="235.4" cy="240" r="4.5" fill="var(--panel)" class="ring c2s" style="stroke-width:2"/>
+<circle class="c3" cx="261.5" cy="240" r="5"/>
+<text x="261.5" y="258" class="xs" text-anchor="middle">Sσ</text>
+<circle cx="283.4" cy="240" r="4.5" fill="var(--panel)" class="ring c3s" style="stroke-width:2"/>
+<rect class="cn" x="433.5" y="236" width="8" height="8"/>
+<rect class="cn" x="421.5" y="236" width="8" height="8"/>
+<text x="430.4" y="272" class="xs" text-anchor="middle">init</text>
+<rect class="cn" x="466.7" y="236" width="8" height="8"/>
+<text x="470.7" y="258" class="xs" text-anchor="middle">画素</text></svg></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-2　内容の誤差 U と time_r2。</b> 図 4-5 の閾値の位置に、実際の値を置きました。塗りの丸が seed 0、白抜きが seed 1、灰色の四角が物差し（<code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>）と学習前（<code>init</code>・<code>init-s1</code>）、画素の tubelet です。学習した符号は、内容では全て基準の外（赤い範囲）にあり、time_r2 では全て線の内にあります。</figcaption>
+  </figure>
+  <div class="prose">
+    <ul>
+      <li><b>遅いだけ</b>（ψ<sub>copy</sub> &gt; 0 かつ ψ<sub>clim</sub> &lt; 0）: どの符号にも当たりませんでした。向きはその逆で、4.4 節の「雑音を足す」形です。</li>
+      <li><b>時間に一定</b>（time_r2 &gt; 0.867）: 当たりません。time_r2 は 0.37〜0.55 で、学習前（0.770）や画素の tubelet（0.817）より低い値です。</li>
+      <li><b>内容を捨てた</b>（U &gt; 0.2854）: 長い run の全ての step（6000 以降）と、短い run 17 本が当たりました。例外は Sσ の lr 1e-5・λ 0.5（step 6000）だけで、U = 0.28499 が基準の内にわずかに入りました。ただし、この符号でも未来と過去の言葉は「分母で向きが割れた」です。</li>
+    </ul>
+  </div>
+
+  <div class="prose">
+    <h3>7.4 復元の像</h3>
+    <p>学習した JEPA には復元の口がありません。そこで全ての符号に、内容のガードと同じ ridge の読み出し（白色化した PCA64 の座標から、32×32 の最後のフレームへ）を当てました。</p>
+  </div>
+  <figure>
+    <div class="chart"><img src="results/foundation/recon-s0.png" alt="ridge で読み出した像。1 行目が観測、2 行目から pca・mean8・v16・v17・init・T0・S1・Sσ" style="display:block;width:100%;max-width:658px;height:auto;margin:0 auto"></div>
+    <figcaption><span class="tag data">データ</span><b>図 7-3　ridge の読み出しの像（seed 0、step 45000）。</b> 1 行目は観測（Zurich の stack を等間隔に 10 個）です。2 行目からは <code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>・<code>init</code>・T0・S1・Sσ の順です。物差しと <code>init</code> では、場面の明るさと大きな構造（空・建物・青い壁）が出ます。学習した 3 つの腕は、ほぼ平均の灰色のぼかしで、場面を見分けられません。E<sup>lin</sup> 0.09〜0.25 という数値と見た目は合っています。</figcaption>
+  </figure>
+
+  <div class="prose">
+    <h3>7.5 判定の表</h3>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>未来・過去（対 <code>pca</code>）</th><th>崩壊</th><th>time_r2（≤ 0.867）</th><th>U（≤ 0.2854）</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>T0（F1）</td><td>割れた / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.375 / 0.374</td><td class="n">0.907 / 0.894</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+      <tr><td>S1（F2）</td><td>区別できない / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.407 / 0.484</td><td class="n">0.761 / 0.819</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+      <tr><td>Sσ（F3）</td><td>割れた / 割れた</td><td><span class="badge ok">通った</span></td><td class="n">0.521 / 0.552</td><td class="n">0.751 / 0.748</td><td><span class="badge ng">良いに当たらない</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <p class="small muted">各欄は seed 0 / seed 1 です。2 つの seed がそろって良いときだけ、その腕を「良い」とします（README の「回す前に決めたこと」）。<code>v16</code>・<code>v17</code>・<code>mean8</code> に対しても、どの腕も「良い」に当たりません。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.6 段の差と学習の経過（記述）</h3>
+    <p>seed 0 の未来の mean log R（copy / clim）と E<sup>lin</sup> を、step ごとに並べました。step 0 は学習前の <code>init</code> で、3 つの腕に共通です。</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>腕</th><th>step 0</th><th>6000</th><th>30000</th><th>45000</th></tr></thead>
+    <tbody>
+      <tr><td>T0</td><td class="n">−0.498 / −0.255、0.741</td><td class="n">−0.580 / −0.110、0.474</td><td class="n">−0.638 / −0.018、0.105</td><td class="n">−0.627 / −0.017、0.093</td></tr>
+      <tr><td>S1</td><td>同上</td><td class="n">−0.565 / −0.136、0.528</td><td class="n">−0.545 / −0.077、0.266</td><td class="n">−0.534 / −0.082、0.239</td></tr>
+      <tr><td>Sσ</td><td>同上</td><td class="n">−0.585 / −0.128、0.484</td><td class="n">−0.566 / −0.079、0.223</td><td class="n">−0.555 / −0.091、0.249</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose">
+    <ul>
+      <li><b>学習の経過</b>: 学習が進むほど clim は 0 に近づき、E<sup>lin</sup> は下がりました。step 6000 の時点で既に、全ての腕が「分母で向きが割れた」になっています。</li>
+      <li><b>T0 → S1（時間の補完の効果）</b>: step 45000 で clim は −0.017 → −0.082、E<sup>lin</sup> は 0.093 → 0.239 です。時間の予測しやすさと内容が、両方とも良い向きに動きました。ただし、どちらも <code>pca</code> には遠く及びません。</li>
+      <li><b>S1 → Sσ（時間の尺度の効果）</b>: clim は −0.082 → −0.091、E<sup>lin</sup> は 0.239 → 0.249 で、差は小さいです。</li>
+    </ul>
+    <p><b>値を見た後の診断（判定は変えていない）。</b> 内容が <var>z</var> に無いのか、評価が読む PCA64 に無いだけなのかを分けました。学習した <var>z</var> の全体からは内容が 0.49〜0.59 読めますが、白色化した PCA64 からは 0.05〜0.19 しか読めません（<code>init</code> は 0.790 / 0.658）。上位 64 の主成分は分散の 46〜57% を持つので、SIGReg で <var>z</var> が等方になったという見込みは外れました。分散の大きい方向が、フレームから線形に読めず、時間にも予測しにくい成分で占められています。</p>
+  </div>
+
+  <div class="prose">
+    <h3>7.7 次に持ち込むもの</h3>
+    <p>この組み直しは、成功の最低線（未来と過去で <code>pca</code> を超え、ずるでないことをガードで示す）を満たしませんでした。次に持ち込むのは、次の事実と問いです。</p>
+    <ul>
+      <li><b>評価の土台で、落ち方を見分けられた。</b> minGRU の評価、2 つの分母、ガード、復元の像は、学習した符号の落ち方を「雑音を足す」形と「内容を捨てた」形に分けて示しました。比べる相手は、これからも <code>pca</code>・<code>mean8</code>・<code>v16</code>・<code>v17</code>・学習前です。</li>
+      <li><b>落ち方は、平均に対する予測しやすさと内容が失われる形。</b> 「遅いだけ」でも「時間に一定」でもありません。崩壊の指標（K1〜K3・time_r2）だけでは、この落ち方を捉えられませんでした。学習の経過では、step 6000 で既にこの形になっています。</li>
+      <li><b>時間の補完は良い向きに効く。</b> T0 → S1 で、時間の予測しやすさ・内容・stack の中の未来の補完が、いずれも良い向きに動きました。時間の尺度（S1 → Sσ）の効果は小さいものでした。</li>
+      <li><b>予測器の空間と z の分散の大きい方向が食い違う。</b> 予測器は自分の空間で stack の中の未来と過去を当てられます（S1 の clim 0.35〜0.37）。しかし、その予測しやすさは、<var>z</var> の分散の大きい方向にも、stack をまたぐ時間の予測しやすさにも表れていません。</li>
+    </ul>
+    <p><b>まだ言えないこと</b>:</p>
+    <ul>
+      <li>掃引の外（lr &gt; 1e-4、λ &lt; 0.5、より長い学習）なら結果が変わるか。選んだ設定は掃引の端にあります。</li>
+      <li>評価が PCA64 ではなく <var>z</var> の全体を読んでいたら、判定が変わったか。評価の規則は F0 で決めたもので、値を見た後には変えていません。</li>
+      <li>分散の大きい方向を占める成分が何か（位置や時刻の符号、SIGReg の分布合わせの副産物など）。確かめていません。</li>
     </ul>
   </div>
 </section>
